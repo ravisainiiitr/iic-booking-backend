@@ -62,7 +62,9 @@ def serialize_row(rec: SricWalletRecharge, *, admin: bool) -> dict:
         "amount_raw": rec.amount_raw,
         "financial_year": rec.financial_year,
         "status": rec.status,
-        "status_display": rec.get_status_display(),
+        "status_display": "Reversed" if rec.reversed_at else rec.get_status_display(),
+        "reversed": bool(rec.reversed_at),
+        "reversed_at": _iso(rec.reversed_at),
         "review_reason": rec.review_reason,
         "review_message": rec.review_message,
         "credited_at": _iso(rec.credited_at),
@@ -103,9 +105,11 @@ def serialize_row(rec: SricWalletRecharge, *, admin: bool) -> dict:
             "rejection_reason": rec.rejection_reason,
             "rejected_at": _iso(rec.rejected_at),
             "rejected_by_name": _name(rec.rejected_by) if rec.rejected_by_id else "",
+            "reversal_ref": rec.reversal_ref,
+            "reversed_by_name": _name(rec.reversed_by) if rec.reversed_by_id else "",
             "can_credit": rec.status in CREDITABLE_STATUSES and not svc._missing_ledger(rec.ledger_id),
             "can_reject": rec.status in CREDITABLE_STATUSES,
-            "can_verify": rec.status == S.CREDITED,
+            "can_verify": rec.status == S.CREDITED and not rec.reversed_at,
             "history": rec.history or [],
         }
     )
@@ -121,6 +125,7 @@ def _rows_qs():
         "credited_by",
         "fund_receipt_verified_by",
         "rejected_by",
+        "reversed_by",
         "duplicate_of",
     )
 
@@ -220,6 +225,11 @@ def filter_rows(qs, params):
     end = _day(params.get("date_to"), end=True)
     if end:
         qs = qs.filter(created_at__lt=end)
+    test = (params.get("test") or "").strip().lower()
+    if test == "hide":
+        qs = qs.filter(is_test=False)
+    elif test == "only":
+        qs = qs.filter(is_test=True)
     search = (params.get("search") or "").strip()
     if search:
         qs = qs.filter(
@@ -244,7 +254,8 @@ def admin_list(request):
         page, size = 1, 25
     total = qs.count()
     rows = list(qs[(page - 1) * size : page * size])
-    counts = dict(SricWalletRecharge.objects.values_list("status").annotate(n=Count("id")).values_list("status", "n"))
+    real = SricWalletRecharge.objects.filter(is_test=False)
+    counts = dict(real.values_list("status").annotate(n=Count("id")).values_list("status", "n"))
     years = list(
         SricWalletRecharge.objects.order_by("-financial_year").values_list("financial_year", flat=True).distinct()
     )
@@ -258,7 +269,10 @@ def admin_list(request):
             "status_counts": counts,
             "financial_years": years,
             "receivers": [{"code": m.code, "label": m.label} for m in SricReceiverMapping.objects.all()],
-            "credited_total": _money(qs.filter(status=S.CREDITED).aggregate(t=Sum("amount"))["t"] or 0),
+            "credited_total": _money(
+                qs.filter(status=S.CREDITED, is_test=False, reversed_at__isnull=True).aggregate(t=Sum("amount"))["t"] or 0
+            ),
+            "test_count": SricWalletRecharge.objects.filter(is_test=True).count(),
             "scan_enabled": config.scan_enabled,
             "auto_credit_enabled": config.auto_credit_enabled,
             "last_scan_at": _iso(config.last_scan_at),

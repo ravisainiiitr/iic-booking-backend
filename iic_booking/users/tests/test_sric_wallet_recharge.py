@@ -670,8 +670,27 @@ class TestSenderRunTests(_World):
         rec.refresh_from_db()
         self.assertFalse(rec.fund_receipt_verified)
         self.assertIn("reversed", rec.fund_receipt_verification_remarks)
+        self.assertEqual((rec.reversal_ref, rec.reversed_by_id, rec.reversed_at is not None), (adj.reference, self.admin.pk, True))
         self.assertIn("created=False", self.run_cmd("test-sender-reverse", "--row-id", str(rec.pk)))
         self.assertEqual(self.balance(user=self.tester), Decimal("250.00"))
+
+        client = self.admin_client()
+        data = client.get("/api/admin/sric-wallet-recharges/").json()
+        row = next(r for r in data["results"] if r["id"] == rec.pk)
+        self.assertEqual((row["is_test"], row["reversed"], row["status_display"], row["reversal_ref"], row["can_verify"]),
+                         (True, True, "Reversed", adj.reference, False))
+        self.assertEqual((data["status_counts"], data["credited_total"], data["test_count"]), ({}, "0.00", 2))
+        self.assertEqual(client.get("/api/admin/sric-wallet-recharges/", {"test": "hide"}).json()["count"], 0)
+        self.assertEqual(client.get("/api/admin/sric-wallet-recharges/", {"test": "only"}).json()["count"], 2)
+        verify = client.post(f"/api/admin/sric-wallet-recharges/{rec.pk}/verify/", {"verified": True}, format="json")
+        self.assertEqual(verify.status_code, 400)
+        res = client.get("/api/exports/sric-wallet-recharges/", {"export_format": "csv"})
+        self.assertEqual(res.status_code, 200)
+        self.assertNotIn("TEST-LED-900", b"".join(res.streaming_content if res.streaming else [res.content]).decode("utf-8-sig"))
+        tester = APIClient()
+        tester.force_authenticate(self.tester)
+        mine = tester.get("/api/wallet/sric-recharges/").json()["results"]
+        self.assertEqual([(r["is_test"], r["reversed"], r["status_display"]) for r in mine], [(True, True, "Reversed")])
 
         self.process(csv_text(self.ROW), uid="20", message_id="<real@sric>")
         real = SricWalletRecharge.objects.get(ledger_id="LED-900")
@@ -728,6 +747,39 @@ class TestSenderRunTests(_World):
             self.run_cmd("test-employee-id-dry-run", "--test-user-id", uid, "--employee-id", "TEST-0003")
         self.tester.refresh_from_db()
         self.assertIsNone(self.tester.emp_id)
+
+    def test_reversal_link_marks_an_already_reversed_test_row(self):
+        from django.core.management.base import CommandError
+
+        self.e2e()
+        rec = SricWalletRecharge.objects.get(is_test=True)
+        with self.assertRaises(CommandError):
+            self.run_cmd("test-reversal-link-dry-run", "--row-id", str(rec.pk))
+        self.run_cmd("test-sender-reverse", "--row-id", str(rec.pk))
+        SricWalletRecharge.objects.filter(pk=rec.pk).update(reversed_at=None, reversed_by=None, reversal_ref="")
+        out = self.run_cmd("test-reversal-link-dry-run", "--row-id", str(rec.pk))
+        self.assertIn("already_reversed=False applied=False direction_debit=True amount_matches=True", out)
+        self.assertIn("now_reversed=False", out)
+        self.assertIsNone(SricWalletRecharge.objects.get(pk=rec.pk).reversed_at)
+        out = self.run_cmd("test-reversal-link-apply", "--row-id", str(rec.pk))
+        self.assertIn("applied=True", out)
+        self.assertIn("now_reversed=True reversal_ref=WAD-", out)
+        self.assertIn("already_reversed=True applied=False", self.run_cmd("test-reversal-link-apply", "--row-id", str(rec.pk)))
+        self.assertEqual(self.balance(user=self.tester), Decimal("250.00"))
+
+    def test_auto_credit_switch_changes_only_that_setting(self):
+        out = self.run_cmd("auto-credit-dry-run")
+        self.assertIn("auto_credit before=False after=False applied=False", out)
+        out = self.run_cmd("auto-credit-enable")
+        self.assertIn("auto_credit before=False after=True applied=True scan_enabled=True sender_is_default=True", out)
+        self.assertIn("applied=False", self.run_cmd("auto-credit-enable"))
+        config = SricWalletRechargeSettings.get_singleton()
+        self.assertEqual((config.auto_credit_enabled, config.sender_email, config.require_internal_relay), (True, SENDER, True))
+        self.process(csv_text(self.ROW), sender=TEST_SENDER, hops=[FOREIGN_HOP], marker=0)
+        self.process(csv_text("P-8,Prof. Test,123456,LED-901,IIC-000-002,100"), uid="21", hops=[FOREIGN_HOP], marker=0, message_id="<x@y>")
+        self.assertEqual(list(SricWalletRecharge.objects.values_list("status", "review_reason")), [("needs_review", "origin_unverified")])
+        self.assertEqual(self.balance(), Decimal("0.00"))
+        self.assertIn("before=True after=False applied=True", self.run_cmd("auto-credit-disable"))
 
     def test_reverse_refuses_real_rows(self):
         from django.core.management.base import CommandError

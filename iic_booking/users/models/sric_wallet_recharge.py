@@ -254,6 +254,13 @@ class SricWalletRecharge(models.Model):
     rejection_reason = models.TextField(_("Rejection reason"), blank=True)
     history = models.JSONField(_("History"), default=list, blank=True)
     is_test = models.BooleanField(_("Test row"), default=False)
+    reversed_at = models.DateTimeField(_("Credit reversed at"), null=True, blank=True)
+    reversed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    reversal_ref = models.CharField(
+        _("Reversal reference"), max_length=40, blank=True, help_text=_("Wallet ledger adjustment that debited this credit back.")
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

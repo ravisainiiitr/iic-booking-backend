@@ -114,6 +114,7 @@ _SRIC_STATUSES = {
 def sric_wallet_recharges(request):
     rows, _ = collect_rows(request, "admin-sric-wallet-recharges", page_size=200, page_param="page",
                            limit_param="page_size")
+    rows = [r for r in rows if not r.get("is_test")]
     columns = [
         SNO,
         C("reference", "Reference", width=0.9),
@@ -135,7 +136,7 @@ def sric_wallet_recharges(request):
     ]
     kpis = [
         spec.Kpi("Rows", len(rows), spec.INTEGER),
-        spec.Kpi("Credited amount", _amount_sum(rows, status="credited"), spec.CURRENCY),
+        spec.Kpi("Credited amount", _amount_sum([r for r in rows if not r.get("reversed")], status="credited"), spec.CURRENCY),
         spec.Kpi("Need action", sum(1 for r in rows if r.get("status") in ("needs_review", "awaiting_credit", "failed")),
                  spec.INTEGER),
     ]

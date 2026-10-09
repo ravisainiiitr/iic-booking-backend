@@ -405,6 +405,50 @@ def run(
     return result
 
 
+def _mark_reversed(row_id: int, adjustment) -> None:
+    from django.db import transaction
+
+    with transaction.atomic():
+        rec = SricWalletRecharge.objects.select_for_update().get(pk=row_id)
+        if rec.reversed_at:
+            return
+        rec.reversed_at = adjustment.created_at or timezone.now()
+        rec.reversed_by_id = adjustment.performed_by_id
+        rec.reversal_ref = adjustment.reference[:40]
+        svc._history(rec, "reversed", adjustment.performed_by, f"{REVERSAL_REMARKS} ({adjustment.reference})")
+        rec.save(update_fields=["reversed_at", "reversed_by", "reversal_ref", "history", "updated_at"])
+
+
+def link_test_reversal(*, row_id: int, apply: bool = False) -> dict[str, Any]:
+    """Mark a credited test row as reversed by its existing reversal debit (no money moves). Guarded, idempotent."""
+    from iic_booking.users.models.wallet_admin_adjustment import WalletAdminAdjustment
+
+    rec = SricWalletRecharge.objects.filter(pk=row_id).first()
+    if rec is None or not rec.is_test or rec.status != S.CREDITED:
+        raise TestSenderError("Only a credited test row can be linked to its reversal here.")
+    adj = WalletAdminAdjustment.objects.select_related("wallet", "performed_by").filter(
+        client_request_id=f"sric-test-reversal-{rec.pk}"
+    ).first()
+    if adj is None:
+        raise TestSenderError("No reversal debit exists for this row; run test-sender-reverse instead.")
+    checks = {
+        "direction_debit": adj.direction == "debit",
+        "amount_matches": adj.amount == rec.amount,
+        "owner_matches": adj.wallet.user_id == rec.matched_user_id,
+        "sub_wallet_matches": adj.sub_wallet_id == rec.sub_wallet_id,
+        "remarks_match": adj.remarks == REVERSAL_REMARKS,
+    }
+    if not all(checks.values()):
+        raise TestSenderError(f"The reversal debit does not match the row ({checks}); nothing was changed.")
+    result = {"row_id": rec.pk, "adjustment": adj.reference, "already_reversed": bool(rec.reversed_at), "applied": False, **checks}
+    if apply and not rec.reversed_at:
+        _mark_reversed(rec.pk, adj)
+        result["applied"] = True
+    rec.refresh_from_db()
+    result.update(now_reversed=bool(rec.reversed_at), reversal_ref=rec.reversal_ref)
+    return result
+
+
 def reverse(*, row_id: int, actor_id: int | None = None) -> dict[str, Any]:
     """Debit a credited test row back out of the test wallet (Main Admin ledger debit). Safe to repeat."""
     from iic_booking.users.admin_wallet_ledger import LedgerError, perform_adjustment
@@ -435,6 +479,8 @@ def reverse(*, row_id: int, actor_id: int | None = None) -> dict[str, Any]:
         raise TestSenderError(f"The reversal debit was refused ({exc.code}).") from exc
     if created:
         svc.set_verification(rec.pk, actor=actor, verified=False, remarks=f"Test credit reversed ({REVERSAL_REMARKS}, {record.reference}).")
+    if created or not rec.reversed_at:
+        _mark_reversed(rec.pk, record)
     after = SubWallet.objects.get(pk=rec.sub_wallet_id).balance
     return {"row_id": rec.pk, "adjustment": record.reference, "created": created, "actor_id": actor.pk,
             "balance_before_reversal": f"{before:.2f}", "balance_after_reversal": f"{after:.2f}",

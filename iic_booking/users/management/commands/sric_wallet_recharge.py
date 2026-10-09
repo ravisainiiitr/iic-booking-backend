@@ -26,6 +26,11 @@ class Command(BaseCommand):
                 "test-sender-reverse",
                 "test-employee-id-dry-run",
                 "test-employee-id-apply",
+                "test-reversal-link-dry-run",
+                "test-reversal-link-apply",
+                "auto-credit-dry-run",
+                "auto-credit-enable",
+                "auto-credit-disable",
             ],
         )
         parser.add_argument("--employee-id", default="")
@@ -60,6 +65,10 @@ class Command(BaseCommand):
                 w(f"test_employee_id user_id={r['user_id']} action={r['action']} previous_empty={r['previous_empty']} "
                   f"previous_was_null={r['previous_was_null']} collisions={r['collisions']} unchanged={r['unchanged']} "
                   f"applied={r['applied']} now_set={r['now_set']} now_matches_only_this_account={r['now_matches_only_this_account']}")
+                return
+            if action.startswith("test-reversal-link-"):
+                r = test_run.link_test_reversal(row_id=self._int(options["row_id"]) or 0, apply=action.endswith("-apply"))
+                w("test_reversal_link " + " ".join(f"{k}={v}" for k, v in r.items()))
                 return
             if action == "test-sender-reverse":
                 r = test_run.reverse(row_id=self._int(options["row_id"]) or 0, actor_id=self._int(options["actor_id"]))
@@ -104,11 +113,40 @@ class Command(BaseCommand):
                   f"balance_before={r['balance_before']} balance_after={r['balance_after']} in_admin_tab={r['in_admin_tab']} "
                   f"admin_row_is_test={r['admin_row_is_test']} on_faculty_page={r['on_faculty_page']}")
 
+    def _auto_credit(self, action):
+        """Switch the auto-credit setting only; sender, origin checks and limit are left as they are."""
+        from iic_booking.users.models.sric_wallet_recharge import (
+            DEFAULT_SENDER,
+            SricWalletRechargeSettings,
+            SricWalletRecharge,
+            SricWalletRechargeStatus,
+        )
+
+        config = SricWalletRechargeSettings.get_singleton()
+        before = config.auto_credit_enabled
+        target = {"auto-credit-enable": True, "auto-credit-disable": False}.get(action)
+        applied = target is not None and target != before
+        if applied:
+            config.auto_credit_enabled = target
+            config.save(update_fields=["auto_credit_enabled", "updated_at"])
+        config.refresh_from_db()
+        waiting = SricWalletRecharge.objects.filter(status=SricWalletRechargeStatus.AWAITING_CREDIT, is_test=False).count()
+        self.stdout.write(
+            f"auto_credit before={before} after={config.auto_credit_enabled} applied={applied} "
+            f"scan_enabled={config.scan_enabled} sender_is_default={config.sender_email.strip().lower() == DEFAULT_SENDER} "
+            f"require_internal_relay={config.require_internal_relay} gateway_marker_set={bool(config.gateway_marker_header)} "
+            f"auto_credit_limit_set={config.auto_credit_max_amount is not None} "
+            f"existing_awaiting_rows={waiting} (not credited by this switch; it applies to newly read rows only)"
+        )
+
     def handle(self, *args, **options):
         from django.db.models import Count
 
-        if options["action"].startswith(("test-sender-", "test-employee-id-")) or options["action"] == "find-test-faculty":
+        if options["action"].startswith(("test-sender-", "test-employee-id-", "test-reversal-link-")) or options["action"] == "find-test-faculty":
             self._test_sender(options)
+            return
+        if options["action"].startswith("auto-credit-"):
+            self._auto_credit(options["action"])
             return
 
         from iic_booking.users.models.sric_wallet_recharge import (

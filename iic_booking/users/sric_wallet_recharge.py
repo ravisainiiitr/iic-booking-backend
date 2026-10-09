@@ -353,6 +353,8 @@ def set_verification(row_id: int, *, actor, verified: bool, remarks: str = "") -
         rec = SricWalletRecharge.objects.select_for_update().get(pk=row_id)
         if rec.status != S.CREDITED:
             raise SricRechargeError("Only credited rows can be checked against the fund receipt.", code="NOT_CREDITED")
+        if verified and rec.reversed_at:
+            raise SricRechargeError("This credit was reversed; it cannot be marked as verified.", code="REVERSED")
         rec.fund_receipt_verified = bool(verified)
         rec.fund_receipt_verified_by = actor if getattr(actor, "pk", None) else None
         rec.fund_receipt_verified_at = timezone.now()

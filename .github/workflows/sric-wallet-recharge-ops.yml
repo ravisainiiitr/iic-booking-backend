@@ -1,6 +1,6 @@
 # SRIC wallet recharge (Wallet_Recharge.csv emails): status, read-only dry-run scan of the real mailbox (parse +
-# match only, nothing stored or credited), or switch the 5-minute mailbox reading on / off. Auto-credit is a
-# separate Main Administrator setting and is never changed here. Prints counts, flags and record ids only.
+# match only, nothing stored or credited), or switch the 5-minute mailbox reading on / off. auto-credit-* shows or
+# switches only the auto-credit setting (sender and origin checks untouched). Prints counts, flags and record ids only.
 # test-sender-* / find-test-faculty: one-off run-scoped test with an email from a test sender; the real faculty in
 # the file is only dry-run, the credit goes to an existing flagged test faculty account and is reversed afterwards.
 name: SRIC Wallet Recharge Ops
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "status | dry-run-scan | enable-scan | disable-scan | test-sender-dry-run | find-test-faculty | test-employee-id-dry-run | test-employee-id-apply | test-sender-e2e | test-sender-reverse"
+        description: "status | scan on/off | auto-credit-dry-run / -enable / -disable | test-sender-* | test-employee-id-* | test-reversal-link-*"
         required: true
         default: "status"
         type: choice
@@ -24,6 +24,11 @@ on:
           - test-employee-id-apply
           - test-sender-e2e
           - test-sender-reverse
+          - test-reversal-link-dry-run
+          - test-reversal-link-apply
+          - auto-credit-dry-run
+          - auto-credit-enable
+          - auto-credit-disable
       test_sender:
         description: "test-sender-dry-run / e2e: the one test sender address for this run (not saved)"
         required: false
@@ -41,7 +46,7 @@ on:
         required: false
         default: ""
       test_row_id:
-        description: "test-sender-reverse: id of the credited test row"
+        description: "test-sender-reverse / test-reversal-link-*: id of the credited test row"
         required: false
         default: ""
       test_employee_id:
@@ -74,7 +79,7 @@ jobs:
               echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
               CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
               test -n "$CID"
-              if [[ "$ACTION" == test-sender-* || "$ACTION" == test-employee-id-* || "$ACTION" == find-test-faculty ]]; then
+              if [[ "$ACTION" == test-* || "$ACTION" == auto-credit-* || "$ACTION" == find-test-faculty ]]; then
                 docker exec -i -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
                   python manage.py sric_wallet_recharge "$ACTION" --test-sender "$TEST_SENDER" --folder "$TEST_FOLDER" \
                   --uid "$TEST_UID" --test-user-id "$TEST_USER_ID" --row-id "$TEST_ROW_ID" --employee-id "$TEST_EMPLOYEE_ID"
