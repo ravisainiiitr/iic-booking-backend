@@ -1,0 +1,200 @@
+name: Probe TGA/DTA Field C (read-only)
+
+# Read-only probe for the TGA/DTA [A] / [B] "Samples Details" field C: every charge profile and input field
+# definition (keys, types, column / row config, formulas), and counts of bookings, urgent requests and booking
+# templates whose inputs hold C, grouped by the user type's field type and by the stored value shape. Simple
+# table values are shown only as anonymised shapes (numbers, known gas names, <text len=N>). Runs inside a
+# READ ONLY transaction that is rolled back. No names, emails or free text.
+
+on:
+  workflow_dispatch:
+    inputs:
+      name_filter:
+        description: Equipment name fragment
+        required: false
+        default: 'TGA'
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Field C definitions and stored value shapes (SELECT only)
+        env:
+          NAME_FILTER: ${{ github.event.inputs.name_filter }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e NAME_FILTER="${NAME_FILTER:-TGA}" -w /app "$CID" python - <<'PY'
+          import json
+          import os
+          import re
+          from collections import Counter, defaultdict
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+          from django.db.models import Min
+          from django.utils import timezone
+
+          from iic_booking.equipment.models import (
+              Booking, BookingInputTemplate, ChargeProfile, DynamicInputField, Equipment, UrgentBookingRequest,
+          )
+
+          NAME_FILTER = (os.environ.get("NAME_FILTER") or "TGA").strip()
+          GASES = {"air", "nitrogen", "n2", "argon", "ar", "oxygen", "o2", "helium", "he", "synthetic air", "n₂"}
+          NUM_RE = re.compile(r"^\s*-?\d+(\.\d+)?\s*(°?c|c/min|°c/min|min|ml/min|mg)?\s*$", re.I)
+
+          def cell_shape(v):
+              if v is None:
+                  return "None"
+              if isinstance(v, bool):
+                  return f"bool:{v}"
+              if isinstance(v, (int, float)):
+                  return f"num:{v:g}"
+              if isinstance(v, str):
+                  t = v.strip()
+                  if not t:
+                      return "''"
+                  if t.lower() in GASES:
+                      return f"gas:{t}"
+                  if NUM_RE.match(t):
+                      return f"numstr:{t[:12]}"
+                  return f"<text len={len(t)}>"
+              if isinstance(v, list):
+                  return f"<list len={len(v)}>"
+              return f"<{type(v).__name__}>"
+
+          def value_shape(v):
+              if v is None:
+                  return "none"
+              if isinstance(v, str):
+                  t = v.strip()
+                  if not t:
+                      return "empty-string"
+                  try:
+                      p = json.loads(t)
+                      return "json-string:" + value_shape(p)
+                  except ValueError:
+                      return "plain-string"
+              if isinstance(v, list):
+                  if not v:
+                      return "empty-list"
+                  kinds = {type(r).__name__ for r in v}
+                  if kinds == {"dict"}:
+                      keys = tuple(sorted({k for r in v for k in r}))
+                      return f"list-of-dicts keys={','.join(keys)}"
+                  if kinds <= {"list", "tuple"}:
+                      widths = sorted({len(r) for r in v})
+                      return f"list-of-lists widths={widths}"
+                  return f"list-mixed {sorted(kinds)}"
+              if isinstance(v, (int, float)):
+                  return "number"
+              return type(v).__name__
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+              now = timezone.now()
+              eqs = list(Equipment.objects.filter(name__icontains=NAME_FILTER).order_by("equipment_id"))
+              print(f"equipment matching {NAME_FILTER!r}: {len(eqs)}")
+              for eq in eqs:
+                  print(f"\n== equipment id={eq.equipment_id} code={eq.code!r} status={eq.status} name={eq.name!r} "
+                        f"profile_type={eq.profile_type} slot={eq.slot_duration_minutes}min "
+                        f"multi_sets={getattr(eq, 'allow_multiple_sample_sets', '-')}")
+                  for cp in ChargeProfile.objects.filter(equipment=eq).order_by("user_type", "pricing_profile"):
+                      print(f"  profile id={cp.pk} user_type={cp.user_type!r} pricing={cp.pricing_profile} "
+                            f"type={cp.profile_type} active={cp.is_active} pc={cp.primary_unit_charge} "
+                            f"sc={cp.secondary_unit_charge} bp={cp.breakpoint}")
+                      print(f"     time_formula={(cp.time_formula or '')[:300]!r}")
+                      print(f"     charge_formula={(cp.charge_formula or '')[:300]!r}")
+                  fields = list(DynamicInputField.objects.filter(equipment=eq).order_by("user_type", "field_key"))
+                  by_ut = defaultdict(list)
+                  for f in fields:
+                      by_ut[f.user_type].append(f)
+                  for ut, rows in by_ut.items():
+                      print(f"  -- input fields user_type={ut or '<shared>'!r}: "
+                            + ", ".join(f"{f.field_key}:{f.field_type}" for f in rows))
+                      for f in rows:
+                          print(f"     {f.field_key} id={f.pk} label={f.field_label!r} type={f.field_type} req={f.is_required} "
+                                f"edit={f.editing_required} default={f.default_value!r} link={f.source_element_field_key!r} "
+                                f"help={(f.help_text or '')[:80]!r}")
+                          if f.field_type in ("TABLE", "TYPED_TABLE") or f.field_key == "C":
+                              print(f"        options={json.dumps(f.options, ensure_ascii=False)[:600]}")
+                              print(f"        table_config={json.dumps(f.table_config, ensure_ascii=False)[:2500]}")
+                          elif f.options:
+                              print(f"        options={json.dumps(f.options, ensure_ascii=False)[:200]}")
+
+                  c_type = {ut: next((f.field_type for f in rows if f.field_key == "C"), None) for ut, rows in by_ut.items()}
+
+                  def ut_kind(ut):
+                      ut = (ut or "").strip()
+                      if ut in c_type:
+                          return f"{ut}->{c_type[ut]}"
+                      return f"{ut or '?'}->shared:{c_type.get('')}"
+
+                  def scan(label, rows):
+                      by_shape = Counter()
+                      samples = defaultdict(list)
+                      total = with_c = 0
+                      for key, ut, iv, extra in rows:
+                          total += 1
+                          groups = []
+                          if isinstance(iv, dict):
+                              groups.append(("set1", iv.get("C")) if "C" in iv else None)
+                              for i, s in enumerate(iv.get("_sample_sets") or []):
+                                  if isinstance(s, dict) and "C" in s:
+                                      groups.append((f"set{i + 2}", s.get("C")))
+                          groups = [g for g in groups if g]
+                          if not groups:
+                              by_shape[(ut_kind(ut), "no-C", extra)] += 1
+                              continue
+                          with_c += 1
+                          for _sn, v in groups:
+                              shp = value_shape(v)
+                              by_shape[(ut_kind(ut), shp, extra)] += 1
+                              if shp.startswith(("list-of-lists", "json-string:list-of-lists", "plain-string")) and len(samples[ut_kind(ut)]) < 4:
+                                  p = v
+                                  if isinstance(p, str):
+                                      try:
+                                          p = json.loads(p)
+                                      except ValueError:
+                                          p = None
+                                  if isinstance(p, list):
+                                      samples[ut_kind(ut)].append([[cell_shape(c) for c in r] for r in p[:3] if isinstance(r, (list, tuple))])
+                                  else:
+                                      samples[ut_kind(ut)].append(f"plain-string len={len(v)}")
+                      print(f"  {label}: total={total} with C={with_c}")
+                      for (k, shp, extra), n in sorted(by_shape.items()):
+                          print(f"     {k} | {shp} | {extra} | {n}")
+                      for k, ss in samples.items():
+                          for s in ss:
+                              print(f"     sample shape {k}: {s}")
+
+                  brow = []
+                  for b in (Booking.objects.filter(equipment=eq)
+                            .annotate(first_start=Min("daily_slots__start_datetime"))
+                            .values_list("booking_id", "user_type_snapshot", "charge_profile__user_type", "input_values",
+                                         "status", "first_start")):
+                      bid, snap, cput, iv, st, fs = b
+                      when = "noslot" if fs is None else ("future" if fs >= now else "past")
+                      brow.append((bid, (snap or cput or ""), iv, f"{st}/{when}"))
+                  scan("bookings", brow)
+                  snaps = list(Booking.objects.filter(equipment=eq, charge_recalculation_revert_snapshot__isnull=False)
+                               .values_list("booking_id", "user_type_snapshot", "charge_recalculation_revert_snapshot"))
+                  print(f"  bookings with revert snapshot: {len(snaps)} keys="
+                        f"{dict(Counter(k for _b, _u, s in snaps if isinstance(s, dict) for k in s))}")
+                  scan("revert snapshots", [(b, u, (s or {}).get("input_values"), "snap") for b, u, s in snaps if isinstance(s, dict)])
+                  scan("urgent requests", [(r[0], r[1] or "", r[2], r[3]) for r in UrgentBookingRequest.objects.filter(equipment=eq)
+                                           .values_list("pk", "user__user_type", "input_values", "status")])
+                  scan("booking templates", [(t[0], t[1] or "", t[2], "template") for t in BookingInputTemplate.objects.filter(equipment=eq)
+                                             .values_list("pk", "user__user_type", "input_values")])
+                  print(f"  repeat bookings (source in this equipment): "
+                        f"{Booking.objects.filter(source_booking__equipment=eq).count()}")
+              transaction.set_rollback(True)
+          print("\nDONE (read-only, rolled back)")
+          PY
