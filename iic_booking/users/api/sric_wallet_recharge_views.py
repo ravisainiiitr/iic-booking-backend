@@ -152,13 +152,15 @@ def my_sric_recharges(request):
 
 def _refresh_response(request, *, admin: bool, per_user_seconds: int) -> Response:
     try:
-        result = svc.refresh(request.user, per_user_seconds=per_user_seconds)
+        result = svc.refresh(request.user, per_user_seconds=per_user_seconds, trigger="admin-refresh" if admin else "refresh")
     except svc.SricRechargeError as exc:
         return _error(exc)
     scan = result["scan"]
     mine = result["rows"]
     credited = [r for r in mine if r.status == S.CREDITED]
-    if scan.get("status") == "disabled":
+    if scan.get("status") == svc.SKIPPED_PEAK:
+        message = result.get("message") or svc.paused_message(SricWalletRechargeSettings.get_singleton())
+    elif scan.get("status") == "disabled":
         message = "Reading SRIC recharge emails is switched off at the moment."
     elif scan.get("status") == "not_configured":
         message = "The portal mailbox is not configured."
@@ -403,13 +405,35 @@ SETTINGS_FIELDS = (
     "gateway_marker_value",
     "confirmation_cc_emails",
     "review_alert_emails",
+    "quiet_window_enabled",
+    "quiet_window_weekday",
+    "quiet_window_start",
+    "quiet_window_end",
 )
+BOOL_SETTINGS = ("scan_enabled", "auto_credit_enabled", "require_internal_relay", "quiet_window_enabled")
+
+
+def _hhmm(value) -> str:
+    return value.strftime("%H:%M") if value else ""
+
+
+def _parse_hhmm(value):
+    from datetime import datetime as dt
+
+    try:
+        return dt.strptime(str(value or "").strip()[:5], "%H:%M").time()
+    except ValueError:
+        return None
 
 
 def _settings_payload() -> dict:
     config = SricWalletRechargeSettings.get_singleton()
     data = {f: getattr(config, f) for f in SETTINGS_FIELDS}
     data["auto_credit_max_amount"] = _money(config.auto_credit_max_amount)
+    data["quiet_window_start"] = _hhmm(config.quiet_window_start)
+    data["quiet_window_end"] = _hhmm(config.quiet_window_end)
+    data["quiet_window_label"] = svc.quiet_window_label(config)["window"]
+    data["quiet_window_active"] = svc.in_quiet_window(config)
     data["last_scan_at"] = _iso(config.last_scan_at)
     data["last_scan_result"] = config.last_scan_result or {}
     data["mappings"] = [
@@ -457,8 +481,19 @@ def admin_settings(request):
             if field not in request.data:
                 continue
             value = request.data.get(field)
-            if field in ("scan_enabled", "auto_credit_enabled", "require_internal_relay"):
+            if field in BOOL_SETTINGS:
                 value = value if isinstance(value, bool) else str(value).strip().lower() in ("1", "true", "yes", "on")
+            elif field == "quiet_window_weekday":
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    value = -1
+                if not 0 <= value <= 6:
+                    return Response({"error": "Choose the day of the week for the pause."}, status=400)
+            elif field in ("quiet_window_start", "quiet_window_end"):
+                value = _parse_hhmm(value)
+                if value is None:
+                    return Response({"error": "Enter the pause times as HH:MM (24-hour, IST)."}, status=400)
             elif field == "auto_credit_max_amount":
                 if value in (None, ""):
                     value = None
@@ -475,6 +510,8 @@ def admin_settings(request):
                     return Response({"error": "Sender address and attachment name cannot be empty."}, status=400)
             setattr(config, field, value)
             changed.append(field)
+        if config.quiet_window_start >= config.quiet_window_end:
+            return Response({"error": "The pause must end after it starts (same day, IST)."}, status=400)
         if changed:
             config.updated_by = request.user
             config.save(update_fields=changed + ["updated_by", "updated_at"])

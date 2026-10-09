@@ -185,6 +185,15 @@ class Command(BaseCommand):
                 )
         from django_celery_beat.models import PeriodicTask
 
+        from iic_booking.users.models.sric_wallet_recharge import WEEKDAY_CHOICES
+        from iic_booking.users.sric_wallet_recharge import in_quiet_window
+
+        self.stdout.write(
+            f"quiet_window enabled={config.quiet_window_enabled} weekday={dict(WEEKDAY_CHOICES).get(config.quiet_window_weekday)} "
+            f"start={config.quiet_window_start:%H:%M} end={config.quiet_window_end:%H:%M} tz=Asia/Kolkata "
+            f"active_now={in_quiet_window(config)}"
+        )
+
         task = PeriodicTask.objects.filter(task="users.scan_sric_wallet_recharge_mailbox").first()
         self.stdout.write(
             f"settings scan_enabled={config.scan_enabled} auto_credit_enabled={config.auto_credit_enabled} "

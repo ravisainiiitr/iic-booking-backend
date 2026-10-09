@@ -1,5 +1,6 @@
 """SRIC wallet recharge: rows of the Wallet_Recharge.csv file that the SRIC portal (rnd.iitr.ac.in) emails."""
 
+import datetime
 from decimal import Decimal
 
 from django.conf import settings
@@ -10,6 +11,15 @@ from django.utils.translation import gettext_lazy as _
 DEFAULT_SENDER = "no-reply@sric.iitr.ac.in"
 DEFAULT_ATTACHMENT_NAME = "Wallet_Recharge.csv"
 SRIC_PORTAL_URL = "https://rnd.iitr.ac.in"
+WEEKDAY_CHOICES = [
+    (0, _("Monday")),
+    (1, _("Tuesday")),
+    (2, _("Wednesday")),
+    (3, _("Thursday")),
+    (4, _("Friday")),
+    (5, _("Saturday")),
+    (6, _("Sunday")),
+]
 
 
 class SricWalletRechargeSettings(models.Model):
@@ -77,6 +87,19 @@ class SricWalletRechargeSettings(models.Model):
         blank=True,
         help_text=_("Empty = every active Main Administrator."),
     )
+    quiet_window_enabled = models.BooleanField(
+        _("Pause mailbox checks during peak booking time"),
+        default=True,
+        help_text=_(
+            "The 5-minute check and the faculty Refresh do not read the mailbox in this weekly window (IST). "
+            "The first check after it reads everything that arrived meanwhile. Main Administrator Refresh still works."
+        ),
+    )
+    quiet_window_weekday = models.PositiveSmallIntegerField(
+        _("Pause on"), choices=WEEKDAY_CHOICES, default=2, help_text=_("Day of the week (IST).")
+    )
+    quiet_window_start = models.TimeField(_("Pause from (IST)"), default=datetime.time(20, 55))
+    quiet_window_end = models.TimeField(_("Resume at (IST)"), default=datetime.time(21, 15))
     last_scan_at = models.DateTimeField(_("Last scan at"), null=True, blank=True)
     last_scan_result = models.JSONField(_("Last scan result"), default=dict, blank=True)
     updated_at = models.DateTimeField(_("Updated at"), auto_now=True)

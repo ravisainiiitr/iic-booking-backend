@@ -186,6 +186,7 @@ class _World(TestCase):
         self.config = SricWalletRechargeSettings.get_singleton()
         self.config.scan_enabled = True
         self.config.auto_credit_enabled = True
+        self.config.quiet_window_enabled = False
         self.config.save()
 
     def process(self, content, *, uid="1", **kw):
@@ -471,6 +472,118 @@ class ApiTests(_World):
             other.force_authenticate(self.admin)
             self.assertTrue(other.post("/api/admin/sric-wallet-recharges/refresh/").json()["debounced"])
         self.assertEqual(scan.call_count, 1)
+
+
+def utc(*args):
+    from datetime import timezone as dt_tz
+
+    return datetime(*args, tzinfo=dt_tz.utc)
+
+
+# Wednesday 7 Oct 2026: 20:55 IST = 15:25 UTC, 21:15 IST = 15:45 UTC.
+IN_WINDOW = utc(2026, 10, 7, 15, 30)
+AFTER_WINDOW = utc(2026, 10, 7, 15, 45)
+
+
+class QuietWindowTests(_World):
+    def setUp(self):
+        super().setUp()
+        self.config.quiet_window_enabled = True
+        self.config.save()
+
+    def at(self, when):
+        return mock.patch("django.utils.timezone.now", return_value=when)
+
+    def test_defaults_are_wednesday_2055_to_2115(self):
+        fresh = SricWalletRechargeSettings()
+        self.assertEqual((fresh.quiet_window_enabled, fresh.quiet_window_weekday, f"{fresh.quiet_window_start:%H:%M}", f"{fresh.quiet_window_end:%H:%M}"),
+                         (True, 2, "20:55", "21:15"))
+        self.assertEqual(svc.quiet_window_label(fresh), {"window": "Wednesday 8:55–9:15 PM", "resume": "9:15 PM"})
+
+    def test_boundaries_weekdays_and_disabled_flag(self):
+        cases = [
+            (utc(2026, 10, 7, 15, 24, 59), False),
+            (utc(2026, 10, 7, 15, 25, 0), True),
+            (utc(2026, 10, 7, 15, 44, 59), True),
+            (utc(2026, 10, 7, 15, 45, 0), False),
+            (utc(2026, 10, 8, 15, 30), False),
+            (utc(2026, 10, 6, 15, 30), False),
+            (utc(2026, 10, 14, 15, 30), True),
+        ]
+        for when, expected in cases:
+            self.assertEqual(svc.in_quiet_window(self.config, when), expected, when)
+        self.config.quiet_window_enabled = False
+        self.assertFalse(svc.in_quiet_window(self.config, IN_WINDOW))
+
+    def test_window_is_ist_even_with_a_utc_server_clock(self):
+        from django.test import override_settings
+
+        with override_settings(TIME_ZONE="UTC"):
+            self.assertTrue(svc.in_quiet_window(self.config, utc(2026, 10, 7, 15, 25)))
+            self.assertFalse(svc.in_quiet_window(self.config, utc(2026, 10, 7, 20, 55)))
+            with self.at(IN_WINDOW):
+                self.assertTrue(svc.in_quiet_window(self.config))
+
+    def test_scheduled_scan_skips_without_imap_then_next_scan_reads_mail_from_the_window(self):
+        msgs = {"5": make_email(csv_text("P,Prof. Test,123456,LED-700,IIC-000-002,300"), when=timezone.make_aware(datetime(2026, 10, 7, 21, 0)))}
+        with self.at(IN_WINDOW), mock.patch.object(svc, "_imap_config", return_value=IMAP), mock.patch(
+            "iic_booking.users.imap_fetch.connect_imap", side_effect=AssertionError("no IMAP in the window")
+        ) as connect:
+            result = svc.scan_mailbox(trigger="schedule")
+        self.assertEqual(result["status"], "skipped_peak_window")
+        connect.assert_not_called()
+        self.assertEqual(SricWalletRechargeSettings.get_singleton().last_scan_result["status"], "skipped_peak_window")
+        with self.at(AFTER_WINDOW), mock.patch.object(svc, "_imap_config", return_value=IMAP), mock.patch(
+            "iic_booking.users.imap_fetch.connect_imap", return_value=FakeImap(msgs)
+        ), self.captureOnCommitCallbacks(execute=True):
+            result = svc.scan_mailbox(trigger="schedule")
+        self.assertEqual((result["status"], result["credited"]), ("ok", 1))
+        self.assertEqual(self.balance(), Decimal("300.00"))
+
+    def test_faculty_refresh_is_paused_but_main_admin_refresh_reads(self):
+        faculty = APIClient()
+        faculty.force_authenticate(self.faculty)
+        with self.at(IN_WINDOW), mock.patch.object(svc, "scan_mailbox", return_value={"status": "ok"}) as scan:
+            resp = faculty.post("/api/wallet/sric-recharges/refresh/")
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json()["status"], "skipped_peak_window")
+            self.assertEqual(
+                resp.json()["message"],
+                "Recharge checks are paused during peak booking time (Wednesday 8:55–9:15 PM). "
+                "Your recharge will be credited automatically after 9:15 PM.",
+            )
+            self.assertEqual(scan.call_count, 0)
+            admin = self.admin_client().post("/api/admin/sric-wallet-recharges/refresh/").json()
+            self.assertEqual(admin["status"], "ok")
+            self.assertEqual(scan.call_args.kwargs["trigger"], "admin-refresh")
+        self.assertEqual(faculty.post("/api/wallet/sric-recharges/refresh/").status_code, 200)
+
+    def test_admin_refresh_scan_is_not_skipped_in_the_window(self):
+        with self.at(IN_WINDOW), mock.patch.object(svc, "_imap_config", return_value=IMAP), mock.patch(
+            "iic_booking.users.imap_fetch.connect_imap", return_value=FakeImap({})
+        ) as connect:
+            self.assertEqual(svc.scan_mailbox(trigger="admin-refresh")["status"], "ok")
+        connect.assert_called_once()
+
+    def test_settings_edit_and_validation(self):
+        client = self.admin_client()
+        url = "/api/admin/sric-wallet-recharges/settings/"
+        data = client.get(url).json()
+        self.assertEqual((data["quiet_window_enabled"], data["quiet_window_weekday"], data["quiet_window_start"], data["quiet_window_end"]),
+                         (True, 2, "20:55", "21:15"))
+        self.assertEqual(data["quiet_window_label"], "Wednesday 8:55–9:15 PM")
+        resp = client.patch(url, {"quiet_window_weekday": 4, "quiet_window_start": "09:30", "quiet_window_end": "10:00"}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["quiet_window_label"], "Friday 9:30–10:00 AM")
+        for bad in ({"quiet_window_weekday": 7}, {"quiet_window_start": "25:00"}, {"quiet_window_start": "10:00", "quiet_window_end": "09:00"}):
+            self.assertEqual(client.patch(url, bad, format="json").status_code, 400, bad)
+        config = SricWalletRechargeSettings.get_singleton()
+        self.assertEqual((config.quiet_window_weekday, f"{config.quiet_window_start:%H:%M}"), (4, "09:30"))
+
+    def test_status_command_shows_the_window(self):
+        out = StringIO()
+        call_command("sric_wallet_recharge", "status", stdout=out)
+        self.assertIn("quiet_window enabled=True weekday=Wednesday start=20:55 end=21:15 tz=Asia/Kolkata", out.getvalue())
 
 
 class ProjectGrantRetiredTests(_World):

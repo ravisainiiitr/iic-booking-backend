@@ -631,11 +631,57 @@ def _fetch(conn, uid: str) -> bytes | None:
     return next((p[1] for p in data if isinstance(p, tuple) and len(p) >= 2), None)
 
 
+QUIET_WINDOW_TZ = "Asia/Kolkata"
+QUIET_WINDOW_TRIGGERS = ("schedule", "refresh")
+SKIPPED_PEAK = "skipped_peak_window"
+
+
+def in_quiet_window(config: SricWalletRechargeSettings, now: datetime | None = None) -> bool:
+    """True inside the weekly peak-booking pause (IST): start inclusive, end exclusive."""
+    from zoneinfo import ZoneInfo
+
+    start, end = config.quiet_window_start, config.quiet_window_end
+    if not config.quiet_window_enabled or start is None or end is None or start >= end:
+        return False
+    local = timezone.localtime(now or timezone.now(), ZoneInfo(QUIET_WINDOW_TZ))
+    return local.weekday() == config.quiet_window_weekday and start <= local.time() < end
+
+
+def _clock(t) -> str:
+    hour = t.hour % 12 or 12
+    return f"{hour}:{t.minute:02d}"
+
+
+def quiet_window_label(config: SricWalletRechargeSettings) -> dict[str, str]:
+    """Human labels, e.g. {"window": "Wednesday 8:55–9:15 PM", "resume": "9:15 PM"}."""
+    from iic_booking.users.models.sric_wallet_recharge import WEEKDAY_CHOICES
+
+    start, end = config.quiet_window_start, config.quiet_window_end
+    day = str(dict(WEEKDAY_CHOICES).get(config.quiet_window_weekday, ""))
+    s_ampm, e_ampm = ("AM" if start.hour < 12 else "PM"), ("AM" if end.hour < 12 else "PM")
+    span = f"{_clock(start)}–{_clock(end)} {e_ampm}" if s_ampm == e_ampm else f"{_clock(start)} {s_ampm}–{_clock(end)} {e_ampm}"
+    return {"window": f"{day} {span}", "resume": f"{_clock(end)} {e_ampm}"}
+
+
+def paused_message(config: SricWalletRechargeSettings) -> str:
+    label = quiet_window_label(config)
+    return (
+        f"Recharge checks are paused during peak booking time ({label['window']}). "
+        f"Your recharge will be credited automatically after {label['resume']}."
+    )
+
+
 def scan_mailbox(*, trigger: str = "schedule", dry_run: bool = False, max_messages: int = MAX_MESSAGES_PER_RUN) -> dict[str, Any]:
     """Read new SRIC wallet recharge emails (read-only IMAP; nothing is moved, flagged or deleted)."""
     config = SricWalletRechargeSettings.get_singleton()
     if not dry_run and not config.scan_enabled:
         return {"status": "disabled"}
+    if not dry_run and trigger in QUIET_WINDOW_TRIGGERS and in_quiet_window(config):
+        logger.info("SRIC wallet recharge scan (%s) skipped: peak window", trigger)
+        if trigger == "schedule":
+            result = {**(config.last_scan_result or {}), "status": SKIPPED_PEAK, "skipped_at": timezone.now().isoformat()}
+            SricWalletRechargeSettings.objects.filter(pk=config.pk).update(last_scan_result=result)
+        return {"status": SKIPPED_PEAK, "trigger": trigger}
     imap = _imap_config()
     if imap is None:
         return {"status": "not_configured"}
@@ -731,8 +777,12 @@ def _scan(config, imap: dict, *, trigger: str, dry_run: bool, max_messages: int)
 # --- Refresh (on demand) ----------------------------------------------------------------------------------------
 
 
-def refresh(user, *, per_user_seconds: int = USER_REFRESH_SECONDS) -> dict[str, Any]:
+def refresh(user, *, per_user_seconds: int = USER_REFRESH_SECONDS, trigger: str = "refresh") -> dict[str, Any]:
     """Refresh button: rate-limited per user, debounced globally. Returns the scan status and the user's new rows."""
+    if trigger == "refresh":
+        config = SricWalletRechargeSettings.get_singleton()
+        if config.scan_enabled and in_quiet_window(config):
+            return {"scan": {"status": SKIPPED_PEAK, "trigger": trigger}, "rows": [], "message": paused_message(config)}
     key = f"sric_wallet_refresh_user:{user.pk}"
     now = time.time()
     if not cache.add(key, now + per_user_seconds, per_user_seconds):
@@ -745,7 +795,7 @@ def refresh(user, *, per_user_seconds: int = USER_REFRESH_SECONDS) -> dict[str, 
     if recent:
         scan = {**recent, "debounced": True}
     else:
-        scan = scan_mailbox(trigger="refresh", max_messages=10)
+        scan = scan_mailbox(trigger=trigger, max_messages=10)
         if scan.get("status") in ("ok", "disabled", "not_configured"):
             cache.set(RECENT_SCAN_KEY, {k: v for k, v in scan.items() if k not in ("messages", "review_row_ids")}, RECENT_SCAN_SECONDS)
     mine = list(
