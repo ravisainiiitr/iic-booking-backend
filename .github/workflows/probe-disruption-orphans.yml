@@ -144,9 +144,10 @@ jobs:
               from iic_booking.equipment.models import EquipmentManager, EquipmentTemporaryOIC
               from django.contrib.auth import get_user_model
               U = get_user_model()
-              viewers = set(EquipmentManager.objects.filter(equipment=e).values_list("user_id", flat=True))
-              viewers |= set(EquipmentTemporaryOIC.objects.filter(equipment=e).values_list("user_id", flat=True)) if hasattr(EquipmentTemporaryOIC, "equipment") else set()
+              viewers = set(EquipmentManager.objects.filter(equipment=e).values_list("manager_id", flat=True))
+              viewers |= set(EquipmentTemporaryOIC.objects.filter(equipment=e).values_list("temporary_oic_id", flat=True)) if hasattr(EquipmentTemporaryOIC, "equipment") else set()
               viewers |= set(U.objects.filter(user_type="admin", is_active=True).values_list("id", flat=True)[:2])
+              viewers.add(66)
               viewers |= set(U.objects.filter(user_type="dept_admin", is_active=True, department_id=getattr(e, "internal_department_id", None)).values_list("id", flat=True)[:3]) if hasattr(U, "department_id") else set()
               ev_ids = set(DisruptionEvent.objects.filter(equipment=e, is_deleted=False).values_list("id", flat=True))
               rf = APIRequestFactory()
