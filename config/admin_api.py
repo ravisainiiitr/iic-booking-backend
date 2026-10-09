@@ -1880,6 +1880,8 @@ def admin_api_router():
                 "processed_by",
                 "fund_receipt_verified_by",
                 "cashbook_parse_entry",
+                "deleted_by",
+                "sric_reminder_last_sent_by",
             )
             .prefetch_related("audit_logs", "audit_logs__actor", "payment_receipts")
             .order_by("-created_at")
@@ -1941,6 +1943,12 @@ def admin_api_router():
                     )
             else:
                 qs = qs.filter(department_id=user.department_id)
+
+            from iic_booking.users.wallet_payment_modes import is_main_admin
+
+            show_deleted = (self.request.query_params.get("show_deleted") or "").strip().lower() in {"1", "true", "yes"}
+            if not (is_main_admin(user) and (self.action != "list" or show_deleted)):
+                qs = qs.filter(is_deleted=False)
 
             if self.action != "list":
                 return qs
@@ -2418,8 +2426,10 @@ def admin_api_router():
         )
         def cashbook_upload(self, request):
             """Upload an SRIC cash-book TXT: store rows (re-uploads are de-duplicated) and auto-match."""
+            from iic_booking.users.models.wallet_sric_settings import cashbook_match_from_date
             from iic_booking.users.wallet_recharge_import import (
                 match_pending_recharge_requests_to_parse_entries,
+                split_cashbook_rows_by_cutoff,
                 store_parsed_cashbook_rows,
             )
             from iic_booking.users.wallet_recharge_parser import parse_wallet_recharge_file
@@ -2437,15 +2447,133 @@ def admin_api_router():
                     {"error": "No cash-book rows found in this file. Check that it is the SRIC cash-book TXT."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            stored = store_parsed_cashbook_rows(rows)
+            cutoff = cashbook_match_from_date()
+            eligible, before_cutoff, undated = split_cashbook_rows_by_cutoff(rows, cutoff)
+            stored = store_parsed_cashbook_rows(eligible)
             matched, errors = match_pending_recharge_requests_to_parse_entries()
             return Response(
                 {
                     "parsed": len(rows),
                     "stored": stored,
-                    "skipped_without_emp_or_receipt": len(rows) - stored,
+                    "skipped_without_emp_or_receipt": len(eligible) - stored,
+                    "ignored_before_cutoff": before_cutoff,
+                    "ignored_undated": undated,
+                    "cutoff_date": cutoff.isoformat(),
                     "matched": matched,
                     "errors": errors[:20],
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        def _require_main_admin(self, request):
+            from iic_booking.users.wallet_payment_modes import is_main_admin
+
+            if not is_main_admin(request.user):
+                return Response(
+                    {"error": "Only the Main Administrator can do this."}, status=status.HTTP_403_FORBIDDEN
+                )
+            return None
+
+        @staticmethod
+        def _admin_action_error(exc):
+            return Response({"error": exc.message, "code": exc.code, **exc.extra}, status=exc.status)
+
+        @action(detail=True, methods=["post"], url_path="delete-request")
+        def delete_request(self, request, pk=None):
+            """Main Administrator: soft-delete (blocked once the request has credited a wallet)."""
+            from iic_booking.users.wallet_recharge_admin_actions import RechargeAdminActionError, soft_delete_request
+
+            denied = self._require_main_admin(request)
+            if denied is not None:
+                return denied
+            recharge_request = self.get_object()
+            inform = str(request.data.get("inform_requester") or "").strip().lower() in {"1", "true", "yes", "on"}
+            try:
+                deleted = soft_delete_request(
+                    recharge_request,
+                    actor=request.user,
+                    reason=str(request.data.get("reason") or ""),
+                    inform_requester=inform,
+                )
+            except RechargeAdminActionError as e:
+                return self._admin_action_error(e)
+            return Response(
+                {
+                    "message": f"{deleted.transaction_number} deleted.",
+                    "request": self.get_serializer(self.get_queryset().get(pk=deleted.pk)).data,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        def _reminder_input(self, request):
+            from iic_booking.users.wallet_recharge_admin_actions import clean_extra_cc
+
+            data = request.data if request.method == "POST" else request.query_params
+            return str(data.get("note") or ""), clean_extra_cc(data.get("extra_cc") or "")
+
+        @action(detail=True, methods=["get"], url_path="sric-reminder-preview")
+        def sric_reminder_preview(self, request, pk=None):
+            """Main Administrator: recipients and full body of the next SRIC reminder (nothing is sent)."""
+            from iic_booking.users.wallet_recharge_admin_actions import (
+                RechargeAdminActionError,
+                build_sric_reminder,
+                reminder_blocked_reason,
+                reminder_cooldown_seconds,
+            )
+
+            denied = self._require_main_admin(request)
+            if denied is not None:
+                return denied
+            recharge_request = self.get_object()
+            try:
+                note, extra_cc = self._reminder_input(request)
+            except RechargeAdminActionError as e:
+                return self._admin_action_error(e)
+            built = build_sric_reminder(recharge_request, note=note, extra_cc=extra_cc, preview=True)
+            first = built["approver_messages"][0]
+            return Response(
+                {
+                    "eligible": not reminder_blocked_reason(recharge_request),
+                    "blocked_reason": reminder_blocked_reason(recharge_request),
+                    "cooldown_seconds": reminder_cooldown_seconds(recharge_request),
+                    "reminder_number": built["reminder_number"],
+                    "subject": built["subject"],
+                    "to": built["to"],
+                    "cc": built["cc"],
+                    "includes_action_links": built["includes_action_links"],
+                    "text": first["text"],
+                    "html": first["html"],
+                    "reminders_sent": recharge_request.sric_reminder_count,
+                    "last_sent_at": recharge_request.sric_reminder_last_sent_at,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        @action(detail=True, methods=["post"], url_path="sric-reminder")
+        def sric_reminder(self, request, pk=None):
+            """Main Administrator: send Reminder #N to the SRIC office (copy to the requester)."""
+            from iic_booking.users.wallet_recharge_admin_actions import RechargeAdminActionError, send_sric_reminder
+
+            denied = self._require_main_admin(request)
+            if denied is not None:
+                return denied
+            recharge_request = self.get_object()
+            try:
+                note, extra_cc = self._reminder_input(request)
+                result = send_sric_reminder(recharge_request, actor=request.user, note=note, extra_cc=extra_cc)
+            except RechargeAdminActionError as e:
+                return self._admin_action_error(e)
+            except Exception:
+                logger.exception("SRIC reminder failed for WRR-%s", pk)
+                return Response(
+                    {"error": "The reminder could not be sent (mail server error). Nothing was recorded."},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+            return Response(
+                {
+                    "message": f"Reminder #{result['reminder_number']} sent to the SRIC office.",
+                    "reminder_number": result["reminder_number"],
+                    "request": self.get_serializer(self.get_queryset().get(pk=recharge_request.pk)).data,
                 },
                 status=status.HTTP_200_OK,
             )

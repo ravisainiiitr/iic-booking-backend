@@ -197,7 +197,7 @@ class RechargeApprovalNoticeTests(TestCase):
             folder="INBOX", uid="9001", from_addr="SRIC Cash Book <cashbook@sric.test.iitr.ac.in>"
         )
         entry = WalletRechargeParseEntry.objects.create(
-            receipt_no="R-777", dated=date(2026, 9, 20), emp_no="E5005", amount="1,000.00",
+            receipt_no="R-777", dated=date(2026, 10, 2), emp_no="E5005", amount="1,000.00",
             credited_to_project_no=GRANT, name="X", source_imap_uid="9001",
         )
         with self.captureOnCommitCallbacks(execute=True):

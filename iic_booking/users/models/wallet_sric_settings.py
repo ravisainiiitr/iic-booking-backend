@@ -1,7 +1,11 @@
 """Singleton settings: SRIC Office recipient emails for faculty wallet recharge notifications."""
 
+from datetime import date
+
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+
+PORTAL_LAUNCH_DATE = date(2026, 9, 30)
 
 
 class WalletSricSettings(models.Model):
@@ -128,6 +132,14 @@ class WalletSricSettings(models.Model):
             "shown to the Main Administrator and Account In-charge every time they open the dashboard."
         ),
     )
+    cashbook_match_from_date = models.DateField(
+        _("Match cash-book entries dated on or after"),
+        default=PORTAL_LAUNCH_DATE,
+        help_text=_(
+            "Only SRIC cash-book entries whose own date is on or after this date are used to match wallet "
+            "recharge requests (portal launch). Older or undated entries are ignored."
+        ),
+    )
 
     class Meta:
         db_table = "users_walletsricsettings"
@@ -146,6 +158,10 @@ class WalletSricSettings(models.Model):
             defaults={"recipient_emails": "", "bill_section_emails": "", "grant_code_for_credit": "IIC-000-002"},
         )
         return obj
+
+
+def cashbook_match_from_date() -> date:
+    return WalletSricSettings.get_singleton().cashbook_match_from_date or PORTAL_LAUNCH_DATE
 
 
 def project_grant_switch_exempt(user) -> bool:

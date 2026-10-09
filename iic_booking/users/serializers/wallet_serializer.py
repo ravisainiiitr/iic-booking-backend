@@ -571,11 +571,24 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
     fund_receipt_verified_by_name = serializers.SerializerMethodField()
     cashbook_entry = serializers.SerializerMethodField()
     cashbook_candidates = serializers.SerializerMethodField()
+    deleted_by_name = serializers.SerializerMethodField()
+    delete_blocked_reason = serializers.SerializerMethodField()
+    sric_reminder_last_sent_by_name = serializers.SerializerMethodField()
+    sric_reminder_blocked_reason = serializers.SerializerMethodField()
     audit_logs = WalletRechargeRequestAuditLogSerializer(many=True, read_only=True)
     
     class Meta:
         model = WalletRechargeRequest
         fields = [
+            'is_deleted',
+            'deleted_at',
+            'deleted_by_name',
+            'deletion_reason',
+            'delete_blocked_reason',
+            'sric_reminder_count',
+            'sric_reminder_last_sent_at',
+            'sric_reminder_last_sent_by_name',
+            'sric_reminder_blocked_reason',
             'cashbook_receipt_no',
             'cashbook_receipt_date',
             'cashbook_matched_at',
@@ -645,6 +658,11 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             'audit_logs',
         ]
         read_only_fields = [
+            'is_deleted',
+            'deleted_at',
+            'deletion_reason',
+            'sric_reminder_count',
+            'sric_reminder_last_sent_at',
             'decline_credit_amount',
             'decline_credit_outstanding',
             'decline_credit_settled_at',
@@ -843,6 +861,22 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             return get_user_display_name(u)
         except Exception:
             return ""
+
+    def get_deleted_by_name(self, obj):
+        return get_user_display_name(obj.deleted_by) if obj.deleted_by_id else ""
+
+    def get_delete_blocked_reason(self, obj):
+        from iic_booking.users.wallet_recharge_admin_actions import delete_blocked_reason
+
+        return delete_blocked_reason(obj)
+
+    def get_sric_reminder_last_sent_by_name(self, obj):
+        return get_user_display_name(obj.sric_reminder_last_sent_by) if obj.sric_reminder_last_sent_by_id else ""
+
+    def get_sric_reminder_blocked_reason(self, obj):
+        from iic_booking.users.wallet_recharge_admin_actions import reminder_blocked_reason
+
+        return reminder_blocked_reason(obj)
 
     def get_cashbook_entry(self, obj):
         if not obj.cashbook_parse_entry_id:

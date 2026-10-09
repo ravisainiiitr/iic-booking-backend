@@ -257,7 +257,7 @@ class TransactionReferenceMatchTests(TestCase):
         second = self._request()
         WalletRechargeParseEntry.objects.create(
             receipt_no="R-900",
-            dated=date(2026, 9, 25),
+            dated=date(2026, 10, 5),
             emp_no="100777",
             amount="2,500.00",
             credited_to_project_no=GRANT,
@@ -277,7 +277,7 @@ class TransactionReferenceMatchTests(TestCase):
         req = self._request()
         WalletRechargeParseEntry.objects.create(
             receipt_no="R-901",
-            dated=date(2026, 9, 25),
+            dated=date(2026, 10, 5),
             emp_no="100777",
             amount="2,500.00",
             credited_to_project_no=GRANT,
@@ -293,7 +293,7 @@ class TransactionReferenceMatchTests(TestCase):
 
 CASHBOOK_TXT = (
     "|Sl No|Dated|Receipt No|Credited to Project No.|Amount(Rs)|Payment Details|Received From|\n"
-    "|1 |Sep 25, 2026|R-950|IIC-000-002|3,000.00|NEFT IIC-TXN-{pk:06d}|PROF-TEST EMP NO-100888 DEPT-OF PHYSICS|\n"
+    "|1 |Oct 05, 2026|R-950|IIC-000-002|3,000.00|NEFT IIC-TXN-{pk:06d}|PROF-TEST EMP NO-100888 DEPT-OF PHYSICS|\n"
 )
 
 

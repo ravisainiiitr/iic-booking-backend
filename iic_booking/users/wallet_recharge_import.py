@@ -376,13 +376,52 @@ def serialize_parse_entry_brief(entry: WalletRechargeParseEntry, *, emp_match: O
     return out
 
 
+def _match_from_date() -> date:
+    from .models.wallet_sric_settings import cashbook_match_from_date
+
+    return cashbook_match_from_date()
+
+
+def entry_before_cutoff_reason(dated: Optional[date], cutoff: Optional[date] = None) -> str:
+    """Why a cash-book entry is too old to match ('' when its own date is on or after the cutoff)."""
+    cutoff = cutoff or _match_from_date()
+    if dated is None:
+        return f"Cash-book entry has no date; only entries dated on or after {cutoff:%d-%m-%Y} can be matched."
+    if dated < cutoff:
+        return (
+            f"Cash-book entry dated {dated:%d-%m-%Y} is before {cutoff:%d-%m-%Y} (portal launch); "
+            "it cannot be matched."
+        )
+    return ""
+
+
+def split_cashbook_rows_by_cutoff(
+    rows: List[Dict[str, Any]], cutoff: Optional[date] = None
+) -> Tuple[List[Dict[str, Any]], int, int]:
+    """(rows dated on/after the cutoff, count dated before it, count without a date)."""
+    cutoff = cutoff or _match_from_date()
+    kept: List[Dict[str, Any]] = []
+    before = undated = 0
+    for row in rows:
+        dated = row.get("dated")
+        if dated is None:
+            undated += 1
+        elif dated < cutoff:
+            before += 1
+        else:
+            kept.append(row)
+    return kept, before, undated
+
+
 class CashbookIndex:
     """
     In-memory view of available (unconsumed) cash-book entries, built once per list request
-    so each recharge row can be matched without extra queries.
+    so each recharge row can be matched without extra queries. Entries dated before the
+    configured cutoff (portal launch) are never offered.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, cutoff: Optional[date] = None) -> None:
+        self.cutoff = cutoff or _match_from_date()
         used_receipts: Dict[str, List[Optional[date]]] = {}
         for rno, rdate in WalletRechargeRequest.objects.exclude(cashbook_receipt_no="").values_list(
             "cashbook_receipt_no", "cashbook_receipt_date"
@@ -397,7 +436,11 @@ class CashbookIndex:
         imported_no_date = set((rno, emp) for rno, _d, emp in imported)
 
         self.by_amount: Dict[Decimal, List[Dict[str, Any]]] = {}
-        entries = WalletRechargeParseEntry.objects.select_related("matched_recharge_request").order_by("-dated", "-id")
+        entries = (
+            WalletRechargeParseEntry.objects.filter(dated__gte=self.cutoff)
+            .select_related("matched_recharge_request")
+            .order_by("-dated", "-id")
+        )
         for entry in entries:
             amount = _parse_entry_amount(entry)
             if amount is None:
@@ -419,7 +462,7 @@ class CashbookIndex:
             )
 
     def candidates_for(self, req: WalletRechargeRequest) -> List[Dict[str, Any]]:
-        if req.cashbook_receipt_no or req.status not in (
+        if req.cashbook_receipt_no or req.is_deleted or req.status not in (
             WalletRechargeRequestStatus.PENDING,
             WalletRechargeRequestStatus.APPROVED,
         ):
@@ -495,6 +538,8 @@ def link_cashbook_entry_to_request(
                 .select_related("user", "department")
                 .get(pk=request_id)
             )
+            if locked.is_deleted:
+                raise CashbookMatchError(f"{locked.request_id_display} was deleted by the Main Administrator.")
             if locked.cashbook_receipt_no or locked.cashbook_parse_entry_id:
                 raise CashbookMatchError(
                     f"{locked.request_id_display} is already matched to cash-book receipt "
@@ -505,7 +550,7 @@ def link_cashbook_entry_to_request(
                     f"{locked.request_id_display} is {locked.get_status_display()}; only pending or approved "
                     "requests can be matched."
                 )
-            reason = parse_entry_consumed_reason(entry)
+            reason = entry_before_cutoff_reason(entry.dated) or parse_entry_consumed_reason(entry)
             if reason:
                 raise CashbookMatchError(reason)
             ok, why = _entry_matches_request(entry, locked)
@@ -666,7 +711,7 @@ def match_pending_recharge_requests_to_parse_entries() -> Tuple[int, List[str]]:
     matched, referenced_entries = _match_by_transaction_reference(CashbookIndex(), errors)
     index = CashbookIndex()
     eligible = list(
-        WalletRechargeRequest.objects.filter(cashbook_receipt_no="")
+        WalletRechargeRequest.objects.filter(cashbook_receipt_no="", is_deleted=False)
         .filter(
             Q(
                 status=WalletRechargeRequestStatus.PENDING,

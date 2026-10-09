@@ -21,6 +21,7 @@ from iic_booking.users.imap_fetch import fetch_email_attachment, list_emails
 from iic_booking.users.models.wallet_sric_settings import WalletCashbookMailboxMessage, WalletSricSettings
 from iic_booking.users.wallet_recharge_import import (
     match_pending_recharge_requests_to_parse_entries,
+    split_cashbook_rows_by_cutoff,
     store_parsed_cashbook_rows,
 )
 from iic_booking.users.wallet_recharge_ops import _parse_sric_recipient_emails
@@ -100,7 +101,8 @@ def _read(sric: WalletSricSettings, config: dict[str, Any], max_messages: int) -
                 email_uid=uid, folder=folder, **config
             )
             rows = parse_wallet_recharge_file(content) if content else []
-            stored = store_parsed_cashbook_rows(rows, source_imap_uid=uid) if rows else 0
+            eligible = split_cashbook_rows_by_cutoff(rows)[0] if rows else []
+            stored = store_parsed_cashbook_rows(eligible, source_imap_uid=uid) if eligible else 0
             WalletCashbookMailboxMessage.objects.create(
                 folder=folder,
                 uid=uid,

@@ -286,7 +286,7 @@ def build_finance_report(*, user: Any, date_from: date, date_to: date) -> dict[s
     )
 
     # Wallet recharges scoped to the department, bucketed by status within the date range.
-    recharge_qs = WalletRechargeRequest.objects.filter(department_id=department_id)
+    recharge_qs = WalletRechargeRequest.objects.filter(department_id=department_id, is_deleted=False)
 
     def _responded_in_range(status_value: str):
         return recharge_qs.filter(status=status_value).filter(

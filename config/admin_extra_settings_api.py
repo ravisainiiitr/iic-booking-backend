@@ -315,6 +315,7 @@ def register_extra_admin_routes(router):
                 "auto_read_cashbook_mailbox",
                 "cashbook_sender_emails",
                 "fund_receipt_overdue_days",
+                "cashbook_match_from_date",
             ]
             read_only_fields = ["id"]
 

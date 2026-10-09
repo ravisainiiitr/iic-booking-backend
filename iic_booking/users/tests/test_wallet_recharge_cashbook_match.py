@@ -59,7 +59,7 @@ class CashbookMatchTests(TestCase):
             department_grant_code=GRANT,
         )
 
-    def _entry(self, receipt="R-101", emp="E2001", amount="5,000.00", grant=GRANT, dated=date(2026, 9, 20)):
+    def _entry(self, receipt="R-101", emp="E2001", amount="5,000.00", grant=GRANT, dated=date(2026, 10, 2)):
         return WalletRechargeParseEntry.objects.create(
             receipt_no=receipt, dated=dated, emp_no=emp, amount=amount, credited_to_project_no=grant, name="X"
         )
@@ -121,12 +121,12 @@ class CashbookMatchTests(TestCase):
 
     def test_manual_import_skips_when_request_exists_or_receipt_used(self):
         req = self._request(self.fac_a)
-        row = {"receipt_no": "R-300", "amount": Decimal("5000.00"), "emp_no": "E2001", "dated": date(2026, 9, 21)}
+        row = {"receipt_no": "R-300", "amount": Decimal("5000.00"), "emp_no": "E2001", "dated": date(2026, 10, 3)}
         credited, _skipped, errors, _ = import_wallet_recharge_rows([row], default_department_id=self.dept.pk)
         self.assertEqual(credited, 0)
         self.assertTrue(any("WRR-" in e for e in errors))
 
-        link_cashbook_entry_to_request(req.pk, self._entry(receipt="R-300", dated=date(2026, 9, 21)).pk)
+        link_cashbook_entry_to_request(req.pk, self._entry(receipt="R-300", dated=date(2026, 10, 3)).pk)
         credited, _skipped, _errors, _ = import_wallet_recharge_rows([row], default_department_id=self.dept.pk)
         self.assertEqual(credited, 0)
         self.assertEqual(self._balance(self.fac_a), Decimal("5000.00"))

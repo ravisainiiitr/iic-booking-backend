@@ -1000,33 +1000,10 @@ body{font-family:Arial,sans-serif;line-height:1.6;color:#333}
 """
 
 
-def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
-    """
-    Send approval-interface email (Approve / Decline buttons).
-    Project Grant → SRIC Office recipients.
-    Direct Cash Deposit → SRIC Bill Section.
-    The requester, wallet owner and configured CC addresses get a copy without action links
-    (the links credit the wallet without login, so they go to approvers only).
-    Returns number of primary (approval) recipients emailed.
-    """
-    populate_request_snapshots(recharge_request)
-    recharge_request.refresh_from_db()
-
+def recharge_email_parts(recharge_request: WalletRechargeRequest) -> dict[str, Any]:
+    """Request details, guidance and cash-book note of the SRIC approval email (shared with its reminders)."""
     mode = getattr(recharge_request, "recharge_mode", None) or WalletRechargeMode.PROJECT_GRANT
     is_cash = mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT
-
-    recipients = route_for_test_requester(recharge_request, get_recharge_approver_emails(recharge_request))
-    if not recipients:
-        logger.warning(
-            "No %s recipients configured for recharge request %s",
-            "Bill Section" if is_cash else "SRIC Office",
-            recharge_request.id,
-        )
-        return 0
-    copy_recipients = _unique_emails(
-        route_for_test_requester(recharge_request, get_recharge_copy_recipients(recharge_request)),
-        exclude=recipients,
-    )
 
     user = recharge_request.user
     name = get_user_display_name(user)
@@ -1043,7 +1020,6 @@ def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
     user_type = getattr(user, "user_type", "") or "—"
     dept_name = recharge_request.department.name if recharge_request.department_id else "—"
     approver_label = "SRIC Bill Section" if is_cash else "SRIC Office"
-    cc_text = ", ".join(copy_recipients) if copy_recipients else "—"
 
     subject = f"[{txn}] Wallet Recharge ₹{amount_str} — {name}"
     if is_cash:
@@ -1143,40 +1119,102 @@ Credit department: {dept_name}"""
         "<em>Payment Details</em> column and the depositor's <strong>EMP NO</strong> in <em>Received From</em>, "
         "so the portal can confirm it automatically."
     )
+    return {
+        "mode": mode,
+        "is_cash": is_cash,
+        "txn": txn,
+        "name": name,
+        "amount_str": amount_str,
+        "mode_label": mode_label,
+        "approver_label": approver_label,
+        "subject": subject,
+        "details_text": details_text,
+        "details_html": details_html,
+        "guidance_text": guidance_text,
+        "guidance_html": guidance_html,
+        "format_text": format_text,
+        "format_html": format_html,
+    }
 
-    approval_messages = []
-    for recipient in recipients:
-        approve_url, reject_url = build_action_urls(recharge_request, approver_email=recipient)
-        text_body = f"""Wallet Recharge Request — {txn}
 
-{details_text}
-Copy sent to (without action links): {cc_text}
-
-Approve (credits wallet immediately): {approve_url}
+def approver_email_body(
+    parts: dict[str, Any], recipient: str, cc_text: str, approve_url: str = "", reject_url: str = ""
+) -> tuple[str, str]:
+    """Text and HTML body sent to one SRIC approver. Without action URLs the Approve / Decline block is left out."""
+    if approve_url and reject_url:
+        links_text = f"""Approve (credits wallet immediately): {approve_url}
 Decline: {reject_url}
 
 These links are personal to {recipient}: an approval or decline made from them is recorded and
 reported as made by {recipient}.
-
-{guidance_text}
-{format_text}
-If you Decline, you must provide a reason on the linked page.
-Once approved, the request cannot be re-approved.
 """
-        html_body = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"/><style>{_RECHARGE_EMAIL_CSS}</style></head><body><div class="box">
-<h2>Wallet Recharge Request</h2>
-{details_html}
-<div class="row"><span class="label">Copy sent to:</span> {escape(cc_text)}</div>
-<p style="text-align:center;margin:28px 0">
+        links_html = f"""<p style="text-align:center;margin:28px 0">
   <a class="btn ok" href="{approve_url}">Approve</a>
   <a class="btn bad" href="{reject_url}">Decline</a>
 </p>
 <div class="note">These links are personal to <strong>{escape(recipient)}</strong>: an approval or decline
-made from them is recorded and reported as made by {escape(recipient)}.</div>
-<div class="note">{guidance_html}</div>
-<div class="note">{format_html}</div>
+made from them is recorded and reported as made by {escape(recipient)}.</div>"""
+    else:
+        links_text = links_html = ""
+    text_body = f"""Wallet Recharge Request — {parts["txn"]}
+
+{parts["details_text"]}
+Copy sent to (without action links): {cc_text}
+
+{links_text}
+{parts["guidance_text"]}
+{parts["format_text"]}
+If you Decline, you must provide a reason on the linked page.
+Once approved, the request cannot be re-approved.
+"""
+    html_body = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"/><style>{_RECHARGE_EMAIL_CSS}</style></head><body><div class="box">
+<h2>Wallet Recharge Request</h2>
+{parts["details_html"]}
+<div class="row"><span class="label">Copy sent to:</span> {escape(cc_text)}</div>
+{links_html}
+<div class="note">{parts["guidance_html"]}</div>
+<div class="note">{parts["format_html"]}</div>
 </div></body></html>"""
+    return text_body, html_body
+
+
+def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
+    """
+    Send approval-interface email (Approve / Decline buttons).
+    Project Grant → SRIC Office recipients.
+    Direct Cash Deposit → SRIC Bill Section.
+    The requester, wallet owner and configured CC addresses get a copy without action links
+    (the links credit the wallet without login, so they go to approvers only).
+    Returns number of primary (approval) recipients emailed.
+    """
+    populate_request_snapshots(recharge_request)
+    recharge_request.refresh_from_db()
+
+    parts = recharge_email_parts(recharge_request)
+    mode, is_cash, txn = parts["mode"], parts["is_cash"], parts["txn"]
+    name, amount_str, mode_label = parts["name"], parts["amount_str"], parts["mode_label"]
+    approver_label, subject = parts["approver_label"], parts["subject"]
+    details_text, details_html = parts["details_text"], parts["details_html"]
+
+    recipients = route_for_test_requester(recharge_request, get_recharge_approver_emails(recharge_request))
+    if not recipients:
+        logger.warning(
+            "No %s recipients configured for recharge request %s",
+            "Bill Section" if is_cash else "SRIC Office",
+            recharge_request.id,
+        )
+        return 0
+    copy_recipients = _unique_emails(
+        route_for_test_requester(recharge_request, get_recharge_copy_recipients(recharge_request)),
+        exclude=recipients,
+    )
+    cc_text = ", ".join(copy_recipients) if copy_recipients else "—"
+
+    approval_messages = []
+    for recipient in recipients:
+        approve_url, reject_url = build_action_urls(recharge_request, approver_email=recipient)
+        text_body, html_body = approver_email_body(parts, recipient, cc_text, approve_url, reject_url)
         message = EmailMultiAlternatives(
             subject=subject, body=text_body, from_email=settings.DEFAULT_FROM_EMAIL, to=[recipient]
         )
@@ -1315,7 +1353,7 @@ def overdue_fund_receipt_requests(queryset, days: Optional[int] = None) -> tuple
         days = WalletSricSettings.get_singleton().fund_receipt_overdue_days or 15
     cutoff = timezone.now() - timedelta(days=days)
     rows = list(
-        queryset.filter(fund_receipt_verified=False, cashbook_receipt_no="")
+        queryset.filter(fund_receipt_verified=False, cashbook_receipt_no="", is_deleted=False)
         .filter(
             Q(status=WalletRechargeRequestStatus.APPROVED, responded_at__lte=cutoff)
             | Q(status=WalletRechargeRequestStatus.PENDING, user_otp_verified=True, created_at__lte=cutoff)

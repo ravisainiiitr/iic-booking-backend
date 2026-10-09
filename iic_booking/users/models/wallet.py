@@ -17,6 +17,7 @@ from django.db.models import IntegerField
 from django.db.models import Model
 from django.db.models import OneToOneField
 from django.db.models import PROTECT
+from django.db.models import PositiveIntegerField
 from django.db.models import SET_NULL
 from django.db.models import TextField
 from django.db.models import BooleanField
@@ -821,6 +822,32 @@ class WalletRechargeRequest(Model):
         ),
     )
     wallet_credited_at = DateTimeField(_("Wallet credited at"), null=True, blank=True)
+    is_deleted = BooleanField(
+        _("Deleted"),
+        default=False,
+        db_index=True,
+        help_text=_("Soft-deleted by the Main Administrator: hidden from lists, counts and exports."),
+    )
+    deleted_at = DateTimeField(_("Deleted at"), null=True, blank=True)
+    deleted_by = ForeignKey(
+        User,
+        on_delete=SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deleted_wallet_recharge_requests",
+        verbose_name=_("Deleted by"),
+    )
+    deletion_reason = TextField(_("Deletion reason"), blank=True)
+    sric_reminder_count = PositiveIntegerField(_("SRIC reminders sent"), default=0)
+    sric_reminder_last_sent_at = DateTimeField(_("Last SRIC reminder sent at"), null=True, blank=True)
+    sric_reminder_last_sent_by = ForeignKey(
+        User,
+        on_delete=SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sent_wallet_recharge_sric_reminders",
+        verbose_name=_("Last SRIC reminder sent by"),
+    )
     created_at = DateTimeField(_("Created at"), auto_now_add=True)
     updated_at = DateTimeField(_("Updated at"), auto_now=True)
     responded_at = DateTimeField(

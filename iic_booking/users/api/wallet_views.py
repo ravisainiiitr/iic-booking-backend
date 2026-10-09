@@ -2579,7 +2579,7 @@ def get_my_recharge_requests(request):
     Returns:
         - requests: List of wallet recharge requests
     """
-    queryset = WalletRechargeRequest.objects.filter(user=request.user)
+    queryset = WalletRechargeRequest.objects.filter(user=request.user, is_deleted=False)
     
     # Filter by status if provided
     status_filter = request.query_params.get('status')
@@ -2622,6 +2622,7 @@ def get_wallet_recharge_pipeline_requests(request):
         WalletRechargeRequest.objects.filter(
             user__user_type=UserType.FACULTY,
             user_otp_verified=True,
+            is_deleted=False,
         )
         .exclude(status=WalletRechargeRequestStatus.CANCELLED)
         .select_related("user", "department", "project", "wallet")

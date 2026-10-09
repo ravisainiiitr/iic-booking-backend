@@ -81,7 +81,7 @@ class RunningCreditTests(TestCase):
     def _entry(self, amount, receipt="R-501"):
         return WalletRechargeParseEntry.objects.create(
             receipt_no=receipt,
-            dated=date(2026, 9, 26),
+            dated=date(2026, 10, 6),
             emp_no="100901",
             amount=amount,
             credited_to_project_no=GRANT,

@@ -1,0 +1,42 @@
+# Cash-book matching cutoff (portal launch): report requests whose 'Entry received' flag came only from
+# cash-book entries dated before the cutoff, and stored links to pre-cutoff receipts. Dry run by default;
+# with confirm=CLEAR, pre-cutoff links are cleared on requests that are NOT approved (approved / credited
+# requests are never touched). Prints counts and request ids only.
+name: Recharge Cash-book Cutoff Cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type CLEAR to apply (empty = dry run)"
+        required: false
+        default: ""
+
+jobs:
+  cleanup:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Cleanup
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              ARGS=""
+              if [[ "$CONFIRM" == "CLEAR" ]]; then ARGS="--apply"; fi
+              docker exec -i -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
+                python manage.py recharge_cashbook_cutoff_cleanup $ARGS
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
