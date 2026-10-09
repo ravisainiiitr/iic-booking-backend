@@ -698,6 +698,37 @@ class TestSenderRunTests(_World):
         self.assertFalse(SricWalletMailMessage.objects.exists())
         self.assertFalse(SricWalletRecharge.objects.exists())
 
+    def test_test_employee_id_is_guarded_dry_run_then_apply_then_clear(self):
+        from django.core.management.base import CommandError
+
+        self.tester.emp_id = None
+        self.tester.save()
+        uid = str(self.tester.pk)
+        out = self.run_cmd("test-employee-id-dry-run", "--test-user-id", uid, "--employee-id", "test-0001")
+        self.assertIn("previous_empty=True previous_was_null=True collisions=0 unchanged=False applied=False now_set=False", out)
+        self.tester.refresh_from_db()
+        self.assertIsNone(self.tester.emp_id)
+        out = self.run_cmd("test-employee-id-apply", "--test-user-id", uid, "--employee-id", "TEST-0001")
+        self.assertIn("applied=True now_set=True now_matches_only_this_account=True", out)
+        self.tester.refresh_from_db()
+        self.assertEqual(self.tester.emp_id, "TEST-0001")
+        self.assertIn("unchanged=True applied=False", self.run_cmd("test-employee-id-apply", "--test-user-id", uid, "--employee-id", "TEST-0001"))
+        self.assertNotIn("TEST-0001", out)
+        for args in (
+            (str(self.faculty.pk), "TEST-0002"),
+            (uid, "123456"),
+            (uid, "TEST-0002"),
+        ):
+            with self.assertRaises(CommandError):
+                self.run_cmd("test-employee-id-apply", "--test-user-id", args[0], "--employee-id", args[1])
+        self.faculty.emp_id = " test-0003 "
+        self.faculty.save()
+        self.run_cmd("test-employee-id-apply", "--test-user-id", uid, "--employee-id", "")
+        with self.assertRaises(CommandError):
+            self.run_cmd("test-employee-id-dry-run", "--test-user-id", uid, "--employee-id", "TEST-0003")
+        self.tester.refresh_from_db()
+        self.assertIsNone(self.tester.emp_id)
+
     def test_reverse_refuses_real_rows(self):
         from django.core.management.base import CommandError
 

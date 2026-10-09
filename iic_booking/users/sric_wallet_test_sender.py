@@ -172,6 +172,47 @@ def test_faculty_candidates() -> list[dict[str, Any]]:
     return out
 
 
+TEST_EMP_ID_RE = re.compile(r"^TEST-[A-Z0-9-]{1,40}$")
+
+
+def set_test_employee_id(*, user_id: int | None, employee_id: str, apply: bool = False) -> dict[str, Any]:
+    """Give a flagged test faculty a test-only Employee ID (``TEST-…``), or clear one (empty value). Guarded."""
+    from iic_booking.users.sric_wallet_csv import normalize_employee_id
+    from iic_booking.users.test_accounts import is_test_user
+
+    user = User.objects.filter(pk=user_id).first() if user_id else None
+    if user is None or not is_test_user(user) or user.user_type != UserType.FACULTY or not user.is_active:
+        raise TestSenderError("Only an active flagged test faculty account can be changed here.")
+    new = (employee_id or "").strip().upper()
+    current = user.emp_id
+    if new:
+        if not TEST_EMP_ID_RE.match(new):
+            raise TestSenderError("A test Employee ID must look like TEST-0001.")
+        if (current or "").strip() and current.strip().upper() != new:
+            raise TestSenderError("The account already has a different Employee ID; nothing was changed.")
+    elif not (current or "").upper().startswith("TEST-"):
+        raise TestSenderError("Only a test Employee ID (TEST-…) can be cleared here.")
+    norm = normalize_employee_id(new) if new else ""
+    collisions = 0
+    if new:
+        for pk, value in User.objects.exclude(pk=user.pk).exclude(emp_id__isnull=True).exclude(emp_id="").values_list("pk", "emp_id"):
+            if normalize_employee_id(value) == norm:
+                collisions += 1
+    if collisions:
+        raise TestSenderError(f"The test Employee ID matches {collisions} other account(s); nothing was changed.")
+    result = {"user_id": user.pk, "previous_empty": not (current or "").strip(), "previous_was_null": current is None,
+              "action": "set" if new else "clear", "collisions": collisions, "applied": False,
+              "unchanged": (current or "") == new}
+    if apply and not result["unchanged"]:
+        user.emp_id = new or None
+        user.save(update_fields=["emp_id"])
+        result["applied"] = True
+    user.refresh_from_db(fields=["emp_id"])
+    result["now_set"] = bool((user.emp_id or "").strip())
+    result["now_matches_only_this_account"] = bool(new) and [u.pk for u in svc.match_employee(user.emp_id or "")] == [user.pk]
+    return result
+
+
 def _main_admin(actor_id: int | None) -> User:
     qs = User.objects.filter(is_active=True, is_test_account=False).filter(Q(is_superuser=True) | Q(user_type=UserType.ADMIN))
     actor = qs.filter(pk=actor_id).first() if actor_id else qs.order_by("-is_superuser", "pk").first()

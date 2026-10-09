@@ -8,7 +8,8 @@ class Command(BaseCommand):
         "status | dry-run-scan (parse + match only, nothing stored or credited) | enable-scan | disable-scan | "
         "test-sender-dry-run (one-off test email from --test-sender; nothing stored) | find-test-faculty | "
         "test-sender-e2e (--folder --uid --test-user-id: credit an existing test faculty instead of the file's faculty) | "
-        "test-sender-reverse (--row-id: Main Admin ledger debit of a credited test row)"
+        "test-sender-reverse (--row-id: Main Admin ledger debit of a credited test row) | "
+        "test-employee-id-dry-run / -apply (--test-user-id --employee-id TEST-…; empty value clears a TEST- id)"
     )
 
     def add_arguments(self, parser):
@@ -23,8 +24,11 @@ class Command(BaseCommand):
                 "find-test-faculty",
                 "test-sender-e2e",
                 "test-sender-reverse",
+                "test-employee-id-dry-run",
+                "test-employee-id-apply",
             ],
         )
+        parser.add_argument("--employee-id", default="")
         parser.add_argument("--test-sender", default="")
         parser.add_argument("--folder", default="")
         parser.add_argument("--uid", default="")
@@ -49,6 +53,13 @@ class Command(BaseCommand):
                 for r in rows:
                     w(f"  user_id={r['user_id']} eligible={r['eligible']} detail={r['detail']} has_employee_id={r['has_employee_id']} "
                       f"iic_sub_wallet={r['iic_sub_wallet']} iic_balance={r['iic_balance']}")
+                return
+            if action.startswith("test-employee-id-"):
+                r = test_run.set_test_employee_id(user_id=self._int(options["test_user_id"]), employee_id=options["employee_id"],
+                                                  apply=action == "test-employee-id-apply")
+                w(f"test_employee_id user_id={r['user_id']} action={r['action']} previous_empty={r['previous_empty']} "
+                  f"previous_was_null={r['previous_was_null']} collisions={r['collisions']} unchanged={r['unchanged']} "
+                  f"applied={r['applied']} now_set={r['now_set']} now_matches_only_this_account={r['now_matches_only_this_account']}")
                 return
             if action == "test-sender-reverse":
                 r = test_run.reverse(row_id=self._int(options["row_id"]) or 0, actor_id=self._int(options["actor_id"]))
@@ -96,7 +107,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         from django.db.models import Count
 
-        if options["action"].startswith("test-sender-") or options["action"] == "find-test-faculty":
+        if options["action"].startswith(("test-sender-", "test-employee-id-")) or options["action"] == "find-test-faculty":
             self._test_sender(options)
             return
 

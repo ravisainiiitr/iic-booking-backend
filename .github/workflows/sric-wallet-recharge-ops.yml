@@ -9,12 +9,21 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "status | dry-run-scan | enable-scan | disable-scan | test-sender-dry-run | find-test-faculty | test-sender-e2e | test-sender-reverse"
+        description: "status | dry-run-scan | enable-scan | disable-scan | test-sender-dry-run | find-test-faculty | test-employee-id-dry-run | test-employee-id-apply | test-sender-e2e | test-sender-reverse"
         required: true
         default: "status"
         type: choice
         options:
-          [status, dry-run-scan, enable-scan, disable-scan, test-sender-dry-run, find-test-faculty, test-sender-e2e, test-sender-reverse]
+          - status
+          - dry-run-scan
+          - enable-scan
+          - disable-scan
+          - test-sender-dry-run
+          - find-test-faculty
+          - test-employee-id-dry-run
+          - test-employee-id-apply
+          - test-sender-e2e
+          - test-sender-reverse
       test_sender:
         description: "test-sender-dry-run / e2e: the one test sender address for this run (not saved)"
         required: false
@@ -35,6 +44,10 @@ on:
         description: "test-sender-reverse: id of the credited test row"
         required: false
         default: ""
+      test_employee_id:
+        description: "test-employee-id-*: invented test-only Employee ID (TEST-…); empty clears a TEST- id"
+        required: false
+        default: ""
 
 jobs:
   ops:
@@ -48,6 +61,7 @@ jobs:
           TEST_UID: ${{ inputs.test_uid }}
           TEST_USER_ID: ${{ inputs.test_user_id }}
           TEST_ROW_ID: ${{ inputs.test_row_id }}
+          TEST_EMPLOYEE_ID: ${{ inputs.test_employee_id }}
         run: |
           set -euo pipefail
           for d in \
@@ -60,10 +74,10 @@ jobs:
               echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
               CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
               test -n "$CID"
-              if [[ "$ACTION" == test-sender-* || "$ACTION" == find-test-faculty ]]; then
+              if [[ "$ACTION" == test-sender-* || "$ACTION" == test-employee-id-* || "$ACTION" == find-test-faculty ]]; then
                 docker exec -i -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
                   python manage.py sric_wallet_recharge "$ACTION" --test-sender "$TEST_SENDER" --folder "$TEST_FOLDER" \
-                  --uid "$TEST_UID" --test-user-id "$TEST_USER_ID" --row-id "$TEST_ROW_ID"
+                  --uid "$TEST_UID" --test-user-id "$TEST_USER_ID" --row-id "$TEST_ROW_ID" --employee-id "$TEST_EMPLOYEE_ID"
                 exit 0
               fi
               docker exec -i -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
