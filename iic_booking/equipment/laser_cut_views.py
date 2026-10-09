@@ -2,6 +2,7 @@
 
 import logging
 import zipfile
+from decimal import ROUND_CEILING, Decimal, InvalidOperation
 
 from django.conf import settings
 from django.core.files.base import ContentFile
@@ -15,7 +16,16 @@ from iic_booking.users.models.user_type import UserType
 
 from .fabrication import default_part_name, parse_quantity, resolve_own_material
 from .fabrication_material_support import NO_MATERIALS_MESSAGE, bookable_material_or_none, bookable_materials
-from .laser_cut_service import UNIT_TO_MM, DxfParseError, analyze_dxf_bytes, bbox_to_mm, sheet_fit_error
+from .laser_cut_service import (
+    MAX_OWN_SHEET_MM,
+    UNIT_TO_MM,
+    DxfParseError,
+    analyze_dxf_bytes,
+    bbox_to_mm,
+    format_mm,
+    part_fits_sheet,
+    sheet_fit_error,
+)
 from .models import (
     Equipment,
     EquipmentProfileType,
@@ -286,8 +296,38 @@ def laser_cut_batch_detail(request, batch_id):
     return Response(LaserCutBatchSerializer(batch, context={"request": request}).data)
 
 
+def _blank(value) -> bool:
+    return value is None or str(value).strip() == ""
+
+
+def clean_own_sheet_size(analysis: LaserCutAnalysis, raw_width, raw_height):
+    """((width, height), None) for the user's own sheet, ((None, None), None) to go back to the size from the
+    drawing, or ((None, None), error message)."""
+    if _blank(raw_width) and _blank(raw_height):
+        return (None, None), None
+    try:
+        width = Decimal(str(raw_width).strip())
+        height = Decimal(str(raw_height).strip())
+    except (InvalidOperation, TypeError, ValueError):
+        return (None, None), "Enter the sheet width and height in mm."
+    if not (width.is_finite() and height.is_finite()) or width <= 0 or height <= 0:
+        return (None, None), "Enter the sheet width and height in mm."
+    if width > MAX_OWN_SHEET_MM or height > MAX_OWN_SHEET_MM:
+        return (None, None), f"The sheet can be at most {format_mm(MAX_OWN_SHEET_MM)} mm on each side."
+    width = width.quantize(Decimal("0.1"), rounding=ROUND_CEILING)
+    height = height.quantize(Decimal("0.1"), rounding=ROUND_CEILING)
+    if analysis.width_mm is not None and analysis.height_mm is not None and not part_fits_sheet(
+        analysis.width_mm, analysis.height_mm, width, height
+    ):
+        return (None, None), (
+            f"The part is {format_mm(analysis.width_mm)} × {format_mm(analysis.height_mm)} mm, so your sheet "
+            "must be at least that large."
+        )
+    return (width, height), None
+
+
 def apply_laser_part_changes(analysis: LaserCutAnalysis, data, *, equipment, own_material=False) -> str | None:
-    """Apply part_name / quantity / material_id / units from ``data``. Returns an error message or None.
+    """Apply part_name / quantity / material_id / units / own sheet size from ``data``. Returns an error message or None.
 
     With ``own_material`` (already resolved against the equipment) the part is not checked against the sheet size."""
     update_fields = ["updated_at"]
@@ -311,7 +351,15 @@ def apply_laser_part_changes(analysis: LaserCutAnalysis, data, *, equipment, own
                 return "This part has no measured outline."
             analysis.units = units
             analysis.width_mm, analysis.height_mm, analysis.area_mm2 = bbox_to_mm(analysis.bbox_drawing_units, units)
-            update_fields += ["units", "width_mm", "height_mm", "area_mm2"]
+            # The part changed size, so the own-sheet size goes back to the one worked out from the drawing.
+            analysis.own_sheet_width_mm = analysis.own_sheet_height_mm = None
+            update_fields += ["units", "width_mm", "height_mm", "area_mm2", "own_sheet_width_mm", "own_sheet_height_mm"]
+    if "own_sheet_width_mm" in data or "own_sheet_height_mm" in data:
+        sheet, err = clean_own_sheet_size(analysis, data.get("own_sheet_width_mm"), data.get("own_sheet_height_mm"))
+        if err:
+            return err
+        analysis.own_sheet_width_mm, analysis.own_sheet_height_mm = sheet
+        update_fields += ["own_sheet_width_mm", "own_sheet_height_mm"]
     if "material_id" in data:
         material_id = data.get("material_id")
         if material_id in (None, ""):
@@ -345,7 +393,8 @@ def apply_laser_part_changes(analysis: LaserCutAnalysis, data, *, equipment, own
 @api_view(["PATCH", "DELETE"])
 @permission_classes([AllowAny])
 def laser_cut_analysis_detail(request, analysis_id):
-    """Edit (part name, quantity, sheet material, units for unitless drawings) or remove an unbooked part."""
+    """Edit (part name, quantity, sheet material, units for unitless drawings, own sheet size) or remove an
+    unbooked part. ``own_sheet_width_mm`` / ``own_sheet_height_mm`` both blank go back to the size from the drawing."""
     try:
         analysis = LaserCutAnalysis.objects.select_related("equipment", "material", "batch").get(pk=analysis_id)
     except (LaserCutAnalysis.DoesNotExist, ValueError):

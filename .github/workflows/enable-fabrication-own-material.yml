@@ -1,0 +1,55 @@
+# Offer "I will bring my own sheet / printing material" on every 3D print / 2D laser cutting equipment: a blank
+# own-material fixed charge (option hidden) becomes 0 (no material charge; machine time still charged).
+# Dry run by default; apply needs confirm=FAB-OWN-MATERIAL. Bookings and charges are not touched. Output has
+# equipment ids, codes, profiles and counts only.
+name: Enable Fabrication Own Material
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "dry-run | apply"
+        required: true
+        default: "dry-run"
+        type: choice
+        options: [dry-run, apply]
+      confirm:
+        description: "Type FAB-OWN-MATERIAL for apply"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run
+        env:
+          FO_ACTION: ${{ inputs.action }}
+          FO_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          ARGS=()
+          case "$FO_ACTION" in
+            dry-run) ;;
+            apply)
+              [[ "$FO_CONFIRM" == "FAB-OWN-MATERIAL" ]] || { echo "confirm=FAB-OWN-MATERIAL is required"; exit 1; }
+              ARGS+=(--apply) ;;
+            *) echo "unknown action"; exit 1 ;;
+          esac
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+                python manage.py enable_fabrication_own_material "${ARGS[@]}"
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1

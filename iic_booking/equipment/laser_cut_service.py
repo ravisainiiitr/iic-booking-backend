@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import logging
 from dataclasses import dataclass, field
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 
 logger = logging.getLogger(__name__)
 
@@ -201,3 +201,80 @@ def laser_part_material_cost(area_mm2, quantity, sheet_width_mm, sheet_height_mm
     qty = max(1, int(quantity or 1))
     cost = (Decimal(str(area_mm2)) * qty / sheet_area) * Decimal(str(sheet_rate))
     return cost.quantize(MONEY_2DP, rounding=ROUND_HALF_UP)
+
+
+# --------------------------------------------------------------------------- user's own sheet size
+
+# Edge left on every side of the part on the user's own sheet (clamping and kerf). Equipment has no setting for it.
+OWN_SHEET_MARGIN_MM = Decimal("5")
+MAX_OWN_SHEET_MM = Decimal("20000")
+
+
+@dataclass(frozen=True)
+class OwnSheetSize:
+    width_mm: Decimal
+    height_mm: Decimal
+    rotated: bool = False
+
+    def as_dict(self) -> dict:
+        return {"width_mm": format_mm(self.width_mm), "height_mm": format_mm(self.height_mm), "rotated": self.rotated}
+
+
+def format_mm(value) -> str:
+    return f"{Decimal(str(value)).normalize():f}"
+
+
+def _overflow(w: Decimal, h: Decimal, bed_w: Decimal, bed_h: Decimal) -> Decimal:
+    return max(Decimal("0"), w - bed_w) + max(Decimal("0"), h - bed_h)
+
+
+def _smallest_standard_size(w: Decimal, h: Decimal, standard_sizes) -> tuple[Decimal, Decimal] | None:
+    best = None
+    for size in standard_sizes or ():
+        sw, sh = Decimal(str(size[0])), Decimal(str(size[1]))
+        if w <= sw and h <= sh:
+            fitted = (sw, sh)
+        elif w <= sh and h <= sw:
+            fitted = (sh, sw)
+        else:
+            continue
+        if best is None or fitted[0] * fitted[1] < best[0] * best[1]:
+            best = fitted
+    return best
+
+
+def own_sheet_size(width_mm, height_mm, *, margin_mm=OWN_SHEET_MARGIN_MM, bed=None, standard_sizes=()):
+    """Sheet the user should bring for one part: its bounding box plus ``margin_mm`` on every side, rounded up
+    to the next whole mm (or the smallest of ``standard_sizes`` it fits on), turned 90° when that makes it
+    overflow the machine ``bed`` (width, height) less. None when the part has no measured size."""
+    if width_mm is None or height_mm is None:
+        return None
+    w, h = Decimal(str(width_mm)), Decimal(str(height_mm))
+    if w <= 0 or h <= 0:
+        return None
+    margin = max(Decimal("0"), Decimal(str(margin_mm or 0)))
+    w = (w + 2 * margin).to_integral_value(rounding=ROUND_CEILING)
+    h = (h + 2 * margin).to_integral_value(rounding=ROUND_CEILING)
+    standard = _smallest_standard_size(w, h, standard_sizes)
+    if standard:
+        w, h = standard
+    rotated = False
+    if bed and bed[0] and bed[1]:
+        bed_w, bed_h = Decimal(str(bed[0])), Decimal(str(bed[1]))
+        if bed_w > 0 and bed_h > 0 and _overflow(h, w, bed_w, bed_h) < _overflow(w, h, bed_w, bed_h):
+            w, h, rotated = h, w, True
+    return OwnSheetSize(w, h, rotated)
+
+
+def suggested_own_sheet(analysis) -> OwnSheetSize | None:
+    """Own-sheet size from the part's model; the chosen IIC sheet stands in for the machine bed."""
+    material = getattr(analysis, "material", None)
+    bed = (material.sheet_width_mm, material.sheet_height_mm) if material is not None else None
+    return own_sheet_size(analysis.width_mm, analysis.height_mm, bed=bed)
+
+
+def effective_own_sheet(analysis) -> OwnSheetSize | None:
+    """The size the user entered, else the size from the model."""
+    if analysis.own_sheet_width_mm is not None and analysis.own_sheet_height_mm is not None:
+        return OwnSheetSize(Decimal(analysis.own_sheet_width_mm), Decimal(analysis.own_sheet_height_mm))
+    return suggested_own_sheet(analysis)

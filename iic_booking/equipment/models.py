@@ -435,10 +435,12 @@ class Equipment(models.Model):
         decimal_places=2,
         null=True,
         blank=True,
+        default=Decimal("0.00"),
         help_text=_(
             "For 3D printing and 2D laser cutting equipment: fixed charge (INR, once per booking) that "
-            "replaces the material cost when the user brings their own material. Leave blank to hide "
-            "the 'I will bring my own material' option."
+            "replaces the material cost when the user brings their own material. 0 (the default) means no "
+            "material charge; machine time is still charged. Leave blank to hide the 'I will bring my own "
+            "material' option."
         ),
         verbose_name=_("Own material fixed charge (INR)"),
     )
@@ -2960,6 +2962,20 @@ class LaserCutAnalysis(models.Model):
     width_mm = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True)
     height_mm = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True)
     area_mm2 = models.DecimalField(max_digits=16, decimal_places=3, null=True, blank=True)
+    own_sheet_width_mm = models.DecimalField(
+        max_digits=7,
+        decimal_places=1,
+        null=True,
+        blank=True,
+        help_text=_("Own sheet width entered by the user; blank uses the size worked out from the drawing."),
+    )
+    own_sheet_height_mm = models.DecimalField(
+        max_digits=7,
+        decimal_places=1,
+        null=True,
+        blank=True,
+        help_text=_("Own sheet height entered by the user; blank uses the size worked out from the drawing."),
+    )
     entity_count = models.PositiveIntegerField(default=0)
     warnings = models.JSONField(default=list, blank=True)
     error_message = models.TextField(blank=True, default="")

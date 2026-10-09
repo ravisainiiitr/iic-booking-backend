@@ -348,10 +348,13 @@ def stored_print_input_values(booking, analyses) -> dict:
 
 def build_laser_parts(analyses, job_quantity: int = 1) -> list[dict]:
     """``quantity`` is the part's count in one job; the job is made ``job_quantity`` times."""
+    from .laser_cut_service import effective_own_sheet
+
     job_quantity = max(1, int(job_quantity or 1))
     parts = []
     for a in analyses:
         m = a.material
+        own_sheet = effective_own_sheet(a) if a.status == PrintAnalysisStatus.COMPLETED else None
         parts.append(
             {
                 "kind": "laser",
@@ -372,6 +375,9 @@ def build_laser_parts(analyses, job_quantity: int = 1) -> list[dict]:
                 "sheet_width_mm": str(m.sheet_width_mm) if m else None,
                 "sheet_height_mm": str(m.sheet_height_mm) if m else None,
                 "sheet_rate": str(m.sheet_rate if m else (a.sheet_rate_snapshot or "")) or None,
+                # Sheet size to bring when the booking is "own material": entered by the user or from the drawing.
+                "own_sheet_width_mm": own_sheet.as_dict()["width_mm"] if own_sheet else None,
+                "own_sheet_height_mm": own_sheet.as_dict()["height_mm"] if own_sheet else None,
             }
         )
     return parts

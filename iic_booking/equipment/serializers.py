@@ -1124,9 +1124,17 @@ class LaserCutAnalysisSerializer(serializers.ModelSerializer):
     dxf_download_url = serializers.SerializerMethodField()
     fit_error = serializers.SerializerMethodField()
     estimated_material_cost = serializers.SerializerMethodField()
+    own_sheet_suggested = serializers.SerializerMethodField()
 
     def get_dxf_download_url(self, obj):
         return f"/api/laser-cut-analyses/{obj.id}/dxf/"
+
+    def get_own_sheet_suggested(self, obj):
+        from .laser_cut_service import suggested_own_sheet
+        from .models import PrintAnalysisStatus
+
+        size = suggested_own_sheet(obj) if obj.status == PrintAnalysisStatus.COMPLETED else None
+        return size.as_dict() if size else None
 
     def get_fit_error(self, obj):
         from .laser_cut_service import sheet_fit_error
@@ -1170,6 +1178,9 @@ class LaserCutAnalysisSerializer(serializers.ModelSerializer):
             "dxf_download_url",
             "fit_error",
             "estimated_material_cost",
+            "own_sheet_width_mm",
+            "own_sheet_height_mm",
+            "own_sheet_suggested",
             "cancelled_at",
             "superseded_at",
             "created_at",

@@ -1341,7 +1341,7 @@ class ChargeCalculationEngine:
         total_charge = Decimal("0.00")
         if own_charge is not None:
             breakdown.append({
-                "description": f"Own material ({material.name}) — fixed charge",
+                "description": f"Own material ({material.name}) — {_own_material_charge_label(own_charge)}",
                 "amount": float(own_charge),
             })
             total_charge += own_charge
@@ -1414,7 +1414,10 @@ class ChargeCalculationEngine:
         total_charge = Decimal("0.00")
         own_charge = _own_material_fixed_charge(charge_profile, input_values.get(OWN_MATERIAL_KEY))
         if own_charge is not None:
-            breakdown.append({"description": "Own material — fixed charge", "amount": float(own_charge)})
+            breakdown.append({
+                "description": f"Own material — {_own_material_charge_label(own_charge)}",
+                "amount": float(own_charge),
+            })
             total_charge += own_charge
         else:
             for part in parts:
@@ -1453,6 +1456,10 @@ def _format_rate(value: Any) -> str:
     d = safe_decimal(value)
     q = d.quantize(Decimal("0.01"))
     return str(q) if q == d else str(d.normalize())
+
+
+def _own_material_charge_label(own_charge: Decimal) -> str:
+    return "fixed charge" if own_charge > 0 else "no material charge"
 
 
 def _own_material_fixed_charge(charge_profile: ChargeProfile, flag: Any) -> Optional[Decimal]:
