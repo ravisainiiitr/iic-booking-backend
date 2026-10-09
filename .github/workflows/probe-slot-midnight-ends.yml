@@ -1,0 +1,105 @@
+# Read-only: SQUID slot masters / upcoming daily slots, and every equipment whose Slot Masters end at
+# 23:59, 23:59:59 or 00:00 (midnight). Prints equipment codes, ids, times, statuses and counts only.
+name: Probe Slot Midnight Ends
+
+on:
+  workflow_dispatch:
+    inputs:
+      equipment_code:
+        description: "SQUID equipment code (empty = equipment whose name/code contains SQUID)"
+        required: false
+        default: ""
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        env:
+          EQUIPMENT_CODE: ${{ inputs.equipment_code }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e EQUIPMENT_CODE="$EQUIPMENT_CODE" -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import defaultdict
+          from datetime import time
+          from django.utils import timezone
+          from iic_booking.equipment.models import DailySlot, Equipment, SlotMaster
+
+          now = timezone.now()
+          code_in = (os.environ.get("EQUIPMENT_CODE") or "").strip()
+
+          def lt(dt):
+              return timezone.localtime(dt).strftime("%Y-%m-%d %H:%M:%S") if dt else None
+
+          def hm(t):
+              return t.strftime("%H:%M:%S") if t else None
+
+          if code_in:
+              squids = list(Equipment.objects.filter(code__iexact=code_in))
+          else:
+              squids = [e for e in Equipment.objects.all() if "SQUID" in f"{e.name} {e.code}".upper()]
+          print(f"squid_matches={len(squids)}")
+          for eq in squids:
+              masters = list(SlotMaster.objects.filter(equipment=eq).order_by("slot_number"))
+              print(f"squid code={eq.code} id={eq.pk} status={eq.status} slot_duration_minutes={eq.slot_duration_minutes}")
+              for m in masters:
+                  print(f"  master id={m.pk} number={m.slot_number} open={hm(m.open_time)} close={hm(m.close_time)} active={m.is_active}")
+              upcoming = list(
+                  DailySlot.objects.filter(slot_master__equipment=eq, start_datetime__gte=now)
+                  .order_by("start_datetime")[:8]
+              )
+              for s in upcoming:
+                  mins = int((s.end_datetime - s.start_datetime).total_seconds() // 60)
+                  print(
+                      f"  slot id={s.pk} master={s.slot_master_id} date={s.date} start={lt(s.start_datetime)} "
+                      f"end={lt(s.end_datetime)} minutes={mins} status={s.status} booked={s.booking_id is not None}"
+                  )
+              future = DailySlot.objects.filter(slot_master__equipment=eq, start_datetime__gte=now)
+              lengths = defaultdict(int)
+              for st, en in future.values_list("start_datetime", "end_datetime"):
+                  lengths[int((en - st).total_seconds() // 60)] += 1
+              print(f"  future_slots={future.count()} minutes_histogram={dict(sorted(lengths.items()))}")
+              ends_2359 = sum(1 for e in future.values_list("end_datetime", flat=True) if timezone.localtime(e).time() >= time(23, 59))
+              print(f"  future_slots_ending_23_59={ends_2359}")
+              spans = defaultdict(set)
+              for bid, mid in DailySlot.objects.filter(slot_master__equipment=eq, booking__isnull=False).values_list("booking_id", "slot_master_id"):
+                  spans[bid].add(mid)
+              both = sorted(b for b, ms in spans.items() if len(ms) > 1)
+              print(f"  bookings_total={len(spans)} bookings_spanning_both_slots={len(both)} ids={both[:20]}")
+              ordered = list(DailySlot.objects.filter(slot_master__equipment=eq, start_datetime__gte=now).order_by("start_datetime").values_list("start_datetime", "end_datetime"))
+              overlaps = sum(1 for a, b in zip(ordered, ordered[1:]) if b[0] < a[1])
+              print(f"  future_overlapping_pairs={overlaps}")
+
+          print("midnight_or_2359_ends:")
+          rows = defaultdict(list)
+          for m in SlotMaster.objects.select_related("equipment").order_by("equipment_id", "slot_number"):
+              c = m.close_time
+              if c is None:
+                  continue
+              if c == time(0) or (c.hour == 23 and c.minute == 59):
+                  rows[m.equipment_id].append(m)
+          for eid, ms in rows.items():
+              eq = ms[0].equipment
+              all_masters = SlotMaster.objects.filter(equipment_id=eid).order_by("slot_number")
+              times = " ".join(f"{m.slot_number}:{hm(m.open_time)}-{hm(m.close_time)}{'' if m.is_active else '(inactive)'}" for m in all_masters)
+              print(f"  code={eq.code if eq else None} id={eid} status={getattr(eq, 'status', None)} slot_duration_minutes={getattr(eq, 'slot_duration_minutes', None)} masters={times}")
+          print(f"midnight_or_2359_equipment={len(rows)}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
