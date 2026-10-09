@@ -1,0 +1,103 @@
+# Read-only: for the newest emails FROM no-reply@sric.iitr.ac.in in the portal mailbox, print only header
+# NAMES, the authentication verdicts (spf/dkim/dmarc results and the domains they were checked for),
+# attachment file names and CSV row counts. No subjects, bodies, addresses or CSV contents are printed.
+name: Probe SRIC Wallet Mail Headers
+
+on:
+  workflow_dispatch:
+    inputs:
+      sender:
+        description: "Sender to look for"
+        required: false
+        default: "no-reply@sric.iitr.ac.in"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        env:
+          SENDER: ${{ inputs.sender }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e SENDER="$SENDER" -w /app "$CID" python - <<'PY'
+          import os, re, email, imaplib, socket
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          import django
+          django.setup()
+          from django.conf import settings
+          sender = (os.environ.get("SENDER") or "no-reply@sric.iitr.ac.in").strip()
+          host = getattr(settings, "IMAP_HOST", "") or ""
+          user = getattr(settings, "IMAP_USER", "") or ""
+          pw = getattr(settings, "IMAP_PASSWORD", "") or ""
+          folder = (getattr(settings, "IMAP_MAILBOX", "") or "INBOX").strip() or "INBOX"
+          print("imap_configured=", bool(host and user and pw), "mailbox_domain=", user.split("@")[-1] if "@" in user else "-", "folder=", folder)
+          socket.setdefaulttimeout(45)
+          conn = imaplib.IMAP4_SSL(host, int(getattr(settings, "IMAP_PORT", 993) or 993)) if getattr(settings, "IMAP_USE_SSL", True) else imaplib.IMAP4(host, int(getattr(settings, "IMAP_PORT", 143) or 143))
+          conn.login(user, pw)
+          print("folders_with_sric_hint=", [f.decode(errors="replace").split(' "/" ')[-1] for f in (conn.list()[1] or []) if f and (b"sric" in f.lower() or b"spam" in f.lower() or b"junk" in f.lower())])
+          typ, _ = conn.select(folder, readonly=True)
+          typ, data = conn.uid("search", None, f'FROM "{sender}"')
+          ids = data[0].split() if data and data[0] else []
+          print("messages_from_sender=", len(ids))
+          VERDICT = re.compile(r"\b(spf|dkim|dmarc|arc)\s*=\s*([a-z]+)", re.I)
+          DOMAINS = re.compile(r"\b(header\.d|header\.i|header\.from|smtp\.mailfrom|smtp\.helo)\s*=\s*([^\s;]+)", re.I)
+          def dom(v):
+              v = v.strip().strip('"<>')
+              return v.split("@")[-1].lower()
+          for uid in ids[-8:][::-1]:
+              typ, md = conn.uid("fetch", uid, "(RFC822)")
+              raw = next((p[1] for p in md if isinstance(p, tuple) and len(p) >= 2), None)
+              if not raw:
+                  continue
+              m = email.message_from_bytes(raw)
+              print("--- uid=", uid.decode(), "date=", (m.get("Date") or "")[:40])
+              print("  header_names=", sorted({k for k in m.keys()}))
+              frm = email.utils.parseaddr(m.get("From") or "")[1].lower()
+              print("  from_matches_sender=", frm == sender.lower(), "from_domain=", dom(frm) if frm else "-")
+              rp = email.utils.parseaddr(m.get("Return-Path") or "")[1]
+              print("  return_path_domain=", dom(rp) if rp else "-")
+              for name in ("Authentication-Results", "ARC-Authentication-Results", "Received-SPF", "X-Spam-Status", "X-Virus-Scanned", "X-Spam-Flag", "X-Authentication-Warning"):
+                  for val in m.get_all(name) or []:
+                      flat = " ".join(str(val).split())
+                      authserv = flat.split(";")[0].split()[-1] if ";" in flat else ""
+                      verdicts = [f"{a.lower()}={b.lower()}" for a, b in VERDICT.findall(flat)]
+                      doms = [f"{a.lower()}={dom(b)}" for a, b in DOMAINS.findall(flat)]
+                      first = flat.split()[0].lower() if flat else ""
+                      if name in ("X-Spam-Status", "X-Spam-Flag", "X-Virus-Scanned"):
+                          print(f"  {name}: {first[:20]}")
+                      else:
+                          print(f"  {name}: authserv={authserv[:60]} verdicts={verdicts} domains={doms} first={first[:12]}")
+              for val in m.get_all("DKIM-Signature") or []:
+                  flat = " ".join(str(val).split())
+                  d = re.search(r"\bd=([^;\s]+)", flat)
+                  print("  DKIM-Signature: d=", d.group(1).lower() if d else "-")
+              rcv = m.get_all("Received") or []
+              print("  received_hops=", len(rcv))
+              for part in m.walk():
+                  if part.get_content_disposition() != "attachment":
+                      continue
+                  fn = part.get_filename() or ""
+                  payload = part.get_payload(decode=True) or b""
+                  text = payload.decode("utf-8-sig", errors="replace")
+                  lines = [l for l in text.splitlines() if l.strip()]
+                  header = lines[0] if lines else ""
+                  print("  attachment=", fn[:80], "bytes=", len(payload), "data_rows=", max(0, len(lines) - 1), "header=", header[:120] if "Project" in header else "(not a recognised header)")
+          conn.logout()
+          print("DONE_OK")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
