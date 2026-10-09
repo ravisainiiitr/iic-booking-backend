@@ -158,6 +158,7 @@ class SricWalletMailMessage(models.Model):
     status = models.CharField(_("Status"), max_length=32, choices=SricWalletMailStatus.choices)
     error = models.TextField(_("Error"), blank=True)
     trigger = models.CharField(_("Trigger"), max_length=40, blank=True)
+    is_test = models.BooleanField(_("Test email"), default=False)
     processed_at = models.DateTimeField(_("Processed at"), auto_now_add=True)
 
     class Meta:
@@ -252,6 +253,7 @@ class SricWalletRecharge(models.Model):
     rejected_at = models.DateTimeField(_("Rejected at"), null=True, blank=True)
     rejection_reason = models.TextField(_("Rejection reason"), blank=True)
     history = models.JSONField(_("History"), default=list, blank=True)
+    is_test = models.BooleanField(_("Test row"), default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

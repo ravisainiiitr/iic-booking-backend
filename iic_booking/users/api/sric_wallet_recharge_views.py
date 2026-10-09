@@ -70,6 +70,7 @@ def serialize_row(rec: SricWalletRecharge, *, admin: bool) -> dict:
         "email_date": _iso(rec.message.received_at) if rec.message_id and rec.message else None,
         "created_at": _iso(rec.created_at),
         "fund_receipt_verified": rec.fund_receipt_verified,
+        "is_test": rec.is_test,
     }
     if not admin:
         return data
@@ -423,6 +424,7 @@ def _settings_payload() -> dict:
             "authenticated": m.authenticated,
             "auth_verdict": m.auth_verdict,
             "attachment_name": m.attachment_name,
+            "is_test": m.is_test,
         }
         for m in SricWalletMailMessage.objects.order_by("-processed_at")[:10]
     ]

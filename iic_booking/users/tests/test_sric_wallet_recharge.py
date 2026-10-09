@@ -541,3 +541,184 @@ class RetirePendingProjectGrantTests(_World):
         cash.refresh_from_db()
         self.assertEqual(cash.status, WalletRechargeRequestStatus.PENDING)
         self.assertEqual(len(mail.outbox), 0)
+
+
+TEST_SENDER = "tester.example@gmail.test"
+
+
+class FolderImap(FakeImap):
+    """Read-only IMAP double with folders (INBOX + a Junk folder)."""
+
+    def __init__(self, folders: dict[str, dict[str, bytes]]):
+        super().__init__({})
+        self.folders = folders
+        self.current = ""
+
+    def list(self):
+        return "OK", [f'(\\HasNoChildren) "/" "{name}"'.encode() for name in self.folders]
+
+    def select(self, folder, readonly=False):
+        assert readonly
+        self.current = folder.strip('"')
+        self.messages = self.folders.get(self.current, {})
+        return ("OK", [b"1"]) if self.current in self.folders else ("NO", [])
+
+    def uid(self, command, *args):
+        if command == "search":
+            sender = args[1].split('"')[1]
+            return "OK", [" ".join(u for u, raw in self.messages.items() if sender.encode() in raw).encode()]
+        return super().uid(command, *args)
+
+
+class TestSenderRunTests(_World):
+    ROW = "P-9,Prof. Test,123456,LED-900,IIC-000-002,1500"
+
+    def setUp(self):
+        super().setUp()
+        self.config.auto_credit_enabled = False
+        self.config.save()
+        self.folders = {
+            "INBOX": {"3": make_email(csv_text("P,Prof. X,123456,LED-899,IIC-000-002,10"), sender="other@gmail.test")},
+            "Junk E-mail": {"7": make_email(csv_text(self.ROW), sender=TEST_SENDER, hops=[FOREIGN_HOP], marker=0,
+                                            message_id="<t1@gmail.test>")},
+        }
+        self.tester = User.objects.create_user(
+            email="qa.faculty@qa.example.test", password="pass12345", email_verified=True, admin_approved=True,
+            name="QA Faculty", user_type=UserType.FACULTY, emp_id="900001", is_test_account=True,
+        )
+        wallet = Wallet(user=self.tester)
+        wallet.save()
+        SubWallet.objects.create(wallet=wallet, department=self.iic, balance=Decimal("250.00"))
+
+    def run_cmd(self, *args):
+        out = StringIO()
+        with mock.patch.object(svc, "_imap_config", return_value=IMAP), mock.patch(
+            "iic_booking.users.imap_fetch.connect_imap", return_value=FolderImap(self.folders)
+        ), self.captureOnCommitCallbacks(execute=True):
+            call_command("sric_wallet_recharge", *args, stdout=out)
+        return out.getvalue()
+
+    def e2e(self, *extra):
+        return self.run_cmd("test-sender-e2e", "--test-sender", TEST_SENDER, "--folder", "Junk E-mail", "--uid", "7",
+                            "--test-user-id", str(self.tester.pk), *extra)
+
+    def test_dry_run_finds_the_test_email_in_junk_and_stores_nothing(self):
+        out = self.run_cmd("test-sender-dry-run", "--test-sender", TEST_SENDER)
+        self.assertIn("folder='INBOX' selectable=True from_test_sender=0", out)
+        self.assertIn("folder='Junk E-mail' selectable=True from_test_sender=1", out)
+        self.assertIn("uid=7", out)
+        self.assertIn("in_scanner_folder=False", out)
+        self.assertIn("origin_verified_real=False", out)
+        self.assertIn("employee_matched=yes", out)
+        self.assertIn("receiver=IIC-000-002 -> IIC", out)
+        self.assertIn("ledger=LED-900", out)
+        self.assertIn("duplicate_real=False", out)
+        self.assertIn("would_be=awaiting_credit", out)
+        self.assertIn("would_credit=no", out)
+        self.assertIn("test_sender=t***@gmail.test", out)
+        for secret in ("123456", "Prof. Test", TEST_SENDER):
+            self.assertNotIn(secret, out)
+        self.assertFalse(SricWalletMailMessage.objects.exists())
+        self.assertFalse(SricWalletRecharge.objects.exists())
+
+    def test_find_test_faculty_lists_ids_and_flags_only(self):
+        out = self.run_cmd("find-test-faculty")
+        self.assertIn("test_faculty_accounts=1 eligible=1", out)
+        self.assertIn(f"user_id={self.tester.pk} eligible=True detail=ok has_employee_id=True iic_sub_wallet=True iic_balance=250.00", out)
+        for secret in ("900001", "qa.faculty", "QA Faculty"):
+            self.assertNotIn(secret, out)
+
+    def test_e2e_credits_the_test_faculty_only_then_duplicate_then_reversal(self):
+        mail.outbox.clear()
+        out = self.e2e()
+        rec = SricWalletRecharge.objects.get()
+        msg = SricWalletMailMessage.objects.get()
+        self.assertEqual((rec.is_test, rec.ledger_id, rec.status, rec.matched_user_id), (True, "TEST-LED-900", "credited", self.tester.pk))
+        self.assertEqual((rec.employee_id, rec.origin_verified), ("900001", False))
+        self.assertNotIn("Prof. Test", rec.pi_name)
+        self.assertEqual((msg.is_test, msg.trigger, msg.authenticated), (True, "test-sender", False))
+        self.assertIn("origin check bypassed", msg.auth_verdict)
+        self.assertEqual(self.balance(user=self.tester), Decimal("1750.00"))
+        self.assertEqual(self.balance(), Decimal("0.00"))
+        self.assertIn("credit=credited final_status=credited", out)
+        self.assertIn("balance_before=250.00 balance_after=1750.00", out)
+        self.assertIsNotNone(rec.confirmation_sent_at)
+        self.assertIn("in_admin_tab=True admin_row_is_test=True on_faculty_page=True", out)
+        self.assertEqual([m.subject[:7] for m in mail.outbox], ["[TEST] "])
+        self.assertNotIn("fac.one@test.iitr.ac.in", mail.outbox[0].to)
+        for secret in ("123456", "900001", "Prof. Test", TEST_SENDER, "qa.faculty"):
+            self.assertNotIn(secret, out)
+        config = SricWalletRechargeSettings.get_singleton()
+        self.assertEqual((config.sender_email, config.auto_credit_enabled), (SENDER, False))
+
+        again = self.e2e()
+        self.assertIn("rerun=True", again)
+        self.assertIn("stored_status=duplicate reason='duplicate_ledger'", again)
+        self.assertIn("credit=refused:NOT_CREDITABLE", again)
+        self.assertEqual(SricWalletRecharge.objects.filter(status="duplicate", is_test=True).count(), 1)
+        self.assertEqual(self.balance(user=self.tester), Decimal("1750.00"))
+        self.assertEqual(len(mail.outbox), 1)
+
+        out = self.run_cmd("test-sender-reverse", "--row-id", str(rec.pk))
+        self.assertIn("created=True", out)
+        self.assertIn("amount=1500.00 balance_before_credit=250.00 balance_before_reversal=1750.00 balance_after_reversal=250.00", out)
+        self.assertEqual(self.balance(user=self.tester), Decimal("250.00"))
+        from iic_booking.users.models.wallet_admin_adjustment import WalletAdminAdjustment
+
+        adj = WalletAdminAdjustment.objects.get()
+        self.assertEqual((adj.remarks, adj.direction, adj.performed_by_id), ("SRIC CSV test reversal", "debit", self.admin.pk))
+        rec.refresh_from_db()
+        self.assertFalse(rec.fund_receipt_verified)
+        self.assertIn("reversed", rec.fund_receipt_verification_remarks)
+        self.assertIn("created=False", self.run_cmd("test-sender-reverse", "--row-id", str(rec.pk)))
+        self.assertEqual(self.balance(user=self.tester), Decimal("250.00"))
+
+        self.process(csv_text(self.ROW), uid="20", message_id="<real@sric>")
+        real = SricWalletRecharge.objects.get(ledger_id="LED-900")
+        self.assertEqual((real.status, real.is_test, real.matched_user_id), ("awaiting_credit", False, self.faculty.pk))
+
+    def test_e2e_guards_stop_before_anything_is_stored(self):
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            self.run_cmd("test-sender-e2e", "--test-sender", TEST_SENDER, "--test-user-id", str(self.tester.pk))
+        with self.assertRaises(CommandError):
+            self.run_cmd("test-sender-e2e", "--test-sender", TEST_SENDER, "--folder", "Junk E-mail", "--uid", "7",
+                         "--test-user-id", str(self.faculty.pk))
+        with self.assertRaises(CommandError):
+            self.run_cmd("test-sender-e2e", "--test-sender", TEST_SENDER, "--folder", "INBOX", "--uid", "7",
+                         "--test-user-id", str(self.tester.pk))
+        SubWallet.objects.filter(wallet__user=self.tester).delete()
+        with self.assertRaises(CommandError):
+            self.e2e()
+        self.tester.emp_id = ""
+        self.tester.save()
+        with self.assertRaises(CommandError):
+            self.e2e()
+        self.assertFalse(SricWalletMailMessage.objects.exists())
+        self.assertFalse(SricWalletRecharge.objects.exists())
+
+    def test_reverse_refuses_real_rows(self):
+        from django.core.management.base import CommandError
+
+        self.config.auto_credit_enabled = True
+        self.config.save()
+        self.process(csv_text(self.ROW), uid="20", message_id="<real@sric>")
+        real = SricWalletRecharge.objects.get()
+        self.assertEqual(real.status, "credited")
+        with self.assertRaises(CommandError):
+            self.run_cmd("test-sender-reverse", "--row-id", str(real.pk))
+        self.assertEqual(self.balance(), Decimal("1500.00"))
+
+    def test_configured_sender_and_bad_address_are_refused(self):
+        from django.core.management.base import CommandError
+
+        for bad in (SENDER, "not-an-address"):
+            with self.assertRaises(CommandError):
+                self.run_cmd("test-sender-dry-run", "--test-sender", bad)
+
+    def test_normal_scan_ignores_the_test_sender(self):
+        self.assertEqual(self.process(csv_text(self.ROW), sender=TEST_SENDER)["status"], "wrong_sender")
+        self.assertFalse(SricWalletRecharge.objects.exists())
+
+

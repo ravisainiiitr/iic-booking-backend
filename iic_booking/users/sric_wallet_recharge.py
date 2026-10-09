@@ -165,10 +165,19 @@ def _history(row: SricWalletRecharge, action: str, actor=None, note: str = "") -
 
 
 def store_row(
-    row: ParsedRow, *, message: SricWalletMailMessage | None, fy: str, origin_verified: bool, config
+    row: ParsedRow,
+    *,
+    message: SricWalletMailMessage | None,
+    fy: str,
+    origin_verified: bool,
+    config,
+    is_test: bool = False,
 ) -> SricWalletRecharge:
-    """Store one parsed row (never twice for the same ledger in a financial year) and credit it if eligible."""
-    plan = plan_row(row, fy, origin_verified=origin_verified, config=config)
+    """Store one parsed row (never twice for the same ledger in a financial year) and credit it if eligible.
+
+    Test rows (one-off test-sender run) skip the origin check but are never auto-credited.
+    """
+    plan = plan_row(row, fy, origin_verified=origin_verified or is_test, config=config)
     ledger_id = row.ledger_id or f"{MISSING_LEDGER_PREFIX}{getattr(message, 'pk', 0)}-{row.row_number}"
     fields = dict(
         message=message,
@@ -185,9 +194,10 @@ def store_row(
         matched_user=plan.user,
         receiver_mapping=plan.mapping,
         department=plan.mapping.department if plan.mapping else None,
+        is_test=is_test,
     )
-    want_credit = plan.status == S.CREDITED
-    status = S.AWAITING_CREDIT if want_credit else plan.status
+    want_credit = plan.status == S.CREDITED and not is_test
+    status = S.AWAITING_CREDIT if plan.status == S.CREDITED else plan.status
     try:
         with transaction.atomic():
             rec = SricWalletRecharge(
@@ -405,6 +415,8 @@ def send_credit_confirmation(row_id: int) -> None:
         "Your wallet recharge from the SRIC portal (rnd.iitr.ac.in) has been credited to your IIC booking wallet. "
         "The entry appears in your wallet transactions."
     )
+    if rec.is_test:
+        intro += " This credit was made while testing the new SRIC recharge process."
     text = f"Dear {name},\n\n{intro}\n\n" + "\n".join(f"{k}: {v}" for k, v in rows) + f"\n\nView your wallet: {link}\n"
     table = "".join(
         f"<tr><td style='padding:6px 12px 6px 0;color:#475569;'><strong>{escape(k)}</strong></td>"
@@ -416,13 +428,13 @@ def send_credit_confirmation(row_id: int) -> None:
         f"<table cellpadding='0' cellspacing='0' style='font-family:Arial,Helvetica,sans-serif;font-size:14px;'>{table}</table>"
         f"<p style='margin-top:18px;'><a href='{escape(link)}'>View your wallet</a></p>"
     )
-    subject = f"[{rec.reference}] {headline}"
+    subject = f"{'[TEST] ' if rec.is_test else ''}[{rec.reference}] {headline}"
     html = wrap_email_html(title=headline, subtitle=rec.reference, body_inner_html=body)
     try:
         if owner.email:
             _send(owner.email, subject, text, html)
             SricWalletRecharge.objects.filter(pk=rec.pk).update(confirmation_sent_at=timezone.now())
-        for cc in _addresses(SricWalletRechargeSettings.get_singleton().confirmation_cc_emails):
+        for cc in [] if rec.is_test else _addresses(SricWalletRechargeSettings.get_singleton().confirmation_cc_emails):
             _send(cc, f"{subject} (copy)", text, html)
     except Exception:  # noqa: BLE001
         logger.exception("SRIC wallet recharge confirmation email failed for row %s", rec.pk)
