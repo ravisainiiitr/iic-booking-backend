@@ -43,7 +43,9 @@ jobs:
               if not lbl:
                   return "-"
               m = re.match(r"^[A-Z][A-Z0-9_:]{2,40}", lbl)
-              return m.group(0) if m else f"text(len={len(lbl)})"
+              if m:
+                  return m.group(0)
+              return f"text(len={len(lbl)},maint={'mainten' in lbl.lower()})"
 
           links = defaultdict(list)
           for sid, eid, deleted, ended in DisruptionEventSlot.objects.values_list(
@@ -77,6 +79,18 @@ jobs:
           for k, v in sorted(agg.items(), key=lambda x: (x[0][0] or "", x[0][2], x[0][3])):
               print(f"    eq={k[0]} eq_status={k[1]} slot={k[2]} {k[3]} {k[4]} {k[5]} -> {v}")
 
+          print("== A2. Deleted events (who/when; no names) ==")
+          for ev in DisruptionEvent.objects.filter(is_deleted=True).select_related("equipment", "deleted_by").order_by("deleted_at"):
+              print(
+                  f"    id={ev.pk} eq={ev.equipment.code} type={ev.disruption_type} scope={ev.scope} src={ev.source}"
+                  f" backfilled={ev.backfilled} created={ev.created_at:%Y-%m-%d %H:%M}"
+                  f" start={ev.start_at:%Y-%m-%d} deleted_at={ev.deleted_at and f'{ev.deleted_at:%Y-%m-%d %H:%M}'}"
+                  f" deleted_by_id={ev.deleted_by_id} deleted_by_type={getattr(ev.deleted_by, 'user_type', None)}"
+                  f" reason_len={len(ev.delete_reason or '')} slots={ev.slot_links.count()}"
+              )
+          print("== A3. Events by created date / source ==")
+          print(f"    {dict(Counter((f'{c:%Y-%m-%d}', s, b) for c, s, b in DisruptionEvent.objects.values_list('created_at', 'source', 'backfilled')))}")
+
           frag = (os.environ.get("CODE_LIKE") or "TGA").strip()
           eqs = list(Equipment.objects.filter(code__icontains=frag).only("equipment_id", "code", "status"))
           print(f"== B. Equipment with code containing {frag!r}: {len(eqs)} ==")
@@ -85,7 +99,7 @@ jobs:
               print(f"  eq_id={e.equipment_id} code={e.code} status={e.status}")
               for ev in DisruptionEvent.objects.filter(equipment=e).order_by("start_at"):
                   print(
-                      f"    event id={ev.pk} type={ev.disruption_type} scope={ev.scope} src={ev.source}"
+                      f"    event id={ev.pk} created={ev.created_at:%Y-%m-%d %H:%M} type={ev.disruption_type} scope={ev.scope} src={ev.source}"
                       f" start={ev.start_at:%Y-%m-%d %H:%M} end={ev.end_at and f'{ev.end_at:%Y-%m-%d %H:%M}'}"
                       f" ended={bool(ev.ended_at)} deleted={ev.is_deleted} backfilled={ev.backfilled}"
                       f" slots={ev.slot_links.count()} started_by_set={bool(ev.started_by_id)}"
