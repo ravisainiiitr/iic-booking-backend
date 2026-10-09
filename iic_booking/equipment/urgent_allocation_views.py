@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -20,6 +20,8 @@ from .urgent_allocation import (
 )
 
 logger = logging.getLogger(__name__)
+
+MAX_RANGE_DAYS = 7
 
 
 def _load_request_for_staff(request, request_id):
@@ -48,38 +50,56 @@ def _load_request_for_staff(request, request_id):
 @permission_classes([IsAuthenticated])
 def urgent_allocation_slots(request, request_id):
     """
-    Every slot of one date (any status: weekends, holidays, closed, blocked, maintenance) so the OIC can
-    allocate a Type B request without slots. Query: date=YYYY-MM-DD.
+    Every slot of a date or a week (any status: weekends, holidays, closed, Not Available, blocked,
+    maintenance, weeks not yet open to users) so the OIC can allocate a Type B request without slots.
+    Query: date=YYYY-MM-DD, or start_date & end_date (at most 7 days). Only booked and ended slots are
+    not selectable.
     """
+    from django.utils import timezone
+
     from .slot_utils import SlotGenerator
 
     urg, err = _load_request_for_staff(request, request_id)
     if err:
         return err
-    raw_date = (request.query_params.get("date") or "").strip()
+    params = request.query_params
+    raw_start = (params.get("start_date") or params.get("date") or "").strip()
+    raw_end = (params.get("end_date") or raw_start).strip()
     try:
-        target_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
+        start_date = datetime.strptime(raw_start, "%Y-%m-%d").date()
+        end_date = datetime.strptime(raw_end, "%Y-%m-%d").date()
     except ValueError:
-        return Response({"error": "Provide date as YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"error": "Provide date (or start_date and end_date) as YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST
+        )
+    if end_date < start_date or (end_date - start_date).days > MAX_RANGE_DAYS - 1:
+        return Response(
+            {"error": f"Choose a range of 1 to {MAX_RANGE_DAYS} days."}, status=status.HTTP_400_BAD_REQUEST
+        )
     equipment = urg.equipment
     SlotGenerator.ensure_slot_masters_exist(equipment)
-    SlotGenerator.generate_slots_for_week(equipment, target_date, target_date, allow_holiday=True)
+    SlotGenerator.generate_slots_for_week(equipment, start_date, end_date, allow_holiday=True)
     slots = list(
-        DailySlot.objects.filter(slot_master__equipment=equipment, date=target_date)
+        DailySlot.objects.filter(slot_master__equipment=equipment, date__gte=start_date, date__lte=end_date)
         .select_related("booking", "booking__user")
         .order_by("start_datetime")
     )
-    holidays = holidays_for({target_date})
+    days = [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
+    holidays = holidays_for(set(days))
+    now = timezone.now()
     rows = []
     for s in slots:
         booked = bool(s.booking_id) or s.status == SlotStatus.BOOKED
+        ended = bool(s.end_datetime and s.end_datetime <= now)
         rows.append({
             "id": s.id,
+            "date": s.date.isoformat() if s.date else None,
             "start_datetime": s.start_datetime.isoformat() if s.start_datetime else None,
             "end_datetime": s.end_datetime.isoformat() if s.end_datetime else None,
             "status": s.status,
             "status_display": s.get_status_display(),
-            "selectable": not booked,
+            "selectable": not booked and not ended,
+            "past": ended,
             "notes": [n for n in slot_notes(s, holidays) if not booked],
             "booked_by": (
                 getattr(getattr(s.booking, "user", None), "name", None)
@@ -87,9 +107,12 @@ def urgent_allocation_slots(request, request_id):
             ) if s.booking_id else None,
         })
     return Response({
-        "date": target_date.isoformat(),
-        "is_weekend": target_date.weekday() >= 5,
-        "holiday": holidays.get(target_date) if target_date in holidays else None,
+        "date": start_date.isoformat(),
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "is_weekend": start_date.weekday() >= 5,
+        "holiday": holidays.get(start_date) if start_date in holidays else None,
+        "holidays": {d.isoformat(): name for d, name in holidays.items()},
         "slot_duration_minutes": int(getattr(equipment, "slot_duration_minutes", None) or 60),
         "required_minutes": urg.duration_minutes,
         "required_slots": urg.slots_requested,

@@ -393,6 +393,25 @@ def quote_allocation(urg: UrgentBookingRequest, slot_ids) -> dict:
 # ----------------------------------------------------------------------------- allocate
 
 
+def _log_overridden_slot_statuses(equipment, slots, actor, request_id: int) -> None:
+    """Slot status change log (Disruption history) for slots that were not Available before the allocation."""
+    from .disruption_models import DisruptionSource
+    from .disruption_service import DisruptionInput, record_slot_status_change
+
+    for s in slots:
+        s._disruption_old_status = s.status
+    record_slot_status_change(
+        equipment,
+        slots,
+        SlotStatus.BOOKED,
+        DisruptionInput(
+            user=actor,
+            source=DisruptionSource.OTHER,
+            label=f"Allocated to Type B urgent request #{request_id}",
+        ),
+    )
+
+
 def allocate_urgent_request(urg_id: int, actor, slot_ids, *, admin_notes=None, expected_total=None):
     """
     Approve a Type B request without slots by booking ``slot_ids`` for the requester.
@@ -483,7 +502,18 @@ def allocate_urgent_request(urg_id: int, actor, slot_ids, *, admin_notes=None, e
             created_by=actor,
             **initial_istem_fbr_fields_for_charge_profile(charge_profile),
         )
+        previous_statuses = {str(s.pk): s.status for s in locked}
+        overridden = [s for s in locked if s.status != SlotStatus.AVAILABLE]
         DailySlot.objects.filter(pk__in=[s.pk for s in locked]).update(booking=booking, status=SlotStatus.BOOKED)
+        if overridden:
+            _log_overridden_slot_statuses(equipment, overridden, actor, urg.id)
+        override_note = ""
+        if overridden:
+            counts: dict[str, int] = {}
+            for s in overridden:
+                label = s.get_status_display()
+                counts[label] = counts.get(label, 0) + 1
+            override_note = " Previous slot status: " + ", ".join(f"{k} × {v}" for k, v in sorted(counts.items())) + "."
         create_booking_event(
             booking=booking,
             event_type=BookingEventType.CREATED,
@@ -491,6 +521,7 @@ def allocate_urgent_request(urg_id: int, actor, slot_ids, *, admin_notes=None, e
             comment=(
                 f"Slots allocated by {actor_label} for Type B urgent request #{urg.id}: {times} "
                 f"({quote['required_minutes']} minutes, ₹{quote['total_charge']:.2f} incl. 50% urgent surcharge)."
+                + override_note
             ),
             new_status=BookingStatus.HOLD,
             metadata={
@@ -500,6 +531,7 @@ def allocate_urgent_request(urg_id: int, actor, slot_ids, *, admin_notes=None, e
                 "slot_ids": ids,
                 "slot_times": payload["slot_times"],
                 "slot_warnings": payload["warnings"],
+                "previous_slot_statuses": previous_statuses,
             },
             send_notification=False,
         )

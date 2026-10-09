@@ -61,6 +61,7 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "urgent_booking_hold_released_email",
     "urgent_booking_admin_decision_user_email",
     "urgent_booking_request_oic_alert_email",
+    "urgent_booking_allocated_operator_email",
     "wallet_credit_email",
     "wallet_debit_email",
     "wallet_recharge_approved_email",
@@ -1080,6 +1081,39 @@ def _urgent_templates() -> list[dict[str, Any]]:
                 "{{ status_detail }}, {{ equipment_name }}, {{ equipment_code }}, {{ requester_name }}, "
                 "{{ requester_category }}, {{ required_time }}, {{ amount }}, {{ preferred_schedule }}, "
                 "{{ reason }}, {{ link }}"
+            ),
+        ),
+        _simple_email(
+            code="urgent_booking_allocated_operator_email",
+            title="Urgent Booking Allocated",
+            subject="Urgent booking allocated – {{ booking_id }} – {{ equipment_name }}",
+            intro=(
+                "An urgent booking has been allocated on <strong>{{ equipment_name }}</strong>. "
+                "Please plan the run for the slots below."
+            ),
+            description=(
+                "Sent to the equipment's active Lab Operator(s) when an urgent request is allocated "
+                "(its slots become a confirmed booking)."
+            ),
+            detail_rows=[
+                optional_detail_row("Booking ID", "booking_id"),
+                optional_detail_row("Equipment", "equipment_name"),
+                optional_detail_row("Equipment code", "equipment_code"),
+                optional_detail_row("Urgent request ID", "request_id"),
+                optional_detail_row("Requested by", "requester_name"),
+                optional_detail_row("Requester category", "requester_category"),
+                optional_detail_row("Required time", "required_time"),
+            ],
+            note_vars=(
+                ("allocated_slots", "Allocated slots"),
+                ("sample_details", "Sample details"),
+                ("oic_note", "Note from the Officer in charge"),
+            ),
+            cta_label="Open booking",
+            variable_help=(
+                "{{ user_name }}, {{ booking_id }}, {{ equipment_name }}, {{ equipment_code }}, {{ request_id }}, "
+                "{{ requester_name }}, {{ requester_category }}, {{ required_time }}, {{ allocated_slots }}, "
+                "{{ sample_details }}, {{ oic_note }}, {{ link }}"
             ),
         ),
     ]

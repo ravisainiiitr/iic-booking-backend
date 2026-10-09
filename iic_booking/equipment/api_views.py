@@ -9820,8 +9820,30 @@ def get_urgent_request_detail(request, request_id):
         "hold_booking_summary": hold_booking_summary,
         "requires_slot_allocation": urg.requires_slot_allocation,
         "requirement": requirement_payload(urg),
+        "supervisor_decided_at": urg.supervisor_decided_at.isoformat() if urg.supervisor_decided_at else None,
+        "requester_category": str(urg.user.get_user_type_display_label() or ""),
+        "wallet_check": _urgent_detail_wallet_check(urg),
     }
     return Response(result, status=status.HTTP_200_OK)
+
+
+def _urgent_detail_wallet_check(urg):
+    """Whether the paying wallet can take the amount now (pending requests only; None when unknown)."""
+    from .urgent_allocation import wallet_check
+
+    if urg.status != UrgentBookingRequestStatus.PENDING:
+        return None
+    if urg.estimated_charge is not None:
+        amount = urg.estimated_charge
+    elif urg.hold_booking_id and urg.hold_booking:
+        amount = urg.hold_booking.total_charge
+    else:
+        return None
+    try:
+        return wallet_check(urg.user, urg.equipment, amount)
+    except Exception:
+        logger.exception("Urgent detail wallet check failed request_id=%s", urg.id)
+        return None
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])

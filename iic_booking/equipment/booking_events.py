@@ -1134,6 +1134,17 @@ def send_booking_event_notification(event: BookingEvent) -> None:
             )
 
             staff_users = get_equipment_staff_notify_users(equipment)
+            # Lab Operators get the dedicated allocation email instead of the generic staff copy.
+            operator_alert_ids: set = set()
+            if event.event_type == BookingEventType.STATUS_CHANGED and (event.metadata or {}).get(
+                "urgent_hold_converted"
+            ):
+                try:
+                    from iic_booking.equipment.urgent_operator_alerts import send_urgent_allocation_operator_emails
+
+                    operator_alert_ids = send_urgent_allocation_operator_emails(booking, exclude_ids={user.id})
+                except Exception:
+                    logger.exception("Urgent operator emails failed for event %s", event.event_id)
             confirmation_email_opt_out_ids = (
                 get_booking_confirmation_email_opt_out_user_ids(equipment)
                 if email_template_code in BOOKING_CONFIRMATION_EMAIL_TEMPLATES
@@ -1171,6 +1182,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                     and (staff.email or "").strip()
                     and staff.id not in confirmation_email_opt_out_ids
                     and staff.id not in supervisor_emailed_ids
+                    and staff.id not in operator_alert_ids
                 ):
                     try:
                         CommunicationService.send_email(
