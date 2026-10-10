@@ -7858,3 +7858,4 @@ from iic_booking.equipment.cancellation_models import (  # noqa: E402
     CancellationDataQuality,
     CancellationReason,
 )
+from iic_booking.equipment.testdata_models import TestDataFlag, TestDataKind  # noqa: E402

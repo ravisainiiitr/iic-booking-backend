@@ -1,0 +1,53 @@
+# List (dry run) or mark obvious test users, equipment and equipment categories on production, so dashboards,
+# overviews and reports leave them out. Users get is_test_account; equipment / categories get a test-data mark
+# (who can see or book them is not changed). Users are printed by id, type and reason; no emails.
+name: Flag Test Data
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type APPLY to write the marks (anything else = dry run)"
+        required: false
+        default: ""
+      skip_users:
+        description: "User ids to leave out (comma separated)"
+        required: false
+        default: ""
+      skip_equipment:
+        description: "Equipment ids to leave out"
+        required: false
+        default: ""
+      skip_categories:
+        description: "Category ids to leave out"
+        required: false
+        default: ""
+      equipment_ids:
+        description: "Equipment ids that are test data whatever their name"
+        required: false
+        default: ""
+
+concurrency:
+  group: flag-test-data
+  cancel-in-progress: false
+
+jobs:
+  flag:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Flag test data
+        env:
+          CONFIRM: ${{ github.event.inputs.confirm }}
+          SKIP_USERS: ${{ github.event.inputs.skip_users }}
+          SKIP_EQUIPMENT: ${{ github.event.inputs.skip_equipment }}
+          SKIP_CATEGORIES: ${{ github.event.inputs.skip_categories }}
+          EQUIPMENT_IDS: ${{ github.event.inputs.equipment_ids }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          echo "django_container=$CID"
+          test -n "$CID"
+          ARGS=(--skip-users "$SKIP_USERS" --skip-equipment "$SKIP_EQUIPMENT" --skip-categories "$SKIP_CATEGORIES" --equipment-ids "$EQUIPMENT_IDS")
+          if [ "${CONFIRM:-}" = "APPLY" ]; then ARGS+=(--apply); fi
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python manage.py flag_test_data "${ARGS[@]}"
