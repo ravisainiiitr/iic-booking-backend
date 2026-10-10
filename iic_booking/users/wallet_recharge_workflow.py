@@ -1343,15 +1343,22 @@ def verify_fund_receipt(
     return locked
 
 
-def overdue_fund_receipt_requests(queryset, days: Optional[int] = None) -> tuple[int, list]:
-    """Requests with no SRIC cash-book match `days` after approval (or after submission while still pending)."""
+def overdue_fund_receipt_requests(queryset, days: Optional[int] = None, *, include_test: bool = False) -> tuple[int, list]:
+    """Requests with no SRIC cash-book match `days` after approval (or after submission while still pending).
+
+    Test-account requests never get a cash-book entry, so they are never overdue (``include_test`` is for reports).
+    """
     from datetime import timedelta
 
     from django.db.models import Q
 
+    from iic_booking.users.test_accounts import exclude_test_recharge_requests
+
     if days is None:
         days = WalletSricSettings.get_singleton().fund_receipt_overdue_days or 15
     cutoff = timezone.now() - timedelta(days=days)
+    if not include_test:
+        queryset = exclude_test_recharge_requests(queryset)
     rows = list(
         queryset.filter(fund_receipt_verified=False, cashbook_receipt_no="", is_deleted=False)
         .filter(

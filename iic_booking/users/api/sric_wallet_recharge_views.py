@@ -23,8 +23,12 @@ from iic_booking.users.models.sric_wallet_recharge import (
     SricWalletRechargeSettings,
     SricWalletRechargeStatus,
 )
+from iic_booking.users.test_accounts import filter_by_test_param
 
 S = SricWalletRechargeStatus
+
+# Test-run rows and rows credited to a flagged test account: not counted in totals or exports.
+SRIC_TEST_Q = Q(is_test=True) | Q(matched_user__is_test_account=True)
 
 
 class IsMainAdministrator(permissions.BasePermission):
@@ -72,7 +76,7 @@ def serialize_row(rec: SricWalletRecharge, *, admin: bool) -> dict:
         "email_date": _iso(rec.message.received_at) if rec.message_id and rec.message else None,
         "created_at": _iso(rec.created_at),
         "fund_receipt_verified": rec.fund_receipt_verified,
-        "is_test": rec.is_test,
+        "is_test": rec.is_test or bool(rec.matched_user_id and getattr(rec.matched_user, "is_test_account", False)),
     }
     if not admin:
         return data
@@ -227,11 +231,7 @@ def filter_rows(qs, params):
     end = _day(params.get("date_to"), end=True)
     if end:
         qs = qs.filter(created_at__lt=end)
-    test = (params.get("test") or "").strip().lower()
-    if test == "hide":
-        qs = qs.filter(is_test=False)
-    elif test == "only":
-        qs = qs.filter(is_test=True)
+    qs = filter_by_test_param(qs, params.get("test"), test_q=SRIC_TEST_Q)
     search = (params.get("search") or "").strip()
     if search:
         qs = qs.filter(
@@ -256,7 +256,7 @@ def admin_list(request):
         page, size = 1, 25
     total = qs.count()
     rows = list(qs[(page - 1) * size : page * size])
-    real = SricWalletRecharge.objects.filter(is_test=False)
+    real = SricWalletRecharge.objects.exclude(SRIC_TEST_Q)
     counts = dict(real.values_list("status").annotate(n=Count("id")).values_list("status", "n"))
     years = list(
         SricWalletRecharge.objects.order_by("-financial_year").values_list("financial_year", flat=True).distinct()
@@ -272,9 +272,10 @@ def admin_list(request):
             "financial_years": years,
             "receivers": [{"code": m.code, "label": m.label} for m in SricReceiverMapping.objects.all()],
             "credited_total": _money(
-                qs.filter(status=S.CREDITED, is_test=False, reversed_at__isnull=True).aggregate(t=Sum("amount"))["t"] or 0
+                qs.filter(status=S.CREDITED, reversed_at__isnull=True).exclude(SRIC_TEST_Q).aggregate(t=Sum("amount"))["t"]
+                or 0
             ),
-            "test_count": SricWalletRecharge.objects.filter(is_test=True).count(),
+            "test_count": SricWalletRecharge.objects.filter(SRIC_TEST_Q).count(),
             "scan_enabled": config.scan_enabled,
             "auto_credit_enabled": config.auto_credit_enabled,
             "last_scan_at": _iso(config.last_scan_at),

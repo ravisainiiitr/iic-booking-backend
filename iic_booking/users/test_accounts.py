@@ -125,6 +125,42 @@ def exclude_test_wallet_txns(qs: QuerySet) -> QuerySet:
     )
 
 
+TEST_NOT_COUNTED_LABEL = "Test — not counted in revenue"
+
+
+def test_wallet_member_ids() -> QuerySet:
+    """Users currently linked (approved) to a test account's wallet: their bookings are paid from that test wallet."""
+    from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
+
+    return WalletJoinRequest.objects.filter(
+        status=WalletJoinRequestStatus.APPROVED, wallet__user__is_test_account=True
+    ).values("student_id")
+
+
+def exclude_test_revenue_bookings(qs: QuerySet) -> QuerySet:
+    """Bookings that count as revenue: not by a test account and not paid from a test account's wallet."""
+    return exclude_test_bookings(qs).exclude(user_id__in=test_wallet_member_ids())
+
+
+def exclude_test_recharge_requests(qs: QuerySet) -> QuerySet:
+    return qs.exclude(user__is_test_account=True)
+
+
+def recharge_request_is_test(recharge_request: Any) -> bool:
+    """Recharges by a test account carry no real money: no SRIC cash-book entry is expected for them."""
+    return is_test_user(getattr(recharge_request, "user", None))
+
+
+def filter_by_test_param(qs: QuerySet, value: Any, *, test_q: Q) -> QuerySet:
+    """``test=hide`` drops rows matching ``test_q``; ``test=only`` keeps only them; anything else keeps all."""
+    choice = str(value or "").strip().lower()
+    if choice == "hide":
+        return qs.exclude(test_q)
+    if choice == "only":
+        return qs.filter(test_q)
+    return qs
+
+
 def redirect_email_for_user(
     user: Any,
     *,

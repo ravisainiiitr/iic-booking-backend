@@ -31,6 +31,7 @@ from iic_booking.users.models.wallet_admin_adjustment import (
     WalletAdminAdjustmentDirection,
     WalletAdminAdjustmentReason,
 )
+from iic_booking.users.test_accounts import filter_by_test_param, is_test_user
 
 logger = logging.getLogger(__name__)
 
@@ -295,7 +296,7 @@ def filter_owners(qs, params):
         qs = qs.filter(Exists(txns))
     elif (params.get("activity") or "").strip() == "none":
         qs = qs.filter(last_transaction_at__isnull=True)
-    return qs
+    return filter_by_test_param(qs, params.get("test"), test_q=Q(user__is_test_account=True))
 
 
 def order_owners(qs, ordering: str):
@@ -334,6 +335,7 @@ def serialize_owner(wallet: Wallet, sub_wallets: list[SubWallet], *, s_no: int |
         "linked_students": int(getattr(wallet, "linked_students", 0) or 0),
         "status": "active" if user.is_active else "inactive",
         "last_transaction_at": wallet.last_transaction_at.isoformat() if getattr(wallet, "last_transaction_at", None) else None,
+        "is_test_account": is_test_user(user),
     }
 
 
@@ -511,7 +513,11 @@ def filter_transactions(qs, params):
         if not owner:
             cond |= Q(sub_wallet__wallet__user__name__icontains=search) | Q(sub_wallet__wallet__user__email__icontains=search)
         qs = qs.filter(cond)
-    return qs
+    return filter_by_test_param(
+        qs,
+        params.get("test"),
+        test_q=Q(sub_wallet__wallet__user__is_test_account=True) | Q(related_user__is_test_account=True),
+    )
 
 
 def transactions_queryset():
@@ -637,6 +643,7 @@ def serialize_transactions(rows: list[SubWalletTransaction], *, start: int = 0) 
                 "reference": reference,
                 "external_reference": external,
                 "related_user_name": _display_name(t.related_user) if t.related_user_id else "",
+                "is_test_account": is_test_user(owner) or bool(t.related_user_id and is_test_user(t.related_user)),
             }
         )
     return out

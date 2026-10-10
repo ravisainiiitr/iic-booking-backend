@@ -1,0 +1,76 @@
+# Test accounts (wallet activity and bookings not counted in revenue, never matched to the SRIC cash-book).
+# report  : read-only. Flagged test accounts, unflagged accounts that look like test accounts, and which requests the
+#           SRIC follow-up list shows / hides as test. Ids, user types, counts and flags only (public logs).
+# dry-run : read-only. What flagging (or unflagging) the given user ids would change.
+# apply   : writes User.is_test_account for the given user ids; needs confirm = FLAG_TEST_ACCOUNTS.
+# User ids only (emails would be printed in the public run log); find ids in Admin settings > Users.
+name: Flag Test Accounts
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "report | dry-run | apply"
+        required: true
+        default: "report"
+        type: choice
+        options:
+          - report
+          - dry-run
+          - apply
+      user_ids:
+        description: "dry-run / apply: comma-separated user ids"
+        required: false
+        default: ""
+      unflag:
+        description: "dry-run / apply: remove the test-account mark instead"
+        required: false
+        type: boolean
+        default: false
+      confirm:
+        description: "apply only: type FLAG_TEST_ACCOUNTS"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run
+        env:
+          ACTION: ${{ inputs.action }}
+          USER_IDS: ${{ inputs.user_ids }}
+          UNFLAG: ${{ inputs.unflag }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$USER_IDS" =~ ^[0-9,\ ]*$ ]]; then
+            echo "user_ids must be numbers separated by commas"; exit 1
+          fi
+          ARGS=()
+          if [[ "$ACTION" != "report" ]]; then
+            if [[ -z "${USER_IDS// /}" ]]; then echo "user_ids is required for $ACTION"; exit 1; fi
+            ARGS+=(--user-ids "$USER_IDS")
+            if [[ "$UNFLAG" == "true" ]]; then ARGS+=(--unflag); fi
+          fi
+          if [[ "$ACTION" == "apply" ]]; then
+            if [[ "$CONFIRM" != "FLAG_TEST_ACCOUNTS" ]]; then echo "confirm must be FLAG_TEST_ACCOUNTS to apply"; exit 1; fi
+            ARGS+=(--confirm FLAG_TEST_ACCOUNTS)
+          fi
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
+                python manage.py flag_test_accounts ${ARGS[@]+"${ARGS[@]}"}
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1

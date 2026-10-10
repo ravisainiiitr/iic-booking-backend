@@ -631,7 +631,11 @@ def _equipment_report_payload(
         elif _is_external_snapshot(ut):
             booking_minutes_ext[eid] += tm
 
-    completed_revenue_qs = completed_in_range.select_related("user", "user__department", "equipment")
+    from iic_booking.users.test_accounts import exclude_test_revenue_bookings
+
+    completed_revenue_qs = exclude_test_revenue_bookings(completed_in_range).select_related(
+        "user", "user__department", "equipment"
+    )
     if not include_revenue:
         completed_revenue_qs = completed_revenue_qs.none()
     total_revenue = completed_revenue_qs.aggregate(total=Sum("total_charge"))["total"] or 0

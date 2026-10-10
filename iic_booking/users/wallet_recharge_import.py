@@ -462,10 +462,14 @@ class CashbookIndex:
             )
 
     def candidates_for(self, req: WalletRechargeRequest) -> List[Dict[str, Any]]:
+        from .test_accounts import recharge_request_is_test
+
         if req.cashbook_receipt_no or req.is_deleted or req.status not in (
             WalletRechargeRequestStatus.PENDING,
             WalletRechargeRequestStatus.APPROVED,
         ):
+            return []
+        if recharge_request_is_test(req):
             return []
         req_emp = _request_emp_no(req)
         out = []
@@ -540,6 +544,13 @@ def link_cashbook_entry_to_request(
             )
             if locked.is_deleted:
                 raise CashbookMatchError(f"{locked.request_id_display} was deleted by the Main Administrator.")
+            from .test_accounts import recharge_request_is_test
+
+            if recharge_request_is_test(locked):
+                raise CashbookMatchError(
+                    f"{locked.request_id_display} is from a test account (not counted in revenue); "
+                    "SRIC cash-book entries are never matched to test requests."
+                )
             if locked.cashbook_receipt_no or locked.cashbook_parse_entry_id:
                 raise CashbookMatchError(
                     f"{locked.request_id_display} is already matched to cash-book receipt "
@@ -707,11 +718,14 @@ def match_pending_recharge_requests_to_parse_entries() -> Tuple[int, List[str]]:
     whenever the cash-book row has one. Everything else is left for manual matching on the
     Wallet Recharge Requests page.
     """
+    from .test_accounts import exclude_test_recharge_requests
+
     errors: List[str] = []
     matched, referenced_entries = _match_by_transaction_reference(CashbookIndex(), errors)
     index = CashbookIndex()
     eligible = list(
-        WalletRechargeRequest.objects.filter(cashbook_receipt_no="", is_deleted=False)
+        exclude_test_recharge_requests(WalletRechargeRequest.objects.all())
+        .filter(cashbook_receipt_no="", is_deleted=False)
         .filter(
             Q(
                 status=WalletRechargeRequestStatus.PENDING,

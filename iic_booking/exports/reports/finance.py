@@ -49,6 +49,8 @@ def _grant_code(row) -> str:
 def _fund_receipt(row) -> str:
     if row.get("recharge_mode") != "project_grant":
         return ""
+    if row.get("is_test_account") and not row.get("fund_receipt_verified"):
+        return "Not needed (test account)"
     if row.get("fund_receipt_verified"):
         by = row.get("fund_receipt_verified_by_name") or ""
         return f"Verified by {by}" if by else "Verified"
@@ -61,6 +63,9 @@ def wallet_recharge_requests(request):
     params["ordering"] = params.get("ordering") or "-created_at"
     rows, _ = collect_rows(request, "admin-walletrechargerequest-list", page_size=200, page_param="page",
                            limit_param="page_size", params=params)
+    test_only = (params.get("test") or "").strip().lower() == "only"
+    if not test_only:
+        rows = [r for r in rows if not r.get("is_test_account")]
     columns = [
         SNO,
         C("request_id", "Request ID", width=1.0),
@@ -98,9 +103,12 @@ def wallet_recharge_requests(request):
         ("date_from", "From", "date"),
         ("date_to", "To", "date"),
         ("overdue", "Overdue only", {"1": "Yes"}),
+        ("test", "Test accounts", {"hide": "Hidden", "only": "Only test accounts"}),
         ("search", "Search", "text"),
     ])
-    table = spec.Table("requests", "Wallet recharge requests", columns, numbered(rows),
+    note = ("Test-account requests only: not counted in revenue." if test_only
+            else "Requests from test accounts are left out (not counted in revenue).")
+    table = spec.Table("requests", "Wallet recharge requests", columns, numbered(rows), note=note,
                        empty_message="No recharge requests match these filters.")
     return make_document(request, title="Wallet Recharge Requests", slug="wallet-recharge-requests",
                          tables=[table], filters=filters, kpis=kpis, landscape=True)
@@ -206,6 +214,14 @@ def _owner_type_label(raw: str) -> str:
     return ", ".join(str(labels.get(v.strip(), v.strip())) for v in raw.split(","))
 
 
+def _with_test_mark(key: str):
+    def value(row) -> str:
+        text = row.get(key) or ""
+        return f"{text} [TEST — not counted in revenue]" if row.get("is_test_account") else text
+
+    return value
+
+
 def _sub_wallets_text(row) -> str:
     return "; ".join(f"{s['department_name']}: ₹{Decimal(s['balance']):,.2f}" for s in row.get("sub_wallets") or [])
 
@@ -228,7 +244,7 @@ def admin_wallet_owners(request):
     summary = (first or {}).get("summary") or {}
     columns = [
         SNO,
-        C("name", "Wallet owner", width=1.5, link=_owner_link),
+        C("name", "Wallet owner", width=1.5, value=_with_test_mark("name"), link=_owner_link),
         C("employee_id", "Employee / enrolment no.", width=1.0),
         C("user_type_label", "Category", width=1.1),
         C("department_name", "Department", width=1.4),
@@ -256,6 +272,7 @@ def admin_wallet_owners(request):
         ("has_students", "Linked students", {"yes": "Has linked students", "no": "No linked students"}),
         ("activity_from", "Activity from", "date"),
         ("activity_to", "Activity to", "date"),
+        ("test", "Test accounts", {"hide": "Hidden", "only": "Only test accounts"}),
     ])
     table = spec.Table("owners", "Wallet owners", columns, numbered(rows),
                        note="Email addresses and phone numbers are left out of exports.",
@@ -277,7 +294,7 @@ def admin_wallet_transactions(request):
     ]
     if not single_owner:
         columns += [
-            C("owner_name", "Wallet owner", width=1.4, link=_owner_link),
+            C("owner_name", "Wallet owner", width=1.4, value=_with_test_mark("owner_name"), link=_owner_link),
             C("owner_department", "Owner department", width=1.2),
         ]
     columns += [
@@ -315,6 +332,7 @@ def admin_wallet_transactions(request):
         ("amount_max", "Amount up to (₹)", "text"),
         ("booking", "Booking", "text"),
         ("related_user", "Booking user", "user"),
+        ("test", "Test accounts", {"hide": "Hidden", "only": "Only test accounts"}),
         ("search", "Search", "text"),
     ])
     title = "Wallet Transactions"

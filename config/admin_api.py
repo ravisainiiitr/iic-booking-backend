@@ -804,7 +804,51 @@ def admin_api_router():
                     qs = qs.filter(is_active=True)
                 elif str(is_active).lower() in ("false", "0", "no"):
                     qs = qs.filter(is_active=False)
+            is_test_account = self.request.query_params.get("is_test_account")
+            if is_test_account is not None:
+                if str(is_test_account).lower() in ("true", "1", "yes"):
+                    qs = qs.filter(is_test_account=True)
+                elif str(is_test_account).lower() in ("false", "0", "no"):
+                    qs = qs.filter(is_test_account=False)
             return qs
+
+        @action(detail=True, methods=["post"], url_path="set-test-account")
+        def set_test_account(self, request, pk=None):
+            """Main Administrator: mark / unmark a test account (its wallet activity is not counted in revenue)."""
+            from iic_booking.users.test_account_flags import TestAccountFlagError, set_test_account_flag
+
+            if not (getattr(request.user, "is_superuser", False) or getattr(request.user, "user_type", None) == UserType.ADMIN):
+                return Response(
+                    {"error": "Only the Main Administrator can mark test accounts."}, status=status.HTTP_403_FORBIDDEN
+                )
+            raw = request.data.get("is_test_account")
+            if isinstance(raw, bool):
+                value = raw
+            elif str(raw).strip().lower() in ("1", "true", "yes", "on"):
+                value = True
+            elif str(raw).strip().lower() in ("0", "false", "no", "off"):
+                value = False
+            else:
+                return Response({"error": "is_test_account must be true or false."}, status=status.HTTP_400_BAD_REQUEST)
+            target = self.get_object()
+            try:
+                changed = set_test_account_flag(target, value, actor=request.user, source="user management")
+            except TestAccountFlagError as exc:
+                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            if not changed:
+                message = "No change."
+            elif value:
+                message = "Marked as a test account. Its wallet recharges, transactions and bookings are no longer counted in revenue."
+            else:
+                message = "Test account mark removed. Its activity now counts in revenue again."
+            return Response(
+                {
+                    "message": message,
+                    "changed": changed,
+                    "user": UserSerializer(target, context={"request": request}).data,
+                },
+                status=status.HTTP_200_OK,
+            )
 
         def create(self, request, *args, **kwargs):
             # Dept Admin may create OIC / Lab / Accounts staff in their own department only.
@@ -2006,6 +2050,12 @@ def admin_api_router():
             if recharge_mode in {"project_grant", "direct_cash_deposit"}:
                 qs = qs.filter(recharge_mode=recharge_mode)
 
+            from iic_booking.users.test_accounts import exclude_test_recharge_requests, filter_by_test_param
+
+            qs = filter_by_test_param(
+                qs, self.request.query_params.get("test"), test_q=Q(user__is_test_account=True)
+            )
+
             if (self.request.query_params.get("overdue") or "").strip().lower() in {"1", "true", "yes"}:
                 from iic_booking.users.wallet_recharge_workflow import overdue_fund_receipt_requests
 
@@ -2017,7 +2067,7 @@ def admin_api_router():
                 qs = qs.exclude(cashbook_receipt_no="")
             elif cashbook in {"received", "awaiting"}:
                 index = self._cashbook_index()
-                open_qs = qs.filter(
+                open_qs = exclude_test_recharge_requests(qs).filter(
                     cashbook_receipt_no="",
                     status__in=[WalletRechargeRequestStatus.PENDING, WalletRechargeRequestStatus.APPROVED],
                 )
