@@ -83,4 +83,16 @@ jobs:
               print("card_for_main_admin=", cancellation_card(admin, now) if admin else "no admin")
           except Exception as exc:
               print("card_error=", type(exc).__name__, str(exc)[:200])
+
+          try:
+              from django.http import QueryDict
+              from iic_booking.equipment.admin_insights.refund_requests import build_refund_request_insights
+              for label, qs in (("last30", ""), ("last365", f"date_from={(timezone.localdate(now) - timedelta(days=364)).isoformat()}")):
+                  s = build_refund_request_insights(admin, QueryDict(qs))["summary"]
+                  keep = ("total", "bookings_created", "rate", "within_window", "unique_users", "unique_users_within_window",
+                          "repeat_refunders", "refund_total", "by_source", "by_status", "by_window")
+                  print(f"refund_requests_{label}=", {k: s.get(k) for k in keep})
+                  print(f"refund_requests_{label}_repeater_counts=", sorted((r.get("count") or r.get("requests") or 0) for r in s.get("repeaters") or []))
+          except Exception as exc:
+              print("refund_requests_error=", type(exc).__name__, str(exc)[:200])
           PY
