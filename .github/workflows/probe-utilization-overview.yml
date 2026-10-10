@@ -1,0 +1,97 @@
+# Read-only: the deployed Equipment overview's 30-day utilisation as the Main Administrator sees it (institute scope,
+# disposed left out), inside a rolled-back transaction: summary, top equipment, test equipment left out, and the
+# figure if the extra ids given were also test data. Prints equipment ids, codes, names, hours and percentages only.
+name: Probe Utilization Overview
+
+on:
+  workflow_dispatch:
+    inputs:
+      extra_test_ids:
+        description: "Equipment ids to also leave out for the what-if line (comma separated)"
+        required: false
+        default: "97,98,100,101"
+      top:
+        description: "Rows to list"
+        required: false
+        default: "15"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        env:
+          EXTRA_TEST_IDS: ${{ inputs.extra_test_ids }}
+          TOP: ${{ inputs.top }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app -e EXTRA_TEST_IDS="$EXTRA_TEST_IDS" -e TOP="$TOP" "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.db import transaction
+          from iic_booking.equipment.admin_insights.equipment import build_equipment_insights
+          from iic_booking.equipment.models import Equipment
+          from iic_booking.equipment.testdata import get_test_equipment_ids
+          from iic_booking.equipment.utilization import UtilizationTally, compute_utilization_by_equipment, utilization_today
+          from iic_booking.users.models import User
+          from datetime import timedelta
+
+          def pct(v):
+              return "N/A" if v is None else f"{v * 100:.2f}%"
+
+          admin = User.objects.filter(user_type="admin", is_active=True, is_test_account=False).order_by("pk").first()
+          with transaction.atomic():
+              data = build_equipment_insights(admin, {"page_size": "500", "sort": "-utilisation"})
+              transaction.set_rollback(True)
+          s = data["summary"]
+          print(f"scope={data.get('scope')} equipment={s['total']}")
+          print(f"OVERVIEW utilisation (30 days): {pct(s['utilisation'])} = booked {s.get('utilisation_booked_hours')} h / "
+                f"available {s.get('utilisation_available_hours')} h")
+          print(f"period: {s.get('utilisation_period_display')} | {s.get('utilisation_period_note')}")
+          rows = [r for r in data["results"] if r["slot_hours_30d"]]
+          rows.sort(key=lambda r: (-r["slot_hours_30d"]))
+          print(f"\n== top {os.environ['TOP']} by available hours (id | code | name | utilisation | booked h | available h)")
+          for r in rows[: int(os.environ["TOP"])]:
+              print(f"{r['equipment_id']} | {r['code']} | {r['name']} | {pct(r['utilisation'])} | "
+                    f"{r['booked_hours_30d']} | {r['slot_hours_30d']}")
+          counted = [r for r in data["results"] if r.get("utilisation_counted_under")]
+          print(f"\nmodes counted on parent: {len(counted)}")
+          test_rows = [r for r in data["results"] if r.get("utilisation_test_excluded")]
+          print("test equipment left out: " + ", ".join(f"{r['equipment_id']} {r['code']}" for r in test_rows))
+
+          ids = list(Equipment.objects.exclude(status__iexact="DISPOSED").values_list("equipment_id", flat=True))
+          today = utilization_today()
+          extra = {int(x) for x in os.environ.get("EXTRA_TEST_IDS", "").split(",") if x.strip().isdigit()}
+          with transaction.atomic():
+              tallies = compute_utilization_by_equipment(ids, today - timedelta(days=29), today)
+              transaction.set_rollback(True)
+          total, without = UtilizationTally(), UtilizationTally()
+          for eid, t in tallies.items():
+              total.merge(t)
+              if eid not in extra:
+                  without.merge(t)
+          print(f"\nall slot hours (old formula, same equipment): {pct(total.all_slot_factor)} = "
+                f"{total.all_slot_booked_hours:.2f} / {total.all_slot_hours:.2f} h")
+          print(f"what-if ids {sorted(extra)} also test data: {pct(without.factor)} = "
+                f"{without.booked_hours:.2f} / {without.available_hours:.2f} h")
+          for eid in sorted(extra):
+              t = tallies.get(eid)
+              if t:
+                  print(f"  {eid}: booked {t.booked_hours:.2f} h / available {t.available_hours:.2f} h")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production checkout found" >&2
+          exit 1
