@@ -1,0 +1,127 @@
+# One-off announcement email to every active IITR faculty member (one email each, with optional CC / BCC).
+# dry-run (default): recipient count, exclusions and a masked sample; nothing is sent.
+# test-send: one [TEST] copy to test_to only (CC / BCC copied only if test_include_cc).
+# send: all faculty not yet sent; confirm must equal the campaign name. Re-running skips those already sent.
+# CC / BCC / Reply-To take addresses or the tokens dean_sric, ar_sric, sric_office, bill_section.
+name: Send Announcement
+
+on:
+  workflow_dispatch:
+    inputs:
+      campaign:
+        description: "Announcement"
+        required: true
+        default: "wallet-recharge-2026-10"
+        type: choice
+        options:
+          - wallet-recharge-2026-10
+      mode:
+        description: "dry-run | test-send | send"
+        required: true
+        default: "dry-run"
+        type: choice
+        options:
+          - dry-run
+          - test-send
+          - send
+      test_to:
+        description: "test-send: the one address to receive the [TEST] copy"
+        required: false
+        default: ""
+      test_include_cc:
+        description: "test-send: also copy the CC / BCC addresses"
+        required: false
+        default: false
+        type: boolean
+      cc:
+        description: "CC on every email (comma separated addresses or tokens)"
+        required: false
+        default: ""
+      bcc:
+        description: "BCC on every email (comma separated addresses or tokens)"
+        required: false
+        default: ""
+      reply_to:
+        description: "Reply-To address (empty: replies go to the sender)"
+        required: false
+        default: ""
+      attach_pdf:
+        description: "Attach the PDF guide"
+        required: false
+        default: true
+        type: boolean
+      limit:
+        description: "send: at most N recipients in this run (0 = all remaining)"
+        required: false
+        default: "0"
+      batch_size:
+        description: "Emails per SMTP connection"
+        required: false
+        default: "20"
+      pause_seconds:
+        description: "Seconds to wait between batches"
+        required: false
+        default: "20"
+      confirm:
+        description: "send: type the campaign name to confirm"
+        required: false
+        default: ""
+
+concurrency:
+  group: send-announcement-${{ inputs.campaign }}
+  cancel-in-progress: false
+
+jobs:
+  announce:
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 180
+    steps:
+      - name: Run
+        env:
+          CAMPAIGN: ${{ inputs.campaign }}
+          MODE: ${{ inputs.mode }}
+          TEST_TO: ${{ inputs.test_to }}
+          TEST_INCLUDE_CC: ${{ inputs.test_include_cc }}
+          CC: ${{ inputs.cc }}
+          BCC: ${{ inputs.bcc }}
+          REPLY_TO: ${{ inputs.reply_to }}
+          ATTACH_PDF: ${{ inputs.attach_pdf }}
+          LIMIT: ${{ inputs.limit }}
+          BATCH_SIZE: ${{ inputs.batch_size }}
+          PAUSE_SECONDS: ${{ inputs.pause_seconds }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          ARGS=("$CAMPAIGN" --cc "$CC" --bcc "$BCC" --reply-to "$REPLY_TO" \
+            --limit "$LIMIT" --batch-size "$BATCH_SIZE" --pause "$PAUSE_SECONDS")
+          if [[ "$ATTACH_PDF" != "true" ]]; then ARGS+=(--no-attachment); fi
+          case "$MODE" in
+            dry-run) ;;
+            test-send)
+              test -n "$TEST_TO" || { echo "test_to is required for test-send"; exit 1; }
+              ARGS+=(--test-to "$TEST_TO")
+              if [[ "$TEST_INCLUDE_CC" == "true" ]]; then ARGS+=(--test-include-cc); fi
+              ;;
+            send)
+              if [[ "$CONFIRM" != "$CAMPAIGN" ]]; then echo "Refusing to send: confirm must be '$CAMPAIGN'"; exit 1; fi
+              ARGS+=(--send --confirm "$CONFIRM")
+              ;;
+            *) echo "Unknown mode: $MODE"; exit 1 ;;
+          esac
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
+                python manage.py send_announcement "${ARGS[@]}"
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
