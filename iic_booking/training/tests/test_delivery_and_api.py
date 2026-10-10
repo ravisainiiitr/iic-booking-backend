@@ -178,7 +178,7 @@ def test_pending_actions_include_training_items(world):
 @pytest.mark.django_db
 def test_housekeeping_runs_when_enabled(world):
     out = housekeeping()
-    assert set(out) == {"proposals_expired", "seats_expired", "demo_escalated"}
+    assert set(out) == {"proposals_expired", "seats_expired", "demo_escalated", "certifications", "duty"}
 
 
 def test_email_catalog_contains_training_templates():

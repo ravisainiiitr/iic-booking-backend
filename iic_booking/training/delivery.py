@@ -358,6 +358,10 @@ def issue_award(user, event: TrainingEvent, registration: Registration | None, a
         source_registration=registration,
         awarded_by=actor if getattr(actor, "pk", None) else None,
     )
+    from .certification import certificate_number
+
+    award.certificate_no = certificate_number(award)
+    award.save(update_fields=["certificate_no"])
     badge = BadgeDefinition.objects.filter(level=level, is_active=True).first() or BadgeDefinition.objects.filter(code="trained").first()
     if badge:
         UserBadge.objects.filter(user=user, badge=badge, equipment=equipment, revoked_at__isnull=True).update(revoked_at=now)

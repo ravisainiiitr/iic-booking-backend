@@ -701,8 +701,40 @@ def workspace_summary(request):
             ).count(),
             "certified_active": _scoped(CertificationAward.objects.filter(status=AwardStatus.ACTIVE), ids).count(),
             "can_manage": access.is_admin(user) or bool(oic_ids),
+            **_operator_summary(ids, now),
         }
     )
+
+
+def _operator_summary(ids, now) -> dict:
+    """Assessment, certificate-expiry and duty counts (zeros until the duty tables are migrated)."""
+    from django.db import DatabaseError, transaction
+
+    from .models import Assessment, DutyAllocation, DutyShift, DutyStatus, ShiftStatus
+
+    try:
+        with transaction.atomic():
+            return {
+                "assessments_to_sign_off": _scoped(Assessment.objects.filter(result="PASS", award__isnull=True), ids).count(),
+                "certifications_expiring": _scoped(
+                    CertificationAward.objects.filter(status=AwardStatus.ACTIVE, valid_until__gte=now, valid_until__lte=now + timedelta(days=30)), ids
+                ).count(),
+                "duty_awaiting_confirmation": _scoped(DutyAllocation.objects.filter(status=DutyStatus.PENDING), ids).count(),
+                "duty_hours_to_verify": _scoped(
+                    DutyShift.objects.filter(
+                        allocation__status=DutyStatus.CONFIRMED, status__in=(ShiftStatus.SCHEDULED, ShiftStatus.CHECKED_IN), end_at__lte=now
+                    ),
+                    ids,
+                ).count(),
+                "duty_on_now": _scoped(
+                    DutyShift.objects.filter(
+                        allocation__status=DutyStatus.CONFIRMED, status__in=(ShiftStatus.SCHEDULED, ShiftStatus.CHECKED_IN), start_at__lte=now, end_at__gt=now
+                    ),
+                    ids,
+                ).count(),
+            }
+    except DatabaseError:
+        return {}
 
 
 # ---------------------------------------------------------------------------
