@@ -1,0 +1,165 @@
+# Read-only: slot-by-slot utilization factor workings for one equipment (name/code match, multi-mode children
+# included) — weekly view window, weekend/holiday calendar, slot templates, every daily slot in the period with
+# its status, booking id/code/status and clipped hours, daily totals and the final ratio. Loads
+# iic_booking/equipment/utilization.py from the dispatched ref into the running container (nothing is deployed
+# or written). Prints equipment ids/codes, holiday reasons, booking ids/codes, times, statuses and hours only.
+name: Probe Utilization Detail
+
+on:
+  workflow_dispatch:
+    inputs:
+      equipment:
+        description: "Equipment code, or text contained in the name/code (case-insensitive)"
+        required: false
+        default: "PPMS"
+      period:
+        description: "YYYY-MM-DD:YYYY-MM-DD, or golive (go-live to today)"
+        required: false
+        default: "golive"
+      go_live:
+        description: "Portal go-live date, used only when the deployed settings have no PORTAL_GO_LIVE_DATE"
+        required: false
+        default: "2026-10-05"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: iic_booking/equipment/utilization.py
+          sparse-checkout-cone-mode: false
+      - name: Probe
+        env:
+          UTIL_EQUIPMENT: ${{ inputs.equipment }}
+          UTIL_PERIOD: ${{ inputs.period }}
+          UTIL_GO_LIVE: ${{ inputs.go_live }}
+        run: |
+          set -euo pipefail
+          SRC="$GITHUB_WORKSPACE/iic_booking/equipment/utilization.py"
+          test -f "$SRC"
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker cp "$SRC" "$CID:/tmp/utilization_probe.py"
+              docker exec -i -w /app -e UTIL_EQUIPMENT="$UTIL_EQUIPMENT" -e UTIL_PERIOD="$UTIL_PERIOD" -e UTIL_GO_LIVE="$UTIL_GO_LIVE" "$CID" python - <<'PY'
+          import importlib.util, os, sys, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import defaultdict
+          from datetime import date, timedelta
+          from django.conf import settings
+          from django.db import transaction
+          from django.db.models import Q
+          from django.utils import timezone
+          from iic_booking.equipment.models import DailySlot, Equipment, Holiday, SlotMaster
+
+          spec = importlib.util.spec_from_file_location("iic_booking.equipment.utilization", "/tmp/utilization_probe.py")
+          util = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = util
+          spec.loader.exec_module(util)
+
+          if not getattr(settings, "PORTAL_GO_LIVE_DATE", None) and os.environ.get("UTIL_GO_LIVE"):
+              settings.PORTAL_GO_LIVE_DATE = os.environ["UTIL_GO_LIVE"]
+          go_live = util.portal_go_live_date()
+          today = timezone.localdate()
+          token = (os.environ.get("UTIL_PERIOD") or "golive").strip()
+          if token == "golive":
+              req_start, req_end = go_live or today, today
+          else:
+              a, b = token.split(":")
+              req_start, req_end = date.fromisoformat(a), date.fromisoformat(b)
+          period = util.utilization_period(req_start, req_end)
+          hm = lambda dt: timezone.localtime(dt).strftime("%Y-%m-%d %H:%M") if dt else "-"
+          fields = ("equipment_id", "code", "name", "status", "weekly_view_time_from", "weekly_view_time_to",
+                    "parent_equipment", "slot_duration_minutes")
+
+          print(f"now_local={timezone.localtime().isoformat()} TZ={settings.TIME_ZONE}")
+          print(f"go_live={go_live} requested={req_start}..{req_end} effective={period.start}..{period.end} "
+                f"empty={period.is_empty}")
+          print(f"UTILIZATION_WEEKEND_DAYS={getattr(settings, 'UTILIZATION_WEEKEND_DAYS', (5, 6))} (0=Mon..6=Sun) "
+                f"UTILIZATION_DEFAULT_VIEW_WINDOW={getattr(settings, 'UTILIZATION_DEFAULT_VIEW_WINDOW', None)}")
+          print(f"available statuses={sorted(util.AVAILABLE_SLOT_STATUSES)} booked status=BOOKED")
+
+          needle = (os.environ.get("UTIL_EQUIPMENT") or "PPMS").strip()
+          matches = list(Equipment.objects.filter(code__iexact=needle).only(*fields)) or list(
+              Equipment.objects.filter(Q(code__icontains=needle) | Q(name__icontains=needle)).only(*fields)
+              .order_by("equipment_id")
+          )
+          print(f"matches={len(matches)}")
+
+          with transaction.atomic():
+              print("\nholidays in period:")
+              for h in Holiday.objects.filter(date__gte=period.start, date__lte=period.end).order_by("date"):
+                  print(f"  {h.date} {h.date.strftime('%a')} active={h.is_active} reason={h.reason or ''}")
+              calendar = util.WorkingCalendar.for_range(period.start, period.end + timedelta(days=7))
+              for eq in matches:
+                  parent = Equipment.objects.filter(pk=eq.parent_equipment_id).only(*fields).first() if eq.parent_equipment_id else None
+                  family = [eq] + list(Equipment.objects.filter(parent_equipment_id=eq.pk).only(*fields).order_by("equipment_id"))
+                  print(f"\n#### equipment id={eq.pk} code={eq.code} status={eq.status} parent={eq.parent_equipment_id} "
+                        f"weekly_view_from={eq.weekly_view_time_from} weekly_view_to={eq.weekly_view_time_to} "
+                        f"window_used={util.view_window_for(eq, parent).label()} slot_duration_minutes={eq.slot_duration_minutes}")
+                  for member in family:
+                      if member is not eq:
+                          print(f"  child mode id={member.pk} code={member.code} status={member.status} "
+                                f"window_used={util.view_window_for(member, eq).label()}")
+                      for m in SlotMaster.objects.filter(equipment=member).order_by("slot_number"):
+                          print(f"  template eq={member.code} master={m.pk} #{m.slot_number} {m.open_time}-{m.close_time} active={m.is_active}")
+                  if period.is_empty:
+                      print("  period is before portal go-live -> N/A")
+                      continue
+                  windows = {m.pk: util.view_window_for(m, eq if m is not eq else parent) for m in family}
+                  slots = (
+                      DailySlot.objects.filter(date__gte=period.start, date__lte=period.end,
+                                               slot_master__equipment_id__in=list(windows))
+                      .order_by("start_datetime", "pk")
+                      .values("pk", "date", "start_datetime", "end_datetime", "status", "booking_id",
+                              "slot_master__equipment_id", "booking__virtual_booking_id", "booking__status",
+                              "booking__user__is_test_account")
+                  )
+                  tally = util.UtilizationTally()
+                  daily = defaultdict(lambda: [0.0, 0.0])
+                  print("  slot | eq | date | day | start-end (IST) | raw_h | status | booking pk / code / booking status | "
+                        "test | working_day | window_h(working) | window_h(off) | counted_avail_h | counted_booked_h")
+                  for s in slots:
+                      eid, st, en, day = s["slot_master__equipment_id"], s["start_datetime"], s["end_datetime"], s["date"]
+                      raw = util.slot_hours(st, en)
+                      working, off = util.window_hours(st, en, windows[eid], calendar)
+                      is_test = bool(s["booking__user__is_test_account"])
+                      before = tally.available_hours, tally.booked_hours
+                      tally.add(s["status"], st, en, windows[eid], calendar, test_booking=is_test)
+                      avail_h, booked_h = tally.available_hours - before[0], tally.booked_hours - before[1]
+                      daily[day][0] += avail_h
+                      daily[day][1] += booked_h
+                      bk = (f"{s['booking_id']} / {s['booking__virtual_booking_id']} / {s['booking__status']}"
+                            if s["booking_id"] else "-")
+                      print(f"  {s['pk']} | {eid} | {day} | {day.strftime('%a')} | {hm(st)}-{hm(en) if hm(en)[:10] != hm(st)[:10] else hm(en)[11:]} | "
+                            f"{raw:.4f} | {s['status']} | {bk} | {is_test} | {calendar.is_working_day(day)} | "
+                            f"{working:.4f} | {off:.4f} | {avail_h:.4f} | {booked_h:.4f}")
+                  print("  daily: date | day | working_day | available_h | booked_h")
+                  d = period.start
+                  while d <= period.end:
+                      a, b = daily.get(d, (0.0, 0.0))
+                      reason = "" if calendar.is_working_day(d) else (" holiday" if d in calendar.holidays else " weekend")
+                      print(f"  {d} | {d.strftime('%a')} | {calendar.is_working_day(d)}{reason} | {a:.4f} | {b:.4f}")
+                      d += timedelta(days=1)
+                  f = tally.factor
+                  print(f"  TOTAL available_h={tally.available_hours:.4f} booked_h={tally.booked_hours:.4f} "
+                        f"booked_outside_window_h={tally.booked_hours_outside_window:.4f} "
+                        f"factor={'N/A' if f is None else f'{f * 100:.2f}%'} "
+                        f"(old all-slot: {tally.all_slot_booked_hours:.4f}/{tally.all_slot_hours:.4f})")
+              transaction.set_rollback(True)
+          PY
+              docker exec "$CID" rm -f /tmp/utilization_probe.py
+              exit 0
+            fi
+          done
+          echo "No production checkout found" >&2
+          exit 1
