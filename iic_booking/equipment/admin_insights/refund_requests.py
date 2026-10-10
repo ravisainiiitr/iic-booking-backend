@@ -426,7 +426,7 @@ def build_refund_request_insights(user, params) -> dict[str, Any]:
     offset, size = page_params(params)
     page = ordered[offset : offset + size]
     txns = attach_wallet_transactions(page, with_owner=is_main_admin(user))
-    return {
+    payload = {
         **scope_payload(scope),
         "generated_at": now.isoformat(),
         "date_from": start.isoformat(),
@@ -437,6 +437,19 @@ def build_refund_request_insights(user, params) -> dict[str, Any]:
         "results": [serialize(r, txns.get(r["key"])) for r in page],
         **page_meta(len(rows), offset, size),
     }
+    if params.get("with_options"):
+        from .cancellations import _options
+
+        base = _options(user, scope)
+        payload["options"] = {
+            "equipment": base["equipment"],
+            "categories": base["categories"],
+            "departments": base["departments"],
+            "sources": [{"value": k, "label": v} for k, v in SOURCES.items()],
+            "statuses": [{"value": k, "label": v} for k, v in STATUSES.items()],
+            "windows": [{"value": k, "label": v} for k, v in WINDOW_LABELS.items() if k != "unknown"],
+        }
+    return payload
 
 
 def refund_request_card(user, start, end) -> dict[str, Any]:
