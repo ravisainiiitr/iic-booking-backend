@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('equipment', '0244_equipment_flash_messages'),
+        ('equipment', '0245_laser_cut_time_estimate'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
