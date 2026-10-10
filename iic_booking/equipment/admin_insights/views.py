@@ -43,3 +43,41 @@ def admin_insights_cancellations(request):
     from .cancellations import build_cancellation_insights
 
     return _respond(request, build_cancellation_insights)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def admin_insights_refund_requests(request):
+    """GET /api/admin/insights/refund-requests/ — users cancelling their own bookings for a refund before the slot."""
+    from .refund_requests import build_refund_request_insights
+
+    return _respond(request, build_refund_request_insights)
+
+
+def _card_response(request, build):
+    from .user_card import CardError
+
+    if not can_view_admin_dashboard(request.user):
+        return Response({"error": FORBIDDEN}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        return Response(build(), status=status.HTTP_200_OK)
+    except CardError as exc:
+        return Response({"error": exc.message}, status=exc.status)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def admin_insights_user_card(request, user_id: int):
+    """GET /api/admin/insights/users/<id>/ — the user's ID card, booking totals and recent bookings."""
+    from .user_card import build_user_card
+
+    return _card_response(request, lambda: build_user_card(request.user, user_id, request))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def admin_insights_wallet_bookings(request, user_id: int):
+    """GET /api/admin/insights/users/<id>/wallet-bookings/ — bookings by every user linked to the user's wallet."""
+    from .user_card import build_wallet_bookings
+
+    return _card_response(request, lambda: build_wallet_bookings(request.user, user_id, request.query_params))

@@ -486,6 +486,9 @@ def cancellation_card(user, now) -> dict[str, Any]:
     previous_total = base.filter(cancelled_at__gte=p0, cancelled_at__lt=p1).count()
     created = _bookings_created(user, {}, start, today)
     total = row["total"] or 0
+    from .refund_requests import refund_request_card
+
+    refunds = refund_request_card(user, start, today)
     return {
         "days": CARD_DAYS,
         "total": total,
@@ -494,4 +497,6 @@ def cancellation_card(user, now) -> dict[str, Any]:
         "refunded": money(row["refund"]),
         "bookings_created": created,
         "rate": share(total, created),
+        **refunds,
+        "refund_rate": share(refunds["refund_requests"], created),
     }

@@ -507,7 +507,10 @@ from iic_booking.equipment.admin_dashboard_summary import admin_dashboard_summar
 from iic_booking.equipment.admin_insights.views import (
     admin_insights_cancellations,
     admin_insights_equipment,
+    admin_insights_refund_requests,
+    admin_insights_user_card,
     admin_insights_users,
+    admin_insights_wallet_bookings,
 )
 from iic_booking.equipment.pending_actions import pending_actions
 from iic_booking.equipment.publication_claim_views import (
@@ -1856,6 +1859,15 @@ urlpatterns = router.urls + [
     path("admin/insights/equipment/", admin_insights_equipment, name="admin-insights-equipment"),
     path("admin/insights/users/", admin_insights_users, name="admin-insights-users"),
     path("admin/insights/cancellations/", admin_insights_cancellations, name="admin-insights-cancellations"),
+    path(
+        "admin/insights/refund-requests/", admin_insights_refund_requests, name="admin-insights-refund-requests"
+    ),
+    path("admin/insights/users/<int:user_id>/", admin_insights_user_card, name="admin-insights-user-card"),
+    path(
+        "admin/insights/users/<int:user_id>/wallet-bookings/",
+        admin_insights_wallet_bookings,
+        name="admin-insights-wallet-bookings",
+    ),
     path("notifications/<int:notification_id>/", delete_notification, name="notification-delete"),
     
     # Notice Board endpoints

@@ -243,3 +243,141 @@ def cancellations(request):
         request, title="Cancellations", slug="cancellations", tables=[table, *breakdowns],
         filters=filters, kpis=kpis, landscape=True,
     )
+
+
+def _flatten_booking_row(row) -> None:
+    booking = row.get("booking") or {}
+    user = row.get("user") or {}
+    equipment = row.get("equipment") or {}
+    row["booking_display_id"] = booking.get("display_id") or row.get("display_id") or ""
+    row["booking_pk"] = booking.get("pk") or row.get("pk")
+    row["user_name"] = user.get("name") or ""
+    row["equipment_id"] = equipment.get("id")
+    row["equipment_label"] = (
+        f"{equipment.get('name')} ({equipment.get('code')})" if equipment.get("code") else equipment.get("name") or ""
+    )
+
+
+@register("admin-refund-requests")
+def refund_requests(request):
+    rows, first = collect_rows(request, "admin-insights-refund-requests", page_param="page", limit_param="page_size")
+    data = first or {}
+    summary = data.get("summary") or {}
+    for row in rows:
+        _flatten_booking_row(row)
+        user = row.get("user") or {}
+        txn = row.get("wallet_transaction") or {}
+        row["user_category"] = user.get("category_display") or ""
+        row["user_department"] = user.get("department") or ""
+        row["lead_hours"] = round(row["lead_minutes"] / 60, 1) if row.get("lead_minutes") is not None else None
+        row["txn"] = f"#{txn['id']} on {(txn.get('created_at') or '')[:10]}" if txn.get("id") else ""
+    columns = [
+        SNO,
+        C("booking_display_id", "Booking ID", width=1.3,
+          link=booking_link(request, display_key="booking_display_id", pk_key="booking_pk")),
+        C("user_name", "User", width=1.4, align="left"),
+        C("user_category", "Category", width=1.0),
+        C("user_department", "Department / organisation", width=1.3),
+        C("equipment_label", "Equipment", width=1.6, link=_equipment_path(), align="left"),
+        C("source_display", "Type", width=1.1),
+        C("requested_at", "Requested at (IST)", spec.DATETIME, 1.1),
+        C("slot_start", "Slot (IST)", spec.DATETIME, 1.1),
+        C("lead_hours", "Lead time (h)", spec.NUMBER, 0.7),
+        C("window_hours", "Window (h)", spec.INTEGER, 0.6),
+        C("within_window", "Within window", spec.BOOL, 0.6),
+        C("status_display", "Status", width=0.9),
+        C("refund", "Refund (₹)", spec.CURRENCY, 0.8, total=True),
+        C("txn", "Wallet transaction", width=1.1),
+        C("note", "Notes", width=1.6, align="left"),
+    ]
+    table = spec.Table("refund_requests", "Refund requests", columns, numbered(rows), sheet_name="Refund requests")
+    repeaters = []
+    for item in summary.get("repeaters") or []:
+        user = item.get("user") or {}
+        repeaters.append({**item, "name": user.get("name") or "", "category": user.get("category_display") or "",
+                          "department": user.get("department") or ""})
+    repeat_table = spec.Table(
+        "repeaters", "Repeat refunders",
+        [SNO, C("name", "User", width=1.6, align="left"), C("category", "Category", width=1.0),
+         C("department", "Department / organisation", width=1.4),
+         C("count", "Requests", spec.INTEGER, 0.7, total=True),
+         C("within_window", "Within window", spec.INTEGER, 0.7, total=True),
+         C("refund_total", "Refunded (₹)", spec.CURRENCY, 0.8, total=True),
+         C("last_requested_at", "Last request (IST)", spec.DATETIME, 1.1)],
+        numbered(repeaters), sheet_name="Repeat refunders",
+    )
+    kpis = [
+        spec.Kpi("Refund requests", summary.get("total", len(rows)), spec.INTEGER),
+        spec.Kpi("Of bookings created", summary.get("rate") or 0, spec.PERCENT,
+                 f"{summary.get('bookings_created', 0)} bookings created"),
+        spec.Kpi("Users who booked then refunded in the window", summary.get("unique_users_within_window", 0),
+                 spec.INTEGER),
+        spec.Kpi("Repeat refunders (2+)", summary.get("repeat_refunders", 0), spec.INTEGER),
+        spec.Kpi("Refunded", summary.get("refund_total", 0), spec.CURRENCY),
+    ]
+    filters = [("Dates", f"{data.get('date_from', '')} to {data.get('date_to', '')}")]
+    filters += filter_pairs(request, [
+        ("source", "Type", "text"),
+        ("status", "Status", "text"),
+        ("window", "Window", {"WITHIN": "Within the window", "OUTSIDE": "Inside the cut-off"}),
+        ("equipment", "Equipment", "equipment"),
+        ("department", "Department", "department"),
+        ("category", "User category", "text"),
+        ("user", "User", "user"),
+        ("search", "Search", "text"),
+    ])
+    return make_document(
+        request, title="Refund requests", slug="refund-requests", tables=[table, repeat_table],
+        filters=filters, kpis=kpis, landscape=True,
+    )
+
+
+@register("admin-wallet-linked-bookings")
+def wallet_linked_bookings(request):
+    owner = str(request.query_params.get("owner") or "").strip()
+    rows, first = collect_rows(
+        request, "admin-insights-wallet-bookings", page_param="page", limit_param="page_size",
+        kwargs={"user_id": int(owner) if owner.isdigit() else 0},
+    )
+    data = first or {}
+    summary = data.get("summary") or {}
+    for row in rows:
+        _flatten_booking_row(row)
+    columns = [
+        SNO,
+        C("booking_display_id", "Booking ID", width=1.3,
+          link=booking_link(request, display_key="booking_display_id", pk_key="booking_pk")),
+        C("user_name", "Booked by", width=1.5, align="left"),
+        C("equipment_label", "Equipment", width=1.7, link=_equipment_path(), align="left"),
+        C("slot_start", "Slot (IST)", spec.DATETIME, 1.1),
+        C("created_at", "Booked on (IST)", spec.DATETIME, 1.1),
+        C("status_display", "Status", width=1.0),
+        C("charge", "Charge (₹)", spec.CURRENCY, 0.8, total=True),
+    ]
+    table = spec.Table("bookings", "Bookings by linked users", columns, numbered(rows), sheet_name="Bookings")
+    members = spec.Table(
+        "by_member", "Totals per linked user",
+        [SNO, C("name", "User", width=1.8, align="left"), C("email", "Email", width=1.8),
+         C("bookings", "Bookings", spec.INTEGER, 0.7, total=True),
+         C("cancelled", "Cancelled / refunded", spec.INTEGER, 0.8, total=True),
+         C("charged", "Charged (₹)", spec.CURRENCY, 0.9, total=True)],
+        numbered([dict(m) for m in summary.get("by_member") or []]), sheet_name="Per linked user",
+    )
+    kpis = [
+        spec.Kpi("Linked users", summary.get("linked_users", 0), spec.INTEGER),
+        spec.Kpi("Bookings", summary.get("bookings", 0), spec.INTEGER),
+        spec.Kpi("Charged", summary.get("charged", 0), spec.CURRENCY),
+    ]
+    owner_name = (data.get("owner") or {}).get("name") or ""
+    filters = [("Wallet owner", owner_name)] + filter_pairs(request, [
+        ("member", "Linked user", "user"),
+        ("equipment", "Equipment", "equipment"),
+        ("status", "Status", "text"),
+        ("date_from", "Booked from", "date"),
+        ("date_to", "Booked to", "date"),
+        ("search", "Search", "text"),
+    ])
+    return make_document(
+        request, title=f"Bookings by linked users — {owner_name}".strip(" —"), slug="wallet-linked-bookings",
+        tables=[table, members], filters=filters, kpis=kpis, landscape=True,
+    )

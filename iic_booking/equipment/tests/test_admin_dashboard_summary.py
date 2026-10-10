@@ -50,6 +50,9 @@ def _book(f, owner, equipment, start, *, status=BookingStatus.BOOKED, total_char
 @pytest.fixture
 def two_departments():
     """Department A: 2 equipment (1 under maintenance), 2 bookings; department B: 1 equipment, 1 booking."""
+    from iic_booking.equipment.models import Equipment
+
+    Equipment.objects.all().delete()  # migration 0148 seeds a sample 3D printer
     a, b = _EgsFactory(), _EgsFactory()
     eq_a1 = a.equipment()
     eq_a2 = a.equipment(status="REPAIR")
@@ -213,7 +216,7 @@ def test_query_count_does_not_grow_with_bookings(two_departments, django_assert_
     for days in range(1, 6):
         _book(f, two_departments["students"][0], two_departments["eq"][0], f.future(days=days))
     admin = _admin()
-    with django_assert_max_num_queries(20):
+    with django_assert_max_num_queries(24):
         build_admin_dashboard_summary(admin)
 
 

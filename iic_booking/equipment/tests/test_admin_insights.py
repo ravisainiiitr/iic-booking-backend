@@ -80,6 +80,9 @@ def test_anonymous_is_rejected(url):
 
 @pytest.fixture
 def labs():
+    from iic_booking.equipment.models import Equipment
+
+    Equipment.objects.all().delete()  # migration 0148 seeds a sample 3D printer
     a, b = _EgsFactory(), _EgsFactory()
     eq = {
         "active": a.equipment(),

@@ -1,0 +1,32 @@
+# Fill the cancellation log (BookingCancellation) from booking history on production.
+# Dry run by default; type APPLY to write. Idempotent: bookings that already have a row are skipped.
+# Prints counts only (no names, emails or secrets).
+name: Backfill Booking Cancellations
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type APPLY to write rows (anything else = dry run)"
+        required: false
+        default: ""
+
+concurrency:
+  group: backfill-booking-cancellations
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Backfill
+        env:
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          echo "django_container=$CID"
+          test -n "$CID"
+          if [ "${CONFIRM:-}" = "APPLY" ]; then FLAG="--apply"; else FLAG=""; fi
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python manage.py backfill_booking_cancellations $FLAG
