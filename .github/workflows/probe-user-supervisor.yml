@@ -56,4 +56,14 @@ jobs:
                         "portal_user": bool(r.get("id")), "has_department": bool(r.get("department"))})
               except ImportError:
                   print("resolved= (resolver not deployed yet)")
+
+          try:
+              from iic_booking.equipment.admin_insights.supervisors import resolve_supervisors
+              real = get_user_model().objects.filter(is_test_account=False, is_active=True).exclude(user_type="faculty")
+              students = list(real.filter(user_type="student").values_list("pk", flat=True))
+              found = resolve_supervisors(students)
+              print("active_students=", len(students), "with_profile_fk_before=", real.filter(user_type="student", supervisor__isnull=False).count())
+              print("active_students_resolved=", len(found), "by_source=", dict(Counter(s["source"] for s in found.values())))
+          except ImportError:
+              pass
           PY
