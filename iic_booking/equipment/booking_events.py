@@ -351,6 +351,7 @@ def create_booking_event(
     metadata: Optional[Dict[str, Any]] = None,
     send_notification: bool = True,
     system_actor: bool = False,
+    cancellation: Optional[Dict[str, Any]] = None,
 ) -> BookingEvent:
     """
     Create a booking event and optionally send notifications.
@@ -365,6 +366,8 @@ def create_booking_event(
         metadata: Additional metadata dictionary
         send_notification: Whether to send email and push notifications
         system_actor: If True and created_by is None, store null created_by (automated/system event).
+        cancellation: Hints for the cancellation log when the booking ends cancelled / refunded
+            (``actor``, ``system``, ``reason``, ``note``, ``refund_amount``, ``released_slot_ids``).
         
     Returns:
         BookingEvent instance
@@ -386,6 +389,10 @@ def create_booking_event(
         created_by=created_by,
         metadata=event_metadata,
     )
+
+    from .booking_cancellation_log import record_from_event
+
+    record_from_event(event, cancellation)
     
     # Send notifications after response-critical DB work: queue on commit so email/push
     # (SMTP, FCM, etc.) do not block the booking API.

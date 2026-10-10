@@ -504,6 +504,11 @@ from iic_booking.equipment.equipment_addition_requests import (
 from iic_booking.equipment.completion_reminders import bookings_awaiting_completion_view
 from iic_booking.equipment.results_deadline import results_overdue_view
 from iic_booking.equipment.admin_dashboard_summary import admin_dashboard_summary
+from iic_booking.equipment.admin_insights.views import (
+    admin_insights_cancellations,
+    admin_insights_equipment,
+    admin_insights_users,
+)
 from iic_booking.equipment.pending_actions import pending_actions
 from iic_booking.equipment.publication_claim_views import (
     my_publication_claims,
@@ -1846,6 +1851,9 @@ urlpatterns = router.urls + [
     path("notifications/mark-all-read/", mark_all_notifications_as_read, name="notifications-mark-all-read"),
     path("notifications/pending-actions/", pending_actions, name="notifications-pending-actions"),
     path("admin/dashboard-summary/", admin_dashboard_summary, name="admin-dashboard-summary"),
+    path("admin/insights/equipment/", admin_insights_equipment, name="admin-insights-equipment"),
+    path("admin/insights/users/", admin_insights_users, name="admin-insights-users"),
+    path("admin/insights/cancellations/", admin_insights_cancellations, name="admin-insights-cancellations"),
     path("notifications/<int:notification_id>/", delete_notification, name="notification-delete"),
     
     # Notice Board endpoints

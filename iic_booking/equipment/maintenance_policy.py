@@ -749,7 +749,7 @@ def _upcoming_slots(equipment):
 
 def auto_cancel_expired_maintenance_bookings() -> int:
     """Auto-cancel disruption bookings past decision deadline with full refund (default to refund if no action)."""
-    from .models import Booking, BookingDisruptionKind, BookingStatus, BookingEventType
+    from .models import Booking, BookingDisruptionKind, BookingStatus, BookingEventType, CancellationReason
     from .booking_events import create_booking_event
     from iic_booking.users.repositories.wallet_repository import WalletRepository
     from iic_booking.equipment.api_views import (
@@ -772,6 +772,7 @@ def auto_cancel_expired_maintenance_bookings() -> int:
             released_slot_ids = list(booking.daily_slots.values_list("id", flat=True))
             with transaction.atomic():
                 previous_status = booking.status
+                refund_amount = Decimal("0.00")
                 slot_status = effective_slot_status_when_freeing_disruption_booking(booking)
                 booking.daily_slots.update(
                     booking=None,
@@ -832,6 +833,12 @@ def auto_cancel_expired_maintenance_bookings() -> int:
                     comment="Auto-cancelled: maintenance disruption policy deadline.",
                     created_by=None,
                     send_notification=False,
+                    cancellation={
+                        "system": True,
+                        "reason": CancellationReason.DISRUPTION_DEADLINE,
+                        "refund_amount": refund_amount,
+                        "released_slot_ids": released_slot_ids,
+                    },
                 )
             try:
                 from .waitlist import notify_waitlist_slots_available
