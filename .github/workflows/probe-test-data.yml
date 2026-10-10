@@ -51,6 +51,17 @@ jobs:
               n = Equipment.objects.filter(category_id=c["id"]).count()
               flag = "?" if word.search(c["name"] or "") else " "
               print(f"{flag} {c['id']} | {c['name']} | {n} equipment")
+          print("\n== equipment in small or test-like categories (id | code | name | category | test-only | slots | real bookings)")
+          from iic_booking.equipment.models import Booking, DailySlot
+          small = [c["id"] for c in EquipmentCategory.objects.values("id", "name")
+                   if word.search(c["name"] or "") or re.search(r"concurrency|sample", c["name"] or "", re.I)]
+          for e in Equipment.objects.filter(category_id__in=small).order_by("category_id", "equipment_id").values(
+              "equipment_id", "code", "name", "category__name", "visible_to_test_accounts_only"
+          ):
+              slots = DailySlot.objects.filter(slot_master__equipment_id=e["equipment_id"]).count()
+              real = Booking.objects.filter(equipment_id=e["equipment_id"], user__is_test_account=False).count()
+              print(f"{e['equipment_id']} | {e['code']} | {e['name']} | {e['category__name']} | "
+                    f"{e['visible_to_test_accounts_only']} | {slots} | {real}")
           print("\n== test accounts by user type")
           for row in sorted(Counter(User.objects.filter(is_test_account=True).values_list("user_type", flat=True)).items(), key=str):
               print(f"{row[0]}: {row[1]}")
