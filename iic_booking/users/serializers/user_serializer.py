@@ -109,8 +109,9 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer[User]):
             "oic_enable_ta_duty_assignments",
             "oic_enable_leave_management",
             "oic_enable_reward_config",
+            "is_test_account",
         ]
-        read_only_fields = ["id", "email"]
+        read_only_fields = ["id", "email", "is_test_account"]
 
     def validate(self, attrs):
         # user_type_alias only valid when user_type is STUDENT or INDIVIDUAL_STUDENT
@@ -357,10 +358,12 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "oic_enable_ta_duty_assignments",
             "oic_enable_leave_management",
             "oic_enable_reward_config",
+            "is_test_account",
         ]
         read_only_fields = [
             "id",
             "email",
+            "is_test_account",
             "gender_from_channel_i",
             "needs_mobile_number",
             "department_code",

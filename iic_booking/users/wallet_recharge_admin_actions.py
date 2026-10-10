@@ -187,6 +187,10 @@ def reminder_blocked_reason(req: WalletRechargeRequest) -> str:
         and not req.fund_receipt_verified
         and not (req.cashbook_receipt_no or "").strip()
     ):
+        from iic_booking.users.test_accounts import recharge_request_is_test
+
+        if recharge_request_is_test(req):
+            return "This request is from a test account (not counted in revenue); no SRIC cash-book entry is expected."
         return ""
     return "Reminders can be sent only for pending requests, or approved requests whose funds are not yet received."
 

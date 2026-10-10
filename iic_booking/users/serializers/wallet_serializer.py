@@ -575,11 +575,13 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
     delete_blocked_reason = serializers.SerializerMethodField()
     sric_reminder_last_sent_by_name = serializers.SerializerMethodField()
     sric_reminder_blocked_reason = serializers.SerializerMethodField()
+    is_test_account = serializers.SerializerMethodField()
     audit_logs = WalletRechargeRequestAuditLogSerializer(many=True, read_only=True)
     
     class Meta:
         model = WalletRechargeRequest
         fields = [
+            'is_test_account',
             'is_deleted',
             'deleted_at',
             'deleted_by_name',
@@ -658,6 +660,7 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             'audit_logs',
         ]
         read_only_fields = [
+            'is_test_account',
             'is_deleted',
             'deleted_at',
             'deletion_reason',
@@ -877,6 +880,11 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
         from iic_booking.users.wallet_recharge_admin_actions import reminder_blocked_reason
 
         return reminder_blocked_reason(obj)
+
+    def get_is_test_account(self, obj):
+        from iic_booking.users.test_accounts import recharge_request_is_test
+
+        return recharge_request_is_test(obj)
 
     def get_cashbook_entry(self, obj):
         if not obj.cashbook_parse_entry_id:

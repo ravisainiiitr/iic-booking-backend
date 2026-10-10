@@ -70,7 +70,7 @@ def report_bookings_scope(user) -> tuple[QuerySet, str]:
     from iic_booking.equipment.reports import get_equipment_ids_managed_by_oic
     from iic_booking.users.models.user_type import UserType
     from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
-    from iic_booking.users.test_accounts import exclude_test_bookings, is_test_user
+    from iic_booking.users.test_accounts import exclude_test_bookings, exclude_test_revenue_bookings, is_test_user
 
     qs = Booking.objects.all()
     user_type = getattr(user, "user_type", None)
@@ -94,6 +94,7 @@ def report_bookings_scope(user) -> tuple[QuerySet, str]:
         # Test accounts still see their own activity; real users never see test bookings.
         if is_test_user(user):
             return qs, scope
+        return exclude_test_bookings(qs), scope
     elif user_type == UserType.MANAGER:
         ids = get_equipment_ids_managed_by_oic(user.id)
         qs = qs.filter(equipment_id__in=ids) if ids else qs.none()
@@ -105,7 +106,8 @@ def report_bookings_scope(user) -> tuple[QuerySet, str]:
     else:
         scope = SCOPE_INSTITUTE
 
-    return exclude_test_bookings(qs), scope
+    # Staff scopes report revenue: also leave out bookings paid from a test account's wallet.
+    return exclude_test_revenue_bookings(qs), scope
 
 
 def status_counts_for(qs: QuerySet) -> dict[str, int]:

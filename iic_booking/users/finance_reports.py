@@ -26,6 +26,7 @@ from iic_booking.users.models.wallet import (
     WalletRechargeRequest,
     WalletRechargeRequestStatus,
 )
+from iic_booking.users.test_accounts import exclude_test_recharge_requests, exclude_test_revenue_bookings
 
 # Recognised revenue = charges still held (same "charged" definition as the Reports page), so
 # bookings in progress / processing / not utilised count and fully refunded ones do not.
@@ -69,12 +70,7 @@ def _department_scoped_bookings_qs(department_id: int):
     qs = Booking.objects.filter(
         Q(equipment__internal_department_id=department_id) | Q(settlement_department_id=department_id)
     )
-    try:
-        from iic_booking.users.test_accounts import exclude_test_bookings
-
-        qs = exclude_test_bookings(qs)
-    except ImportError:
-        pass
+    qs = exclude_test_revenue_bookings(qs)
     return qs.annotate(effective_date=Coalesce("payment_settled_at", "completed_at", "created_at"))
 
 
@@ -286,7 +282,9 @@ def build_finance_report(*, user: Any, date_from: date, date_to: date) -> dict[s
     )
 
     # Wallet recharges scoped to the department, bucketed by status within the date range.
-    recharge_qs = WalletRechargeRequest.objects.filter(department_id=department_id, is_deleted=False)
+    recharge_qs = exclude_test_recharge_requests(
+        WalletRechargeRequest.objects.filter(department_id=department_id, is_deleted=False)
+    )
 
     def _responded_in_range(status_value: str):
         return recharge_qs.filter(status=status_value).filter(
@@ -327,7 +325,9 @@ def build_finance_report(*, user: Any, date_from: date, date_to: date) -> dict[s
                 status=PaymentGatewayStatus.SUCCESS,
                 created_at__date__gte=date_from,
                 created_at__date__lte=date_to,
-            ).aggregate(total=Sum("amount"))["total"]
+            )
+            .exclude(user__is_test_account=True)
+            .aggregate(total=Sum("amount"))["total"]
         )
     except Exception:
         online_payments = Decimal("0.00")
@@ -344,7 +344,9 @@ def build_finance_report(*, user: Any, date_from: date, date_to: date) -> dict[s
                 status=PaymentOrderStatus.PAID,
                 created_at__date__gte=date_from,
                 created_at__date__lte=date_to,
-            ).aggregate(total=Sum("base_amount"))["total"]
+            )
+            .exclude(user__is_test_account=True)
+            .aggregate(total=Sum("base_amount"))["total"]
         )
         online_payments = online_payments + razorpay_online
         razorpay_pending_settlements = _dec(
