@@ -1,0 +1,86 @@
+# Probe: where production cancellations and user refund requests live, and what the dashboard card counts.
+# Read-only; prints counts and amounts only (no names, emails or secrets).
+name: Probe Cancellation Sources
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Cancellation and refund counts
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          echo "django_container=$CID"
+          test -n "$CID"
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter
+          from datetime import timedelta
+          from django.db import connection
+          from django.db.models import Count, Sum, Q
+          from django.utils import timezone
+          from iic_booking.equipment.models import (
+              Booking, BookingEvent, BookingCancellationRequest, Equipment,
+          )
+          from iic_booking.users.models.wallet import SubWalletTransaction
+
+          now = timezone.now()
+          since = now - timedelta(days=30)
+          print(f"now={now.isoformat()} since={since.isoformat()}")
+
+          with connection.cursor() as c:
+              c.execute("SELECT name FROM django_migrations WHERE app='equipment' AND name LIKE '024%%' ORDER BY name")
+              print("equipment_migrations_024x=", [r[0] for r in c.fetchall()])
+
+          try:
+              from iic_booking.equipment.models import BookingCancellation
+              bc = BookingCancellation.objects.all()
+              print("booking_cancellation_total=", bc.count())
+              print("booking_cancellation_by_quality=", dict(Counter(bc.values_list("data_quality", flat=True))))
+              print("booking_cancellation_last30_by_reason=", dict(Counter(bc.filter(cancelled_at__gte=since).values_list("reason", flat=True))))
+          except Exception as exc:
+              print("booking_cancellation_error=", type(exc).__name__)
+
+          real = Booking.objects.filter(user__is_test_account=False)
+          tracked = ["CANCELLED", "REFUNDED", "UNDER_MAINTENANCE", "ABSENT", "OTHER_DISRUPTION", "BOOKING_NOT_UTILIZED"]
+          print("bookings_all_by_status=", dict(Counter(real.values_list("status", flat=True))))
+          print("bookings_tracked_updated_last30=", dict(Counter(real.filter(status__in=tracked, updated_at__gte=since).values_list("status", flat=True))))
+          print("bookings_created_last30=", real.filter(created_at__gte=since).count())
+
+          ev = BookingEvent.objects.filter(booking__user__is_test_account=False)
+          ev30 = ev.filter(created_at__gte=since)
+          print("events_last30_into_tracked=", dict(Counter(ev30.filter(new_status__in=tracked).exclude(previous_status__in=tracked).values_list("new_status", flat=True))))
+          print("events_all_into_tracked=", ev.filter(new_status__in=tracked).exclude(previous_status__in=tracked).count())
+          print("events_last30_partial_cancel=", ev30.filter(comment__istartswith="Partial cancellation").count())
+          print("events_all_partial_cancel=", ev.filter(comment__istartswith="Partial cancellation").count())
+          print("events_last30_by_type=", dict(Counter(ev30.values_list("event_type", flat=True))))
+
+          cr = BookingCancellationRequest.objects.filter(booking__user__is_test_account=False)
+          print("cancel_requests_all_by_status=", dict(Counter(cr.values_list("status", flat=True))))
+          print("cancel_requests_last30_by_status=", dict(Counter(cr.filter(requested_at__gte=since).values_list("status", flat=True))))
+
+          tx = SubWalletTransaction.objects.all()
+          refunds = tx.filter(Q(description__istartswith="Refund for cancelled Booking") | Q(description__istartswith="Partial refund for cancelled"))
+          r30 = refunds.filter(created_at__gte=since)
+          print("wallet_refund_credits_all=", refunds.count(), "sum=", refunds.aggregate(s=Sum("amount"))["s"])
+          print("wallet_refund_credits_last30_full=", r30.filter(description__istartswith="Refund for cancelled").count())
+          print("wallet_refund_credits_last30_partial=", r30.filter(description__istartswith="Partial refund").count(), "sum=", r30.aggregate(s=Sum("amount"))["s"])
+          per_user = Counter(r30.exclude(related_user__isnull=True).values_list("related_user_id", flat=True))
+          print("wallet_refund_users_last30=", len(per_user), "repeat_users_ge2=", sum(1 for v in per_user.values() if v >= 2))
+          print("other_refund_like_descriptions_last30=", tx.filter(created_at__gte=since, description__icontains="refund").exclude(pk__in=refunds.values("pk")).count())
+
+          print("reschedule_hours_threshold_values=", dict(Counter(Equipment.objects.values_list("reschedule_hours_threshold", flat=True))))
+
+          try:
+              from django.contrib.auth import get_user_model
+              from iic_booking.equipment.admin_insights.cancellations import cancellation_card
+              admin = get_user_model().objects.filter(user_type__iexact="admin", is_active=True, is_test_account=False).order_by("pk").first()
+              print("card_for_main_admin=", cancellation_card(admin, now) if admin else "no admin")
+          except Exception as exc:
+              print("card_error=", type(exc).__name__, str(exc)[:200])
+          PY
