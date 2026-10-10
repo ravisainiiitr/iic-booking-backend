@@ -85,6 +85,26 @@ jobs:
               print("card_error=", type(exc).__name__, str(exc)[:200])
 
           try:
+              from iic_booking.equipment.models import BookingCancellation
+              ur = BookingCancellation.objects.filter(reason="USER_REQUEST")
+              print("user_request_by_test_account=", dict(Counter(ur.values_list("booking__user__is_test_account", flat=True))))
+              ur = ur.filter(booking__user__is_test_account=False)
+              print("user_request_real_by_actor=", dict(Counter(ur.values_list("actor_role", flat=True))))
+              print("user_request_real_by_booking_status=", dict(Counter(ur.values_list("booking__status", flat=True))))
+              print("user_request_real_slot_start_null=", ur.filter(slot_start__isnull=True).count())
+              leads = []
+              for cancelled_at, slot_start in ur.exclude(slot_start__isnull=True).values_list("cancelled_at", "slot_start"):
+                  m = (slot_start - cancelled_at).total_seconds() / 60
+                  leads.append("<=0" if m <= 0 else ("<48h" if m < 2880 else ">=48h"))
+              print("user_request_real_lead_buckets=", dict(Counter(leads)))
+              print("user_request_real_refund_gt0=", ur.filter(refund_amount__gt=0).count(), "users=", ur.values("booking__user_id").distinct().count())
+              tx_real = refunds.filter(created_at__gte=since, related_user__is_test_account=False)
+              pu = Counter(tx_real.values_list("related_user_id", flat=True))
+              print("wallet_refund_credits_last30_real=", tx_real.count(), "users=", len(pu), "repeat_users_ge2=", sum(1 for v in pu.values() if v >= 2))
+          except Exception as exc:
+              print("diag_error=", type(exc).__name__, str(exc)[:200])
+
+          try:
               from django.http import QueryDict
               from iic_booking.equipment.admin_insights.refund_requests import build_refund_request_insights
               for label, qs in (("last30", ""), ("last365", f"date_from={(timezone.localdate(now) - timedelta(days=364)).isoformat()}")):
