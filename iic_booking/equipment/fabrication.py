@@ -226,13 +226,34 @@ def print_estimate_breakdown(analysis) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def build_print_parts(analyses, job_quantity: int = 1) -> list[dict]:
+def _has_stored_file(file_field) -> bool:
+    """False once the file is gone (STL / DXF files are deleted when the booking is completed)."""
+    return bool(file_field and getattr(file_field, "name", ""))
+
+
+def _print_preview_fields(analysis, est: dict) -> dict:
+    """What the booking page's 3D preview draws besides the model: layer lines and the print timeline (one copy),
+    plus whether the STL is still stored."""
+    layer = (getattr(analysis, "slicer_settings", None) or {}).get("layer_height_mm") or est.get("layer_height_mm")
+    progress = est.get("progress")
+    return {
+        "file_available": _has_stored_file(getattr(analysis, "stl_file", None)),
+        "layer_height_mm": layer,
+        "print_progress": list(progress) if isinstance(progress, (list, tuple)) else None,
+        "print_minutes": est.get("total_min"),
+        "warmup_minutes": est.get("warmup_min"),
+    }
+
+
+def build_print_parts(analyses, job_quantity: int = 1, *, with_preview: bool = False) -> list[dict]:
     """Per-file totals. Estimates are multiplied by the file's copies and the job quantity; staff-entered
     actuals are the totals of all those copies already.
 
     ``weight_g_*`` is charged at the model material's rate (it includes supports printed in that material).
     Supports in a separate material are ``support_weight_g_*`` at ``support_material_code``'s rate; they stay
-    at the estimate when staff enter the actual weight (which is the model material)."""
+    at the estimate when staff enter the actual weight (which is the model material).
+
+    ``with_preview`` adds what the booking detail's 3D preview needs (not stored or emailed)."""
     job_quantity = max(1, int(job_quantity or 1))
     parts = []
     for a in analyses:
@@ -276,6 +297,8 @@ def build_print_parts(analyses, job_quantity: int = 1) -> list[dict]:
         orientation = (getattr(a, "slicer_settings", None) or {}).get("orientation")
         if orientation:
             part["orientation"] = list(orientation)
+        if with_preview:
+            part.update(_print_preview_fields(a, est))
         parts.append(part)
     return parts
 
@@ -350,8 +373,11 @@ def stored_print_input_values(booking, analyses) -> dict:
     return strip_fabrication_keys(merged)
 
 
-def build_laser_parts(analyses, job_quantity: int = 1) -> list[dict]:
-    """``quantity`` is the part's count in one job; the job is made ``job_quantity`` times."""
+def build_laser_parts(analyses, job_quantity: int = 1, *, with_preview: bool = False) -> list[dict]:
+    """``quantity`` is the part's count in one job; the job is made ``job_quantity`` times.
+
+    ``with_preview`` adds the sheet's material family and whether the DXF is still stored, for the booking
+    detail's 3D preview."""
     from .laser_cut_service import effective_own_sheet
 
     job_quantity = max(1, int(job_quantity or 1))
@@ -384,6 +410,9 @@ def build_laser_parts(analyses, job_quantity: int = 1) -> list[dict]:
                 "own_sheet_height_mm": own_sheet.as_dict()["height_mm"] if own_sheet else None,
             }
         )
+        if with_preview:
+            parts[-1]["material_family"] = m.material_family if m else None
+            parts[-1]["file_available"] = _has_stored_file(getattr(a, "dxf_file", None))
     return parts
 
 
@@ -507,14 +536,18 @@ def apply_fabrication_to_input_values(booking, input_values) -> dict:
     return merged
 
 
-def fabrication_parts_summary(booking) -> list[dict]:
-    """Display rows for booking detail, job sheet and emails."""
+def fabrication_parts_summary(booking, *, with_preview: bool = False) -> list[dict]:
+    """Display rows for booking detail, job sheet and emails (``with_preview``: booking detail's preview)."""
     equipment = getattr(booking, "equipment", None)
     profile = getattr(equipment, "profile_type", None)
     if profile == EquipmentProfileType.PRINT_3D:
-        return build_print_parts(active_print_analyses_for_booking(booking), booking_job_quantity(booking))
+        return build_print_parts(
+            active_print_analyses_for_booking(booking), booking_job_quantity(booking), with_preview=with_preview
+        )
     if profile == EquipmentProfileType.LASER_CUT_2D:
-        return build_laser_parts(active_laser_analyses_for_booking(booking), booking_job_quantity(booking))
+        return build_laser_parts(
+            active_laser_analyses_for_booking(booking), booking_job_quantity(booking), with_preview=with_preview
+        )
     return []
 
 

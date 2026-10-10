@@ -3817,7 +3817,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             return []
         from .fabrication import fabrication_parts_summary
 
-        return fabrication_parts_summary(obj)
+        return fabrication_parts_summary(obj, with_preview=True)
 
     def get_fabrication_file_changes(self, obj):
         if not self._is_fabrication(obj):
