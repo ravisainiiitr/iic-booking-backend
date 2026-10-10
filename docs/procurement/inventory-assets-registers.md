@@ -59,13 +59,40 @@ Branch `feature/inventory-procurement-assets` (backend + frontend). Extends the 
 * **Maintenance history**: `MaintenanceRecord` per equipment (kind, downtime start/end, cause, action, service
   provider, service / other cost, parts used = stock issues linked to the record, linked disruption event, AMC
   record, follow-up requests). Created from the *back to Operational* dialog or any time from the equipment page.
-* **Back-to-functional hook**: the existing resume dialog gains "Record maintenance & parts used" and the request
-  step gains *Fill from this equipment's inventory* (auto-suggested lines with stock) and request types
-  Repair / Service / AMC besides consumables / minor / major. The request is linked to both the disruption and the
+* **Back-to-functional hook**: the existing resume dialog gains *Record in maintenance history* (type, service
+  charges, other costs, warranty / AMC, remarks; downtime, cause and action are copied from the disruption; parts
+  from stock are added afterwards on the maintenance record) and the request step offers the equipment's linked
+  inventory items with stock on hand as one-click rows, and request types Repair / Service / AMC besides
+  consumables / minor / major. The request is linked to both the disruption and the
   maintenance record. *Raise requirement* is also on the equipment page for OIC / Lab In Charge any time.
 * **SLA ageing**: pending requests bucketed by days since entering the current stage (0–3, 4–7, 8–15, > 15).
 * **Exports** use the module's `table_response` (the shared table/export restyle adds S.No., centred cells);
   printable GFR-style register (PDF, grouped by page) and QR label sheets are separate renderers.
+
+## Frontend (React, `src/pages/procurement/`)
+
+| Page / component | Route / place | For |
+| --- | --- | --- |
+| Registers (`RegistersPage`) | `/procurement/registers`, `/registers/:id` | Register books; page chips, page/serial search, GFR print (PDF), CSV/XLSX export, QR labels per page |
+| Import registers (`RegisterImport`) | `/procurement/registers/import` | Template → upload → check (errors, warnings, duplicates) → import |
+| Assets (`AssetsPage`) | `/procurement/assets[/:id]` | Register filters, GFR fields, accessories, verification / maintenance / disposal history, edit register entry, QR label, condemn / dispose |
+| Scan / verify (`ScanPage`) | `/procurement/scan/<tag>` | Opened by the QR label; camera scan (BarcodeDetector) or typed tag / register page; mark verified |
+| Verification (`VerificationPage`) | `/procurement/verification[/:id]` | Drives, progress, pending / done lists with exports, close |
+| Maintenance (`MaintenancePage`) | `/procurement/maintenance` | History with filters and export, record / edit, parts from stock, *Raise requirement* |
+| Accounts (`AccountsPage`) | `/procurement/accounts` | Bills forwarded by Stores, days waiting |
+| Equipment items (`ItemLinksPanel`) | Consumables and Masters tabs | Item ↔ equipment links |
+| Request wizard / detail, record detail, settings, dashboard | existing pages | Inventory suggestions, Stores line edits + stock check, purchase mode, bill forwarding, Accounts / Lab In Charge roles, thresholds, ageing |
+| Disruption dialogs | `src/components/disruptions/` | Maintenance option, linked items in the requirement step |
+| Equipment profile | *Procurement & maintenance* panel | Assets, maintenance totals, open requirements, Raise requirement / Record maintenance |
+
+## Import template columns
+
+Required: Register Code, Register Type (MAJOR / MINOR / LIMITED_LIFE), Page No, Serial No, Description.
+Optional: Entry Date, Category Code, Quantity, Make, Model, Manufacturer Serial No, Asset Tag (blank = auto),
+Equipment Code, Parent Asset Tag (accessories), Laboratory Code, Location, Custodian Email, Supplier Name,
+Supplier GSTIN, PO Number, PO Date, Invoice Number, Invoice Date, Cost, Funding Source, Project Code, Financial Year,
+Warranty Until, AMC Until, Installation Date, Condition, Status, Remarks, Legacy Ref.
+Dates accept YYYY-MM-DD or DD-MM-YYYY. Duplicate key: (register, page, serial) in the file or already in the system.
 
 ## MVP scope delivered vs deferred
 
