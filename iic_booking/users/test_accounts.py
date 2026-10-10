@@ -137,6 +137,9 @@ def test_wallet_member_ids() -> QuerySet:
     ).values("student_id")
 
 
+test_wallet_member_ids.__test__ = False
+
+
 def exclude_test_revenue_bookings(qs: QuerySet) -> QuerySet:
     """Bookings that count as revenue: not by a test account and not paid from a test account's wallet."""
     return exclude_test_bookings(qs).exclude(user_id__in=test_wallet_member_ids())
