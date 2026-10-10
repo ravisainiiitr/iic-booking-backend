@@ -226,11 +226,18 @@ def print_estimate_breakdown(analysis) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _has_stored_file(file_field) -> bool:
+    """False once the file is gone (STL / DXF files are deleted when the booking is completed)."""
+    return bool(file_field and getattr(file_field, "name", ""))
+
+
 def _print_preview_fields(analysis, est: dict) -> dict:
-    """What the booking page's 3D preview draws besides the model: layer lines and the print timeline (one copy)."""
+    """What the booking page's 3D preview draws besides the model: layer lines and the print timeline (one copy),
+    plus whether the STL is still stored."""
     layer = (getattr(analysis, "slicer_settings", None) or {}).get("layer_height_mm") or est.get("layer_height_mm")
     progress = est.get("progress")
     return {
+        "file_available": _has_stored_file(getattr(analysis, "stl_file", None)),
         "layer_height_mm": layer,
         "print_progress": list(progress) if isinstance(progress, (list, tuple)) else None,
         "print_minutes": est.get("total_min"),
@@ -369,7 +376,8 @@ def stored_print_input_values(booking, analyses) -> dict:
 def build_laser_parts(analyses, job_quantity: int = 1, *, with_preview: bool = False) -> list[dict]:
     """``quantity`` is the part's count in one job; the job is made ``job_quantity`` times.
 
-    ``with_preview`` adds the sheet's material family, for the booking detail's 3D preview."""
+    ``with_preview`` adds the sheet's material family and whether the DXF is still stored, for the booking
+    detail's 3D preview."""
     from .laser_cut_service import effective_own_sheet
 
     job_quantity = max(1, int(job_quantity or 1))
@@ -404,6 +412,7 @@ def build_laser_parts(analyses, job_quantity: int = 1, *, with_preview: bool = F
         )
         if with_preview:
             parts[-1]["material_family"] = m.material_family if m else None
+            parts[-1]["file_available"] = _has_stored_file(getattr(a, "dxf_file", None))
     return parts
 
 

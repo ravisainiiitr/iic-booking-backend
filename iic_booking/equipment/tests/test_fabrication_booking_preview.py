@@ -107,8 +107,42 @@ def test_booking_detail_parts_carry_what_the_preview_draws(egs_factory, media_tm
     model.save(update_fields=["slicer_settings", "bounding_box"])
 
     [printed] = BookingSerializer(print_booking, context={"request": None}).data["fabrication_parts"]
+    assert printed["file_available"] is True
     assert printed["layer_height_mm"] == 0.12
     assert printed["print_progress"] == [0.25, 0.5, 1.0]
     assert printed["print_minutes"] == 42.5
     assert printed["warmup_minutes"] == 6.0
     assert "print_progress" not in fabrication_parts_summary(print_booking)[0]
+
+
+@pytest.mark.django_db
+def test_multi_file_print_booking_streams_each_stl_until_completion_removes_them(egs_factory, media_tmp):
+    from iic_booking.equipment.models import BookingStatus, PrintAnalysisBatch
+    from iic_booking.equipment.print_3d_notifications import delete_print_3d_booking_stl_files
+
+    eq = print_equipment(egs_factory)
+    pla = print_material(eq)
+    student, _sub = funded_student(egs_factory)
+    booking = egs_factory.booking(student, eq, egs_factory.future(), total_charge="30.00")
+    batch = PrintAnalysisBatch.objects.create(equipment=eq, user=student, booking=booking, status="COMPLETED")
+    gear = print_part(eq, student, pla, name="gear", batch=batch, booking=booking, sequence=0)
+    hub = print_part(eq, student, pla, name="hub", batch=batch, booking=booking, sequence=1)
+    oic = _staff(egs_factory, UserType.MANAGER)
+    EquipmentManager.objects.create(equipment=eq, manager=oic)
+    operator = _staff(egs_factory, UserType.OPERATOR)
+    EquipmentOperator.objects.create(equipment=eq, operator=operator)
+
+    parts = BookingSerializer(booking, context={"request": None}).data["fabrication_parts"]
+    assert [(p["analysis_id"], p["file_available"]) for p in parts] == [(str(gear.pk), True), (str(hub.pk), True)]
+    for viewer in (student, oic, operator):
+        for analysis in (gear, hub):
+            resp = _get(egs_factory, viewer, f"/api/print-analyses/{analysis.pk}/stl/")
+            assert resp.status_code == 200, viewer.user_type
+            assert resp.content == b"solid gear\nendsolid gear\n"
+
+    Booking.objects.filter(pk=booking.pk).update(status=BookingStatus.COMPLETED)
+    assert delete_print_3d_booking_stl_files(booking.pk) == 2
+    booking.refresh_from_db()
+    parts = BookingSerializer(booking, context={"request": None}).data["fabrication_parts"]
+    assert [p["file_available"] for p in parts] == [False, False]
+    assert _get(egs_factory, student, f"/api/print-analyses/{gear.pk}/stl/").status_code == 404
