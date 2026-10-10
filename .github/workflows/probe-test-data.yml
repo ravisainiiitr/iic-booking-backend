@@ -1,0 +1,64 @@
+# Read-only: lists records that look like test data so reports can leave them out — equipment (id, code, name,
+# category, test-only flag, OIC user ids with their test-account flag), categories whose name mentions "test", and
+# counts of test accounts per user type. No names, emails or other personal data of users are printed.
+name: Probe Test Data
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, re, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter, defaultdict
+          from django.db.models import Q
+          from iic_booking.equipment.models import Equipment, EquipmentCategory, EquipmentManager
+          from iic_booking.users.models import User
+
+          word = re.compile(r"\b(test|dummy|demo|sample equipment|qa)\b", re.I)
+          managers = defaultdict(list)
+          for em in EquipmentManager.objects.values("equipment_id", "manager_id", "manager__is_test_account"):
+              managers[em["equipment_id"]].append(f"{em['manager_id']}{'*' if em['manager__is_test_account'] else ''}")
+          print("== equipment (flag | id | code | name | category | parent | status | OIC ids, * = test account)")
+          for e in Equipment.objects.order_by("equipment_id").values(
+              "equipment_id", "code", "name", "category__name", "visible_to_test_accounts_only", "parent_equipment_id", "status"
+          ):
+              text = " ".join(str(e[k] or "") for k in ("code", "name", "category__name"))
+              oics = managers.get(e["equipment_id"], [])
+              suspicious = e["visible_to_test_accounts_only"] or word.search(text) or any(o.endswith("*") for o in oics)
+              if suspicious:
+                  print(f"{'T' if e['visible_to_test_accounts_only'] else '-'} | {e['equipment_id']} | {e['code']} | {e['name']} | "
+                        f"{e['category__name']} | {e['parent_equipment_id']} | {e['status']} | {','.join(oics)}")
+          print("\n== categories")
+          for c in EquipmentCategory.objects.order_by("name").values("id", "name"):
+              n = Equipment.objects.filter(category_id=c["id"]).count()
+              flag = "?" if word.search(c["name"] or "") else " "
+              print(f"{flag} {c['id']} | {c['name']} | {n} equipment")
+          print("\n== test accounts by user type")
+          for row in sorted(Counter(User.objects.filter(is_test_account=True).values_list("user_type", flat=True)).items(), key=str):
+              print(f"{row[0]}: {row[1]}")
+          print("total equipment:", Equipment.objects.count(),
+                "test-only flagged:", Equipment.objects.filter(visible_to_test_accounts_only=True).count())
+          PY
+              exit 0
+            fi
+          done
+          echo "No production checkout found" >&2
+          exit 1
