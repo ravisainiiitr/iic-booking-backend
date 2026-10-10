@@ -14,6 +14,7 @@ REPORT_MODULES = (
     "iic_booking.exports.reports.people",
     "iic_booking.exports.reports.finance",
     "iic_booking.exports.reports.disruptions",
+    "iic_booking.exports.reports.admin_insights",
 )
 
 

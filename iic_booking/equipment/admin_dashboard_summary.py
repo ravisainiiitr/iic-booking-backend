@@ -391,6 +391,17 @@ def build_admin_dashboard_summary(user) -> dict[str, Any]:
 
     _safely(payload, "equipment", None, lambda: _equipment_status(scope))
     _safely(payload, "users", None, lambda: _users(scope, now))
+
+    def cancellations():
+        from django.db import transaction
+
+        from .admin_insights.cancellations import cancellation_card
+
+        # A savepoint keeps the rest of the summary working if the cancellations table is not migrated yet.
+        with transaction.atomic():
+            return cancellation_card(user, now)
+
+    _safely(payload, "cancellations", None, cancellations)
     _safely(payload, "waitlist", None, lambda: _waitlist(scope))
     _safely(payload, "booking_attempts", None, lambda: _booking_attempts(scope, now))
     _safely(payload, "ratings", None, lambda: _ratings(scope, bookings, now))

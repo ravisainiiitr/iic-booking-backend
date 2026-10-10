@@ -5314,6 +5314,8 @@ class BookingCancellationRequest(models.Model):
         
         # Process cancellation and refund in a transaction
         released_slot_ids = list(self.booking.daily_slots.values_list("id", flat=True))
+        previous_status = self.booking.status
+        refund_amount = Decimal("0.00")
         with transaction.atomic():
             # Free up slots
             from iic_booking.equipment.maintenance_policy import released_slot_status_after_booking_freed
@@ -5370,6 +5372,20 @@ class BookingCancellationRequest(models.Model):
             self.response_message = response_message.strip() if response_message else "Cancellation approved and refund processed."
             self.responded_at = timezone.now()
             self.save()
+
+            from iic_booking.equipment.booking_cancellation_log import record_cancellation_safely
+
+            record_cancellation_safely(
+                self.booking,
+                previous_status=previous_status,
+                new_status=self.booking.status,
+                actor=self.user,
+                reason=CancellationReason.CANCELLATION_REQUEST,
+                note=(self.notes or "").strip(),
+                refund_amount=refund_amount,
+                released_slot_ids=released_slot_ids,
+                cancelled_at=self.responded_at,
+            )
 
         # After commit: run waitlist auto-booking so freed slots are visible and bookings/notifications
         # are not nested in the cancellation transaction.
@@ -7835,4 +7851,10 @@ from iic_booking.equipment.flash_message_models import (  # noqa: E402
     EquipmentFlashMessageAudit,
     FlashAudience,
     FlashTone,
+)
+from iic_booking.equipment.cancellation_models import (  # noqa: E402
+    BookingCancellation,
+    CancellationActorRole,
+    CancellationDataQuality,
+    CancellationReason,
 )

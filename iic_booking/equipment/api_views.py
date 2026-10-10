@@ -41,6 +41,7 @@ from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParam
 
 from .models import (
     BookingDisruptionKind,
+    CancellationReason,
     Equipment,
     EquipmentAccessory,
     EquipmentAdditionalAccessory,
@@ -10373,7 +10374,7 @@ def update_urgent_booking_request(request, request_id):
 
     if request.method == "DELETE":
         if urg.hold_booking_id and urg.hold_booking and urg.hold_booking.status == BookingStatus.HOLD:
-            _release_hold_booking(urg.hold_booking)
+            _release_hold_booking(urg.hold_booking, actor=request.user)
         record_staff_action(
             request.user, "urgent_request.delete", equipment_id=urg.equipment_id, urgent_request_id=urg.id
         )
@@ -10417,7 +10418,7 @@ def update_urgent_booking_request(request, request_id):
         urg.decided_by = request.user
         urg.decided_at = timezone.now()
     if new_status == UrgentBookingRequestStatus.REJECTED and urg.hold_booking_id:
-        _release_hold_booking(urg.hold_booking)
+        _release_hold_booking(urg.hold_booking, actor=request.user)
         hold_released = True
     if "admin_notes" in request.data:
         urg.admin_notes = request.data.get("admin_notes") or ""
@@ -10626,7 +10627,7 @@ def _apply_urgent_supervisor_decision(urg_id, actor, action: str, notes: str = "
                 "status", "decided_at", "decided_by",
             ])
             if urg.hold_booking_id and urg.hold_booking and urg.hold_booking.status == BookingStatus.HOLD:
-                _release_hold_booking(urg.hold_booking)
+                _release_hold_booking(urg.hold_booking, actor=actor)
     _notify_urgent_supervisor_decision(urg, actor)
     return urg, None
 
@@ -10755,8 +10756,11 @@ def _paginate_supervisor_urgent(request, qs):
         status=status.HTTP_200_OK,
     )
 
-def _release_hold_booking(hold_booking):
-    """Release a HOLD booking: free its slots (AVAILABLE) and set booking status to CANCELLED. No refund (no debit was made)."""
+def _release_hold_booking(hold_booking, actor=None):
+    """Release a HOLD booking: free its slots (AVAILABLE) and set booking status to CANCELLED. No refund (no debit was made).
+
+    ``actor`` is whoever rejected or withdrew the urgent request; none when it expired.
+    """
     if not hold_booking or hold_booking.status != BookingStatus.HOLD:
         return
     released_slot_ids = list(hold_booking.daily_slots.values_list("id", flat=True))
@@ -10776,6 +10780,13 @@ def _release_hold_booking(hold_booking):
             new_status=BookingStatus.CANCELLED,
             metadata={"urgent_hold_released": True},
             send_notification=True,
+            cancellation={
+                "actor": actor,
+                "system": actor is None,
+                "reason": CancellationReason.URGENT_HOLD_RELEASED,
+                "refund_amount": Decimal("0.00"),
+                "released_slot_ids": released_slot_ids,
+            },
         )
     try:
         notify_waitlist_slots_available(hold_booking.equipment, preferred_slot_ids=released_slot_ids)
@@ -12575,6 +12586,7 @@ def refund_booking_internal(booking, refund_notes, performed_by):
             refund_update_fields += clear_pending_charge_difference(booking)
         booking.save(update_fields=refund_update_fields)
 
+        refunded_total = Decimal(str(booking.total_charge or 0)) if razorpay_payment else wallet_credit
         create_booking_event(
             booking=booking,
             event_type=BookingEventType.REFUNDED,
@@ -12583,6 +12595,13 @@ def refund_booking_internal(booking, refund_notes, performed_by):
             comment=refund_notes or "Booking refunded.",
             created_by=performed_by,
             send_notification=True,
+            cancellation={
+                "actor": performed_by,
+                "system": performed_by is None,
+                "note": refund_notes or "",
+                "refund_amount": refunded_total,
+                "released_slot_ids": released_slot_ids,
+            },
         )
         _reverse_reward_points_for_booking(booking, performed_by, "Reward points reversed for refunded booking")
 
@@ -12602,7 +12621,7 @@ def refund_booking_internal(booking, refund_notes, performed_by):
         preferred_slot_ids=released_slot_ids,
         respect_reschedule_threshold=True,
     )
-    return Decimal(str(booking.total_charge or 0)) if razorpay_payment else wallet_credit
+    return refunded_total
 
 def _reverse_reward_points_for_booking(booking, actor, note_prefix):
     points_used = Decimal(str(getattr(booking, "reward_points_used", 0) or "0"))

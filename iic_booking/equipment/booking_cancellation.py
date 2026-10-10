@@ -1072,6 +1072,13 @@ def perform_booking_cancellation(
         send_notification=True,
         system_actor=cancelled_by_label == "system",
         metadata={"refund_amount": str(refund_amount)} if refund_transaction else None,
+        cancellation={
+            "actor": actor,
+            "system": cancelled_by_label == "system" or actor is None,
+            "note": cancel_notes or "",
+            "refund_amount": refund_amount if refund_transaction else Decimal("0.00"),
+            "released_slot_ids": list(slot_ids or []),
+        },
     )
 
     return {
