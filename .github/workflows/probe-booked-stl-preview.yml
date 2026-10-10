@@ -1,0 +1,72 @@
+# Probe: why the View Booking 3D preview of IICTEST-3DP-01202600002 / 0003 stays blank.
+# Read-only: booking status/profile types, the booked STL parts, and the STL download view called in memory
+# (no token, session or row is created). Prints ids, sizes, timings and the first bytes only (no user data, no secrets).
+name: Probe Booked STL Preview
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Booked STL parts and download view
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          echo "django_container=$CID"
+          test -n "$CID"
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import os, time, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.conf import settings
+          from rest_framework.test import APIRequestFactory, force_authenticate
+          from iic_booking.equipment.models import Booking
+          from iic_booking.equipment.fabrication import active_print_analyses_for_booking
+          from iic_booking.equipment.serializers import BookingSerializer
+          from iic_booking.equipment import print_3d_views as pv
+
+          backend = getattr(settings, "STORAGES", {}).get("default", {}).get("BACKEND", "")
+          print(f"storage_backend={backend}")
+          factory = APIRequestFactory()
+          for ref in ("IICTEST-3DP-01202600002", "IICTEST-3DP-01202600003"):
+              b = Booking.objects.select_related("equipment", "charge_profile", "user").filter(virtual_booking_id=ref).first()
+              if b is None:
+                  print(f"{ref}: not found")
+                  continue
+              eq = b.equipment
+              cp = b.charge_profile
+              print(f"{ref}: pk={b.pk} status={b.status} eq={eq.code} eq_profile={eq.profile_type} "
+                    f"cp_profile={getattr(cp, 'effective_profile_type', None)} owner_type={b.user.user_type} "
+                    f"print_analysis={bool(b.print_analysis_id)} batch={bool(b.print_analysis_batch_id)}")
+              data = BookingSerializer(b, context={"request": None}).data
+              parts = data.get("fabrication_parts") or []
+              print(f"  serializer equipment_profile_type={data.get('equipment_profile_type')} parts={len(parts)}")
+              for p in parts:
+                  print(f"  part keys={sorted(p.keys())}")
+              for a in active_print_analyses_for_booking(b):
+                  f = a.stl_file
+                  print(f"  analysis={str(a.id)[:8]} file={'yes' if f and f.name else 'no'} ext={(a.original_filename or '').rsplit('.', 1)[-1]} "
+                        f"uploader_is_owner={a.user_id == b.user_id} status={a.status}")
+                  if not (f and f.name):
+                      continue
+                  t = time.monotonic()
+                  storage, name = pv._resolve_storage_name(f)
+                  print(f"    resolve={'ok' if name else 'missing'} {time.monotonic() - t:.2f}s")
+                  if name:
+                      t = time.monotonic()
+                      try:
+                          print(f"    size_bytes={storage.size(name)} {time.monotonic() - t:.2f}s")
+                      except Exception as e:
+                          print(f"    size error {type(e).__name__}")
+                  req = factory.get(f"/api/print-analyses/{a.id}/stl/")
+                  force_authenticate(req, user=b.user)
+                  t = time.monotonic()
+                  resp = pv.download_print_analysis_stl(req, analysis_id=str(a.id))
+                  if hasattr(resp, "render") and not getattr(resp, "is_rendered", True):
+                      resp.render()
+                  body = getattr(resp, "content", b"") or b""
+                  print(f"    view status={resp.status_code} {time.monotonic() - t:.2f}s type={resp.get('Content-Type')} "
+                        f"len={len(body)} head={body[:5]!r}")
+          PY
