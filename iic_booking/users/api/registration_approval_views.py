@@ -317,12 +317,14 @@ def admin_registration_log(request):
         response["Content-Disposition"] = f'attachment; filename="registration-approval-log-{stamp}.csv"'
         writer = csv.writer(response)
         writer.writerow(
-            ["Time", "Action", "User", "User email", "Actor", "Actor email", "Role", "Channel", "IP address", "Details"]
+            ["S.No.", "Time", "Action", "User", "User email", "Actor", "Actor email", "Role", "Channel", "IP address",
+             "Details"]
         )
-        for e in qs[:LOG_CSV_LIMIT]:
+        for sno, e in enumerate(qs[:LOG_CSV_LIMIT], start=1):
             details = "; ".join(f"{k}={v}" for k, v in (e.details or {}).items())
             writer.writerow(
                 [
+                    sno,
                     timezone.localtime(e.created_at).strftime("%Y-%m-%d %H:%M:%S"),
                     e.get_action_display(),
                     e.subject_name,

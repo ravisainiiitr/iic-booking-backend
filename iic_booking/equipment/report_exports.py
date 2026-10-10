@@ -22,6 +22,34 @@ def _report_duration_caption(data: dict) -> str:
     return f"Report Duration: {human}{sfx}"
 
 
+def _pdf_grid_style(header_hex: str, font_size: float = 7) -> list:
+    """Centred cells, shaded header and thin grid, as on the portal's tables."""
+    from reportlab.lib import colors
+
+    return [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(header_hex)),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), font_size),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f7fb")]),
+        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#cbd5e1")),
+    ]
+
+
+def _xlsx_center_tables(wb) -> None:
+    """Centre every bordered (table) cell horizontally and vertically."""
+    from openpyxl.styles import Alignment
+
+    centred = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.border is not None and cell.border.left is not None and cell.border.left.style:
+                    cell.alignment = centred
+
+
 def build_report_pdf(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -131,16 +159,7 @@ def build_report_pdf(
         ],
     ]
     t0 = Table(fin_rows, repeatRows=1)
-    t0.setStyle(
-        TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ])
-    )
+    t0.setStyle(TableStyle(_pdf_grid_style("#1f2937", 8)))
     story.append(t0)
     story.append(Spacer(1, 0.6 * cm))
 
@@ -213,19 +232,7 @@ def build_report_pdf(
             ["Bookings in period / completed", f"{eq.get('total_bookings_in_period', 0)} / {eq.get('completed_in_period', 0)}"],
         ]
         tp = Table(perf_rows, colWidths=[10 * cm, 7 * cm], repeatRows=1)
-        tp.setStyle(
-            TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f766e")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                ("ALIGN", (0, 0), (0, -1), "LEFT"),
-                ("ALIGN", (1, 0), (1, -1), "RIGHT"),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 7),
-                ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f8fafc")),
-                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#99f6e4")),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ])
-        )
+        tp.setStyle(TableStyle(_pdf_grid_style("#0f766e")))
         story.append(tp)
         story.append(Spacer(1, 0.35 * cm))
 
@@ -245,16 +252,7 @@ def build_report_pdf(
             avg = ur.get("overall_rating_avg")
             rrows.append(["Overall rating (0–5) avg.", str(avg) if avg is not None else "—", "", ""])
             tr = Table(rrows, colWidths=[8 * cm, 2.5 * cm, 2.5 * cm, 2.5 * cm], repeatRows=1)
-            tr.setStyle(
-                TableStyle([
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4c1d95")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 7),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                    ("ALIGN", (1, 0), (-1, -1), "CENTER"),
-                ])
-            )
+            tr.setStyle(TableStyle(_pdf_grid_style("#4c1d95")))
             story.append(tr)
         else:
             story.append(Paragraph("No ratings submitted in this period.", small_style))
@@ -265,22 +263,16 @@ def build_report_pdf(
     r_equipment = financial.get("revenue_by_equipment", []) or []
     if r_equipment:
         story.append(Paragraph("Revenue by equipment (top 20)", heading_style))
-        rows_rev_eq = [["Equipment", "Bookings", "Revenue"]]
-        for r in r_equipment[:20]:
+        rows_rev_eq = [["S.No.", "Equipment", "Bookings", "Revenue"]]
+        for sno, r in enumerate(r_equipment[:20], start=1):
             rows_rev_eq.append([
+                str(sno),
                 f"{r.get('equipment__code','')} — {r.get('equipment__name','')}",
                 str(r.get("count", 0) or 0),
                 f"₹{float(r.get('total', 0) or 0):.2f}",
             ])
         tt = Table(rows_rev_eq, repeatRows=1)
-        tt.setStyle(
-            TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0ea5e9")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("FONTSIZE", (0, 0), (-1, -1), 7),
-            ])
-        )
+        tt.setStyle(TableStyle(_pdf_grid_style("#0ea5e9")))
         story.append(tt)
         story.append(Spacer(1, 0.4 * cm))
 
@@ -295,14 +287,7 @@ def build_report_pdf(
                 f"₹{float(r.get('total', 0) or 0):.2f}",
             ])
         tt2 = Table(rows_rev_ext, repeatRows=1)
-        tt2.setStyle(
-            TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#9333ea")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("FONTSIZE", (0, 0), (-1, -1), 7),
-            ])
-        )
+        tt2.setStyle(TableStyle(_pdf_grid_style("#9333ea")))
         story.append(tt2)
         story.append(Spacer(1, 0.4 * cm))
 
@@ -374,15 +359,7 @@ def build_report_pdf(
     for p in data.get("utilization_pie", []):
         pie_rows.append([str(p.get("name", "")), str(p.get("hours", 0))])
     t2 = Table(pie_rows, repeatRows=1)
-    t2.setStyle(
-        TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#70AD47")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ])
-    )
+    t2.setStyle(TableStyle(_pdf_grid_style("#70AD47", 8)))
     story.append(t2)
 
     doc.build(story)
@@ -704,6 +681,7 @@ def build_report_excel(
             ws2.add_chart(chart, f"D{data_start}")
         eq_row += 2
 
+    _xlsx_center_tables(wb)
     buffer = io.BytesIO()
     wb.save(buffer)
     return buffer.getvalue()

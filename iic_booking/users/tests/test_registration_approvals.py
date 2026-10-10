@@ -345,7 +345,7 @@ def test_log_lists_events_and_exports_csv(admin, faculty):
     csv_res = client.get(f"{ADMIN_URL}log/", {"export": "csv"})
     assert csv_res.status_code == 200
     text = csv_res.content.decode()
-    assert text.startswith("Time,Action,User") and user.email in text
+    assert text.startswith("S.No.,Time,Action,User") and user.email in text
 
 
 # --- programme expiry and extensions ---------------------------------------------------------------

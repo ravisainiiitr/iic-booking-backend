@@ -93,7 +93,7 @@ def charges_visible(view: str, user) -> bool:
 def export_columns(view: str, user) -> list[Column]:
     if view == "staff":
         cols = [
-            Column("sno", "S.No", 0.6, "int"),
+            Column("sno", "S.No.", 0.6, "int"),
             Column("booking_id", "Booking ID", 2.3),
             Column("equipment", "Equipment", 1.9),
             Column("user", "User", 1.5),
@@ -114,7 +114,7 @@ def export_columns(view: str, user) -> list[Column]:
         cols.append(Column("booked_on", "Booked on (IST)", 1.3, "datetime"))
         return cols
     return [
-        Column("sno", "S.No", 0.6, "int"),
+        Column("sno", "S.No.", 0.6, "int"),
         Column("booking_id", "Booking ID", 2.2),
         Column("equipment", "Equipment", 2.6),
         Column("user", "User", 1.8),
@@ -495,12 +495,23 @@ def detail_columns(rows, *, charges: bool, include_charge_lines: bool) -> list[C
     if any(d.atmosphere_sensitive for d in details):
         cols.append(Column("atmosphere", "Atmosphere-sensitive sample", 1.0))
     if any(d.comments for d in details):
-        cols.append(Column("comments", "Any other requirements", 1.0))
+        cols.append(Column("comments", "Any other requirements", 1.0, "longtext"))
     if any(d.files for d in details):
-        cols.append(Column("files", "Uploaded files", 1.0))
+        cols.append(Column("files", "Uploaded files", 1.0, "longtext"))
     if charges and include_charge_lines and any(d.charges for d in details):
-        cols.append(Column("charge_lines", "Charge breakdown (₹)", 1.0))
+        cols.append(Column("charge_lines", "Charge breakdown (₹)", 1.0, "longtext"))
     return cols
+
+
+_TEXT_KINDS = ("text", "longtext")
+
+
+def booking_links(rows, *, view: str) -> None:
+    """Each row's ``link``: the booking on View Booking (staff export) or My Bookings."""
+    from .booking_links import booking_detail_url
+
+    for row in rows:
+        row["link"] = booking_detail_url(pk=row.get("pk"), display_id=row.get("booking_id"), staff=view == "staff")
 
 
 def render_csv(columns, rows) -> bytes:
@@ -509,7 +520,7 @@ def render_csv(columns, rows) -> bytes:
     writer.writerow([c.label for c in columns])
     for row in rows:
         writer.writerow(
-            [_cell_text(c, row.get(c.key)) if c.kind != "text" else guard_formula(_cell_text(c, row.get(c.key)))
+            [guard_formula(_cell_text(c, row.get(c.key))) if c.kind in _TEXT_KINDS else _cell_text(c, row.get(c.key))
              for c in columns],
         )
     return ("\ufeff" + buf.getvalue()).encode("utf-8")
@@ -563,7 +574,8 @@ def _input_table_groups(rows) -> list[tuple[str, list[str], list[list]]]:
                 key = (row.get("equipment") or "", item.label, tuple(columns))
                 bucket = groups.setdefault(key, [])
                 for number, cells in enumerate(data, start=1):
-                    bucket.append([row["booking_id"], set_index, number, *cells, *[""] * (width - len(cells))])
+                    bucket.append([row["booking_id"], set_index, number, *cells, *[""] * (width - len(cells)),
+                                   row.get("link")])
     ordered = sorted(groups.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1].lower()))
     return [(f"{equipment} — {label}" if equipment else label, list(cols), data)
             for (equipment, label, cols), data in ordered]
@@ -577,9 +589,10 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
 
     bookings = SheetWriter(wb, "Bookings")
     bookings.header([c.label for c in columns])
-    kinds = [c.kind if c.kind in ("int", "money", "datetime") else "text" for c in columns]
+    kinds = [c.kind if c.kind in ("int", "money", "datetime", "longtext") else "text" for c in columns]
     for i, row in enumerate(rows):
-        bookings.row([_xlsx_value(c, row.get(c.key)) for c in columns], kinds, striped=i % 2 == 1)
+        links = [row.get("link") if c.key == "booking_id" else None for c in columns]
+        bookings.row([_xlsx_value(c, row.get(c.key)) for c in columns], kinds, striped=i % 2 == 1, links=links)
     bookings.ws.freeze_panes = "C2"
     bookings.flush(autofilter_columns=len(columns))
 
@@ -588,7 +601,7 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
     sets.header(["Booking ID", "Equipment", "Sample set", *labels])
     for i, (row, number, values) in enumerate(_sample_set_rows(rows, labels)):
         sets.row([row["booking_id"], xlsx_text(row.get("equipment") or ""), number, *values],
-                 ["text", "text", "int", *["text"] * len(labels)], striped=i % 2 == 1)
+                 ["text", "text", "int", *["text"] * len(labels)], striped=i % 2 == 1, links=[row.get("link")])
     if not sets.data_rows:
         sets.blank()
         sets.line("None of the exported bookings has user inputs.", "exp_note")
@@ -601,8 +614,9 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
         tables.line(xlsx_text(title), "exp_band")
         tables.header(["Booking ID", "Sample set", "Row #", *cols])
         for i, cells in enumerate(data):
+            *cells, link = cells
             tables.row([cells[0], cells[1], cells[2], *(xlsx_text(c) for c in cells[3:])],
-                       ["text", "int", "int", *["text"] * len(cols)], striped=i % 2 == 1)
+                       ["text", "int", "int", *["text"] * len(cols)], striped=i % 2 == 1, links=[link])
         tables.blank()
     if not groups:
         tables.line("None of the exported bookings has a table input.", "exp_note")
@@ -620,7 +634,7 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
                 sheet.row(
                     [row["booking_id"], xlsx_text(row.get("equipment") or ""), number, xlsx_text(description),
                      float(amount) if amount is not None else None],
-                    ["text", "text", "int", "text", "money"], striped=stripe,
+                    ["text", "text", "int", "text", "money"], striped=stripe, links=[row.get("link")],
                 )
             stripe = not stripe
         if not sheet.data_rows:
@@ -637,7 +651,7 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
         details.append(("Exported from", view_label))
     details.append(("Rows", str(len(rows))))
     for label, value in [*details, *summary]:
-        info.row([label, xlsx_text(value)], ["text", "text"])
+        info.row([label, xlsx_text(value)], ["text", "longtext"])
         info.rows[-1][0] = (label, "exp_label")
     if status_counts:
         info.blank()
@@ -655,7 +669,7 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
     if charges:
         sheet_notes.append(("Charges", "Charge breakdown lines of each booking (₹)."))
     for label, text in sheet_notes:
-        info.row([label, text], ["text", "text"])
+        info.row([label, text], ["text", "longtext"])
         info.rows[-1][0] = (label, "exp_label")
     info.widths[0] = max(info.widths.get(0, 0), 22)
     info.flush()
@@ -722,6 +736,7 @@ def export_booking_list(request, queryset, *, view: str, export_format: str) -> 
             rows.sort(key=lambda r: r["booked_on"] or timezone.now(), reverse=ordering.startswith("-"))
     for index, row in enumerate(rows, start=1):
         row["sno"] = index
+    booking_links(rows, view=view)
 
     columns = export_columns(view, request.user)
     now = timezone.now()

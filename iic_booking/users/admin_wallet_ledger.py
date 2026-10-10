@@ -623,6 +623,7 @@ def serialize_transactions(rows: list[SubWalletTransaction], *, start: int = 0) 
                 "performer": performer,
                 "performed_by": performed_by,
                 "booking_code": code or "",
+                "booking_pk": booking_pk or None,
                 "sub_wallet_id": t.sub_wallet_id,
                 "department_name": t.sub_wallet.department.name,
                 "department_code": t.sub_wallet.department.code or "",

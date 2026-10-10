@@ -96,6 +96,7 @@ def _feedback_csv_response(rows) -> HttpResponse:
     writer = csv.writer(response)
     writer.writerow(
         [
+            "S.No.",
             "Feedback ID",
             "Name",
             "Email",
@@ -112,10 +113,11 @@ def _feedback_csv_response(rows) -> HttpResponse:
             "Last updated",
         ]
     )
-    for fb in rows:
+    for sno, fb in enumerate(rows, start=1):
         user = fb.user
         writer.writerow(
             [
+                sno,
                 fb.feedback_id,
                 _csv_cell(user.get_display_name() if user else ""),
                 _csv_cell(user.email if user else ""),

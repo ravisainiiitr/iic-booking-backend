@@ -111,7 +111,7 @@ class CommunicationService:
         Returns:
             Dictionary with rendered 'subject', 'message', 'html_message', etc.
         """
-        from .email_branding import inject_fbr_number, sanitize_template_context
+        from .email_branding import inject_fbr_number, link_booking_id, sanitize_template_context
 
         raw_context = context or {}
         context = sanitize_template_context(raw_context, template_code=getattr(template, "code", None))
@@ -197,6 +197,7 @@ class CommunicationService:
             from iic_booking.equipment.fbr_email import fbr_number_from_context
 
             inject_fbr_number(result, fbr_number_from_context(raw_context))
+            link_booking_id(result, context.get("link"))
 
         return result
 

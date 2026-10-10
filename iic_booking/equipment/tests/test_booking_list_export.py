@@ -75,7 +75,7 @@ def test_csv_has_bom_header_and_every_matching_booking(world):
     client = world.f.client_for(world.admin)
     rows = _csv_rows(_export(client, view="staff", ordering="-created_at"))
     header = rows[0]
-    assert header[:3] == ["S.No", "Booking ID", "Equipment"]
+    assert header[:3] == ["S.No.", "Booking ID", "Equipment"]
     assert "Amount (₹)" in header and "Supervisor" in header and "Booked on (IST)" in header
     body = rows[1:]
     assert [r[1] for r in body] == _list_ids(client, ordering="-created_at")

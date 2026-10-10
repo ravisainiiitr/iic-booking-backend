@@ -40,6 +40,16 @@ def raw_value(row, column: spec.Column):
     return lookup(row, column.key)
 
 
+def link_url(row, column: spec.Column) -> str:
+    """Absolute portal URL of the column's link for this row, or "" (no link, or FRONTEND_URL unset)."""
+    from iic_booking.communication.utils import get_frontend_absolute_url
+
+    if column.link is None:
+        return ""
+    path = column.link(row)
+    return get_frontend_absolute_url(path) if path else ""
+
+
 def to_ist_datetime(value) -> datetime | None:
     if value in (None, ""):
         return None

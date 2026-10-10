@@ -17,10 +17,11 @@ from .values import to_number
 
 
 def _write_table(writer, table: spec.Table) -> None:
-    writer.writerow([guard_formula(c.header) for c in table.columns])
-    for row in table.rows:
+    columns, rows = spec.serial_view(table)
+    writer.writerow([guard_formula(c.header) for c in columns])
+    for row in rows:
         out = []
-        for column in table.columns:
+        for column in columns:
             text = display_text(raw_value(row, column), column.type, machine=True)
             numeric = column.type in spec.NUMERIC_TYPES and to_number(text.rstrip("%")) is not None
             out.append(text if numeric else guard_formula(text))

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import io
 
+from iic_booking.equipment.export_styles import link_markup
+
 from . import spec
 from .branding import ACCENT_HEX
 from .branding import BRAND_HEX
@@ -25,6 +27,7 @@ from .fonts import plain
 from .fonts import register_fonts
 from .fonts import rupee
 from .values import display_text
+from .values import link_url
 from .values import raw_value
 from .values import to_number
 
@@ -54,7 +57,8 @@ def _wants_landscape(document: spec.Document) -> bool:
     if document.landscape is not None:
         return document.landscape
     return any(
-        len(t.columns) > 7 or sum(c.width for c in t.columns) > _LANDSCAPE_WIDTH_UNITS for t in document.tables
+        len(cols) > 7 or sum(c.width for c in cols) > _LANDSCAPE_WIDTH_UNITS
+        for cols in (spec.rendered_columns(t) for t in document.tables)
     )
 
 
@@ -89,6 +93,7 @@ class _Styles:
         self.kpi_hint = ParagraphStyle("x_kpi_h", fontName=fonts.regular, fontSize=6.5, leading=8, textColor=muted)
         self.cell = ParagraphStyle("x_cell", fontName=fonts.regular, fontSize=body_size, leading=body_size + 1.8,
                                    textColor=ink)
+        self.cell_center = ParagraphStyle("x_cell_c", parent=self.cell, alignment=TA_CENTER)
 
 
 def _letterhead(document: spec.Document, styles: _Styles, fonts: Fonts, width: float, generated_at: str) -> list:
@@ -223,8 +228,8 @@ def _data_table(document, table: spec.Table, styles: _Styles, fonts: Fonts, widt
             f'· {count:,} row{"s" if count != 1 else ""}</font>',
             styles.section,
         ))
-    columns = table.columns
-    if not table.rows or not columns:
+    columns, rows = spec.serial_view(table)
+    if not rows or not columns:
         story.append(Paragraph(markup(table.empty_message, fonts), styles.empty))
         return story
 
@@ -232,13 +237,16 @@ def _data_table(document, table: spec.Table, styles: _Styles, fonts: Fonts, widt
     col_widths = [width * c.width / share for c in columns]
     pad = 3
 
-    def cell(text: str, col_width: float, font: str):
+    def cell(text: str, col_width: float, font: str, *, left: bool = False, url: str = ""):
+        style = styles.cell if left else styles.cell_center
+        if url and text:
+            return Paragraph(link_markup(markup(text, fonts), url), style)
         if needs_markup(text, fonts):
-            return Paragraph(markup(text, fonts), styles.cell)
+            return Paragraph(markup(text, fonts), style)
         return _fit_lines(plain(text, fonts), font, body_size, col_width - 2 * pad)
 
     header = [cell(c.header, w, fonts.bold) for c, w in zip(columns, col_widths)]
-    numeric = [i for i, c in enumerate(columns) if c.type in spec.NUMERIC_TYPES]
+    left_aligned = [i for i, c in enumerate(columns) if c.align == "left"]
     totals = {i: 0.0 for i, c in enumerate(columns) if c.total}
 
     base_style = [
@@ -249,20 +257,19 @@ def _data_table(document, table: spec.Table, styles: _Styles, fonts: Fonts, widt
         ("FONTNAME", (0, 0), (-1, 0), fonts.bold),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(f"#{BRAND_HEX}")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("VALIGN", (0, 0), (-1, 0), "MIDDLE"),
-        ("VALIGN", (0, 1), (-1, -1), "TOP"),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F7FB")]),
-        ("LINEBELOW", (0, 1), (-1, -1), 0.25, colors.HexColor("#E2E8F0")),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D5DDE8")),
         ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
         ("LEFTPADDING", (0, 0), (-1, -1), pad),
         ("RIGHTPADDING", (0, 0), (-1, -1), pad),
         ("TOPPADDING", (0, 0), (-1, -1), 2.2),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2.2),
     ]
-    for i in numeric:
-        base_style.append(("ALIGN", (i, 0), (i, -1), "RIGHT"))
+    for i in left_aligned:
+        base_style.append(("ALIGN", (i, 1), (i, -1), "LEFT"))
 
-    rows = table.rows
     for start in range(0, len(rows), _CHUNK):
         data = [header]
         for row in rows[start:start + _CHUNK]:
@@ -273,7 +280,8 @@ def _data_table(document, table: spec.Table, styles: _Styles, fonts: Fonts, widt
                     number = to_number(raw)
                     if number is not None:
                         totals[index] += number
-                out.append(cell(display_text(raw, column.type, rupee=rupee(fonts)), col_width, fonts.regular))
+                out.append(cell(display_text(raw, column.type, rupee=rupee(fonts)), col_width, fonts.regular,
+                                left=column.align == "left", url=link_url(row, column)))
             data.append(out)
         style = list(base_style)
         if totals and start + _CHUNK >= len(rows):
@@ -309,7 +317,7 @@ def render_pdf(document: spec.Document, *, generated_at: str) -> bytes:
 
     fonts = register_fonts()
     is_landscape = _wants_landscape(document)
-    widest = max((len(t.columns) for t in document.tables), default=0)
+    widest = max((len(spec.rendered_columns(t)) for t in document.tables), default=0)
     body_size = 7.5 if widest <= 8 else (7 if widest <= 12 else 6.5)
     styles = _Styles(fonts, body_size)
     running_title = plain(document.title, fonts)

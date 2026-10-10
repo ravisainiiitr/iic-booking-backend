@@ -124,6 +124,19 @@ def markup(text, fonts: Fonts) -> str:
     return text.replace("\n", "<br/>")
 
 
+LINK = "#1d4ed8"
+# Table cells are centred like the portal's tables; longer free text reads better left-aligned.
+LONG_CELL_TEXT = 60
+
+
+def link_markup(text_markup: str, url: str, *, color: str = LINK) -> str:
+    """Wrap Paragraph markup in a clickable, underlined link (``text_markup`` is already escaped)."""
+    if not url:
+        return text_markup
+    href = url.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+    return f'<link href="{href}" color="{color}"><u>{text_markup}</u></link>'
+
+
 def money_text(amount, fonts: Fonts) -> str:
     if amount is None:
         return ""
@@ -153,12 +166,15 @@ def pdf_styles(fonts: Fonts) -> SimpleNamespace:
         value=style("exp_value", size=8, leading=10.2),
         cell=style("exp_cell", size=7.4, leading=9.3),
         cell_small=style("exp_cell_small", size=6.6, leading=8.3),
+        cell_center=style("exp_cell_center", size=7.4, leading=9.3, alignment=TA_CENTER),
+        cell_small_center=style("exp_cell_small_center", size=6.6, leading=8.3, alignment=TA_CENTER),
         cell_right=style("exp_cell_right", size=7.4, leading=9.3, alignment=TA_RIGHT),
         cell_bold_right=style("exp_cell_bold_right", bold=True, size=7.6, leading=9.5, alignment=TA_RIGHT),
         cell_bold=style("exp_cell_bold", bold=True, size=7.6, leading=9.5),
-        head=style("exp_head", bold=True, size=7.4, leading=9.3, color="#ffffff"),
-        table_head=style("exp_table_head", bold=True, size=7.2, leading=9, color=BRAND),
-        table_head_small=style("exp_table_head_small", bold=True, size=6.5, leading=8.2, color=BRAND),
+        head=style("exp_head", bold=True, size=7.4, leading=9.3, color="#ffffff", alignment=TA_CENTER),
+        table_head=style("exp_table_head", bold=True, size=7.2, leading=9, color=BRAND, alignment=TA_CENTER),
+        table_head_small=style("exp_table_head_small", bold=True, size=6.5, leading=8.2, color=BRAND,
+                               alignment=TA_CENTER),
         table_label=style("exp_table_label", bold=True, size=7.6, leading=9.6, color="#334155", spaceBefore=3,
                           spaceAfter=2, keepWithNext=1),
         band_id=style("exp_band_id", bold=True, size=11.5, leading=14, color="#ffffff"),
@@ -187,8 +203,9 @@ def xlsx_text(value):
 
 
 def register_xlsx_styles(wb) -> None:
-    """Named styles: exp_text / exp_int / exp_money / exp_datetime (and *_alt stripes), exp_header, exp_band,
-    exp_title, exp_label and exp_note."""
+    """Named styles: exp_text / exp_longtext / exp_int / exp_money / exp_datetime / exp_link (and *_alt stripes),
+    exp_header, exp_band, exp_title, exp_label and exp_note. Cells are centred like the portal's tables;
+    ``longtext`` (free text such as comments) is left-aligned."""
     from openpyxl.styles import Alignment
     from openpyxl.styles import Border
     from openpyxl.styles import Font
@@ -202,19 +219,24 @@ def register_xlsx_styles(wb) -> None:
     thin = Side(style="thin", color="CBD5E1")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     body = Font(name="Calibri", size=10, color="1E293B")
+    link = Font(name="Calibri", size=10, color=LINK.lstrip("#").upper(), underline="single")
     top_left = Alignment(vertical="top", wrap_text=True)
+    centred = Alignment(vertical="center", horizontal="center", wrap_text=True)
     kinds = {
-        "text": {"alignment": top_left},
-        "int": {"alignment": Alignment(vertical="top", horizontal="center")},
-        "money": {"alignment": Alignment(vertical="top", horizontal="right"), "number_format": '"₹"#,##0.00'},
-        "datetime": {"alignment": Alignment(vertical="top", horizontal="left"), "number_format": "DD-MM-YYYY HH:MM"},
+        "text": {"alignment": centred},
+        "longtext": {"alignment": Alignment(vertical="center", horizontal="left", wrap_text=True)},
+        "int": {"alignment": centred},
+        "money": {"alignment": centred, "number_format": '"₹"#,##0.00'},
+        "datetime": {"alignment": centred, "number_format": "DD-MM-YYYY HH:MM"},
+        "link": {"alignment": centred, "font": link},
     }
     for kind, extra in kinds.items():
-        wb.add_named_style(NamedStyle(name=f"exp_{kind}", font=body, border=border, **extra))
-        wb.add_named_style(NamedStyle(name=f"exp_{kind}_alt", font=body, border=border, fill=fill("F4F7FB"), **extra))
+        extra = {"font": body, **extra}
+        wb.add_named_style(NamedStyle(name=f"exp_{kind}", border=border, **extra))
+        wb.add_named_style(NamedStyle(name=f"exp_{kind}_alt", border=border, fill=fill("F4F7FB"), **extra))
     wb.add_named_style(NamedStyle(
         name="exp_header", font=Font(name="Calibri", size=10, bold=True, color="FFFFFF"), fill=fill(XLSX_BRAND),
-        border=border, alignment=Alignment(vertical="center", wrap_text=True),
+        border=border, alignment=Alignment(vertical="center", horizontal="center", wrap_text=True),
     ))
     wb.add_named_style(NamedStyle(
         name="exp_band", font=Font(name="Calibri", size=11, bold=True, color=XLSX_BRAND), fill=fill("DBE7F7"),
@@ -230,7 +252,9 @@ def register_xlsx_styles(wb) -> None:
 class SheetWriter:
     """Buffers a write-only sheet so column widths (written before the rows) fit the content.
 
-    Cell kinds are "text", "int", "money" and "datetime"; the workbook needs :func:`register_xlsx_styles`.
+    Cell kinds are "text", "longtext", "int", "money" and "datetime"; a cell with a link is underlined and
+    clickable. When the sheet starts with its header row, that row stays frozen. The workbook needs
+    :func:`register_xlsx_styles`.
     """
 
     def __init__(self, wb, title: str, *, max_width: int = 50):
@@ -239,13 +263,14 @@ class SheetWriter:
         self.rows: list[list[tuple]] = []
         self.widths: dict[int, int] = {}
         self.data_rows = 0
+        self.links: dict[tuple[int, int], str] = {}
 
     def _track(self, index: int, value, kind: str, *, header: bool = False) -> None:
         if value is None:
             return
         if kind == "datetime":
             length = 16
-        elif kind == "money":
+        elif kind == "money" and not isinstance(value, str):
             length = len(f"₹{value:,.2f}")
         elif header:
             words = str(value).split()
@@ -259,10 +284,16 @@ class SheetWriter:
             self._track(i, label, "text", header=True)
         self.rows.append([(label, "exp_header") for label in labels])
 
-    def row(self, values, kinds, *, striped: bool = False) -> None:
+    def row(self, values, kinds, *, striped: bool = False, links=None) -> None:
+        """``links``: optional URL per column (None for plain cells)."""
         out = []
+        links = list(links or [])
         for i, (value, kind) in enumerate(zip(values, kinds)):
             self._track(i, value, kind)
+            url = links[i] if i < len(links) else None
+            if url and value not in (None, ""):
+                self.links[(len(self.rows), i)] = url
+                kind = "link"
             out.append((value, f"exp_{kind}_alt" if striped else f"exp_{kind}"))
         self.rows.append(out)
         self.data_rows += 1
@@ -283,10 +314,15 @@ class SheetWriter:
         if autofilter_columns and self.data_rows:
             last = get_column_letter(autofilter_columns)
             self.ws.auto_filter.ref = f"A1:{last}{self.data_rows + 1}"
-        for row in self.rows:
+        if self.ws.freeze_panes is None and self.rows and self.rows[0] and self.rows[0][0][1] == "exp_header":
+            self.ws.freeze_panes = "A2"
+        for row_index, row in enumerate(self.rows):
             cells = []
-            for value, style in row:
+            for col_index, (value, style) in enumerate(row):
                 cell = WriteOnlyCell(self.ws, value=value)
                 cell.style = style
+                url = self.links.get((row_index, col_index))
+                if url:
+                    cell.hyperlink = url
                 cells.append(cell)
             self.ws.append(cells)

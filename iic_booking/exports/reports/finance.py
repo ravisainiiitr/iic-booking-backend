@@ -10,6 +10,7 @@ from ..registry import register
 from ..values import to_number
 from .booking_activity import humanize
 from .common import SNO
+from .common import booking_link
 from .common import filter_pairs
 from .common import make_document
 from .common import numbered
@@ -30,6 +31,11 @@ def _amount_sum(rows, *, status=None) -> Decimal:
         if number is not None:
             total += Decimal(str(number))
     return total
+
+
+def _owner_link(row) -> str:
+    owner = row.get("owner_id")
+    return f"/admin/wallet-ledger/{int(owner)}" if str(owner or "").isdigit() else ""
 
 
 def _status(row) -> str:
@@ -74,7 +80,7 @@ def wallet_recharge_requests(request):
         C("utr_reference", "UTR", width=1.0),
         C("responded_at", "Responded (IST)", spec.DATETIME, 1.15),
         C("response_message", "Remarks", width=1.8,
-          value=lambda r: r.get("response_message") or r.get("rejection_reason_text") or ""),
+          value=lambda r: r.get("response_message") or r.get("rejection_reason_text") or "", align="left"),
     ]
     kpis = [
         spec.Kpi("Requests", len(rows), spec.INTEGER),
@@ -127,12 +133,13 @@ def sric_wallet_recharges(request):
         C("receiver_label", "Receiver", width=0.8),
         C("amount", "Amount (₹)", spec.CURRENCY, 1.0, total=True),
         C("status_display", "Status", width=1.0),
-        C("review_message", "Review reason", width=1.6),
-        C("matched_user", "Credited to", width=1.4, value=lambda r: (r.get("matched_user") or {}).get("name", "")),
+        C("review_message", "Review reason", width=1.6, align="left"),
+        C("matched_user", "Credited to", width=1.4, value=lambda r: (r.get("matched_user") or {}).get("name", ""),
+          link=lambda r: _owner_link({"owner_id": (r.get("matched_user") or {}).get("id")})),
         C("credited_at", "Credited (IST)", spec.DATETIME, 1.15),
         C("fund_receipt", "Fund receipt", width=1.1,
           value=lambda r: ("Verified" if r.get("fund_receipt_verified") else "Not verified") if r.get("status") == "credited" else ""),
-        C("fund_receipt_verification_remarks", "Verification remarks", width=1.4),
+        C("fund_receipt_verification_remarks", "Verification remarks", width=1.4, align="left"),
     ]
     kpis = [
         spec.Kpi("Rows", len(rows), spec.INTEGER),
@@ -166,12 +173,12 @@ def wallet_withdrawal_requests(request):
         C("user_email", "Email", width=1.6),
         C("amount", "Amount (₹)", spec.CURRENCY, 1.0, total=True),
         C("status", "Status", width=0.9, value=_status),
-        C("user_note", "User note", width=1.6),
+        C("user_note", "User note", width=1.6, align="left"),
         C("approved_by_email", "Approved by", width=1.4),
         C("utr_reference", "UTR", width=1.0),
         C("responded_at", "Responded (IST)", spec.DATETIME, 1.15),
         C("completed_at", "Completed (IST)", spec.DATETIME, 1.15),
-        C("response_message", "Remarks", width=1.6),
+        C("response_message", "Remarks", width=1.6, align="left"),
     ]
     kpis = [
         spec.Kpi("Requests", len(rows), spec.INTEGER),
@@ -221,7 +228,7 @@ def admin_wallet_owners(request):
     summary = (first or {}).get("summary") or {}
     columns = [
         SNO,
-        C("name", "Wallet owner", width=1.5),
+        C("name", "Wallet owner", width=1.5, link=_owner_link),
         C("employee_id", "Employee / enrolment no.", width=1.0),
         C("user_type_label", "Category", width=1.1),
         C("department_name", "Department", width=1.4),
@@ -270,13 +277,14 @@ def admin_wallet_transactions(request):
     ]
     if not single_owner:
         columns += [
-            C("owner_name", "Wallet owner", width=1.4),
+            C("owner_name", "Wallet owner", width=1.4, link=_owner_link),
             C("owner_department", "Owner department", width=1.2),
         ]
     columns += [
         C("transaction_type", "Type", width=0.6, value=lambda r: _TXN_TYPES.get(r.get("transaction_type"), "")),
         C("category_label", "Source", width=1.1),
-        C("booking_code", "Booking", width=1.1),
+        C("booking_code", "Booking", width=1.1,
+          link=booking_link(request, display_key="booking_code", pk_key="booking_pk")),
         C("department_name", "Sub-wallet", width=1.2),
         C("credit", "Credit (₹)", spec.CURRENCY, 0.9, total=True,
           value=lambda r: r.get("amount") if r.get("transaction_type") == "credit" else None),
@@ -284,8 +292,8 @@ def admin_wallet_transactions(request):
           value=lambda r: r.get("amount") if r.get("transaction_type") == "debit" else None),
         C("balance_after", "Balance after (₹)", spec.CURRENCY, 1.0),
         C("performed_by", "Performed by", width=1.2),
-        C("description", "Description", width=2.4),
-        C("remarks", "Remarks", width=1.6),
+        C("description", "Description", width=2.4, align="left"),
+        C("remarks", "Remarks", width=1.6, align="left"),
     ]
     kpis = [
         spec.Kpi("Transactions", summary.get("transactions", len(rows)), spec.INTEGER),

@@ -7,6 +7,7 @@ from ..bridge import call_view
 from ..http import ExportError
 from ..registry import register
 from .booking_activity import humanize
+from .common import booking_link
 from .common import filter_pairs
 from .common import make_document
 
@@ -75,6 +76,7 @@ def _booking_stats_parts(request, *, params=None):
         rows,
         sheet_name="Booking status",
         empty_message="No bookings in your scope.",
+        serial=False,
     )
     return data, kpis, table
 
@@ -104,7 +106,7 @@ def report_bookings(request):
     rows, _ = collect_rows(request, "list-bookings", results_key="bookings", page_size=100, params=params)
     labels = _status_labels()
     columns = [
-        C("booking_id", "Booking ID", width=1.1),
+        C("booking_id", "Booking ID", width=1.1, link=booking_link(request)),
         C("equipment", "Equipment", width=1.9, value=lambda r: _eq_label(
             {"code": r.get("equipment_code"), "name": r.get("equipment_name")})),
         C("start_time", "Start (IST)", spec.DATETIME, 1.15),
@@ -145,7 +147,7 @@ def _revenue_table(key, title, label_header, label_value, rows, sheet):
         [C("label", label_header, width=2.4, value=label_value),
          C("count", "Bookings", spec.INTEGER, 0.8, total=True),
          C("total", "Revenue (₹)", spec.CURRENCY, 1.0, total=True)],
-        list(rows or []), sheet_name=sheet, empty_message="No completed bookings in this period.",
+        list(rows or []), sheet_name=sheet, empty_message="No completed bookings in this period.", serial=False,
     )
 
 
@@ -202,7 +204,7 @@ def _equipment_parts(request):
         [C("name", "Slot outcome", width=2.2), C("hours", "Hours", spec.NUMBER, 1.0, total=True),
          C("share", "Share", spec.PERCENT, 1.0, value=lambda r: (float(r.get("hours") or 0) / pie_total)
            if pie_total else 0)],
-        pie, sheet_name="Utilization", empty_message="No slot data in this period.",
+        pie, sheet_name="Utilization", empty_message="No slot data in this period.", serial=False,
     ))
     tables.append(spec.Table(
         "equipment_usage", "Equipment-wise usage",
@@ -279,7 +281,8 @@ def _equipment_parts(request):
     ]
     if feedback:
         tables.append(spec.Table("feedback", "Rating feedback (latest, up to 50 per equipment)",
-                                 [C("equipment", "Equipment", width=1.4), C("feedback", "Feedback", width=4.0)],
+                                 [C("equipment", "Equipment", width=1.4),
+                                  C("feedback", "Feedback", width=4.0, align="left")],
                                  feedback, sheet_name="Feedback"))
     header = data.get("report_header") or {}
     period = (header.get("period_display") or f"{data.get('date_from', '')} – {data.get('date_to', '')}")

@@ -332,6 +332,7 @@ def test_main_admin_lists_sorts_filters_and_exports_feedback(people):
     assert csv_res["Content-Type"].startswith("text/csv")
     text = csv_res.content.decode("utf-8-sig")
     lines = text.strip().splitlines()
-    assert lines[0].startswith("Feedback ID,Name,Email")
+    assert lines[0].startswith("S.No.,Feedback ID,Name,Email")
+    assert lines[1].startswith("1,")
     assert people["student"].email in lines[1]
     assert "'=HYPERLINK(bad)" in lines[1]

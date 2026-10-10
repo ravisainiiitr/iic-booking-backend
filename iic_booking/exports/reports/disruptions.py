@@ -70,7 +70,7 @@ def disruption_history(request):
         C("duration_hours", "Duration (h)", spec.NUMBER, 0.7, total=True),
         C("slots_affected", "Slots", spec.INTEGER, 0.5, total=True),
         C("bookings_affected", "Bookings", spec.INTEGER, 0.6, total=True),
-        C("reason", "Reason", width=2.0, value=_reason),
+        C("reason", "Reason", width=2.0, value=_reason, align="left"),
         C("action_taken", "Action taken", width=2.0),
         C("service_reports", "Service report", width=1.0, value=_reports),
         C("started_by_name", "Started by", width=1.1, value=lambda r: _person(r, "started_by")),

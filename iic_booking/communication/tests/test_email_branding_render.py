@@ -17,6 +17,27 @@ from iic_booking.communication.email_branding import (
 from iic_booking.communication.service import CommunicationService
 
 
+class BookingIdLinkTests(SimpleTestCase):
+    def _rendered(self):
+        from iic_booking.communication.email_branding import detail_row_html
+
+        return {"html_message": "<table>" + detail_row_html("Booking ID", "IIC-7") + "</table>"}
+
+    def test_booking_id_links_to_the_booking_page(self):
+        from iic_booking.communication.email_branding import link_booking_id
+
+        url = "https://equip.iitr.ac.in/my-bookings?booking=IIC-7"
+        html = link_booking_id(self._rendered(), url)["html_message"]
+        self.assertIn(f'<a href="{url}"', html)
+        self.assertIn(">IIC-7</a>", html)
+
+    def test_other_links_and_relative_urls_are_ignored(self):
+        from iic_booking.communication.email_branding import link_booking_id
+
+        for url in ("https://equip.iitr.ac.in/wallet", "/my-bookings?booking=IIC-7", ""):
+            self.assertNotIn("<a ", link_booking_id(self._rendered(), url)["html_message"])
+
+
 class EmailBrandingFormattersTests(SimpleTestCase):
     def test_format_inr(self):
         self.assertEqual(format_inr(7080), "₹7,080.00")

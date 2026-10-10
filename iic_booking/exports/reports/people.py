@@ -58,7 +58,7 @@ def _nomination_columns(statuses, *, student=True, supervisor=True, outcome=True
         C("nominated_at", "Nominated at (IST)", spec.DATETIME, 1.15),
         C("approved_by_name", "Decided by", width=1.1),
         C("approved_at", "Decided at (IST)", spec.DATETIME, 1.15),
-        C("remarks", "Remarks", width=1.5),
+        C("remarks", "Remarks", width=1.5, align="left"),
     ]
     return columns
 
@@ -145,7 +145,7 @@ _SUBSTITUTION_COLUMNS = [
     C("start_display", "From", width=1.2),
     C("end_display", "Until", width=1.2),
     C("status_label", "Status", width=0.8),
-    C("reason", "Reason", width=1.7),
+    C("reason", "Reason", width=1.7, align="left"),
     C("created_at", "Created at (IST)", spec.DATETIME, 1.1),
     C("created_by", "Created by", width=1.1, value=_person("created_by")),
     C("ended", "Ended / cancelled", width=1.5, value=lambda r: " — ".join(
@@ -159,7 +159,7 @@ _HISTORY_COLUMNS = [
     C("substitute", "Substitute", width=1.3),
     C("action_label", "Action", width=1.0),
     C("actor_name", "By", width=1.2),
-    C("reason", "Reason", width=2.2),
+    C("reason", "Reason", width=2.2, align="left"),
 ]
 
 
@@ -224,7 +224,7 @@ def tickets(request):
         SNO,
         C("ticket_id", "Ticket", spec.INTEGER, 0.6),
         C("created_at", "Raised (IST)", spec.DATETIME, 1.15),
-        C("subject", "Subject", width=2.2),
+        C("subject", "Subject", width=2.2, align="left"),
         C("ticket_type", "Type", width=1.0,
           value=lambda r: r.get("ticket_type_name") or r.get("ticket_type_display") or humanize(r.get("ticket_type"))),
         C("priority", "Priority", width=0.7, value=lambda r: r.get("priority_display") or humanize(r.get("priority"))),

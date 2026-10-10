@@ -97,3 +97,18 @@ def numbered(rows: list[dict]) -> list[dict]:
 
 
 SNO = spec.Column("_sno", "S.No.", spec.INTEGER, 0.45)
+
+
+def booking_link(request, *, display_key: str = "booking_id", pk_key: str = "real_booking_id"):
+    """Column ``link`` for a Booking ID cell: Booking Management for staff, My Bookings for everyone else."""
+    from iic_booking.equipment.booking_links import booking_detail_path
+    from iic_booking.equipment.results_deadline import viewer_is_staff
+
+    staff = viewer_is_staff(request.user)
+
+    def link(row: dict) -> str:
+        pk = row.get(pk_key)
+        return booking_detail_path(pk=pk if str(pk or "").isdigit() else None,
+                                   display_id=str(row.get(display_key) or ""), staff=staff)
+
+    return link

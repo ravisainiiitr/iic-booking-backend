@@ -928,6 +928,32 @@ def inject_fbr_number(rendered: dict, fbr_number: Any) -> dict:
     return rendered
 
 
+_BOOKING_ID_VALUE_RE = re.compile(r"(>\s*Booking ID\s*</td>\s*<td[^>]*>)(.*?)(</td>)", re.DOTALL)
+_BOOKING_PAGE_PATHS = ("/my-bookings", "/booking-management")
+
+
+def link_booking_id(rendered: dict, link: Any) -> dict:
+    """Make the Booking ID detail value a link to the booking, when the email's link opens that booking.
+
+    ``link`` is the email's own (role-appropriate) booking link; other links (wallet, feedback, ...) are left alone.
+    """
+    url = str(link or "").strip()
+    if not isinstance(rendered, dict) or not url.startswith(("http://", "https://")):
+        return rendered
+    if not any(path in url for path in _BOOKING_PAGE_PATHS):
+        return rendered
+    html_body = rendered.get("html_message") or ""
+    match = _BOOKING_ID_VALUE_RE.search(html_body)
+    if not match or "<a " in match.group(2) or not match.group(2).strip():
+        return rendered
+    value = match.group(2).strip()
+    anchor = (
+        f'<a href="{escape(url)}" style="color:{COLOR_PRIMARY};text-decoration:underline;">{value}</a>'
+    )
+    rendered["html_message"] = html_body[: match.start(2)] + anchor + html_body[match.end(2):]
+    return rendered
+
+
 def sanitize_template_context(
     context: Optional[Mapping[str, Any]], template_code: Optional[str] = None
 ) -> dict[str, Any]:

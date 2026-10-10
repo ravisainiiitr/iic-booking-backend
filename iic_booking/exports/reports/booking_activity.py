@@ -6,6 +6,7 @@ from .. import spec
 from ..bridge import collect_rows
 from ..registry import register
 from .common import SNO
+from .common import booking_link
 from .common import filter_pairs
 from .common import make_document
 from .common import numbered
@@ -59,8 +60,8 @@ def booking_attempt_logs(request):
         C("user_email", "Email", width=1.6),
         C("equipment", "Equipment", width=1.6, value=_equipment),
         C("outcome", "Outcome", width=0.8, value=lambda r: _OUTCOMES.get(r.get("outcome"), humanize(r.get("outcome")))),
-        C("reason", "Reason (if failed)", width=2.6, value=_attempt_reason),
-        C("display_booking_id", "Booking ID", width=1.1),
+        C("reason", "Reason (if failed)", width=2.6, value=_attempt_reason, align="left"),
+        C("display_booking_id", "Booking ID", width=1.1, link=booking_link(request, display_key="display_booking_id")),
         C("number_of_samples", "Samples", spec.INTEGER, 0.6),
         C("slots_requested", "Slots", spec.INTEGER, 0.5),
         C("duration", "Duration", width=0.7, value=_duration),
@@ -109,7 +110,7 @@ def my_booking_attempts(request):
         C("equipment", "Equipment", width=1.7, value=_equipment),
         C("outcome", "Outcome", width=0.8, value=lambda r: _OUTCOMES.get(r.get("outcome"), humanize(r.get("outcome")))),
         C("slots", "Requested slots", width=2.0, value=_slots_text),
-        C("reason", "Reason", width=2.6, value=_attempt_reason),
+        C("reason", "Reason", width=2.6, value=_attempt_reason, align="left"),
         C("booked", "Booked by / for", width=1.3, value=_booked_note),
     ]
     outcome = (request.query_params.get("outcome") or "FAILED").strip().upper()
@@ -146,6 +147,11 @@ def _supervisor_text(row) -> str:
     return f"{state} — {who}" if who else state
 
 
+def _hold_booking_link(request):
+    link = booking_link(request)
+    return lambda row: link(row.get("hold_booking_summary") or {})
+
+
 @register("urgent-requests")
 def urgent_requests(request):
     statuses, types = _urgent_labels()
@@ -161,11 +167,11 @@ def urgent_requests(request):
         C("number_of_samples", "Samples", spec.INTEGER, 0.6),
         C("slots_requested", "Slots", spec.INTEGER, 0.5),
         C("supervisor", "Supervisor approval", width=1.3, value=_supervisor_text),
-        C("hold_booking_summary.booking_id", "Hold booking", width=1.0),
+        C("hold_booking_summary.booking_id", "Hold booking", width=1.0, link=_hold_booking_link(request)),
         C("expiry_at", "Hold expires (IST)", spec.DATETIME, 1.15),
         C("decided_by_name", "Decided by", width=1.1),
         C("decided_at", "Decided at (IST)", spec.DATETIME, 1.15),
-        C("admin_notes", "Staff notes", width=1.6),
+        C("admin_notes", "Staff notes", width=1.6, align="left"),
         C("no_slot_log_count", "No-slot attempts", spec.INTEGER, 0.7),
     ]
     filters = filter_pairs(request, [
@@ -218,7 +224,7 @@ def urgent_requests_wallet(request):
         C("number_of_samples", "Samples", spec.INTEGER, 0.6),
         C("hold_booking_total_charge", "Hold booking charge", spec.CURRENCY, 0.9),
         C("wallet_approved_at", "Decided at (IST)", spec.DATETIME, 1.15),
-        C("wallet_notes", "Notes", width=1.5),
+        C("wallet_notes", "Notes", width=1.5, align="left"),
     ]
     filters = filter_pairs(request, [("status", "Status", {"PENDING": "Pending", "APPROVED": "Approved",
                                                             "REJECTED": "Rejected", "ALL": "All"})])
@@ -267,7 +273,7 @@ def waitlist(request):
         C("status", "Status", width=1.4, value=_waitlist_status),
         C("sample", "Sample", width=1.3, value=_sample_text),
         C("booking_attempt_requested_at", "Last attempt (IST)", spec.DATETIME, 1.15),
-        C("last_attempt", "Last attempt result", width=2.0, value=_last_attempt),
+        C("last_attempt", "Last attempt result", width=2.0, value=_last_attempt, align="left"),
     ]
     kpis = []
     if isinstance(data, dict):
@@ -298,7 +304,7 @@ def repeat_sample_requests(request):
                            page_size=None)
     columns = [
         SNO,
-        C("booking_id", "Original booking", width=1.1),
+        C("booking_id", "Original booking", width=1.1, link=booking_link(request)),
         C("equipment", "Equipment", width=1.6, value=_equipment),
         C("user_name", "User", width=1.3),
         C("user_email", "Email", width=1.6),
@@ -306,9 +312,11 @@ def repeat_sample_requests(request):
         C("requested_at", "Marked (IST)", spec.DATETIME, 1.15),
         C("status", "Status", width=0.8, value=_repeat_status),
         C("responded_by_name", "Arranged by", width=1.2),
-        C("new_booking_id", "Repeat booking", width=1.1),
+        C("new_booking_id", "Repeat booking", width=1.1,
+          link=booking_link(request, display_key="new_booking_id", pk_key="new_real_booking_id")),
         C("booked_at", "Repeat booked (IST)", spec.DATETIME, 1.15),
-        C("notes", "Notes", width=1.8, value=lambda r: r.get("admin_notes") or r.get("user_notes") or ""),
+        C("notes", "Notes", width=1.8, value=lambda r: r.get("admin_notes") or r.get("user_notes") or "",
+          align="left"),
     ]
     filters = filter_pairs(request, [("status", "Status", _REPEAT_STATUSES),
                                      ("department_id", "Department", "department"),

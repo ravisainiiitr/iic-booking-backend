@@ -384,9 +384,9 @@ def build_booking_invoice_pdf(*, booking, billing_profile) -> bytes:
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("ALIGN", (2, 1), (2, -1), "RIGHT"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ]
         )
     )
@@ -781,7 +781,8 @@ def build_proforma_invoice_pdf(*, data: Dict[str, Any], billing_profile) -> byte
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#153f79")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
             ]
         )
@@ -933,15 +934,16 @@ def build_proforma_invoice_multi_pdf(
         fontName=header_font,
         fontSize=9,
         textColor=colors.white,
+        alignment=1,
     )
+    small_center = ParagraphStyle("small_center", parent=small, alignment=1)
 
     # Table headers and cells: use rupee symbol when font supports it (headers as Paragraphs so ₹ renders)
     base_col = f"Base ({rupees_label})"
     gst_col = f"GST ({rupees_label})"
     total_col = f"Total ({rupees_label})"
-    header_row = ["#", "Equipment", "Inputs & charge breakup", base_col, gst_col, total_col]
     header_row = [
-        Paragraph("#", header_style),
+        Paragraph("S.No.", header_style),
         Paragraph("Equipment", header_style),
         Paragraph("Inputs & charge breakup", header_style),
         Paragraph(base_col, header_style),
@@ -954,7 +956,7 @@ def build_proforma_invoice_multi_pdf(
         eq_code = _safe_str(row.get("equipment_code", ""))
         eq_para = Paragraph(
             f"{eq_name} ({eq_code})".replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"),
-            small,
+            small_center,
         )
         input_vals = row.get("input_labels_and_values") or row.get("input_values") or {}
         if isinstance(input_vals, dict):
@@ -1006,12 +1008,12 @@ def build_proforma_invoice_multi_pdf(
         amount_words = "Rupees Only"
     total_amount_para = Paragraph(
         "Total amount<br/><font size='8'>" + amount_words.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") + "</font>",
-        small,
+        small_center,
     )
     table_data.append(["", "", total_amount_para, "", "", _money(total_amount)])
 
     # Wider equipment column to avoid overlap; slightly narrower breakup column
-    col_widths = [0.8 * cm, 4.0 * cm, 5.7 * cm, 2.0 * cm, 1.8 * cm, 2.2 * cm]
+    col_widths = [1.0 * cm, 3.9 * cm, 5.6 * cm, 2.0 * cm, 1.8 * cm, 2.2 * cm]
     t = Table(table_data, colWidths=col_widths, repeatRows=1)
     t.setStyle(
         TableStyle(
@@ -1020,9 +1022,8 @@ def build_proforma_invoice_multi_pdf(
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
                 ("FONTNAME", (0, 0), (-1, 0), header_font),
                 ("FONTSIZE", (0, 0), (-1, 0), 9),
-                ("ALIGN", (0, 0), (0, -1), "CENTER"),
-                ("ALIGN", (3, 1), (5, -1), "RIGHT"),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
                 ("BACKGROUND", (0, -2), (-1, -2), colors.HexColor("#e2e8f0")),
                 ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#cbd5e1")),

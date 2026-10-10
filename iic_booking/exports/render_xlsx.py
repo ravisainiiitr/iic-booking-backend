@@ -10,8 +10,11 @@ from .branding import BRAND_HEX
 from .branding import PORTAL_LINE
 from .values import display_text
 from .values import guard_formula
+from .values import link_url
 from .values import raw_value
 from .values import typed_value
+
+LINK_HEX = "1D4ED8"
 
 _NUMBER_FORMATS = {
     spec.INTEGER: "#,##0",
@@ -53,12 +56,13 @@ def _styles():
         "meta": Font(italic=True, size=9, color="64748B"),
         "header_font": Font(bold=True, color="FFFFFF"),
         "header_fill": PatternFill(start_color=BRAND_HEX, end_color=BRAND_HEX, fill_type="solid"),
-        "header_align": Alignment(vertical="center", wrap_text=True),
+        "header_align": Alignment(horizontal="center", vertical="center", wrap_text=True),
         "border": Border(left=thin, right=thin, top=thin, bottom=thin),
         "total_font": Font(bold=True),
         "total_fill": PatternFill(start_color="E8EEF7", end_color="E8EEF7", fill_type="solid"),
-        "wrap": Alignment(vertical="top", wrap_text=True),
-        "top": Alignment(vertical="top"),
+        "center": Alignment(horizontal="center", vertical="center", wrap_text=True),
+        "left": Alignment(horizontal="left", vertical="center", wrap_text=True),
+        "link": Font(color=LINK_HEX, underline="single"),
         "label": Font(bold=True, color="334155"),
         "kpi_value": Font(bold=True, size=12, color=BRAND_HEX),
     }
@@ -84,9 +88,9 @@ def _write_table(ws, document, table: spec.Table, generated_at: str, styles) -> 
     from openpyxl.utils import get_column_letter
     from openpyxl.worksheet.properties import PageSetupProperties
 
-    columns = table.columns
+    columns, rows = spec.serial_view(table)
     ncols = max(len(columns), 1)
-    count = len(table.rows)
+    count = len(rows)
     heading = table.title if len(document.tables) > 1 or not document.subtitle else document.subtitle
     _banner(ws, document, f"{heading} · {count:,} row{'s' if count != 1 else ''}", ncols, generated_at, styles)
 
@@ -101,7 +105,7 @@ def _write_table(ws, document, table: spec.Table, generated_at: str, styles) -> 
 
     totals = {i: 0.0 for i, c in enumerate(columns) if c.total}
     row_no = _HEADER_ROW
-    for position, row in enumerate(table.rows):
+    for position, row in enumerate(rows):
         row_no += 1
         for index, column in enumerate(columns):
             raw = raw_value(row, column)
@@ -110,10 +114,11 @@ def _write_table(ws, document, table: spec.Table, generated_at: str, styles) -> 
             cell.border = styles["border"]
             if column.type in _NUMBER_FORMATS and not isinstance(value, str):
                 cell.number_format = _NUMBER_FORMATS[column.type]
-            if column.type == spec.TEXT:
-                cell.alignment = styles["wrap"]
-            else:
-                cell.alignment = styles["top"]
+            cell.alignment = styles["left"] if column.align == "left" else styles["center"]
+            url = link_url(row, column)
+            if url and value not in (None, ""):
+                cell.hyperlink = url
+                cell.font = styles["link"]
             if index in totals and isinstance(value, (int, float)):
                 totals[index] += value
             if position < _WIDTH_SAMPLE and column.type not in _FIXED_WIDTHS:
@@ -121,7 +126,7 @@ def _write_table(ws, document, table: spec.Table, generated_at: str, styles) -> 
                 longest = max((len(part) for part in text.split("\n")), default=0)
                 widths[index] = max(widths[index], longest + 1)
 
-    if not table.rows:
+    if not rows:
         row_no += 1
         _merge_text(ws, row_no, ncols, table.empty_message, styles["meta"])
     elif totals:
@@ -136,6 +141,7 @@ def _write_table(ws, document, table: spec.Table, generated_at: str, styles) -> 
             cell.font = styles["total_font"]
             cell.fill = styles["total_fill"]
             cell.border = styles["border"]
+            cell.alignment = styles["center"]
     if table.note:
         row_no += 2
         _merge_text(ws, row_no, ncols, table.note, styles["meta"])
@@ -147,7 +153,7 @@ def _write_table(ws, document, table: spec.Table, generated_at: str, styles) -> 
     if columns:
         last = get_column_letter(len(columns))
         ws.freeze_panes = ws.cell(row=_HEADER_ROW + 1, column=1)
-        if table.rows:
+        if rows:
             ws.auto_filter.ref = f"A{_HEADER_ROW}:{last}{_HEADER_ROW + count}"
         ws.print_title_rows = f"{_HEADER_ROW}:{_HEADER_ROW}"
     ws.page_setup.orientation = "landscape" if len(columns) > 6 else "portrait"

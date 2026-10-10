@@ -21,8 +21,10 @@ from .export_styles import RULE
 from .export_styles import SET_BG
 from .export_styles import STATUS_COLOURS
 from .export_styles import STRIPE_BG
+from .export_styles import LONG_CELL_TEXT
 from .export_styles import TABLE_HEAD_BG
 from .export_styles import Fonts
+from .export_styles import link_markup
 from .export_styles import markup
 from .export_styles import money_text
 from .export_styles import pdf_styles
@@ -42,10 +44,19 @@ class _Builder:
         self.width = width
         self.charges = charges
 
-    def p(self, text, style):
+    def p(self, text, style, *, link: str = "", link_color: str | None = None):
         from reportlab.platypus import Paragraph
 
-        return Paragraph(markup(text, self.fonts), style)
+        text_markup = markup(text, self.fonts)
+        if link:
+            text_markup = link_markup(text_markup, link, **({"color": link_color} if link_color else {}))
+        return Paragraph(text_markup, style)
+
+    def cell_p(self, text, *, small: bool = False):
+        """Table cell: centred, except longer free text which stays left-aligned."""
+        if len(text) > LONG_CELL_TEXT:
+            return self.p(text, self.S.cell_small if small else self.S.cell)
+        return self.p(text, self.S.cell_small_center if small else self.S.cell_center)
 
     # -- small pieces ------------------------------------------------------
 
@@ -127,8 +138,8 @@ class _Builder:
         table.setStyle(TableStyle(style))
         return table
 
-    def data_table(self, columns, rows, *, width=None, right_align=()):
-        """Bordered table with a shaded header row (no header when ``columns`` is empty)."""
+    def data_table(self, columns, rows, *, width=None):
+        """Bordered table with a shaded header row (no header when ``columns`` is empty); cells centred."""
         from reportlab.lib import colors
         from reportlab.platypus import Table
         from reportlab.platypus import TableStyle
@@ -152,7 +163,7 @@ class _Builder:
             text = str(r[i]) if i < len(r) and r[i] is not None and str(r[i]).strip() else "—"
             if len(text) > caps[i]:
                 text = text[:caps[i]] + "… (shortened; full text in the Excel export)"
-            return self.p(text, self.S.cell_right if i in right_align else cell_style)
+            return self.cell_p(text, small=small)
 
         data = []
         if columns:
@@ -161,7 +172,7 @@ class _Builder:
             data.append([cell(r, i) for i in range(n)])
         table = Table(data, colWidths=widths, repeatRows=1 if columns else 0)
         style = [
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor(RULE)),
             ("TOPPADDING", (0, 0), (-1, -1), 2.5),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
@@ -185,7 +196,10 @@ class _Builder:
         from reportlab.platypus import TableStyle
 
         badge_w = 4.6 * 28.35
-        left = [self.p(row.get("booking_id") or "", self.S.band_id), self.p(row.get("equipment") or "", self.S.band_sub)]
+        left = [
+            self.p(row.get("booking_id") or "", self.S.band_id, link=row.get("link") or "", link_color="#ffffff"),
+            self.p(row.get("equipment") or "", self.S.band_sub),
+        ]
         band = Table(
             [[left, self.badge(row.get("status_code") or "", row.get("status") or "")]],
             colWidths=[self.width - badge_w, badge_w],
@@ -301,9 +315,8 @@ class _Builder:
         if detail.files:
             flow.append(self.section("Uploaded files"))
             flow.append(self.data_table(
-                ["#", "File name", "Part", "Material", "Quantity"],
+                ["S.No.", "File name", "Part", "Material", "Quantity"],
                 [[str(i), f.name, f.part, f.material, str(f.quantity)] for i, f in enumerate(detail.files, start=1)],
-                right_align=(4,),
             ))
         if self.charges and detail.charges:
             flow.append(self.section("Charges"))
@@ -320,21 +333,20 @@ class _Builder:
         data = [[self.p("Description", self.S.table_head), self.p(f"Amount ({rupee})", self.S.table_head)]]
         for description, amount in lines:
             data.append([
-                self.p(description or "Charge", self.S.cell),
-                self.p("" if amount is None else f"{amount:,.2f}", self.S.cell_right),
+                self.cell_p(description or "Charge"),
+                self.p("" if amount is None else f"{amount:,.2f}", self.S.cell_center),
             ])
         if total is not None:
             data.append([
-                self.p("Total charged", self.S.cell_bold),
-                self.p(f"{total:,.2f}", self.S.cell_bold_right),
+                self.p("Total charged", self.S.cell_bold.clone("exp_cell_bold_c", alignment=1)),
+                self.p(f"{total:,.2f}", self.S.cell_bold.clone("exp_cell_bold_amount_c", alignment=1)),
             ])
-        table = Table(data, colWidths=[self.width - amount_w, amount_w])
+        table = Table(data, colWidths=[self.width - amount_w, amount_w], repeatRows=1)
         style = [
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor(RULE)),
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(TABLE_HEAD_BG)),
             ("LINEBELOW", (0, 0), (-1, 0), 0.8, colors.HexColor(BRAND)),
-            ("ALIGN", (1, 0), (1, 0), "RIGHT"),
             ("TOPPADDING", (0, 0), (-1, -1), 2.5),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
             ("LEFTPADDING", (0, 0), (-1, -1), 5),
@@ -357,7 +369,7 @@ class _Builder:
 
         keys = {c.key for c in columns}
         rupee = "₹" if self.fonts.unicode else "Rs."
-        spec = [("sno", "#", 0.45), ("booking_id", "Booking ID", 2.2), ("equipment", "Equipment", 2.3)]
+        spec = [("sno", "S.No.", 0.55), ("booking_id", "Booking ID", 2.2), ("equipment", "Equipment", 2.3)]
         if "department" in keys:
             spec.append(("user", "User", 1.8))
         spec += [("slot_dates", "Slot date(s)", 1.55), ("status", "Status", 1.55), ("samples", "Samples", 1.05)]
@@ -367,9 +379,9 @@ class _Builder:
         widths = [self.width * s / total for _, _, s in spec]
         header = [self.p(label, self.S.head) for _, label, _ in spec]
         style = [
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND)),
-            ("LINEBELOW", (0, 0), (-1, -1), 0.35, colors.HexColor(RULE)),
+            ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor(RULE)),
             ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor(RULE)),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor(STRIPE_BG)]),
             ("TOPPADDING", (0, 0), (-1, -1), 2.5),
@@ -386,13 +398,15 @@ class _Builder:
                 for key, _, _ in spec:
                     value = row.get(key)
                     if key == "amount":
-                        cells.append(self.p("" if value is None else f"{value:,.2f}", self.S.cell_right))
+                        cells.append(self.p("" if value is None else f"{value:,.2f}", self.S.cell_center))
                     elif key == "status":
                         fg, _bg = STATUS_COLOURS.get(row.get("status_code") or "", DEFAULT_STATUS_COLOURS)
-                        cells.append(self.p(value or "", self.S.cell_bold.clone("exp_status_c",
-                                                                                textColor=colors.HexColor(fg))))
+                        cells.append(self.p(value or "", self.S.cell_bold.clone(
+                            "exp_status_c", textColor=colors.HexColor(fg), alignment=1)))
+                    elif key == "booking_id":
+                        cells.append(self.p(value or "", self.S.cell_center, link=row.get("link") or ""))
                     else:
-                        cells.append(self.p("" if value is None else value, self.S.cell))
+                        cells.append(self.p("" if value is None else value, self.S.cell_center))
                 data.append(cells)
             table = Table(data, colWidths=widths, repeatRows=1)
             table.setStyle(TableStyle(style))
