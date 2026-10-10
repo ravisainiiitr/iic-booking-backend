@@ -948,8 +948,49 @@ def user_may_download_design_file(user, analysis, check_operator_permission) -> 
         return True
     if analysis.user_id == user.id:
         return True
-    booking = getattr(analysis, "booking", None)
-    return bool(booking and booking.user_id == user.id)
+    return any(user_can_view_booking_design_files(user, b) for b in _bookings_of_design_file(analysis))
+
+
+def _bookings_of_design_file(analysis):
+    """Bookings an STL / DXF belongs to: its own link, its upload batch's, or (old 3D print bookings) the
+    booking's primary analysis."""
+    seen = set()
+    candidates = [getattr(analysis, "booking", None)]
+    batch = getattr(analysis, "batch", None) if getattr(analysis, "batch_id", None) else None
+    candidates.append(getattr(batch, "booking", None) if batch else None)
+    linked = getattr(analysis, "linked_bookings", None)
+    if linked is not None:
+        candidates.extend(linked.select_related("equipment").all()[:5])
+    for booking in candidates:
+        if booking is not None and booking.pk not in seen:
+            seen.add(booking.pk)
+            yield booking
+
+
+def user_can_view_booking_design_files(user, booking) -> bool:
+    """Everyone who sees the booking's details may see its STL / DXF files: the booking user, lab staff of
+    the equipment (admin, OIC, Lab Operators), the Department Administrator of the equipment's department and
+    the faculty whose wallet the student books with. Accounts In Charge do not see the files."""
+    from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
+
+    from .fabrication_workflow import user_is_fabrication_lab_staff
+
+    if not user or not getattr(user, "is_authenticated", False) or booking is None:
+        return False
+    if booking.user_id == user.id:
+        return True
+    if user_is_fabrication_lab_staff(user, booking):
+        return True
+    user_type = getattr(user, "user_type", None)
+    if user_type == UserType.DEPT_ADMIN:
+        dept_id = getattr(user, "department_id", None)
+        equipment = getattr(booking, "equipment", None)
+        return bool(dept_id and equipment and equipment.internal_department_id == dept_id)
+    if user_type == UserType.FINANCE:
+        return False
+    return WalletJoinRequest.objects.filter(
+        faculty=user, student_id=booking.user_id, status=WalletJoinRequestStatus.APPROVED
+    ).exists()
 
 
 def _resolve_storage_name(file_field):
