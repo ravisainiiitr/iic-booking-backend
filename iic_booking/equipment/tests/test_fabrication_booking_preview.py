@@ -146,3 +146,58 @@ def test_multi_file_print_booking_streams_each_stl_until_completion_removes_them
     parts = BookingSerializer(booking, context={"request": None}).data["fabrication_parts"]
     assert [p["file_available"] for p in parts] == [False, False]
     assert _get(egs_factory, student, f"/api/print-analyses/{gear.pk}/stl/").status_code == 404
+
+
+def _view_booking_parts(egs_factory, viewer, booking):
+    """The booking View Booking / My Bookings opens: the full booking fetched by its id, as the page does."""
+    resp = _get(egs_factory, viewer, f"/api/bookings/?booking_id={booking.pk}&limit=1")
+    assert resp.status_code == 200, (viewer.user_type, getattr(resp, "data", None))
+    [row] = resp.json()["bookings"]
+    assert row["equipment_profile_type"] == "PRINT_3D", viewer.user_type
+    return row["fabrication_parts"]
+
+
+@pytest.mark.django_db
+def test_view_booking_of_test_printer_booking_previews_every_stl_for_owner_and_staff(egs_factory, media_tmp):
+    """Shaped like IICTEST-3DP-01202600002: the test-only printer TEST-3DP-01, two STLs uploaded together (one
+    turned on the plate), and an older booking that points at its single STL from the booking only."""
+    from iic_booking.equipment.models import PrintAnalysis, PrintAnalysisBatch
+
+    eq = print_equipment(egs_factory, code="TEST-3DP-01", visible_to_test_accounts_only=True)
+    pla = print_material(eq)
+    student, _sub = funded_student(egs_factory)
+    student.is_test_account = True
+    student.save(update_fields=["is_test_account"])
+    booking = egs_factory.booking(student, eq, egs_factory.future(), total_charge="30.00")
+    Booking.objects.filter(pk=booking.pk).update(virtual_booking_id="IICTEST-3DP-01202600002")
+    batch = PrintAnalysisBatch.objects.create(equipment=eq, user=student, booking=booking, status="COMPLETED")
+    flipped = [1, 0, 0, 0, -1, 0, 0, 0, -1]
+    gear = print_part(eq, student, pla, name="gear", batch=batch, booking=booking, sequence=0)
+    hub = print_part(eq, student, pla, name="hub", batch=batch, booking=booking, sequence=1)
+    PrintAnalysis.objects.filter(pk=gear.pk).update(volume_cm3="8.2346", slicer_settings={"orientation": flipped})
+    Booking.objects.filter(pk=booking.pk).update(print_analysis=gear, print_analysis_batch=batch)
+
+    legacy = egs_factory.booking(student, eq, egs_factory.future(days=4), total_charge="15.00")
+    old_model = print_part(eq, student, pla, name="bracket")
+    Booking.objects.filter(pk=legacy.pk).update(print_analysis=old_model)
+
+    oic = _staff(egs_factory, UserType.MANAGER)
+    EquipmentManager.objects.create(equipment=eq, manager=oic)
+    operator = _staff(egs_factory, UserType.OPERATOR)
+    EquipmentOperator.objects.create(equipment=eq, operator=operator)
+    main_admin = _staff(egs_factory, UserType.ADMIN)
+
+    for viewer in (student, oic, operator, main_admin):
+        parts = _view_booking_parts(egs_factory, viewer, booking)
+        assert [(p["analysis_id"], p["file_available"]) for p in parts] == [(str(gear.pk), True), (str(hub.pk), True)]
+        assert parts[0]["orientation"] == flipped
+        assert parts[0]["volume_cm3"] == 8.23
+        assert (parts[0]["weight_g_each"], parts[0]["time_min_each"]) == (11, 30)
+        for part in parts:
+            resp = _get(egs_factory, viewer, f"/api/print-analyses/{part['analysis_id']}/stl/")
+            assert resp.status_code == 200, (viewer.user_type, part["name"])
+            assert resp.content == b"solid gear\nendsolid gear\n"
+
+        [old] = _view_booking_parts(egs_factory, viewer, legacy)
+        assert (old["analysis_id"], old["file_available"]) == (str(old_model.pk), True)
+        assert _get(egs_factory, viewer, f"/api/print-analyses/{old_model.pk}/stl/").status_code == 200

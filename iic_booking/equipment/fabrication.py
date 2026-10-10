@@ -236,12 +236,14 @@ def _has_stored_file(file_field) -> bool:
 
 
 def _print_preview_fields(analysis, est: dict) -> dict:
-    """What the booking page's 3D preview draws besides the model: layer lines and the print timeline (one copy),
-    plus whether the STL is still stored."""
+    """What the booking page's 3D preview shows besides the model: layer lines, the print timeline and the volume
+    (one copy), plus whether the STL is still stored."""
     layer = (getattr(analysis, "slicer_settings", None) or {}).get("layer_height_mm") or est.get("layer_height_mm")
     progress = est.get("progress")
+    volume = getattr(analysis, "volume_cm3", None)
     return {
         "file_available": _has_stored_file(getattr(analysis, "stl_file", None)),
+        "volume_cm3": round(float(volume), 2) if volume is not None else None,
         "layer_height_mm": layer,
         "print_progress": list(progress) if isinstance(progress, (list, tuple)) else None,
         "print_minutes": est.get("total_min"),
