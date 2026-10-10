@@ -675,6 +675,7 @@ class AwardStatus(models.TextChoices):
     EXPIRED = "EXPIRED", _("Expired")
     SUSPENDED = "SUSPENDED", _("Suspended")
     REVOKED = "REVOKED", _("Revoked")
+    SUPERSEDED = "SUPERSEDED", _("Superseded by a higher level")
 
 
 class CertificationAward(models.Model):
@@ -818,6 +819,258 @@ class TrainingEquipmentSetting(models.Model):
 
     def __str__(self) -> str:
         return f"Training {'on' if self.enabled else 'off'}: {self.equipment_id}"
+
+
+# ---------------------------------------------------------------------------
+# Competency assessment (practical checklist + theory score, ISO/IEC 17025-style authorisation record)
+# ---------------------------------------------------------------------------
+DEFAULT_CHECKLIST_ITEMS: list[dict] = [
+    {"key": "safety", "label": "Safety induction: hazards, PPE, interlocks and emergency stop", "critical": True},
+    {"key": "sop_startup", "label": "Start-up as per SOP (checks, warm-up, vacuum/gas/cooling as applicable)", "critical": True},
+    {"key": "sample_prep", "label": "Sample preparation, mounting and loading", "critical": False},
+    {"key": "calibration", "label": "Calibration / alignment / standard check", "critical": False},
+    {"key": "acquisition", "label": "Method set-up and data acquisition", "critical": False},
+    {"key": "data_handling", "label": "Data saving, naming, transfer and logbook entry", "critical": False},
+    {"key": "troubleshooting", "label": "Recognises common faults and when to stop and call staff", "critical": False},
+    {"key": "shutdown", "label": "Shutdown / standby as per SOP and clean-up", "critical": True},
+    {"key": "emergency", "label": "Emergency response (spill, power failure, alarm) and reporting", "critical": True},
+]
+
+
+class CompetencyChecklist(models.Model):
+    """Practical sign-off items for an equipment. A row without equipment is the institute default."""
+
+    equipment = models.OneToOneField(
+        "equipment.Equipment", on_delete=models.CASCADE, null=True, blank=True, related_name="competency_checklist"
+    )
+    items = models.JSONField(default=list, blank=True)
+    theory_pass_pct = models.PositiveSmallIntegerField(default=70)
+    practical_pass_pct = models.PositiveSmallIntegerField(default=80)
+    updated_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class AssessmentResult(models.TextChoices):
+    PASS = "PASS", _("Competent (pass)")
+    RETAKE = "RETAKE", _("Not yet competent (retake)")
+    FAIL = "FAIL", _("Not competent (fail)")
+
+
+class Assessment(models.Model):
+    user = models.ForeignKey(USER, on_delete=models.CASCADE, related_name="training_assessments")
+    equipment = models.ForeignKey("equipment.Equipment", on_delete=models.PROTECT, related_name="training_assessments")
+    event = models.ForeignKey(TrainingEvent, on_delete=models.SET_NULL, null=True, blank=True, related_name="assessments")
+    registration = models.ForeignKey(Registration, on_delete=models.SET_NULL, null=True, blank=True, related_name="assessments")
+    target_level = models.ForeignKey(CertificationLevel, on_delete=models.PROTECT, related_name="assessments")
+    assessor = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="training_assessments_made")
+    theory_score_pct = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    practical_items = models.JSONField(default=list, blank=True)
+    practical_score_pct = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    result = models.CharField(max_length=10, choices=AssessmentResult.choices)
+    scope_note = models.TextField(blank=True, default="")
+    remarks = models.TextField(blank=True, default="")
+    award = models.ForeignKey(CertificationAward, on_delete=models.SET_NULL, null=True, blank=True, related_name="assessments")
+    validity_months = models.PositiveSmallIntegerField(null=True, blank=True)
+    prerequisite_waiver_reason = models.TextField(blank=True, default="")
+    signed_off_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    signed_off_at = models.DateTimeField(null=True, blank=True)
+    assessed_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-assessed_at", "-id"]
+        indexes = [models.Index(fields=["user", "equipment"])]
+
+
+# ---------------------------------------------------------------------------
+# Operator duty: policy, roster, allocations, shifts
+# ---------------------------------------------------------------------------
+DEFAULT_DUTY_WEIGHTS: dict[str, float] = {
+    "load": 40,
+    "rotation": 15,
+    "rotation_full_days": 30,
+    "faculty_share": 15,
+    "department_share": 10,
+    "repeat": 5,
+}
+
+
+class OperatorPolicy(models.Model):
+    """Versioned duty and fairness policy (global, department or equipment); the newest active row per scope applies."""
+
+    scope = models.CharField(max_length=20, choices=PolicyScope.choices, default=PolicyScope.GLOBAL)
+    department = models.ForeignKey(
+        "users.Department", on_delete=models.CASCADE, null=True, blank=True, related_name="operator_policies"
+    )
+    equipment = models.ForeignKey(
+        "equipment.Equipment", on_delete=models.CASCADE, null=True, blank=True, related_name="operator_policies"
+    )
+    version = models.PositiveIntegerField(default=1)
+    is_active = models.BooleanField(default=True)
+
+    selection_cooldown_days = models.PositiveSmallIntegerField(default=180)
+    selection_cooldown_blocks = models.BooleanField(default=False)
+    group_repeat_penalty = models.PositiveSmallIntegerField(default=5)
+
+    duty_confirmation_required = models.BooleanField(default=True)
+    duty_confirm_hours = models.PositiveSmallIntegerField(default=24)
+    duty_reminder_hours = models.PositiveSmallIntegerField(default=6)
+    duty_max_hours_week = models.PositiveSmallIntegerField(default=12)
+    duty_max_hours_term = models.PositiveSmallIntegerField(default=150)
+    duty_cooling_days = models.PositiveSmallIntegerField(default=2)
+    duty_fairness_weights = models.JSONField(default=dict, blank=True)
+    duty_hourly_rate = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+
+    expiry_reminder_days = models.PositiveSmallIntegerField(default=30)
+    notes = models.TextField(blank=True, default="")
+    published_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["scope", "-version"]
+        indexes = [models.Index(fields=["scope", "is_active"])]
+        verbose_name_plural = "Operator policies"
+
+    def __str__(self) -> str:
+        target = self.equipment or self.department or "global"
+        return f"Operator policy v{self.version} ({target})"
+
+    def duty_weights(self) -> dict[str, float]:
+        return {**DEFAULT_DUTY_WEIGHTS, **(self.duty_fairness_weights or {})}
+
+
+class RosterSource(models.TextChoices):
+    AWARD = "AWARD", _("Certified on this equipment")
+    LEGACY_TA = "LEGACY_TA", _("Approved TA nomination")
+    MANUAL = "MANUAL", _("Added by the OIC")
+
+
+class RosterStatus(models.TextChoices):
+    ACTIVE = "ACTIVE", _("Active")
+    PAUSED = "PAUSED", _("Paused")
+    REMOVED = "REMOVED", _("Removed")
+
+
+class OperatorRosterEntry(models.Model):
+    equipment = models.ForeignKey("equipment.Equipment", on_delete=models.CASCADE, related_name="operator_roster")
+    user = models.ForeignKey(USER, on_delete=models.CASCADE, related_name="operator_roster_entries")
+    source = models.CharField(max_length=20, choices=RosterSource.choices, default=RosterSource.AWARD)
+    award = models.ForeignKey(CertificationAward, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    legacy_nomination = models.ForeignKey(
+        "equipment.StudentEquipmentNomination", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    status = models.CharField(max_length=10, choices=RosterStatus.choices, default=RosterStatus.ACTIVE)
+    status_reason = models.TextField(blank=True, default="")
+    faculty = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    department = models.ForeignKey("users.Department", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    max_hours_week = models.PositiveSmallIntegerField(null=True, blank=True)
+    note = models.TextField(blank=True, default="")
+    added_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["equipment", "user__name"]
+        constraints = [models.UniqueConstraint(fields=["equipment", "user"], name="training_one_roster_entry_per_equipment")]
+
+
+class DutyStatus(models.TextChoices):
+    PENDING = "PENDING", _("Awaiting operator confirmation")
+    CONFIRMED = "CONFIRMED", _("Confirmed")
+    DECLINED = "DECLINED", _("Declined")
+    EXPIRED = "EXPIRED", _("Released (not confirmed in time)")
+    CANCELLED = "CANCELLED", _("Cancelled")
+    COMPLETED = "COMPLETED", _("Completed")
+
+
+class DutyAllocation(models.Model):
+    equipment = models.ForeignKey("equipment.Equipment", on_delete=models.PROTECT, related_name="duty_allocations")
+    operator = models.ForeignKey(USER, on_delete=models.PROTECT, related_name="duty_allocations")
+    roster_entry = models.ForeignKey(OperatorRosterEntry, on_delete=models.SET_NULL, null=True, blank=True, related_name="allocations")
+    status = models.CharField(max_length=12, choices=DutyStatus.choices, default=DutyStatus.PENDING)
+    requires_confirmation = models.BooleanField(default=True)
+    confirm_by = models.DateTimeField(null=True, blank=True)
+    responded_at = models.DateTimeField(null=True, blank=True)
+    response_channel = models.CharField(max_length=10, blank=True, default="")
+    decline_reason = models.TextField(blank=True, default="")
+    token_nonce = models.CharField(max_length=32, default=_verify_token)
+    reminder_sent_at = models.DateTimeField(null=True, blank=True)
+    escalated_at = models.DateTimeField(null=True, blank=True)
+    title = models.CharField(max_length=255, blank=True, default="")
+    note = models.TextField(blank=True, default="")
+    suggested_rank = models.PositiveSmallIntegerField(null=True, blank=True)
+    override_reason = models.TextField(blank=True, default="")
+    fairness_snapshot = models.JSONField(default=dict, blank=True)
+    academic_year = models.CharField(max_length=9, blank=True, default="")
+    hourly_rate = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    planned_minutes = models.PositiveIntegerField(default=0)
+    allocated_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    cancel_reason = models.TextField(blank=True, default="")
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["equipment", "status"]),
+            models.Index(fields=["operator", "status"]),
+            models.Index(fields=["status", "confirm_by"]),
+        ]
+
+    @property
+    def reference(self) -> str:
+        return f"DA-{self.pk:04d}" if self.pk else "DA-new"
+
+
+class ShiftStatus(models.TextChoices):
+    SCHEDULED = "SCHEDULED", _("Scheduled")
+    CHECKED_IN = "CHECKED_IN", _("On duty")
+    COMPLETED = "COMPLETED", _("Completed")
+    MISSED = "MISSED", _("Missed")
+    RELEASED = "RELEASED", _("Released")
+    CANCELLED = "CANCELLED", _("Cancelled")
+
+
+class HoursSource(models.TextChoices):
+    CHECKIN = "CHECKIN", _("Check-in / check-out")
+    BOOKING = "BOOKING", _("Completed bookings in the shift")
+    OIC = "OIC", _("Entered by the OIC")
+
+
+class DutyShift(models.Model):
+    allocation = models.ForeignKey(DutyAllocation, on_delete=models.CASCADE, related_name="shifts")
+    equipment = models.ForeignKey("equipment.Equipment", on_delete=models.PROTECT, related_name="+")
+    operator = models.ForeignKey(USER, on_delete=models.PROTECT, related_name="duty_shifts")
+    start_at = models.DateTimeField()
+    end_at = models.DateTimeField()
+    daily_slot_ids = models.JSONField(default=list, blank=True)
+    status = models.CharField(max_length=12, choices=ShiftStatus.choices, default=ShiftStatus.SCHEDULED)
+    check_in_at = models.DateTimeField(null=True, blank=True)
+    check_out_at = models.DateTimeField(null=True, blank=True)
+    checked_in_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    operated_minutes = models.PositiveIntegerField(null=True, blank=True)
+    hours_source = models.CharField(max_length=10, choices=HoursSource.choices, blank=True, default="")
+    verified_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    verified_at = models.DateTimeField(null=True, blank=True)
+    remarks = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["start_at", "id"]
+        indexes = [
+            models.Index(fields=["operator", "start_at"]),
+            models.Index(fields=["equipment", "start_at"]),
+            models.Index(fields=["status", "end_at"]),
+        ]
+
+    @property
+    def planned_minutes(self) -> int:
+        return max(0, int((self.end_at - self.start_at).total_seconds() // 60))
 
 
 class TrainingAuditLog(models.Model):

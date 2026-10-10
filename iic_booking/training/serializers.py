@@ -10,6 +10,7 @@ from iic_booking.users.display import get_user_display_name
 
 from . import access
 from .models import (
+    AwardStatus,
     CallStatus,
     DemoRequest,
     DemoStatus,
@@ -386,17 +387,144 @@ def run_public(run: ShortlistRun) -> dict:
 
 
 def award_out(a) -> dict:
+    from .certification import effective_status, verify_path
+
+    status = effective_status(a)
     return {
         "id": a.pk,
         "user": user_brief(a.user),
         "equipment": equipment_brief(a.equipment),
         "level": a.level.code,
         "level_name": a.level.name,
-        "status": a.status,
+        "level_rank": a.level.rank,
+        "status": status,
+        "status_label": AwardStatus(status).label if status in AwardStatus.values else status,
         "awarded_at": iso(a.awarded_at),
         "valid_until": iso(a.valid_until),
+        "last_used_at": iso(a.last_used_at),
         "source_event_id": a.source_event_id,
+        "certificate_no": a.certificate_no or "",
+        "verify_path": verify_path(a),
+        "suspended_until": iso(a.suspended_until),
+        "suspend_reason": a.suspend_reason,
+        "revoke_reason": a.revoke_reason,
     }
+
+
+def assessment_out(a) -> dict:
+    return {
+        "id": a.pk,
+        "user": user_brief(a.user),
+        "equipment": equipment_brief(a.equipment),
+        "event_id": a.event_id,
+        "registration_id": a.registration_id,
+        "target_level": a.target_level.code,
+        "target_level_name": a.target_level.name,
+        "assessor": user_brief(a.assessor) if a.assessor_id else None,
+        "theory_score_pct": money(a.theory_score_pct),
+        "practical_items": a.practical_items,
+        "practical_score_pct": money(a.practical_score_pct),
+        "result": a.result,
+        "result_label": a.get_result_display(),
+        "scope_note": a.scope_note,
+        "remarks": a.remarks,
+        "validity_months": a.validity_months,
+        "prerequisite_waiver_reason": a.prerequisite_waiver_reason,
+        "award_id": a.award_id,
+        "certificate_no": (a.award.certificate_no or "") if a.award_id else "",
+        "signed_off_by": user_brief(a.signed_off_by) if a.signed_off_by_id else None,
+        "signed_off_at": iso(a.signed_off_at),
+        "awaiting_sign_off": a.result == "PASS" and not a.award_id,
+        "assessed_at": iso(a.assessed_at),
+    }
+
+
+def roster_out(e, *, basis: tuple[bool, str] | None = None) -> dict:
+    from .roster import basis as roster_basis
+
+    ok, why = basis or roster_basis(e)
+    return {
+        "id": e.pk,
+        "equipment": equipment_brief(e.equipment),
+        "user": user_brief(e.user),
+        "source": e.source,
+        "source_label": e.get_source_display(),
+        "status": e.status,
+        "status_label": e.get_status_display(),
+        "status_reason": e.status_reason,
+        "eligible": ok,
+        "basis": why,
+        "award": award_out(e.award) if e.award_id else None,
+        "faculty": user_brief(e.faculty) if e.faculty_id else None,
+        "department_name": getattr(e.department, "name", "") if e.department_id else "",
+        "max_hours_week": e.max_hours_week,
+        "note": e.note,
+        "created_at": iso(e.created_at),
+    }
+
+
+def shift_out(sh) -> dict:
+    return {
+        "id": sh.pk,
+        "allocation_id": sh.allocation_id,
+        "start_at": iso(sh.start_at),
+        "end_at": iso(sh.end_at),
+        "planned_minutes": sh.planned_minutes,
+        "daily_slot_ids": sh.daily_slot_ids,
+        "status": sh.status,
+        "status_label": sh.get_status_display(),
+        "check_in_at": iso(sh.check_in_at),
+        "check_out_at": iso(sh.check_out_at),
+        "operated_minutes": sh.operated_minutes,
+        "hours_source": sh.hours_source,
+        "hours_source_label": sh.get_hours_source_display() if sh.hours_source else "",
+        "verified_by": user_brief(sh.verified_by) if sh.verified_by_id else None,
+        "verified_at": iso(sh.verified_at),
+        "remarks": sh.remarks,
+    }
+
+
+def allocation_out(al, viewer=None, *, shifts: bool = True) -> dict:
+    rows = list(al.shifts.order_by("start_at", "id")) if shifts else []
+    can_manage = bool(viewer) and access.can_manage_equipment(viewer, al.equipment_id)
+    data = {
+        "id": al.pk,
+        "reference": al.reference,
+        "equipment": equipment_brief(al.equipment),
+        "operator": user_brief(al.operator),
+        "status": al.status,
+        "status_label": al.get_status_display(),
+        "requires_confirmation": al.requires_confirmation,
+        "confirm_by": iso(al.confirm_by),
+        "responded_at": iso(al.responded_at),
+        "response_channel": al.response_channel,
+        "decline_reason": al.decline_reason,
+        "reminder_sent_at": iso(al.reminder_sent_at),
+        "escalated_at": iso(al.escalated_at),
+        "title": al.title,
+        "note": al.note,
+        "suggested_rank": al.suggested_rank,
+        "override_reason": al.override_reason,
+        "academic_year": al.academic_year,
+        "hourly_rate": money(al.hourly_rate),
+        "planned_minutes": al.planned_minutes,
+        "allocated_by": user_brief(al.allocated_by) if al.allocated_by_id else None,
+        "created_at": iso(al.created_at),
+        "cancelled_at": iso(al.cancelled_at),
+        "cancel_reason": al.cancel_reason,
+        "completed_at": iso(al.completed_at),
+        "first_start": iso(rows[0].start_at) if rows else None,
+        "last_end": iso(rows[-1].end_at) if rows else None,
+        "operated_minutes": sum(int(r.operated_minutes or 0) for r in rows if r.status == "COMPLETED"),
+        "shift_count": len(rows),
+        "can_manage": can_manage,
+        "can_respond": bool(viewer) and viewer.pk == al.operator_id and al.status == "PENDING",
+    }
+    if shifts:
+        data["shifts"] = [shift_out(r) for r in rows]
+    if can_manage:
+        data["fairness_snapshot"] = al.fairness_snapshot
+    return data
 
 
 def policy_out(p) -> dict:

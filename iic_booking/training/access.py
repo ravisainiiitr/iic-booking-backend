@@ -315,12 +315,15 @@ def availability(user) -> dict:
         "operator": bool(operator_equipment_ids(user)) if enabled else False,
         "dept_admin": bool(dept_admin_department_id(user)) if enabled else False,
     }
+    roles["duty_operator"] = enabled and roles["student"] and has_duty_role(user)
     menus = {
         "training_events": enabled and roles["faculty"],
         "my_trainings": enabled and roles["student"],
         "training_workspace": enabled and (roles["admin"] or roles["oic"] or roles["dept_admin"]),
         "training_attendance": enabled and roles["operator"],
         "training_policy_settings": roles["admin"],
+        "operator_duty": enabled and (roles["admin"] or roles["oic"] or roles["dept_admin"]),
+        "my_duty": roles["duty_operator"],
     }
     return {
         "enabled": enabled,
@@ -331,6 +334,22 @@ def availability(user) -> dict:
         "roles": roles,
         "menus": menus,
     }
+
+
+def has_duty_role(user) -> bool:
+    """On an operator roster or ever allocated duty (False until the duty tables are migrated)."""
+    from django.db import DatabaseError, transaction
+
+    from .models import DutyAllocation, OperatorRosterEntry, RosterStatus
+
+    try:
+        with transaction.atomic():
+            return (
+                OperatorRosterEntry.objects.filter(user=user, status=RosterStatus.ACTIVE).exists()
+                or DutyAllocation.objects.filter(operator=user).exists()
+            )
+    except DatabaseError:
+        return False
 
 
 def _internal_department(user) -> bool:

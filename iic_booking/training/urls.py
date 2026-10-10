@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import views
+from . import views, views_ops
 
 app_name = "training"
 
@@ -51,4 +51,33 @@ urlpatterns = [
     path("admin/module/", views.module_settings, name="module-settings"),
     path("admin/equipment/", views.module_equipment, name="module-equipment"),
     path("admin/equipment/<int:equipment_id>/", views.module_equipment_toggle, name="module-equipment-toggle"),
+    # Competency assessment and certificates
+    path("levels/", views_ops.levels, name="levels"),
+    path("equipment/<int:equipment_id>/checklist/", views_ops.checklist, name="checklist"),
+    path("assessments/", views_ops.assessments, name="assessments"),
+    path("assessments/<int:pk>/sign-off/", views_ops.assessment_sign_off, name="assessment-sign-off"),
+    path("assessment-candidates/", views_ops.assessment_candidates, name="assessment-candidates"),
+    path("certifications/<int:pk>/", views_ops.certification_detail, name="certification-detail"),
+    path("certifications/<int:pk>/certificate.pdf", views_ops.certificate_pdf, name="certificate-pdf"),
+    path("certifications/<int:pk>/<str:action>/", views_ops.certification_action, name="certification-action"),
+    path("verify/<str:token>/", views_ops.verify_certificate, name="verify-certificate"),
+    # Operator roster and duty
+    path("roster/", views_ops.roster_list, name="roster"),
+    path("roster/people/", views_ops.roster_people, name="roster-people"),
+    path("roster/<int:pk>/", views_ops.roster_detail, name="roster-detail"),
+    path("roster/<int:pk>/<str:action>/", views_ops.roster_action, name="roster-action"),
+    path("duty/plan/", views_ops.duty_plan, name="duty-plan"),
+    path("duty/allocations/", views_ops.duty_allocations, name="duty-allocations"),
+    path("duty/allocations/<int:pk>/", views_ops.duty_allocation_detail, name="duty-allocation-detail"),
+    path("duty/allocations/<int:pk>/<str:action>/", views_ops.duty_allocation_action, name="duty-allocation-action"),
+    path("duty/respond/", views_ops.duty_respond, name="duty-respond"),
+    path("duty/shifts/<int:pk>/<str:action>/", views_ops.duty_shift_action, name="duty-shift-action"),
+    path("duty/calendar/", views_ops.duty_calendar, name="duty-calendar"),
+    path("duty/me/", views_ops.duty_me, name="duty-me"),
+    path("duty/accounting/", views_ops.duty_accounting, name="duty-accounting"),
+    path("duty/accounting/export/", views_ops.duty_accounting_export, name="duty-accounting-export"),
+    path("duty/statement/", views_ops.duty_statement, name="duty-statement"),
+    path("duty/live/", views_ops.duty_live, name="duty-live"),
+    path("operator-policy/", views_ops.operator_policy_view, name="operator-policy"),
+    path("operator-policy/history/", views_ops.operator_policy_history, name="operator-policy-history"),
 ]

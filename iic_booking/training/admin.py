@@ -107,6 +107,49 @@ class CertificationAwardAdmin(admin.ModelAdmin):
     exclude = ("verify_token",)
 
 
+@admin.register(models.CompetencyChecklist)
+class CompetencyChecklistAdmin(admin.ModelAdmin):
+    list_display = ("id", "equipment", "theory_pass_pct", "practical_pass_pct", "updated_at")
+    raw_id_fields = ("equipment", "updated_by")
+
+
+@admin.register(models.Assessment)
+class AssessmentAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "equipment", "target_level", "result", "assessor", "signed_off_by", "assessed_at")
+    list_filter = ("result", "target_level")
+    raw_id_fields = ("user", "equipment", "event", "registration", "assessor", "award", "signed_off_by")
+
+
+@admin.register(models.OperatorPolicy)
+class OperatorPolicyAdmin(admin.ModelAdmin):
+    list_display = ("id", "scope", "department", "equipment", "version", "is_active", "published_at")
+    list_filter = ("scope", "is_active")
+    raw_id_fields = ("department", "equipment", "created_by")
+
+
+@admin.register(models.OperatorRosterEntry)
+class OperatorRosterEntryAdmin(admin.ModelAdmin):
+    list_display = ("id", "equipment", "user", "source", "status", "max_hours_week", "updated_at")
+    list_filter = ("source", "status")
+    raw_id_fields = ("equipment", "user", "award", "legacy_nomination", "faculty", "department", "added_by")
+
+
+class DutyShiftInline(admin.TabularInline):
+    model = models.DutyShift
+    extra = 0
+    fields = ("start_at", "end_at", "status", "operated_minutes", "hours_source", "verified_by")
+    raw_id_fields = ("verified_by",)
+
+
+@admin.register(models.DutyAllocation)
+class DutyAllocationAdmin(admin.ModelAdmin):
+    list_display = ("id", "equipment", "operator", "status", "confirm_by", "planned_minutes", "academic_year", "created_at")
+    list_filter = ("status", "academic_year")
+    raw_id_fields = ("equipment", "operator", "roster_entry", "allocated_by", "cancelled_by")
+    exclude = ("token_nonce",)
+    inlines = [DutyShiftInline]
+
+
 @admin.register(models.BadgeDefinition)
 class BadgeDefinitionAdmin(admin.ModelAdmin):
     list_display = ("code", "name", "rule_type", "level", "is_active")

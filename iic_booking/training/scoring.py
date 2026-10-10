@@ -94,6 +94,10 @@ def score_candidates(candidates: list[dict], context: dict) -> dict[int, dict]:
         b["group_no_certified"] = 0.0 if f.get("group_has_certified") else float(w["group_no_certified"])
         b["cooldown"] = float(w["cooldown_penalty"]) if f.get("cooldown") else 0.0
         b["prior_no_show"] = float(w["no_show_penalty"]) if f.get("no_show") else 0.0
+        if "recent_selection_penalty" in w:
+            b["recent_selection"] = float(w["recent_selection_penalty"]) if f.get("recent_selection") else 0.0
+        if "group_repeat_per_selection" in w:
+            b["group_repeat"] = float(w["group_repeat_per_selection"]) * int(f.get("group_recent_selections") or 0)
         total = _r2(sum(b.values()))
         out[int(c["nomination_id"])] = {"total": total, "breakdown": b}
     return out

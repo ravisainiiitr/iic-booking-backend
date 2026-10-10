@@ -81,13 +81,15 @@ def send(
     path: str,
     actor=None,
     event: str = "",
+    email_path: str = "",
 ) -> None:
+    """``email_path`` overrides the email link only (e.g. a signed one-click link); in-app always uses ``path``."""
     from iic_booking.communication.in_app import _unique_active, notify_in_app
 
     users = _unique_active(recipients)
     if not users:
         return
-    link = frontend_link(path)
+    link = frontend_link(email_path or path)
 
     def _emails() -> None:
         from iic_booking.communication.service import CommunicationService

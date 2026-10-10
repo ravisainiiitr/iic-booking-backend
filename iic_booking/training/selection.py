@@ -23,7 +23,7 @@ from django.utils.dateparse import parse_datetime
 from iic_booking.users.display import get_user_display_name
 from iic_booking.users.models.user_type import UserType
 
-from . import access, notify, scoring
+from . import access, notify, operator_policy, scoring
 from .audit import audit
 from .errors import TrainingError
 from .models import (
@@ -58,6 +58,7 @@ logger = logging.getLogger(__name__)
 UNDERREP_MIN_GAP = 0.05
 DEMAND_LOOKBACK_DAYS = 365
 NO_SHOW_LOOKBACK_MONTHS = 24
+RECENT_SELECTION_PENALTY = -20.0
 HELD_STATUSES = (AwardStatus.ACTIVE, AwardStatus.PROVISIONAL, AwardStatus.DORMANT)
 
 
@@ -96,6 +97,7 @@ def open_call(actor, data: dict) -> NominationCall:
         raise TrainingError("Deadline must be in the future.")
     policy = effective_policy(equipment)
     snap = policy_snapshot(policy)
+    snap["operator"] = operator_policy.snapshot(operator_policy.effective(equipment))
     with transaction.atomic():
         if event is None:
             title = (data.get("title") or f"Hands-on training: {equipment.name}").strip()[:255]
@@ -412,6 +414,21 @@ def build_candidates(call: NominationCall, policy_snap: dict) -> tuple[list[dict
         ).values_list("user_id", flat=True)
     )
     min_tenure = int(policy_snap["min_tenure_months_after_training"])
+    op = policy_snap.get("operator") or operator_policy.snapshot(operator_policy.effective(equipment))
+    sel_days = int(op.get("selection_cooldown_days") or 0)
+    sel_blocks = bool(op.get("selection_cooldown_blocks"))
+    recently_selected: set[int] = set()
+    if sel_days:
+        recently_selected = set(
+            Registration.objects.filter(
+                user_id__in=student_ids | all_group_ids,
+                source=RegistrationSource.NOMINATION,
+                created_at__gte=now - timedelta(days=sel_days),
+            )
+            .exclude(status__in=(RegistrationStatus.CANCELLED, RegistrationStatus.EXPIRED, RegistrationStatus.TRANSFERRED))
+            .exclude(event_id=call.event_id)
+            .values_list("user_id", flat=True)
+        )
     candidates = []
     for n in nominations:
         s = n.student
@@ -449,6 +466,8 @@ def build_candidates(call: NominationCall, policy_snap: dict) -> tuple[list[dict
                 reasons.append("Suspended on this equipment in the lookback period")
             if a.status in HELD_STATUSES and a.level.rank >= target_rank:
                 reasons.append(f"Already holds {a.level.name} on this equipment")
+        if sel_blocks and s.id in recently_selected:
+            reasons.append(f"Given a training seat within the last {sel_days} days (cooling period)")
         need_points = max(0, min(3, NEED_CATEGORY_POINTS.get(n.need_category, 0) + n.need_adjustment))
         if n.need_adjustment:
             flags.append(f"Research need adjusted by OIC ({n.need_adjustment:+d}): {n.need_adjust_reason}")
@@ -466,7 +485,11 @@ def build_candidates(call: NominationCall, policy_snap: dict) -> tuple[list[dict
             "group_has_certified": group_has_certified,
             "cooldown": any(a.awarded_at >= cooldown_since and a.status != AwardStatus.REVOKED for a in own),
             "no_show": s.id in no_show_users,
+            "recent_selection": s.id in recently_selected,
+            "group_recent_selections": min(3, len((group - {s.id}) & recently_selected)),
         }
+        if s.id in recently_selected and not sel_blocks:
+            flags.append(f"Given a training seat within the last {sel_days} days (cooling-period penalty)")
         candidates.append(
             {
                 "nomination_id": n.id,
@@ -487,7 +510,12 @@ def build_candidates(call: NominationCall, policy_snap: dict) -> tuple[list[dict
     override = [str(x) for x in (policy_snap.get("underrepresented_override_department_ids") or [])]
     underrep = sorted({k for k, g in gaps.items() if g >= UNDERREP_MIN_GAP} | set(override))
     context = {
-        "weights": policy_snap["scoring_weights"],
+        "weights": {
+            **policy_snap["scoring_weights"],
+            "recent_selection_penalty": RECENT_SELECTION_PENALTY if sel_days else 0,
+            "group_repeat_per_selection": -float(op.get("group_repeat_penalty") or 0),
+        },
+        "selection_cooldown_days": sel_days,
         "department_gaps": gaps,
         "underrepresented_override": override,
         "underrepresented_departments": underrep,

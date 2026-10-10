@@ -125,6 +125,12 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "training_appeal_decided_email",
     "training_session_scheduled_email",
     "certification_awarded_email",
+    "training_assessment_result_email",
+    "certification_status_email",
+    "certification_expiring_email",
+    "operator_duty_allocated_email",
+    "operator_duty_reminder_email",
+    "operator_duty_update_email",
     "fabrication_booking_rejected_email",
     "fabrication_files_replaced_email",
     "fabrication_ready_for_pickup_email",
@@ -2386,6 +2392,21 @@ def _training_templates() -> list[dict[str, Any]]:
          "Sent to confirmed participants when a session is scheduled or changed.", "View my trainings"),
         ("certification_awarded_email", "Training Completed", "You are now Trained on {{ equipment_name }}",
          "Sent when a participant completes all sessions and receives the Trained level and badge.", "View my trainings"),
+        ("training_assessment_result_email", "Competency Assessment Result", "{{ status }}: assessment on {{ equipment_name }}",
+         "Sent to the candidate (and supervisor) when an OIC records a competency assessment.", "View my trainings"),
+        ("certification_status_email", "Certification Update", "{{ status }}: {{ title }}",
+         "Sent when a certification is issued, renewed, suspended, reinstated, revoked, expires or becomes dormant.",
+         "View certificate"),
+        ("certification_expiring_email", "Certification Expiring Soon", "Expires {{ deadline }}: {{ title }}",
+         "Sent before a certification's validity ends so a refresher or reassessment can be planned.", "View certificate"),
+        ("operator_duty_allocated_email", "Operator Duty Allocated", "Duty {{ reference }}: {{ equipment_name }}",
+         "Sent to a certified operator when the OIC allocates duty slots; includes the confirm/decline link when "
+         "confirmation is required.", "Confirm or decline"),
+        ("operator_duty_reminder_email", "Please Confirm Your Duty", "Reminder: confirm duty {{ reference }} by {{ deadline }}",
+         "Reminder to the operator before the confirmation deadline.", "Confirm or decline"),
+        ("operator_duty_update_email", "Operator Duty Update", "{{ status }}: duty {{ reference }}",
+         "Sent to the OIC(s) when an operator confirms or declines, or when an unconfirmed allocation is released; "
+         "and to the operator when the OIC cancels.", "Open duty desk"),
     )
     return [
         _training_email(code, title=title, subject=subject, description=desc, cta_label=cta)
