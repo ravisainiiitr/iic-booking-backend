@@ -22,7 +22,7 @@ Branch `feature/inventory-procurement-assets` (backend + frontend). Extends the 
   this app, so the number is conflict-free; the `equipment` app is not migrated (other branches use 0245+).
   All new columns are nullable or have defaults, so old code runs on the new schema and new code tolerates rows
   written by old code.
-* **Physical register identification**: `AssetRegister` (register book: type MAJOR / MINOR / LLTA / CONSUMABLE, code,
+* **Physical register identification**: `AssetRegister` (register book: type MAJOR / MINOR / LIMITED_LIFE / CONSUMABLE, code,
   name, volume, lab, custodian) and on `Asset`: `register`, `register_page`, `register_serial`, `register_entry_date`.
   `(register, page, serial)` is unique among live rows (DB constraint) — the duplicate key for import.
   Search `REG/page/serial` (e.g. `MAJ-1/12/3`) matches instantly.
