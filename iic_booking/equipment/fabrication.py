@@ -28,7 +28,11 @@ OWN_MATERIAL_KEY = "_own_material"
 BOOKED_MINUTES_KEY = "_booked_minutes"
 PRINT_WEIGHT_KEY = "_print_weight_g"
 JOB_QUANTITY_KEY = "_job_quantity"
-RESERVED_KEYS = (PARTS_KEY, OWN_MATERIAL_KEY, BOOKED_MINUTES_KEY, PRINT_WEIGHT_KEY, JOB_QUANTITY_KEY)
+# Laser: machine-time estimate of the whole job from the DXF cut paths (see laser_time_model).
+LASER_ESTIMATE_KEY = "_laser_time_estimate"
+RESERVED_KEYS = (
+    PARTS_KEY, OWN_MATERIAL_KEY, BOOKED_MINUTES_KEY, PRINT_WEIGHT_KEY, JOB_QUANTITY_KEY, LASER_ESTIMATE_KEY,
+)
 
 # Stored with the booking's inputs (not reserved): A holds Quantity Required.
 QUANTITY_MARKER_KEY = "_quantity_in_a"
@@ -435,7 +439,41 @@ def stored_print_input_values(booking, analyses) -> dict:
     return strip_fabrication_keys(merged)
 
 
-def build_laser_parts(analyses, job_quantity: int = 1, *, with_preview: bool = False) -> list[dict]:
+def laser_time_estimate(analyses, job_quantity: int = 1, own_material: bool = False):
+    """Machine-time estimate of the job (``laser_time_model.JobEstimate``), or None while a part has no measured
+    cut path (uploaded before the estimate existed, or not readable) or no sheet material."""
+    from .laser_time_model import JobPart, estimate_job, has_features, resolve_profile, unit_factor
+
+    if not analyses:
+        return None
+    job_quantity = max(1, int(job_quantity or 1))
+    parts = []
+    for a in analyses:
+        if a.status != PrintAnalysisStatus.COMPLETED or not has_features(a.cut_features) or a.material is None:
+            return None
+        parts.append(
+            JobPart(
+                key=str(a.id),
+                features=a.cut_features,
+                unit_mm=unit_factor(a.units),
+                material=a.material,
+                copies=max(1, int(a.quantity or 1)) * job_quantity,
+                area_mm2=float(a.area_mm2 or 0),
+            )
+        )
+    return estimate_job(resolve_profile(analyses[0].equipment), parts, own_material=own_material)
+
+
+def laser_parts_with_estimate(
+    analyses, job_quantity: int = 1, own_material: bool = False, *, with_preview: bool = False
+):
+    """(parts, JobEstimate or None); each part carries its own ``time_estimate`` row when the job has one."""
+    estimate = laser_time_estimate(analyses, job_quantity, own_material)
+    parts = build_laser_parts(analyses, job_quantity, estimate=estimate, with_preview=with_preview)
+    return parts, estimate
+
+
+def build_laser_parts(analyses, job_quantity: int = 1, *, estimate=None, with_preview: bool = False) -> list[dict]:
     """``quantity`` is the part's count in one job; the job is made ``job_quantity`` times.
 
     ``with_preview`` adds the sheet's material family and whether the DXF is still stored, for the booking
@@ -470,6 +508,7 @@ def build_laser_parts(analyses, job_quantity: int = 1, *, with_preview: bool = F
                 # Sheet size to bring when the booking is "own material": entered by the user or from the drawing.
                 "own_sheet_width_mm": own_sheet.as_dict()["width_mm"] if own_sheet else None,
                 "own_sheet_height_mm": own_sheet.as_dict()["height_mm"] if own_sheet else None,
+                "time_estimate": estimate.parts.get(str(a.id)) if estimate is not None else None,
             }
         )
         if with_preview:
@@ -560,8 +599,11 @@ def merge_laser_booking_into_input_values(equipment, input_values, user, *, lase
     merged, qty_err = prepare_new_job_quantity(EquipmentProfileType.LASER_CUT_2D, input_values)
     if qty_err:
         return input_values, qty_err, None
-    merged[PARTS_KEY] = build_laser_parts(analyses, merged[QUANTITY_KEY])
+    parts, estimate = laser_parts_with_estimate(analyses, merged[QUANTITY_KEY], own_material)
+    merged[PARTS_KEY] = parts
     merged[JOB_QUANTITY_KEY] = merged[QUANTITY_KEY]
+    if estimate is not None:
+        merged[LASER_ESTIMATE_KEY] = estimate.as_dict()
     return merged, None, batch
 
 
@@ -589,13 +631,32 @@ def apply_fabrication_to_input_values(booking, input_values) -> dict:
         if analyses:
             merged = inject_print_parts(merged, analyses, job_quantity)
     else:
-        merged[PARTS_KEY] = build_laser_parts(active_laser_analyses_for_booking(booking), job_quantity)
+        parts, estimate = laser_parts_with_estimate(
+            active_laser_analyses_for_booking(booking), job_quantity, booking_own_material(booking)
+        )
+        merged[PARTS_KEY] = parts
         merged[JOB_QUANTITY_KEY] = job_quantity
+        if estimate is not None:
+            merged[LASER_ESTIMATE_KEY] = estimate.as_dict()
         minutes = booked_minutes(booking) if getattr(booking, "pk", None) else 0
         if minutes > 0:
             merged[BOOKED_MINUTES_KEY] = minutes
-    merged[OWN_MATERIAL_KEY] = bool(getattr(booking, "own_material", False)) and own_material_available(equipment)
+    merged[OWN_MATERIAL_KEY] = booking_own_material(booking)
     return merged
+
+
+def booking_own_material(booking) -> bool:
+    return bool(getattr(booking, "own_material", False)) and own_material_available(getattr(booking, "equipment", None))
+
+
+def laser_booking_time_estimate(booking) -> dict | None:
+    """Job machine-time estimate of a laser booking for display, or None."""
+    if getattr(getattr(booking, "equipment", None), "profile_type", None) != EquipmentProfileType.LASER_CUT_2D:
+        return None
+    estimate = laser_time_estimate(
+        active_laser_analyses_for_booking(booking), booking_job_quantity(booking), booking_own_material(booking)
+    )
+    return estimate.as_dict() if estimate is not None else None
 
 
 def fabrication_parts_summary(booking, *, with_preview: bool = False) -> list[dict]:
@@ -607,10 +668,26 @@ def fabrication_parts_summary(booking, *, with_preview: bool = False) -> list[di
             active_print_analyses_for_booking(booking), booking_job_quantity(booking), with_preview=with_preview
         )
     if profile == EquipmentProfileType.LASER_CUT_2D:
-        return build_laser_parts(
-            active_laser_analyses_for_booking(booking), booking_job_quantity(booking), with_preview=with_preview
+        parts, _estimate = laser_parts_with_estimate(
+            active_laser_analyses_for_booking(booking),
+            booking_job_quantity(booking),
+            booking_own_material(booking),
+            with_preview=with_preview,
         )
+        return parts
     return []
+
+
+def format_seconds(seconds) -> str:
+    """'45 s', '12 min 5 s', '2 h 4 min'."""
+    total = max(0, int(round(float(seconds or 0))))
+    if total < 60:
+        return f"{total} s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes} min {secs} s" if secs else f"{minutes} min"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} h {minutes} min" if minutes else f"{hours} h"
 
 
 def format_part_line(part: dict) -> str:
@@ -626,7 +703,14 @@ def format_part_line(part: dict) -> str:
             area = (Decimal(part.get("area_mm2") or 0) / Decimal("1000000")).quantize(Decimal("0.0001"))
             size = f", {w} × {h} mm ({area} m² each)"
         material = part.get("material_name") or part.get("material_code") or "no material"
-        return f"{part.get('name')} × {qty} — {material}{size} [{part.get('filename')}]"
+        est = part.get("time_estimate") or {}
+        time_text = ""
+        if est.get("seconds_each"):
+            time_text = (
+                f", est. {format_seconds(est['seconds_each'])} each "
+                f"({Decimal(str(est.get('cut_length_mm') or 0)).quantize(Decimal('1'))} mm cut, {est.get('pierces')} pierces)"
+            )
+        return f"{part.get('name')} × {qty} — {material}{size}{time_text} [{part.get('filename')}]"
     weight = part.get("weight_g_each")
     time_min = part.get("time_min_each")
     est = f", est. {weight} g / {time_min} min each" if weight or time_min else ""

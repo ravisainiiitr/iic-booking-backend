@@ -1,0 +1,71 @@
+# 2D laser / profile cutting machine-time estimate for existing equipment: report the machine type and cutting
+# speeds used per laser equipment, measure the cut path of DXF parts uploaded before the estimate existed, and
+# optionally save the detected machine type. Dry run by default; apply needs confirm=LASER-TIME. Bookings are not
+# recalculated and stored charges are not changed. Output has ids, codes, machine types, sizes and times only.
+name: Backfill Laser Cut Features
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "dry-run | apply"
+        required: true
+        default: "dry-run"
+        type: choice
+        options: [dry-run, apply]
+      equipment_ids:
+        description: "Equipment ids (comma separated, empty = all 2D laser cutting equipment)"
+        required: false
+        default: ""
+      pin_detected_preset:
+        description: "Save the detected machine type on equipment without a saved one"
+        required: false
+        default: false
+        type: boolean
+      confirm:
+        description: "Type LASER-TIME for apply"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run
+        env:
+          LT_ACTION: ${{ inputs.action }}
+          LT_CONFIRM: ${{ inputs.confirm }}
+          LT_EQUIPMENT: ${{ inputs.equipment_ids }}
+          LT_PIN: ${{ inputs.pin_detected_preset }}
+        run: |
+          set -euo pipefail
+          ARGS=()
+          case "$LT_ACTION" in
+            dry-run) ;;
+            apply)
+              [[ "$LT_CONFIRM" == "LASER-TIME" ]] || { echo "confirm=LASER-TIME is required"; exit 1; }
+              ARGS+=(--apply) ;;
+            *) echo "unknown action"; exit 1 ;;
+          esac
+          if [[ -n "$LT_EQUIPMENT" ]]; then
+            [[ "$LT_EQUIPMENT" =~ ^[0-9,\ ]+$ ]] || { echo "equipment_ids must be numbers"; exit 1; }
+            ARGS+=(--equipment "$LT_EQUIPMENT")
+          fi
+          if [[ "$LT_PIN" == "true" ]]; then ARGS+=(--pin-detected-preset); fi
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+                python manage.py backfill_laser_cut_features "${ARGS[@]}"
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1

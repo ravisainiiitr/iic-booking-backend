@@ -502,6 +502,17 @@ class Equipment(models.Model):
         ),
         verbose_name=_("3D print estimate profile"),
     )
+    laser_estimate_profile = models.JSONField(
+        null=True,
+        blank=True,
+        default=None,
+        help_text=_(
+            "For 2D laser / profile cutting equipment: machine type preset, parameter overrides and per-material "
+            "cutting speeds used for the machine-time estimate of uploaded DXF files. Blank uses the preset "
+            "detected from Make / Model / Name."
+        ),
+        verbose_name=_("Profile cutting time estimate profile"),
+    )
 
     make = models.CharField(
         max_length=255,
@@ -2977,6 +2988,12 @@ class LaserCutAnalysis(models.Model):
         help_text=_("Own sheet height entered by the user; blank uses the size worked out from the drawing."),
     )
     entity_count = models.PositiveIntegerField(default=0)
+    cut_features = models.JSONField(
+        null=True,
+        blank=True,
+        default=dict,
+        help_text=_("Cut path measured from the DXF (drawing units) for the machine-time estimate."),
+    )
     warnings = models.JSONField(default=list, blank=True)
     error_message = models.TextField(blank=True, default="")
     booking = models.ForeignKey(

@@ -1126,9 +1126,34 @@ class LaserCutAnalysisSerializer(serializers.ModelSerializer):
     fit_error = serializers.SerializerMethodField()
     estimated_material_cost = serializers.SerializerMethodField()
     own_sheet_suggested = serializers.SerializerMethodField()
+    time_estimate = serializers.SerializerMethodField()
 
     def get_dxf_download_url(self, obj):
         return f"/api/laser-cut-analyses/{obj.id}/dxf/"
+
+    def get_time_estimate(self, obj):
+        """Machine time for one copy of this part on its sheet (cutting, piercing, rapid moves); job setup and
+        sheet loading are added to the booking's total. None until the cut path is measured and a sheet chosen."""
+        from .laser_time_model import (
+            estimate_part,
+            has_features,
+            material_cut_params,
+            part_estimate_row,
+            resolve_profile,
+            unit_factor,
+        )
+        from .models import PrintAnalysisStatus
+
+        if obj.status != PrintAnalysisStatus.COMPLETED or obj.material is None or not has_features(obj.cut_features):
+            return None
+        cache = self.context.setdefault("_laser_profiles", {}) if isinstance(self.context, dict) else {}
+        profile = cache.get(obj.equipment_id)
+        if profile is None:
+            profile = cache[obj.equipment_id] = resolve_profile(Equipment.objects.get(pk=obj.equipment_id))
+        cut = material_cut_params(profile, obj.material)
+        return part_estimate_row(
+            estimate_part(obj.cut_features, unit_factor(obj.units), profile, cut), cut, max(1, int(obj.quantity or 1))
+        )
 
     def get_own_sheet_suggested(self, obj):
         from .laser_cut_service import suggested_own_sheet
@@ -1179,6 +1204,7 @@ class LaserCutAnalysisSerializer(serializers.ModelSerializer):
             "dxf_download_url",
             "fit_error",
             "estimated_material_cost",
+            "time_estimate",
             "own_sheet_width_mm",
             "own_sheet_height_mm",
             "own_sheet_suggested",
@@ -3751,6 +3777,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     print_analyses = serializers.SerializerMethodField()
     laser_cut_analyses = serializers.SerializerMethodField()
     fabrication_parts = serializers.SerializerMethodField()
+    laser_time_estimate = serializers.SerializerMethodField()
     fabrication_quantity = serializers.SerializerMethodField()
     fabrication_file_changes = serializers.SerializerMethodField()
     fabrication_files_replaceable = serializers.SerializerMethodField()
@@ -3818,6 +3845,11 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
         from .fabrication import fabrication_parts_summary
 
         return fabrication_parts_summary(obj, with_preview=True)
+
+    def get_laser_time_estimate(self, obj):
+        from .fabrication import laser_booking_time_estimate
+
+        return laser_booking_time_estimate(obj)
 
     def get_fabrication_file_changes(self, obj):
         if not self._is_fabrication(obj):
@@ -4032,6 +4064,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'own_material',
             'own_material_fixed_charge',
             'fabrication_parts',
+            'laser_time_estimate',
             'fabrication_quantity',
             'fabrication_file_changes',
             'fabrication_files_replaceable',
