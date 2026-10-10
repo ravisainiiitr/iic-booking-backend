@@ -273,11 +273,67 @@ def build_print_parts(analyses, job_quantity: int = 1) -> list[dict]:
                     "support_weight_g_total": support_each * copies,
                 }
             )
+            part.update(_print_option_fields(est, bool(support_code)))
         orientation = (getattr(a, "slicer_settings", None) or {}).get("orientation")
         if orientation:
             part["orientation"] = list(orientation)
         parts.append(part)
     return parts
+
+
+def _grams_text(value) -> str:
+    g = float(value or 0)
+    return f"{g:.1f} g" if g < 100 else f"{g:.0f} g"
+
+
+def _print_option_fields(est: dict, support_separate: bool) -> dict:
+    """Support type, interface and brim / raft of an estimate made with them (older estimates: {}), plus the
+    per-copy make-up of the model-material weight when it holds more than the model."""
+    if "adhesion" not in est:
+        return {}
+    out = {}
+    if est.get("support_type"):
+        out["support_type"] = est["support_type"]
+        out["support_type_label"] = est.get("support_type_label") or est["support_type"]
+        out["support_interface"] = bool(est.get("support_interface"))
+    adhesion = est.get("adhesion") or "none"
+    adhesion_g = round(float(est.get("adhesion_g") or 0), 1)
+    if adhesion != "none":
+        out.update({"adhesion": adhesion, "adhesion_label": est.get("adhesion_label") or adhesion,
+                    "adhesion_g_each": adhesion_g})
+    model_g = float(est.get("model_g") or 0)
+    support_same = 0.0 if support_separate else float(est.get("support_g") or 0)
+    waste_g = float(est.get("waste_g") or 0)
+    out["model_g_each"] = round(model_g, 1)
+    if support_same >= 0.05 or adhesion_g >= 0.05:
+        rows = [f"model {_grams_text(model_g)}"]
+        if support_same >= 0.05:
+            rows.append(f"supports {_grams_text(support_same)}")
+        if adhesion_g >= 0.05:
+            rows.append(f"{str(out.get('adhesion_label') or adhesion).lower()} {_grams_text(adhesion_g)}")
+        if waste_g >= 0.05:
+            rows.append(f"purge {_grams_text(waste_g)}")
+        out["weight_composition"] = " + ".join(rows)
+    return out
+
+
+def print_part_options_text(part: dict) -> str:
+    """The user's print choices in words, e.g. 'tree supports (touching build plate only), raft'. Empty for parts
+    estimated before support types existed."""
+    if "model_g_each" not in part:
+        return ""
+    rows = []
+    mode = part.get("support_mode")
+    if mode == "none":
+        rows.append("no supports")
+    elif mode:
+        kind = f"{part['support_type_label']} supports" if part.get("support_type_label") else "supports"
+        rows.append(f"{kind} ({str(part.get('support_mode_label') or mode).lower()})")
+        if part.get("support_type") and part.get("support_interface") is False:
+            rows.append("no support interface")
+    if part.get("adhesion"):
+        rows.append(str(part.get("adhesion_label") or part["adhesion"]).lower())
+    return ", ".join(rows)
 
 
 def print_supports_summary(parts) -> str:
@@ -288,10 +344,16 @@ def print_supports_summary(parts) -> str:
         if not mode:
             continue
         text = p.get("support_mode_label") or mode
+        if p.get("support_type_label") and mode != "none":
+            text = f"{p['support_type_label']} ({text.lower()})"
+            if p.get("support_interface") is False:
+                text += ", no interface"
         if p.get("support_weight_g_each"):
             text += f", {p['support_weight_g_each']} g {p.get('support_material_code')} each"
         elif float(p.get("support_g_each") or 0) > 0:
             text += f", ~{p['support_g_each']} g each"
+        if p.get("adhesion"):
+            text += f", {str(p.get('adhesion_label') or p['adhesion']).lower()} ~{p.get('adhesion_g_each') or 0} g each"
         rows.append(f"{p.get('name')}: {text}" if len(parts) > 1 else text)
     return "; ".join(rows)
 
@@ -537,8 +599,13 @@ def format_part_line(part: dict) -> str:
     est = f", est. {weight} g / {time_min} min each" if weight or time_min else ""
     supports = ""
     if part.get("support_mode"):
-        supports = f", supports: {part.get('support_mode_label') or part.get('support_mode')}"
+        mode_label = part.get("support_mode_label") or part.get("support_mode")
+        if part.get("support_type_label") and part.get("support_mode") != "none":
+            mode_label = f"{part['support_type_label']} ({mode_label.lower()})"
+        supports = f", supports: {mode_label}"
         if part.get("support_weight_g_each"):
             supports += f" (+{part['support_weight_g_each']} g {part.get('support_material_code')} each)"
+    if part.get("adhesion"):
+        supports += f", {str(part.get('adhesion_label') or part['adhesion']).lower()} ~{part.get('adhesion_g_each') or 0} g each"
     oriented = ", user-selected orientation" if part.get("orientation") else ""
     return f"{part.get('name')} × {qty}{est}{supports}{oriented} [{part.get('filename')}]"

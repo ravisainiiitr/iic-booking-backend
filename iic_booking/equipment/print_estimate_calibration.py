@@ -11,12 +11,15 @@ from .print_estimate_model import (
     CALIBRATION_KEY,
     PARAMETER_SPECS,
     PRESETS,
+    SUPPORT_OPTIONS_KEY,
     TECHNOLOGY_LABELS,
     clean_profile_overrides,
+    clean_support_options,
     detect_preset,
     estimate,
     fit_calibration,
     resolve_profile,
+    resolved_support_options,
     stored_profile,
 )
 
@@ -28,9 +31,10 @@ _FDM_ONLY = {
     "infill_speed_mm_s", "solid_infill_speed_mm_s", "support_speed_mm_s", "acceleration_mm_s2", "corner_speed_mm_s",
     "max_flow_mm3_s", "infill_segment_mm", "layer_overhead_s", "min_layer_time_s", "infill_pattern_factor",
     "support_interface_layers", "support_layer_overhead_s", "toolchange_s", "toolchange_purge_g",
+    "brim_width_mm", "raft_margin_mm", "raft_density_pct",
 }
 SUPPORT_MATERIAL_IDS_KEY = "support_material_ids"
-_LAYERED_ONLY = {"per_layer_s", "bottom_layers", "bottom_layer_s", "area_s_per_cm2", "lift_mm", "raft_mm",
+_LAYERED_ONLY = {"per_layer_s", "bottom_layers", "bottom_layer_s", "area_s_per_cm2", "lift_mm",
                  "support_material_density_g_cm3"}
 
 
@@ -72,6 +76,7 @@ def profile_payload(equipment) -> Dict[str, Any]:
         "calibration": stored.get(CALIBRATION_KEY) or None,
         "support_material_ids": [int(i) for i in stored.get(SUPPORT_MATERIAL_IDS_KEY) or []],
         "supports_available": bool(effective.get("supports", True)) and tech != "SLS",
+        "support_options": resolved_support_options(stored, tech),
     }
 
 
@@ -114,7 +119,7 @@ def calibration_samples(equipment, profile: Optional[Dict[str, Any]] = None) -> 
         est_w_total = int(a.weight_grams or 0) * copies
         if a.actual_weight_grams is not None and int(a.actual_weight_grams) != est_w_total:
             # Actual weight is the model material (separate support material is not weighed).
-            sample["est_g"] = b.model_g + (0.0 if b.support_separate else b.support_g)
+            sample["est_g"] = b.model_g + b.adhesion_g + (0.0 if b.support_separate else b.support_g)
             sample["act_g"] = float(a.actual_weight_grams) / copies - b.waste_g
         est_t_total = int(a.estimated_time_minutes or 0) * copies
         if a.actual_time_minutes is not None and int(a.actual_time_minutes) != est_t_total:
@@ -133,8 +138,9 @@ def fit_equipment_calibration(equipment) -> Dict[str, Any]:
 
 
 def apply_profile_update(equipment, data: Dict[str, Any]) -> Optional[str]:
-    """Apply ``print_estimate_preset`` / ``print_estimate_overrides`` / ``print_estimate_calibration`` from a
-    PATCH body to ``equipment.print_estimate_profile`` (not saved). Returns an error message or None."""
+    """Apply ``print_estimate_preset`` / ``print_estimate_overrides`` / ``print_estimate_calibration`` /
+    ``print_estimate_support_material_ids`` / ``print_estimate_support_options`` from a PATCH body to
+    ``equipment.print_estimate_profile`` (not saved). Returns an error message or None."""
     profile = stored_profile(equipment)
     if "print_estimate_preset" in data:
         preset = str(data.get("print_estimate_preset") or "").strip()
@@ -169,6 +175,17 @@ def apply_profile_update(equipment, data: Dict[str, Any]) -> Optional[str]:
             profile[SUPPORT_MATERIAL_IDS_KEY] = ids
         else:
             profile.pop(SUPPORT_MATERIAL_IDS_KEY, None)
+    if "print_estimate_support_options" in data:
+        tech = resolve_profile(equipment, profile).get("technology", "FDM")
+        options, err = clean_support_options(
+            data.get("print_estimate_support_options"), tech, profile.get(SUPPORT_OPTIONS_KEY)
+        )
+        if err:
+            return err
+        if options:
+            profile[SUPPORT_OPTIONS_KEY] = options
+        else:
+            profile.pop(SUPPORT_OPTIONS_KEY, None)
     action = data.get("print_estimate_calibration")
     if action:
         action = str(action).strip().lower()

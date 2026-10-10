@@ -1358,9 +1358,15 @@ class ChargeCalculationEngine:
                         weight_text += f" × {job_quantity} sets"
                 else:
                     weight_text = f"{part_weight} g"
+                composition = ""
+                if part.get("weight_composition") and not part.get("actual_weight"):
+                    each = " each" if qty > 1 or job_quantity > 1 else ""
+                    composition = f" ({part['weight_composition']}{each})"
                 cost = part_weight * material.price_per_gram
                 breakdown.append({
-                    "description": f"{part.get('name') or 'Part'}: {weight_text} {material.name} @ {rate_label}/g",
+                    "description": (
+                        f"{part.get('name') or 'Part'}: {weight_text} {material.name} @ {rate_label}/g{composition}"
+                    ),
                     "amount": float(cost),
                 })
                 total_charge += cost

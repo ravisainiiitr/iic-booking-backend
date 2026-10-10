@@ -8,8 +8,9 @@ model surface below), and a coarse per-height profile of the cross-section area 
 Estimates (re-run from the stored features whenever the material or density changes):
 
 * FDM: walls (wall area x wall count x line width), top / bottom solid skin (sloped skin narrower than the walls
-  is printed by the walls), sparse infill of the rest at the chosen density, supports under overhangs, a small
-  purge / skirt allowance. Time is extruded volume over the speed actually reached on the part's segment
+  is printed by the walls), sparse infill of the rest at the chosen density, supports under overhangs (column
+  volume x density x the support type's material factor, plus dense interface layers), an optional brim / raft
+  and a small purge / skirt allowance. Time is extruded volume over the speed actually reached on the part's segment
   lengths (acceleration), capped by the hotend's volumetric flow, layers kept above the minimum layer time
   for cooling, a per-layer overhead (layer change, travel, retraction) and a fixed warm-up.
 * Resin (MSLA / SLA), MultiJet (MJP) and powder (SLS): solid parts; time is per layer (independent of the
@@ -64,6 +65,131 @@ SUPPORT_MODE_LABELS = {
 }
 AUTO_SUPPORT_MIN_OVERHANG_MM2 = 20.0
 
+# Support structures as named in the mainstream slicers (Cura, PrusaSlicer, Bambu Studio / OrcaSlicer,
+# Simplify3D). The placement (none / build plate / everywhere) is chosen separately.
+#
+# volume_factor: support material relative to straight grid columns at the same density under the same overhangs
+#   (the column volume comes from the mesh). Lines / zigzag drop the crossing lines; snug follows the overhang
+#   outline instead of a box around it; tree and organic gather the overhangs onto a few trunks, which typical
+#   slicer output puts at 30-60 % less material than normal supports; gyroid is a little heavier for strength.
+# speed_factor: support extrusion speed relative to grid (zigzag is one continuous line with no retractions; tree
+#   and organic branches are short segments with more travel). Resin types scale the support density only.
+SUPPORT_TYPE_NORMAL = "normal"
+SUPPORT_TYPE_RESIN_MEDIUM = "resin_medium"
+SUPPORT_TYPES: Dict[str, Dict[str, Any]] = {
+    "normal": {
+        "label": "Normal (grid)",
+        "technology": TECH_FDM,
+        "volume_factor": 1.0,
+        "speed_factor": 1.0,
+        "description": "Straight columns with a grid infill under every overhang. Sturdiest and most predictable; "
+                       "uses the most material.",
+        "slicers": "Cura Normal + Grid, PrusaSlicer Grid, Bambu / Orca Normal",
+    },
+    "lines": {
+        "label": "Lines",
+        "technology": TECH_FDM,
+        "volume_factor": 0.85,
+        "speed_factor": 1.1,
+        "description": "Parallel lines: lighter, quick to print and easy to snap off; less stable when tall.",
+        "slicers": "Cura Lines, PrusaSlicer / Orca Rectilinear",
+    },
+    "zigzag": {
+        "label": "Zigzag",
+        "technology": TECH_FDM,
+        "volume_factor": 0.9,
+        "speed_factor": 1.15,
+        "description": "One continuous zigzag line per layer: few retractions, fast, peels off in one piece.",
+        "slicers": "Cura Zig Zag, Simplify3D",
+    },
+    "snug": {
+        "label": "Snug",
+        "technology": TECH_FDM,
+        "volume_factor": 0.85,
+        "speed_factor": 1.0,
+        "description": "Hugs the outline of the overhang instead of a box around it: less material, tighter fit.",
+        "slicers": "PrusaSlicer Snug, Bambu / Orca Normal (snug)",
+    },
+    "concentric": {
+        "label": "Concentric",
+        "technology": TECH_FDM,
+        "volume_factor": 0.95,
+        "speed_factor": 0.9,
+        "description": "Rings that follow the overhang's outline: even contact under round overhangs.",
+        "slicers": "Cura Concentric, Orca Hollow / Concentric",
+    },
+    "gyroid": {
+        "label": "Gyroid",
+        "technology": TECH_FDM,
+        "volume_factor": 1.05,
+        "speed_factor": 0.85,
+        "description": "Curved gyroid infill: strong in every direction for tall or heavy overhangs; slower to print.",
+        "slicers": "Cura Gyroid, Simplify3D",
+    },
+    "tree": {
+        "label": "Tree",
+        "technology": TECH_FDM,
+        "volume_factor": 0.55,
+        "speed_factor": 0.85,
+        "description": "Branches from a few trunks up to the overhangs: about half the material, fewer marks on the "
+                       "part; best for curved or organic shapes.",
+        "slicers": "Cura Tree, Bambu / Orca Tree (slim / strong / hybrid)",
+    },
+    "organic": {
+        "label": "Organic tree",
+        "technology": TECH_FDM,
+        "volume_factor": 0.45,
+        "speed_factor": 0.8,
+        "description": "Smooth, rounded branches that avoid the model: least material and easiest removal.",
+        "slicers": "PrusaSlicer Organic, Cura 5 Tree, Orca Tree (organic)",
+    },
+    "resin_light": {
+        "label": "Light",
+        "technology": TECH_RESIN,
+        "volume_factor": 0.6,
+        "speed_factor": 1.0,
+        "description": "Thin tips and few supports: small, light parts; fewest marks to sand.",
+        "slicers": "Chitubox / Lychee / PreForm light",
+    },
+    "resin_medium": {
+        "label": "Medium",
+        "technology": TECH_RESIN,
+        "volume_factor": 1.0,
+        "speed_factor": 1.0,
+        "description": "Balanced support density for most parts.",
+        "slicers": "Chitubox / Lychee / PreForm medium (default)",
+    },
+    "resin_heavy": {
+        "label": "Heavy",
+        "technology": TECH_RESIN,
+        "volume_factor": 1.6,
+        "speed_factor": 1.0,
+        "description": "Thick, dense supports for large or heavy parts that could peel off the plate.",
+        "slicers": "Chitubox / Lychee / PreForm heavy",
+    },
+}
+DEFAULT_SUPPORT_TYPE = {TECH_FDM: SUPPORT_TYPE_NORMAL, TECH_RESIN: SUPPORT_TYPE_RESIN_MEDIUM}
+SUPPORT_FACTOR_RANGE = {"volume_factor": (0.05, 3.0), "speed_factor": (0.2, 3.0)}
+
+# Bed adhesion (FDM). Skirt / none is covered by the per-part purge allowance (``waste_g``).
+ADHESION_NONE = "none"
+ADHESION_BRIM = "brim"
+ADHESION_RAFT = "raft"
+ADHESION_TYPES: Dict[str, Dict[str, str]] = {
+    ADHESION_NONE: {"label": "Skirt / none", "description": "No extra material on the plate (a skirt is in the purge allowance)."},
+    ADHESION_BRIM: {"label": "Brim", "description": "A few flat loops around the first layer to stop corners lifting; "
+                                                     "trimmed off after printing."},
+    ADHESION_RAFT: {"label": "Raft", "description": "A thick lattice under the part and its supports for warping "
+                                                     "materials or uneven beds; adds material and time."},
+}
+# Raft layers are printed thick (as the slicers do); the raft's extrusion time uses this layer height.
+RAFT_LAYER_MM = 0.3
+FIRST_LAYER_MIN_MM = 0.2
+
+
+def support_types_for(technology: str) -> List[str]:
+    return [k for k, v in SUPPORT_TYPES.items() if v["technology"] == technology]
+
 
 def nearest_angle_index(angle_deg) -> int:
     try:
@@ -103,6 +229,10 @@ _FDM_BASE: Dict[str, Any] = {
     "support_layer_overhead_s": 1.0,
     "toolchange_s": 20.0,
     "toolchange_purge_g": 0.05,
+    "brim_width_mm": 5.0,
+    "raft_mm": 0.9,
+    "raft_margin_mm": 3.0,
+    "raft_density_pct": 70.0,
     "infill_pattern_factor": 1.0,
     "waste_g": 0.5,
     "waste_pct": 0.0,
@@ -266,6 +396,9 @@ PARAMETER_SPECS: Dict[str, Tuple[str, str, Optional[float], Optional[float]]] = 
     "toolchange_s": ("Tool change per layer (separate support material)", "s", 0, 600),
     "toolchange_purge_g": ("Purge per tool change", "g", 0, 10),
     "raft_mm": ("Raft / base thickness", "mm", 0, 10),
+    "brim_width_mm": ("Brim width", "mm", 0, 50),
+    "raft_margin_mm": ("Raft margin around the part", "mm", 0, 30),
+    "raft_density_pct": ("Raft fill density", "%", 5, 100),
     "support_material_density_g_cm3": ("Support material density", "g/cm³", 0.1, 5.0),
     "infill_pattern_factor": ("Infill pattern factor", "", 0.5, 2.0),
     "waste_g": ("Purge / waste per part", "g", 0, 1000),
@@ -273,6 +406,7 @@ PARAMETER_SPECS: Dict[str, Tuple[str, str, Optional[float], Optional[float]]] = 
 }
 
 CALIBRATION_KEY = "calibration"
+SUPPORT_OPTIONS_KEY = "support_options"
 CALIBRATION_MIN_SAMPLES = 3
 CALIBRATION_FACTOR_RANGE = (0.4, 2.5)
 
@@ -317,7 +451,114 @@ def resolve_profile(equipment=None, stored: Optional[Dict[str, Any]] = None) -> 
     calibration = stored.get(CALIBRATION_KEY) or {}
     profile["time_factor"] = _clamped_factor(calibration.get("time_factor")) if calibration.get("applied") else 1.0
     profile["weight_factor"] = _clamped_factor(calibration.get("weight_factor")) if calibration.get("applied") else 1.0
+    options = resolved_support_options(stored, profile.get("technology", TECH_FDM))
+    profile["support_type_factors"] = {
+        t["key"]: {"volume_factor": t["volume_factor"], "speed_factor": t["speed_factor"]} for t in options["types"]
+    }
+    profile["support_type_default"] = options["default_type"]
     return profile
+
+
+def _support_factor(value, default: float, kind: str) -> float:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    lo, hi = SUPPORT_FACTOR_RANGE[kind]
+    return max(lo, min(hi, f)) if math.isfinite(f) else float(default)
+
+
+def resolved_support_options(stored: Optional[Dict[str, Any]], technology: str) -> Dict[str, Any]:
+    """The printer's support types and bed adhesion options for its technology, with the OIC's choices
+    (``stored["support_options"]``: ``types`` enabled, ``default_type``, ``factors`` per type, ``adhesion``
+    enabled). Nothing stored: every type and adhesion option is offered with the preset factors."""
+    raw = (stored or {}).get(SUPPORT_OPTIONS_KEY)
+    raw = raw if isinstance(raw, dict) else {}
+    keys = support_types_for(technology)
+    listed = raw.get("types")
+    enabled = [k for k in keys if k in listed] if isinstance(listed, list) else list(keys)
+    if not enabled:
+        enabled = list(keys)
+    default = raw.get("default_type")
+    if default not in enabled:
+        default = DEFAULT_SUPPORT_TYPE.get(technology)
+        if default not in enabled:
+            default = enabled[0] if enabled else ""
+    factors = raw.get("factors") if isinstance(raw.get("factors"), dict) else {}
+    types = []
+    for k in keys:
+        spec = SUPPORT_TYPES[k]
+        own = factors.get(k) if isinstance(factors.get(k), dict) else {}
+        types.append({
+            "key": k,
+            "label": spec["label"],
+            "description": spec["description"],
+            "slicers": spec["slicers"],
+            "enabled": k in enabled,
+            "volume_factor": _support_factor(own.get("volume_factor"), spec["volume_factor"], "volume_factor"),
+            "speed_factor": _support_factor(own.get("speed_factor"), spec["speed_factor"], "speed_factor"),
+            "default_volume_factor": spec["volume_factor"],
+            "default_speed_factor": spec["speed_factor"],
+        })
+    adhesion = []
+    if technology == TECH_FDM:
+        listed = raw.get("adhesion")
+        for k, spec in ADHESION_TYPES.items():
+            on = k == ADHESION_NONE or not isinstance(listed, list) or k in listed
+            adhesion.append({"key": k, "label": spec["label"], "description": spec["description"], "enabled": on})
+    return {"types": types, "default_type": default, "adhesion": adhesion}
+
+
+def clean_support_options(raw: Any, technology: str, current: Optional[Dict[str, Any]] = None
+                          ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Validate the OIC's support options for the printer's technology. Returns (stored value, error).
+    Accepts ``types`` (enabled keys), ``default_type``, ``factors`` {key: {volume_factor, speed_factor}} (blank
+    = preset) and ``adhesion`` (enabled keys); anything omitted keeps ``current``."""
+    if not isinstance(raw, dict):
+        return None, "Send the support options as an object."
+    out = dict(current) if isinstance(current, dict) else {}
+    keys = support_types_for(technology)
+    if "types" in raw:
+        listed = raw.get("types")
+        if not isinstance(listed, list) or any(k not in SUPPORT_TYPES for k in listed):
+            return None, "Unknown support type."
+        if keys and not any(k in keys for k in listed):
+            return None, "Keep at least one support type; turn supports off with 'Estimate supports' instead."
+        out["types"] = [k for k in SUPPORT_TYPES if k in listed]
+    if "default_type" in raw:
+        default = raw.get("default_type") or ""
+        if default and default not in SUPPORT_TYPES:
+            return None, "Unknown default support type."
+        out["default_type"] = default
+    if out.get("default_type") and isinstance(out.get("types"), list) and out["default_type"] not in out["types"]:
+        return None, "The default support type must be one of the enabled types."
+    if "factors" in raw:
+        given = raw.get("factors")
+        if not isinstance(given, dict):
+            return None, "Support factors must be an object per support type."
+        factors: Dict[str, Dict[str, float]] = {}
+        for k, vals in given.items():
+            if k not in SUPPORT_TYPES or not isinstance(vals, dict):
+                return None, "Unknown support type in the factors."
+            for kind, (lo, hi) in SUPPORT_FACTOR_RANGE.items():
+                value = vals.get(kind)
+                if value in (None, ""):
+                    continue
+                try:
+                    number = float(value)
+                except (TypeError, ValueError):
+                    return None, f"{SUPPORT_TYPES[k]['label']}: factors must be numbers."
+                if not math.isfinite(number) or number < lo or number > hi:
+                    name = "Material" if kind == "volume_factor" else "Speed"
+                    return None, f"{SUPPORT_TYPES[k]['label']}: {name.lower()} factor must be between {lo:g} and {hi:g}."
+                factors.setdefault(k, {})[kind] = round(number, 3)
+        out["factors"] = factors
+    if "adhesion" in raw:
+        listed = raw.get("adhesion")
+        if not isinstance(listed, list) or any(k not in ADHESION_TYPES for k in listed):
+            return None, "Unknown bed adhesion option."
+        out["adhesion"] = [k for k in ADHESION_TYPES if k in listed or k == ADHESION_NONE]
+    return {k: v for k, v in out.items() if v not in (None, "", {})}, None
 
 
 def _clamped_factor(value) -> float:
@@ -670,6 +911,11 @@ class SupportOptions:
     angle_deg: float = DEFAULT_SUPPORT_ANGLE
     material_code: str = ""
     material_density_g_cm3: Optional[float] = None
+    # Support structure (``SUPPORT_TYPES`` key); blank = the printer's default type.
+    type: str = ""
+    # Dense interface (roof) layers under the overhangs; None = on (with the printer's interface layer count).
+    interface: Optional[bool] = None
+    adhesion: str = ADHESION_NONE
 
     @property
     def separate_material(self) -> bool:
@@ -689,12 +935,20 @@ class SupportOptions:
         except (TypeError, ValueError):
             angle = DEFAULT_SUPPORT_ANGLE
         code = str(settings.get("support_material_code") or "").strip()
+        support_type = str(settings.get("support_type") or "").strip().lower()
+        interface = settings.get("support_interface")
+        if interface is not None and not isinstance(interface, bool):
+            interface = str(interface).strip().lower() not in ("false", "0", "no", "off", "none", "")
+        adhesion = str(settings.get("adhesion") or ADHESION_NONE).strip().lower()
         return cls(
             mode=mode if mode in SUPPORT_MODES else SUPPORT_AUTO,
             density_pct=density,
             angle_deg=SUPPORT_ANGLES[nearest_angle_index(angle)],
             material_code=code,
             material_density_g_cm3=material_density if code else None,
+            type=support_type if support_type in SUPPORT_TYPES else "",
+            interface=interface,
+            adhesion=adhesion if adhesion in ADHESION_TYPES else ADHESION_NONE,
         )
 
 
@@ -722,6 +976,13 @@ class EstimateBreakdown:
     support_min: float = 0.0
     overhang_area_mm2: float = 0.0
     overhang_plate_mm2: float = 0.0
+    support_type: str = ""
+    support_volume_factor: float = 1.0
+    support_interface: bool = False
+    # Brim / raft in the model material (included in total_g and the model-material grams).
+    adhesion: str = ADHESION_NONE
+    adhesion_g: float = 0.0
+    adhesion_min: float = 0.0
     # Share of the print time (without warm-up) done when the print reaches each of PROFILE_BINS equal heights.
     progress: List[float] = field(default_factory=list)
 
@@ -765,6 +1026,14 @@ class EstimateBreakdown:
             "support_material_code": self.support_material_code,
             "overhang_area_mm2": round(self.overhang_area_mm2, 1),
             "overhang_plate_mm2": round(self.overhang_plate_mm2, 1),
+            "support_type": self.support_type,
+            "support_type_label": SUPPORT_TYPES[self.support_type]["label"] if self.support_type in SUPPORT_TYPES else "",
+            "support_volume_factor": round(self.support_volume_factor, 3),
+            "support_interface": self.support_interface,
+            "adhesion": self.adhesion,
+            "adhesion_label": ADHESION_TYPES.get(self.adhesion, {}).get("label", ""),
+            "adhesion_g": round(self.adhesion_g, 2),
+            "adhesion_min": round(self.adhesion_min, 1),
             "notes": list(self.notes),
             "detail": {k: round(float(v), 3) for k, v in self.detail.items()},
             "progress": [round(float(v), 4) for v in self.progress],
@@ -832,6 +1101,49 @@ def resolve_support_mode(f: MeshFeatures, profile: Dict[str, Any], opts: Support
     return SUPPORT_EVERYWHERE
 
 
+def resolve_support_type(profile: Dict[str, Any], opts: SupportOptions) -> Tuple[str, float, float]:
+    """(type key, volume factor, speed factor) for the printer's technology: the chosen type, else the printer's
+    default. Technologies without a choice of type (MultiJet wax, powder) use ("", 1, 1)."""
+    tech = profile.get("technology", TECH_FDM)
+    keys = support_types_for(tech)
+    if not keys:
+        return "", 1.0, 1.0
+    key = opts.type if opts.type in keys else profile.get("support_type_default")
+    if key not in keys:
+        key = DEFAULT_SUPPORT_TYPE.get(tech) if DEFAULT_SUPPORT_TYPE.get(tech) in keys else keys[0]
+    spec = SUPPORT_TYPES[key]
+    own = (profile.get("support_type_factors") or {}).get(key) or {}
+    return (
+        key,
+        _support_factor(own.get("volume_factor"), spec["volume_factor"], "volume_factor"),
+        _support_factor(own.get("speed_factor"), spec["speed_factor"], "speed_factor"),
+    )
+
+
+def _bottom_perimeter(f: MeshFeatures) -> float:
+    """Outline length of the first layer (contour of the lowest profile slice)."""
+    if f.contour_mm and f.contour_mm[0] > 0:
+        return float(f.contour_mm[0])
+    return 4.0 * math.sqrt(max(f.bed_area_mm2, 0.0))
+
+
+def fdm_adhesion_volume(f: MeshFeatures, profile: Dict[str, Any], adhesion: str, lh: float,
+                        support_footprint_mm2: float = 0.0) -> float:
+    """Brim: loops of ``brim_width_mm`` around the first-layer outline, one first layer high.
+    Raft: the part's and the plate-standing supports' footprint grown by ``raft_margin_mm``, ``raft_mm`` thick at
+    ``raft_density_pct``. mm³."""
+    perimeter = _bottom_perimeter(f)
+    if adhesion == ADHESION_BRIM:
+        w = max(_num(profile, "brim_width_mm", 5.0), 0.0)
+        return (perimeter * w + math.pi * w * w) * max(lh, FIRST_LAYER_MIN_MM)
+    if adhesion == ADHESION_RAFT:
+        m = max(_num(profile, "raft_margin_mm", 3.0), 0.0)
+        area = max(f.bed_area_mm2, 0.0) + max(support_footprint_mm2, 0.0) + perimeter * m + math.pi * m * m
+        fill = max(0.0, min(100.0, _num(profile, "raft_density_pct", 70.0))) / 100.0
+        return area * max(_num(profile, "raft_mm", 0.9), 0.0) * fill
+    return 0.0
+
+
 def _support_common(f, profile, opts, mode):
     area_all = f.support_at(SUPPORT_EVERYWHERE, opts.angle_deg)[0]
     area_plate = f.support_at(SUPPORT_BUILDPLATE, opts.angle_deg)[0]
@@ -871,18 +1183,26 @@ def estimate_fdm(
 
     mode = resolve_support_mode(f, profile, opts)
     (s_area, s_raw, s_top), s_density, area_all, area_plate = _support_common(f, profile, opts, mode)
+    s_type, s_vf, s_sf = resolve_support_type(profile, opts)
+    interface_on = opts.interface is not False
     support = 0.0
     support_layers = 0
     if s_area > 0:
-        interface_layers = max(_num(profile, "support_interface_layers", 2.0), 0.0)
-        support = s_raw * s_density / 100.0 + s_area * interface_layers * lh * 0.7
+        interface_layers = max(_num(profile, "support_interface_layers", 2.0), 0.0) if interface_on else 0.0
+        support = s_raw * s_density / 100.0 * s_vf + s_area * interface_layers * lh * 0.7
         support_layers = int(math.ceil(s_top / lh))
     separate = opts.separate_material and support > 0
+    adhesion = opts.adhesion if opts.adhesion in ADHESION_TYPES else ADHESION_NONE
+    plate_supports = area_plate * min(1.0, s_vf) if mode != SUPPORT_NONE and s_area > 0 else 0.0
+    adhesion_mm3 = fdm_adhesion_volume(f, profile, adhesion, lh, plate_supports)
 
     model_g = (shell + skin + sparse) / 1000.0 * density
     support_g = support / 1000.0 * (opts.material_density_g_cm3 if separate else density)
+    adhesion_g = adhesion_mm3 / 1000.0 * density
     purge_g = support_layers * _num(profile, "toolchange_purge_g", 0.0) if separate else 0.0
-    waste_g = _num(profile, "waste_g", 0.0) + purge_g + (model_g + support_g) * _num(profile, "waste_pct", 0.0) / 100.0
+    waste_g = _num(profile, "waste_g", 0.0) + purge_g + (
+        model_g + support_g + adhesion_g
+    ) * _num(profile, "waste_pct", 0.0) / 100.0
 
     # --- time
     accel = _num(profile, "acceleration_mm_s2", 1500.0)
@@ -911,7 +1231,7 @@ def estimate_fdm(
     v_wall = speeds(_num(profile, "perimeter_speed_mm_s", 45.0), seg_wall)
     v_solid = speeds(_num(profile, "solid_infill_speed_mm_s", 60.0), seg_fill)
     v_sparse = v_solid if infill >= 0.99 else speeds(_num(profile, "infill_speed_mm_s", 80.0), seg_sparse)
-    v_supp = speeds(_num(profile, "support_speed_mm_s", 60.0), np.full(nb, 20.0))
+    v_supp = speeds(_num(profile, "support_speed_mm_s", 60.0) * s_sf, np.full(nb, 20.0))
 
     wall_w = wall_area / max(wall_area.sum(), 1e-9)
     inner_w = inner_area / max(inner_area.sum(), 1e-9) if inner_area.sum() > 0 else np.full(nb, 1.0 / nb)
@@ -933,20 +1253,40 @@ def estimate_fdm(
     if separate:
         support_overhead_s += support_layers * _num(profile, "toolchange_s", 0.0)
     support_s = float(support_bins_s.sum()) + support_overhead_s
-    print_s = extrude_s + overhead_s + support_overhead_s
+    # Brim at wall speed on the first layer; raft at support speed in thick layers, plus its layer changes.
+    adhesion_s = 0.0
+    if adhesion_mm3 > 0:
+        if adhesion == ADHESION_RAFT:
+            rate = min(_num(profile, "support_speed_mm_s", 60.0) * lw * RAFT_LAYER_MM, qmax)
+            raft_layers = int(math.ceil(max(_num(profile, "raft_mm", 0.9), 0.0) / RAFT_LAYER_MM))
+            adhesion_s = adhesion_mm3 / max(rate, 0.1) + raft_layers * _num(profile, "layer_overhead_s", 2.0)
+        else:
+            rate = min(_num(profile, "perimeter_speed_mm_s", 45.0) * lw * max(lh, FIRST_LAYER_MIN_MM), qmax)
+            adhesion_s = adhesion_mm3 / max(rate, 0.1)
+    print_s = extrude_s + overhead_s + support_overhead_s + adhesion_s
     bin_s = (
         slowed * layers_per_bin
         + layers_per_bin * _num(profile, "layer_overhead_s", 2.0)
         + support_overhead_s * support_w
     )
+    bin_s[0] += adhesion_s
 
     b = _finish(
         TECH_FDM, profile, model_g, support_g, waste_g, print_s, layers, lh, infill_percent, [],
         {"shell_mm3": shell, "skin_mm3": skin, "infill_mm3": sparse, "support_mm3": support,
-         "support_layers": support_layers, "extrude_min": extrude_s / 60.0, "layer_overhead_min": overhead_s / 60.0},
+         "adhesion_mm3": adhesion_mm3, "support_layers": support_layers, "extrude_min": extrude_s / 60.0,
+         "layer_overhead_min": overhead_s / 60.0},
+        adhesion_g=adhesion_g,
     )
     b.progress = _cumulative_share(bin_s)
-    return _with_support(b, profile, opts, mode, s_density, separate, support_s, area_all, area_plate)
+    b = _with_support(b, profile, opts, mode, s_density, separate, support_s, area_all, area_plate)
+    if mode != SUPPORT_NONE:
+        b.support_type = s_type
+        b.support_volume_factor = s_vf
+    b.support_interface = interface_on and support > 0
+    b.adhesion = adhesion
+    b.adhesion_min = adhesion_s / 60.0 * float(profile.get("time_factor", 1.0) or 1.0)
+    return b
 
 
 def estimate_layered(
@@ -958,10 +1298,11 @@ def estimate_layered(
     V = max(f.volume_mm3, 0.0)
     mode = resolve_support_mode(f, profile, opts)
     (s_area, s_raw, _s_top), s_density, area_all, area_plate = _support_common(f, profile, opts, mode)
+    s_type, s_vf, _s_sf = resolve_support_type(profile, opts)
     lift = _num(profile, "lift_mm", 0.0) if mode != SUPPORT_NONE else 0.0
     support = 0.0
     if mode != SUPPORT_NONE:
-        support = (s_raw + f.bed_area_mm2 * lift) * s_density / 100.0
+        support = (s_raw + f.bed_area_mm2 * lift) * s_density / 100.0 * s_vf
         x, y = f.size[0], f.size[1]
         support += (x + 2.0) * (y + 2.0) * _num(profile, "raft_mm", 0.0) * 0.6
     separate = opts.separate_material and support > 0
@@ -999,7 +1340,11 @@ def estimate_layered(
         sec = np.asarray(f.cross_section_mm2, dtype=np.float64)
         bins = bins + sec / 100.0 * area_rate * (max(1, int(math.ceil(f.height / lh))) / nb)
     b.progress = _cumulative_share(bins)
-    return _with_support(b, profile, opts, mode, s_density, separate, support_s, area_all, area_plate)
+    b = _with_support(b, profile, opts, mode, s_density, separate, support_s, area_all, area_plate)
+    if mode != SUPPORT_NONE:
+        b.support_type = s_type
+        b.support_volume_factor = s_vf
+    return b
 
 
 def _with_support(b, profile, opts, mode, density_pct, separate, support_s, area_all, area_plate):
@@ -1014,10 +1359,10 @@ def _with_support(b, profile, opts, mode, density_pct, separate, support_s, area
     return b
 
 
-def _finish(tech, profile, model_g, support_g, waste_g, print_s, layers, lh, infill, notes, detail):
+def _finish(tech, profile, model_g, support_g, waste_g, print_s, layers, lh, infill, notes, detail, adhesion_g=0.0):
     wf = float(profile.get("weight_factor", 1.0) or 1.0)
     tf = float(profile.get("time_factor", 1.0) or 1.0)
-    model_g, support_g = model_g * wf, support_g * wf
+    model_g, support_g, adhesion_g = model_g * wf, support_g * wf, adhesion_g * wf
     print_min = print_s / 60.0 * tf
     warmup = max(_num(profile, "warmup_min", 0.0), 0.0)
     return EstimateBreakdown(
@@ -1026,7 +1371,8 @@ def _finish(tech, profile, model_g, support_g, waste_g, print_s, layers, lh, inf
         model_g=model_g,
         support_g=support_g,
         waste_g=waste_g,
-        total_g=model_g + support_g + waste_g,
+        total_g=model_g + support_g + adhesion_g + waste_g,
+        adhesion_g=adhesion_g,
         print_min=print_min,
         warmup_min=warmup,
         total_min=print_min + warmup,
