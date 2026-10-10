@@ -1,0 +1,83 @@
+# Read-only: runs the deployed equipment report (the code behind Reports & Statistics, PDF/Excel and statistics
+# exports) for the given equipment codes and date range inside a rolled-back transaction, and prints the header
+# period and the utilization card figures only (hours, percentages, dates). No revenue, no personal data.
+name: Probe Equipment Report
+
+on:
+  workflow_dispatch:
+    inputs:
+      equipment:
+        description: "Comma-separated equipment codes (each reported on its own)"
+        required: false
+        default: "XPS,PPMS"
+      date_from:
+        description: "Report start date (YYYY-MM-DD)"
+        required: false
+        default: "2026-01-01"
+      date_to:
+        description: "Report end date (YYYY-MM-DD)"
+        required: false
+        default: "2026-10-10"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        env:
+          REPORT_EQUIPMENT: ${{ inputs.equipment }}
+          REPORT_FROM: ${{ inputs.date_from }}
+          REPORT_TO: ${{ inputs.date_to }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app -e REPORT_EQUIPMENT="$REPORT_EQUIPMENT" -e REPORT_FROM="$REPORT_FROM" -e REPORT_TO="$REPORT_TO" "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.db import transaction
+          from iic_booking.equipment.models import Equipment
+          from iic_booking.equipment.reports import get_equipment_report_data
+
+          def pct(v):
+              return "N/A" if v is None else f"{v * 100:.2f}%"
+
+          codes = [c.strip() for c in os.environ["REPORT_EQUIPMENT"].split(",") if c.strip()]
+          for code in codes:
+              eq = Equipment.objects.filter(code__iexact=code).values("equipment_id", "code").first()
+              if not eq:
+                  print(f"\n== {code}: not found")
+                  continue
+              with transaction.atomic():
+                  data = get_equipment_report_data(
+                      os.environ["REPORT_FROM"], os.environ["REPORT_TO"], [eq["equipment_id"]], include_revenue=False
+                  )
+                  transaction.set_rollback(True)
+              h = data.get("report_header", {})
+              s = data.get("summary", {})
+              print(f"\n== {eq['code']} (id {eq['equipment_id']}) {os.environ['REPORT_FROM']}..{os.environ['REPORT_TO']}")
+              print(f"header range: {h.get('period_display')}")
+              print(f"note: {h.get('utilization_period_note')}")
+              print(f"utilization factor: {pct(s.get('utilization_factor'))} "
+                    f"(booked {s.get('utilization_booked_hours')}h / available {s.get('utilization_available_hours')}h)")
+              print(f"status breakdown: total {s.get('total_hours')}h, utilized {s.get('utilized_hours')}h, "
+                    f"downtime {s.get('downtime_hours')}h, disruption {s.get('disruption_hours')}h")
+              print(f"working-window availability: {s.get('available_hours_working_window')}h, "
+                    f"completed {s.get('completed_hours_in_working_window')}h")
+              print(f"utilization vs capacity: {pct(s.get('utilization_vs_working_capacity'))}")
+              print("pie: " + ", ".join(f"{p.get('name')}={p.get('hours')}h" for p in data.get("utilization_pie", [])))
+          PY
+              exit 0
+            fi
+          done
+          echo "No production checkout found" >&2
+          exit 1
