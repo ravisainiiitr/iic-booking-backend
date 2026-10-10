@@ -1,0 +1,180 @@
+# Read-only: the full state of named wallet recharge requests (IIC-TXN-######) — status, mode, amount,
+# who approved (requester / wallet owner / SRIC link / cash-book / admin, by role only), SRIC cash-book
+# match, fund receipt verification, whether and when the wallet was credited, the sub-wallet balance and
+# every sub-wallet entry since the credit (bookings and other debits). Public logs: ids, user types,
+# flags, amounts and dates only — no names, emails, grant codes or free-text descriptions.
+name: Probe Recharge Transactions
+
+on:
+  workflow_dispatch:
+    inputs:
+      txns:
+        description: "Comma-separated transaction numbers, e.g. IIC-TXN-000049,IIC-TXN-000043"
+        required: true
+        default: "IIC-TXN-000049,IIC-TXN-000043"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        env:
+          TXNS: ${{ inputs.txns }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TXNS" =~ ^(IIC-TXN-[0-9]{6})(,IIC-TXN-[0-9]{6}){0,9}$ ]]; then
+            echo "txns must be up to 10 comma-separated IIC-TXN-###### numbers"; exit 1
+          fi
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e TXNS="$TXNS" -w /app "$CID" python - <<'PY'
+          import os, re, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from decimal import Decimal
+          from django.db.models import Q
+          from iic_booking.users.models.wallet import (
+              SubWallet, SubWalletTransaction, WalletRechargeParseEntry, WalletRechargeRequest,
+          )
+          from iic_booking.users.models.sric_wallet_recharge import SricWalletRecharge
+          from iic_booking.users import wallet_recharge_workflow as wf
+
+          def low(v):
+              return (v or "").strip().lower()
+
+          def who(user):
+              if user is None:
+                  return "-"
+              return f"user_id={user.pk} type={user.user_type} staff={user.is_staff} superuser={user.is_superuser}"
+
+          def kind(desc):
+              d = low(desc)
+              if "booking" in d:
+                  return "booking"
+              if "manual admin" in d:
+                  return "admin_adjustment"
+              if "recharge" in d or "sric" in d:
+                  return "recharge"
+              if "refund" in d:
+                  return "refund"
+              if "credit recovered" in d or "auto-approved credit" in d:
+                  return "credit_settlement"
+              if "transfer" in d:
+                  return "peer_transfer"
+              if "legacy" in d:
+                  return "legacy_sync"
+              return "other"
+
+          def codes(desc):
+              return sorted(set(re.findall(r"\b(IIC[A-Z]*-[A-Z0-9]+-\d{6,}|WAD-\d{4}-\d+|WAC-\d{4}-\d+)\b", desc or "")))
+
+          for txn in os.environ["TXNS"].split(","):
+              pk = int(txn.rsplit("-", 1)[1])
+              print(f"\n===== {txn} (WRR-{pk}) =====")
+              r = WalletRechargeRequest.objects.select_related(
+                  "user", "wallet__user", "department", "processed_by", "fund_receipt_verified_by",
+                  "cashbook_parse_entry", "deleted_by",
+              ).filter(pk=pk).first()
+              if r is None:
+                  print("not_found=True")
+                  continue
+              owner = r.wallet.user
+              requester = r.user
+              req_e, own_e = low(requester.email), low(owner.email)
+              appr = low(r.approved_by_email)
+              approvers = [low(e) for e in wf.get_recharge_approver_emails(r)]
+              print(f"status={r.status} mode={r.recharge_mode} amount={r.amount} is_deleted={r.is_deleted}")
+              print(f"department_id={r.department_id} department={r.department.name if r.department_id else '-'} wallet_id={r.wallet_id}")
+              print(f"owner {who(owner)} test_account={getattr(owner, 'is_test_account', None)}")
+              print(f"requester {who(requester)} requester_is_owner={requester.pk == owner.pk}")
+              print(f"project_grant_code_set={bool((r.project_grant_code or '').strip())} department_grant_code_set={bool((r.department_grant_code or '').strip())} project_id={r.project_id}")
+              print(f"created_at={r.created_at} responded_at={r.responded_at} updated_at={r.updated_at}")
+              print(f"user_otp_verified={r.user_otp_verified} sric_notification_sent={r.sric_notification_sent} sric_reminders={r.sric_reminder_count}")
+              print(
+                  "approved_by: "
+                  f"set={bool(appr)} equals_requester={bool(appr) and appr == req_e} equals_owner={bool(appr) and appr == own_e} "
+                  f"is_current_sric_approver={appr in approvers} sric_email_marker={appr.startswith('sric-email')} "
+                  f"cashbook_marker={appr.startswith('sric-cashbook')} processed_by={who(r.processed_by)} "
+                  f"processed_by_is_requester={r.processed_by_id == requester.pk} processed_by_is_owner={r.processed_by_id == owner.pk}"
+              )
+              print(f"approver_list_count={len(approvers)} approver_list_contains_requester_or_owner={req_e in approvers or own_e in approvers}")
+              print(f"response_message_len={len(r.response_message or '')} response_starts_cashbook={(r.response_message or '').startswith('Approved against SRIC cash-book receipt')}")
+              print(
+                  f"cashbook: parse_entry_id={r.cashbook_parse_entry_id} receipt_no_set={bool((r.cashbook_receipt_no or '').strip())} "
+                  f"receipt_date={r.cashbook_receipt_date} matched_at={r.cashbook_matched_at}"
+              )
+              print(
+                  f"fund_receipt: verified={r.fund_receipt_verified} by={who(r.fund_receipt_verified_by)} at={r.fund_receipt_verified_at} "
+                  f"remarks_len={len(r.fund_receipt_verification_remarks or '')}"
+              )
+              print(
+                  f"credit: wallet_credit_pending={r.wallet_credit_pending} wallet_credited_at={r.wallet_credited_at} "
+                  f"credit_settled_amount={r.credit_settled_amount} decline_credit_amount={r.decline_credit_amount} "
+                  f"decline_credit_outstanding={r.decline_credit_outstanding} credit_facility={r.credit_facility_status} "
+                  f"credit_opted_in={r.credit_facility_opted_in} cancellation_source={r.cancellation_source or '-'}"
+              )
+              mentions = WalletRechargeParseEntry.objects.filter(
+                  Q(payment__icontains=txn) | Q(payment__iregex=rf"WRR-{pk}\b")
+              )
+              print(f"cashbook_rows_quoting_this_txn={mentions.count()} ids={list(mentions.values_list('id', flat=True)[:10])}")
+              print("audit_log:")
+              for a in r.audit_logs.select_related("actor").order_by("created_at", "pk"):
+                  ae = low(a.actor_email)
+                  print(
+                      f"  {a.created_at} action={a.action} {a.from_status or '-'}->{a.to_status} actor={who(a.actor)} "
+                      f"actor_email_is_requester={bool(ae) and ae == req_e} actor_email_is_owner={bool(ae) and ae == own_e} "
+                      f"actor_email_is_sric_approver={ae in approvers} actor_email_marker={ae if (ae and '@' not in ae) else ('email' if ae else '-')} "
+                      f"metadata={ {k: v for k, v in (a.metadata or {}).items() if k in ('amount', 'wallet_credit_deferred', 'credit_recovered', 'overdraft_adjusted', 'cancellation_source', 'source', 'receipt_no_set', 'credit_amount')} }"
+                  )
+
+              sub = SubWallet.objects.filter(wallet_id=r.wallet_id, department_id=r.department_id).first()
+              if sub is None:
+                  print("sub_wallet=none")
+                  continue
+              credit_q = SubWalletTransaction.objects.filter(sub_wallet=sub, transaction_type="credit").filter(
+                  Q(description__iregex=rf"WRR-{pk}\b") | Q(description__icontains=txn)
+              )
+              print(f"sub_wallet_id={sub.pk} balance_now={sub.balance} wallet_total_balance={r.wallet.total_balance}")
+              credits = list(credit_q.order_by("created_at"))
+              print(f"recharge_credit_entries={[(c.pk, str(c.amount), c.created_at.isoformat()) for c in credits]}")
+              other_refs = SubWalletTransaction.objects.filter(sub_wallet=sub).filter(
+                  Q(description__iregex=rf"WRR-{pk}\b") | Q(description__icontains=txn)
+              ).exclude(pk__in=[c.pk for c in credits])
+              print(f"other_entries_referencing_txn={[(t.pk, t.transaction_type, str(t.amount), kind(t.description), t.created_at.isoformat()) for t in other_refs]}")
+              anchor = credits[0] if credits else None
+              all_txns = list(SubWalletTransaction.objects.filter(sub_wallet=sub).order_by("created_at", "pk"))
+              running = Decimal("0.00")
+              before_credit = None
+              for t in all_txns:
+                  if anchor is not None and t.pk == anchor.pk:
+                      before_credit = running
+                  running += t.amount if t.transaction_type == "credit" else -t.amount
+              print(f"ledger_sum={running} matches_balance={running == sub.balance} entries_total={len(all_txns)} balance_before_credit_by_ledger={before_credit}")
+              if anchor is not None:
+                  since = [t for t in all_txns if (t.created_at, t.pk) > (anchor.created_at, anchor.pk)]
+                  deb = sum((t.amount for t in since if t.transaction_type == "debit"), Decimal("0"))
+                  cre = sum((t.amount for t in since if t.transaction_type == "credit"), Decimal("0"))
+                  print(f"since_credit: entries={len(since)} debits={deb} credits={cre}")
+                  for t in since:
+                      print(f"  {t.created_at} id={t.pk} {t.transaction_type} {t.amount} kind={kind(t.description)} refs={codes(t.description)} related_user_is_owner={t.related_user_id == owner.pk} related_user_is_requester={t.related_user_id == requester.pk}")
+              sric_rows = SricWalletRecharge.objects.filter(matched_user_id=owner.pk, is_test=False)
+              print(
+                  "sric_portal_recharges_for_owner="
+                  f"{[(s.pk, s.status, str(s.amount), s.sub_wallet_id, s.credited_at.isoformat() if s.credited_at else None) for s in sric_rows.order_by('created_at')]}"
+              )
+              others = WalletRechargeRequest.objects.filter(wallet_id=r.wallet_id).exclude(pk=pk).order_by("pk")
+              print(f"other_requests_on_wallet={[(o.transaction_number, o.status, o.recharge_mode, str(o.amount), o.department_id, o.fund_receipt_verified, bool(o.cashbook_receipt_no)) for o in others]}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
