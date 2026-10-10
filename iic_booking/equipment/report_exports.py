@@ -9,6 +9,16 @@ from typing import Any, Optional
 from .reports import get_equipment_report_data
 from .document_exports import _pdf_letterhead_story_lines
 
+UTILIZATION_FACTOR_LABEL = "Utilization factor (booked ÷ slot hours in weekly view window, excl. weekends & holidays)"
+
+
+def _utilization_pct_text(value) -> str:
+    return "N/A" if value is None else f"{float(value) * 100:.2f}%"
+
+
+def _utilization_cell_value(value):
+    return "N/A" if value is None else float(value)
+
 
 def _report_duration_caption(data: dict) -> str:
     """Human-readable duration line for PDF/Excel (matches API report_header)."""
@@ -112,6 +122,7 @@ def build_report_pdf(
         fontSize=12,
         spaceAfter=6,
         spaceBefore=12,
+        keepWithNext=1,
     )
     body_style = styles["Normal"]
     small_style = ParagraphStyle(
@@ -164,7 +175,12 @@ def build_report_pdf(
         ["Utilized hours (BOOKED slots)", f"{float(summary.get('utilized_hours', 0) or 0):.2f}"],
         ["Downtime hours (maint. + op. absent)", f"{float(summary.get('downtime_hours', 0) or 0):.2f}"],
         ["Disruption hours (downtime + other reasons)", f"{float(summary.get('disruption_hours', 0) or 0):.2f}"],
-        ["Utilization factor (booked / all slot hours)", f"{float(summary.get('utilization_factor', 0) or 0) * 100:.2f}%"],
+        [
+            UTILIZATION_FACTOR_LABEL,
+            f"{_utilization_pct_text(summary.get('utilization_factor'))} "
+            f"({float(summary.get('utilization_booked_hours', 0) or 0):.2f} / "
+            f"{float(summary.get('utilization_available_hours', 0) or 0):.2f} h)",
+        ],
         [
             "Available hours (Mon–Fri, excl. holidays; slot time window)",
             f"{float(summary.get('available_hours_working_window', 0) or 0):.2f}",
@@ -241,6 +257,11 @@ def build_report_pdf(
             [
                 "Completed booking hours (within working window)",
                 str(eq.get("completed_slot_hours_working_window", 0)),
+            ],
+            [
+                "Utilization factor (booked ÷ slot hours, weekly view window, working days)",
+                f"{_utilization_pct_text(eq.get('utilization_factor'))} "
+                f"({eq.get('utilization_booked_hours', 0)} / {eq.get('utilization_available_hours', 0)} h)",
             ],
             [
                 "Utilization vs working capacity",
@@ -458,8 +479,14 @@ def build_report_excel(
     ws.cell(row=row, column=1, value="Disruption hours")
     ws.cell(row=row, column=2, value=float(summary.get("disruption_hours", 0) or 0))
     row += 1
-    ws.cell(row=row, column=1, value="Utilization factor (booked / all slot hours)")
-    ws.cell(row=row, column=2, value=float(summary.get("utilization_factor", 0) or 0))
+    ws.cell(row=row, column=1, value=UTILIZATION_FACTOR_LABEL)
+    ws.cell(row=row, column=2, value=_utilization_cell_value(summary.get("utilization_factor")))
+    row += 1
+    ws.cell(row=row, column=1, value="Booked hours (weekly view window, working days)")
+    ws.cell(row=row, column=2, value=float(summary.get("utilization_booked_hours", 0) or 0))
+    row += 1
+    ws.cell(row=row, column=1, value="Slot hours (weekly view window, working days)")
+    ws.cell(row=row, column=2, value=float(summary.get("utilization_available_hours", 0) or 0))
     row += 1
     ws.cell(row=row, column=1, value="Available hours (working window)")
     ws.cell(row=row, column=2, value=float(summary.get("available_hours_working_window", 0) or 0))
@@ -491,6 +518,7 @@ def build_report_excel(
         "Avail. work hrs",
         "Wknd/hol hrs",
         "Compl. work hrs",
+        "Util. factor",
         "Util. vs cap.",
         "Bookings period",
         "Completed",
@@ -559,6 +587,8 @@ def build_report_excel(
         ws.cell(row=row, column=col, value=eq.get("available_hours_weekend_or_holiday", 0))
         col += 1
         ws.cell(row=row, column=col, value=eq.get("completed_slot_hours_working_window", 0))
+        col += 1
+        ws.cell(row=row, column=col, value=_utilization_cell_value(eq.get("utilization_factor")))
         col += 1
         ws.cell(row=row, column=col, value=float(eq.get("utilization_vs_working_capacity", 0) or 0))
         col += 1

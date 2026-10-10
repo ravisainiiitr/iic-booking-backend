@@ -1,0 +1,101 @@
+# Read-only: equipment utilization factor before (booked ÷ all slot hours) and after (booked ÷ slot hours inside
+# the weekly view window on working days, excl. weekends and holidays). Loads iic_booking/equipment/utilization.py
+# from the dispatched ref into the running container (nothing is deployed or written). Prints equipment ids,
+# codes, windows, hours and percentages only.
+name: Probe Utilization Factor
+
+on:
+  workflow_dispatch:
+    inputs:
+      periods:
+        description: "Comma-separated periods: last30, mtd, or YYYY-MM-DD:YYYY-MM-DD"
+        required: false
+        default: "last30,mtd,2026-01-01:2026-05-31"
+      equipment:
+        description: "Comma-separated equipment ids (blank = all)"
+        required: false
+        default: ""
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: iic_booking/equipment/utilization.py
+          sparse-checkout-cone-mode: false
+      - name: Probe
+        env:
+          UTIL_PERIODS: ${{ inputs.periods }}
+          UTIL_EQUIPMENT: ${{ inputs.equipment }}
+        run: |
+          set -euo pipefail
+          SRC="$GITHUB_WORKSPACE/iic_booking/equipment/utilization.py"
+          test -f "$SRC"
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker cp "$SRC" "$CID:/tmp/utilization_probe.py"
+              docker exec -i -w /app -e UTIL_PERIODS="$UTIL_PERIODS" -e UTIL_EQUIPMENT="$UTIL_EQUIPMENT" "$CID" python - <<'PY'
+          import importlib.util, os, sys, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from datetime import date, timedelta
+          from django.db import transaction
+          from django.utils import timezone
+          from iic_booking.equipment.models import Equipment
+
+          spec = importlib.util.spec_from_file_location("iic_booking.equipment.utilization", "/tmp/utilization_probe.py")
+          util = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = util
+          spec.loader.exec_module(util)
+
+          today = timezone.localdate()
+          periods = []
+          for token in [t.strip() for t in os.environ.get("UTIL_PERIODS", "").split(",") if t.strip()]:
+              if token == "last30":
+                  periods.append(("last 30 days", today - timedelta(days=29), today))
+              elif token == "mtd":
+                  periods.append(("month to date", today.replace(day=1), today))
+              else:
+                  a, b = token.split(":")
+                  periods.append((token, date.fromisoformat(a), date.fromisoformat(b)))
+          ids = [int(x) for x in os.environ.get("UTIL_EQUIPMENT", "").split(",") if x.strip().isdigit()]
+          equipment = {
+              e.equipment_id: e
+              for e in Equipment.objects.only("equipment_id", "code", "weekly_view_time_from", "weekly_view_time_to")
+              .filter(**({"equipment_id__in": ids} if ids else {}))
+          }
+          pct = lambda v: "N/A" if v is None else f"{v * 100:.1f}%"
+          for label, start, end in periods:
+              with transaction.atomic():
+                  tallies = util.compute_utilization_by_equipment(list(equipment), start, end)
+                  transaction.set_rollback(True)
+              total = util.UtilizationTally()
+              print(f"\n== {label} {start}..{end}")
+              print("id | code | window | all_slot_h | booked_all_h | before | window_slot_h | booked_window_h | after | booked_outside_h")
+              for eid, t in sorted(tallies.items(), key=lambda kv: getattr(equipment.get(kv[0]), "code", "") or ""):
+                  if not t.slots:
+                      continue
+                  total.merge(t)
+                  eq = equipment.get(eid)
+                  print(f"{eid} | {getattr(eq, 'code', '')} | {util.view_window_for(eq).label()} | {t.all_slot_hours:.1f} | "
+                        f"{t.all_slot_booked_hours:.1f} | {pct(t.all_slot_factor)} | {t.available_hours:.1f} | "
+                        f"{t.booked_hours:.1f} | {pct(t.factor)} | {t.booked_hours_outside_window:.1f}")
+              print(f"ALL | | | {total.all_slot_hours:.1f} | {total.all_slot_booked_hours:.1f} | {pct(total.all_slot_factor)} | "
+                    f"{total.available_hours:.1f} | {total.booked_hours:.1f} | {pct(total.factor)} | "
+                    f"{total.booked_hours_outside_window:.1f}")
+          PY
+              docker exec "$CID" rm -f /tmp/utilization_probe.py
+              exit 0
+            fi
+          done
+          echo "No production checkout found" >&2
+          exit 1

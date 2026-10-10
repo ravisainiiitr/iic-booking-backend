@@ -7,7 +7,7 @@ for a date range. Used by admin report API, PDF/Excel exports, and monthly email
 
 from calendar import monthrange
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
 from django.db.models import Count, Prefetch, Q, Sum
@@ -23,8 +23,16 @@ from .models import (
     Equipment,
     EquipmentManager,
     EquipmentOperator,
-    Holiday,
     SlotStatus,
+)
+from .utilization import (
+    UtilizationTally,
+    ViewWindow,
+    WorkingCalendar,
+    slot_hours,
+    utilization_ratio,
+    view_window_for,
+    window_hours,
 )
 
 
@@ -51,13 +59,6 @@ def _parse_sample_count_from_input_values(input_values: dict | None) -> int:
         return 0
 
 
-def _slot_row_hours(start_dt, end_dt) -> float:
-    if not start_dt or not end_dt:
-        return 0.0
-    delta = end_dt - start_dt
-    return max(0.0, delta.total_seconds() / 3600.0)
-
-
 def _normalize_user_type_snapshot(ut: str | None) -> str:
     return (ut or "").strip().lower()
 
@@ -73,47 +74,6 @@ def _is_internal_snapshot(ut: str | None) -> bool:
 
 def _is_external_snapshot(ut: str | None) -> bool:
     return UserType.is_external_user(ut or "")
-
-
-def _slot_in_weekly_time_window(eq: Equipment, start_dt, end_dt) -> bool:
-    """
-    True if slot lies within equipment weekly_view_time_from / weekly_view_time_to (inclusive).
-    Empty from/to means no limit. The window is in local (IST) time; slot datetimes are stored in UTC.
-    """
-    w_from = getattr(eq, "weekly_view_time_from", None)
-    w_to = getattr(eq, "weekly_view_time_to", None)
-    if not w_from and not w_to:
-        return True
-    if not start_dt or not end_dt:
-        return True
-    t_start = (timezone.localtime(start_dt) if timezone.is_aware(start_dt) else start_dt).time()
-    t_end = (timezone.localtime(end_dt) if timezone.is_aware(end_dt) else end_dt).time()
-    if w_from and t_start < w_from:
-        return False
-    if w_to and t_end > w_to:
-        return False
-    return True
-
-
-def _institute_holiday_dates_in_range(start: date, end: date) -> set[date]:
-    return set(
-        Holiday.objects.filter(
-            date__gte=start,
-            date__lte=end,
-            is_active=True,
-        ).values_list("date", flat=True)
-    )
-
-
-def _is_normal_working_calendar_day(d: date, institute_holidays: set[date]) -> bool:
-    """Mon–Fri, excluding institute holiday dates (Sat/Sun excluded by weekday)."""
-    if d.weekday() >= 5:
-        return False
-    return d not in institute_holidays
-
-
-def _is_weekend_or_institute_holiday_day(d: date, institute_holidays: set[date]) -> bool:
-    return d.weekday() >= 5 or d in institute_holidays
 
 
 # Bookings counted as "served" for user/sample/hour stats (had slots in period). Fully refunded
@@ -357,7 +317,7 @@ def _equipment_report_payload(
     else:
         end = start.replace(day=monthrange(start.year, start.month)[1])
 
-    institute_holidays = _institute_holiday_dates_in_range(start, end)
+    calendar = WorkingCalendar.for_range(start, end + timedelta(days=7))
 
     qs_equipment = Equipment.objects.all().order_by("code")
     if equipment_ids is not None:
@@ -435,7 +395,10 @@ def _equipment_report_payload(
                 "utilized_hours": 0.0,
                 "downtime_hours": 0.0,
                 "disruption_hours": 0.0,
-                "utilization_factor": 0.0,
+                "utilization_factor": None,
+                "utilization_booked_hours": 0.0,
+                "utilization_available_hours": 0.0,
+                "booked_hours_outside_window": 0.0,
                 "revenue_total": 0.0,
                 "revenue_internal": 0.0,
                 "revenue_external": 0.0,
@@ -471,6 +434,8 @@ def _equipment_report_payload(
             "other_disruption_hours": 0.0,
         }
     )
+    utilization: dict[int, UtilizationTally] = defaultdict(UtilizationTally)
+    view_windows: dict[int, ViewWindow] = {}
 
     for eid in eq_ids:
         rollup_eid = mode_rollup.get(eid, eid)
@@ -512,7 +477,7 @@ def _equipment_report_payload(
         if eid not in eq_slot_stats:
             continue
         eq = ds.slot_master.equipment
-        hrs = _slot_row_hours(ds.start_datetime, ds.end_datetime)
+        hrs = slot_hours(ds.start_datetime, ds.end_datetime)
         st = ds.status
         bk = ds.booking
         # Test-account bookings must not affect utilization / disruption stats.
@@ -549,14 +514,15 @@ def _equipment_report_payload(
         if bk and not is_test_bk and bk.status == BookingStatus.OTHER_DISRUPTION:
             eq_perf_slots[eid]["other_disruption_hours"] += hrs
 
-        d = ds.date
-        in_window = _slot_in_weekly_time_window(eq, ds.start_datetime, ds.end_datetime)
-        if in_window and _is_normal_working_calendar_day(d, institute_holidays):
-            eq_perf_slots[eid]["available_hours_working_window"] += hrs
-            if bk and not is_test_bk and bk.status == BookingStatus.COMPLETED:
-                eq_perf_slots[eid]["completed_hours_working_window"] += hrs
-        if in_window and _is_weekend_or_institute_holiday_day(d, institute_holidays):
-            eq_perf_slots[eid]["available_hours_weekend_or_holiday"] += hrs
+        if eq.equipment_id not in view_windows:
+            view_windows[eq.equipment_id] = view_window_for(eq, equipment_by_id.get(eid))
+        window = view_windows[eq.equipment_id]
+        utilization[eid].add(st, ds.start_datetime, ds.end_datetime, window, calendar, test_booking=is_test_bk)
+        working_hrs, off_hrs = window_hours(ds.start_datetime, ds.end_datetime, window, calendar)
+        eq_perf_slots[eid]["available_hours_working_window"] += working_hrs
+        if bk and not is_test_bk and bk.status == BookingStatus.COMPLETED:
+            eq_perf_slots[eid]["completed_hours_working_window"] += working_hrs
+        eq_perf_slots[eid]["available_hours_weekend_or_holiday"] += off_hrs
 
     from iic_booking.users.test_accounts import exclude_test_bookings
 
@@ -739,6 +705,7 @@ def _equipment_report_payload(
         sum_avail_working += avail_w
         sum_completed_working += comp_w
         util_working = round((comp_w / avail_w) if avail_w > 0 else 0.0, 4)
+        util = utilization[eid]
 
         managers_payload = []
         for em in eq.equipment_managers.all():
@@ -805,6 +772,10 @@ def _equipment_report_payload(
                 "available_hours_weekend_or_holiday": round(float(perf["available_hours_weekend_or_holiday"]), 2),
                 "completed_slot_hours_working_window": round(comp_w, 2),
                 "utilization_vs_working_capacity": util_working,
+                "utilization_factor": util.factor,
+                "utilization_booked_hours": round(util.booked_hours, 2),
+                "utilization_available_hours": round(util.available_hours, 2),
+                "booked_hours_outside_window": round(util.booked_hours_outside_window, 2),
                 "blocked_hours": round(float(perf["blocked_hours"]), 2),
                 "other_disruption_hours": round(float(perf["other_disruption_hours"]), 2),
                 "total_bookings_in_period": in_range_count.get(eid, 0),
@@ -848,7 +819,10 @@ def _equipment_report_payload(
     downtime_hours = float(total_um + total_sm + total_oa)
     disruption_hours = float(downtime_hours + total_or)
     utilized_hours = float(total_booked)
-    utilization_factor = round((utilized_hours / total_hours) if total_hours > 0 else 0.0, 4)
+    util_total = UtilizationTally()
+    for eq in equipment_list:
+        util_total.merge(utilization[eq.equipment_id])
+    utilization_factor = utilization_ratio(util_total.booked_hours, util_total.available_hours)
 
     utilization_pie = [
         {"name": "Utilized (Booked)", "value": round(total_booked, 2), "hours": round(total_booked, 2)},
@@ -907,6 +881,9 @@ def _equipment_report_payload(
             "downtime_hours": round(downtime_hours, 2),
             "disruption_hours": round(disruption_hours, 2),
             "utilization_factor": utilization_factor,
+            "utilization_booked_hours": round(util_total.booked_hours, 2),
+            "utilization_available_hours": round(util_total.available_hours, 2),
+            "booked_hours_outside_window": round(util_total.booked_hours_outside_window, 2),
             "revenue_total": float(total_revenue or 0),
             "revenue_internal": float(revenue_internal or 0),
             "revenue_external": float(revenue_external or 0),
