@@ -1,7 +1,7 @@
 """Read-only before/after utilization factor per equipment.
 
 Before: booked slot hours ÷ all slot hours. After: the same hours inside the weekly view window on working days
-(``iic_booking.equipment.utilization``).
+(``iic_booking.equipment.utilization``). Both start no earlier than PORTAL_GO_LIVE_DATE.
 
 Usage:
   python manage.py utilization_report                       # last 30 days up to today
@@ -18,7 +18,13 @@ from django.db.models import Q
 from django.utils import timezone
 
 from iic_booking.equipment.models import Equipment
-from iic_booking.equipment.utilization import UtilizationTally, compute_utilization_by_equipment, view_window_for
+from iic_booking.equipment.utilization import (
+    UtilizationTally,
+    compute_utilization_by_equipment,
+    portal_go_live_date,
+    utilization_period,
+    view_window_for,
+)
 
 EQUIPMENT_FIELDS = ("equipment_id", "code", "name", "weekly_view_time_from", "weekly_view_time_to")
 COLUMNS = [
@@ -87,7 +93,12 @@ class Command(BaseCommand):
             f"{total.booked_hours_outside_window:.1f}",
         ])
 
-        self.stdout.write(f"period={start.isoformat()}..{end.isoformat()} equipment={len(rows) - 1}")
+        period = utilization_period(start, end)
+        effective = "none (before portal go-live)" if period.is_empty else f"{period.start}..{period.end}"
+        self.stdout.write(
+            f"period={start.isoformat()}..{end.isoformat()} effective={effective} "
+            f"go_live={portal_go_live_date()} equipment={len(rows) - 1}"
+        )
         if options["csv"]:
             writer = csv.writer(self.stdout)
             writer.writerow(COLUMNS)

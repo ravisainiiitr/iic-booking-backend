@@ -156,7 +156,7 @@ def _utilization_or_na(value):
 
 
 def _equipment_parts(request):
-    from iic_booking.equipment.utilization import UTILIZATION_FORMULA
+    from iic_booking.equipment.utilization import UTILIZATION_FORMULA, utilization_period_caption
 
     params = request.query_params.copy()
     for key in list(params.keys()):
@@ -177,7 +177,7 @@ def _equipment_parts(request):
         ]
     kpis += [
         spec.Kpi("Utilization factor", _utilization_or_na(summary.get("utilization_factor")), spec.PERCENT,
-                 UTILIZATION_FORMULA),
+                 " · ".join(filter(None, [UTILIZATION_FORMULA, utilization_period_caption(summary)]))),
         spec.Kpi("Utilized hours", summary.get("utilized_hours", 0), spec.NUMBER),
         spec.Kpi("Downtime hours", summary.get("downtime_hours", 0), spec.NUMBER,
                  "Under / scheduled maintenance + operator absent"),

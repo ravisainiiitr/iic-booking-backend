@@ -30,6 +30,7 @@ from .utilization import (
     ViewWindow,
     WorkingCalendar,
     slot_hours,
+    utilization_period,
     utilization_ratio,
     view_window_for,
     window_hours,
@@ -318,6 +319,8 @@ def _equipment_report_payload(
         end = start.replace(day=monthrange(start.year, start.month)[1])
 
     calendar = WorkingCalendar.for_range(start, end + timedelta(days=7))
+    # Slot-hour figures (utilization, slot outcomes, downtime, capacity) start at the portal go-live date.
+    slot_period = utilization_period(start, end)
 
     qs_equipment = Equipment.objects.all().order_by("code")
     if equipment_ids is not None:
@@ -399,6 +402,7 @@ def _equipment_report_payload(
                 "utilization_booked_hours": 0.0,
                 "utilization_available_hours": 0.0,
                 "booked_hours_outside_window": 0.0,
+                **slot_period.as_dict(),
                 "revenue_total": 0.0,
                 "revenue_internal": 0.0,
                 "revenue_external": 0.0,
@@ -417,7 +421,7 @@ def _equipment_report_payload(
 
     slots_in_range = (
         DailySlot.objects.filter(
-            date__gte=start,
+            date__gte=slot_period.start,
             date__lte=end,
             slot_master__equipment_id__in=eq_ids,
         )
@@ -466,7 +470,7 @@ def _equipment_report_payload(
             event__disruption_type=DisruptionType.OTHER,
             event__is_deleted=False,
             released_at__isnull=True,
-            daily_slot__date__gte=start,
+            daily_slot__date__gte=slot_period.start,
             daily_slot__date__lte=end,
             daily_slot__slot_master__equipment_id__in=eq_ids,
         ).values_list("daily_slot_id", flat=True)
@@ -888,6 +892,7 @@ def _equipment_report_payload(
             "utilization_booked_hours": round(util_total.booked_hours, 2),
             "utilization_available_hours": round(util_total.available_hours, 2),
             "booked_hours_outside_window": round(util_total.booked_hours_outside_window, 2),
+            **slot_period.as_dict(),
             "revenue_total": float(total_revenue or 0),
             "revenue_internal": float(revenue_internal or 0),
             "revenue_external": float(revenue_external or 0),

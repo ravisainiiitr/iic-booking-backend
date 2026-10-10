@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from .reports import get_equipment_report_data
 from .document_exports import _pdf_letterhead_story_lines
+from .utilization import utilization_period_caption
 
 UTILIZATION_FACTOR_LABEL = "Utilization factor (booked ÷ slot hours in weekly view window, excl. weekends & holidays)"
 
@@ -163,6 +164,8 @@ def build_report_pdf(
     story.append(Anchor("summary", summary_title))
     story.append(Paragraph(escape(summary_title), heading_style))
     summary = data.get("summary", {}) or {}
+    period_caption = utilization_period_caption(summary)
+    period_note = f"; {period_caption}" if period_caption else ""
     fin_rows = [["Metric", "Value"]]
     if include_revenue:
         fin_rows += [
@@ -179,7 +182,7 @@ def build_report_pdf(
             UTILIZATION_FACTOR_LABEL,
             f"{_utilization_pct_text(summary.get('utilization_factor'))} "
             f"({float(summary.get('utilization_booked_hours', 0) or 0):.2f} / "
-            f"{float(summary.get('utilization_available_hours', 0) or 0):.2f} h)",
+            f"{float(summary.get('utilization_available_hours', 0) or 0):.2f} h{period_note})",
         ],
         [
             "Available hours (Mon–Fri, excl. holidays; slot time window)",
@@ -482,6 +485,10 @@ def build_report_excel(
     ws.cell(row=row, column=1, value=UTILIZATION_FACTOR_LABEL)
     ws.cell(row=row, column=2, value=_utilization_cell_value(summary.get("utilization_factor")))
     row += 1
+    if caption := utilization_period_caption(summary):
+        ws.cell(row=row, column=1, value="Utilization period")
+        ws.cell(row=row, column=2, value=caption)
+        row += 1
     ws.cell(row=row, column=1, value="Booked hours (weekly view window, working days)")
     ws.cell(row=row, column=2, value=float(summary.get("utilization_booked_hours", 0) or 0))
     row += 1

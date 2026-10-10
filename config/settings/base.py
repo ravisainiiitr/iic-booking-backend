@@ -27,6 +27,8 @@ DEBUG = env.bool("DJANGO_DEBUG", False)
 # though not all of them may be available with every OS.
 # In Windows, this must be set to your system time zone.
 TIME_ZONE = "Asia/Kolkata"
+# First day bookings were made on the new portal (local date, YYYY-MM-DD). Utilization never counts slots before it.
+PORTAL_GO_LIVE_DATE = env.str("PORTAL_GO_LIVE_DATE", default="2026-10-05")
 # https://docs.djangoproject.com/en/dev/ref/settings/#language-code
 LANGUAGE_CODE = "en-us"
 # https://docs.djangoproject.com/en/dev/ref/settings/#languages

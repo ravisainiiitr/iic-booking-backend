@@ -13,6 +13,8 @@ from iic_booking.equipment.utilization import (
     ViewWindow,
     WorkingCalendar,
     compute_utilization,
+    utilization_period,
+    utilization_period_caption,
     view_window_for,
     window_hours,
 )
@@ -127,6 +129,86 @@ def test_window_falls_back_to_parent_then_setting(settings):
     assert view_window_for(none) == ViewWindow()
     settings.UTILIZATION_DEFAULT_VIEW_WINDOW = ("09:00", "24:00")
     assert view_window_for(none) == ViewWindow(time(9, 0), time(0, 0))
+
+
+# --- portal go-live date ---------------------------------------------------------------------------------------
+
+GO_LIVE = date(2026, 10, 5)
+
+
+@pytest.fixture
+def go_live(settings):
+    settings.PORTAL_GO_LIVE_DATE = GO_LIVE.isoformat()
+    return GO_LIVE
+
+
+def test_period_start_is_clamped_to_go_live(go_live):
+    period = utilization_period(date(2026, 9, 11), date(2026, 10, 10))
+    assert (period.start, period.end, period.clamped, period.is_empty) == (go_live, date(2026, 10, 10), True, False)
+    assert period.as_dict() == {
+        "utilization_period_from": "2026-10-05",
+        "utilization_period_to": "2026-10-10",
+        "utilization_period_clamped": True,
+        "portal_go_live_date": "2026-10-05",
+    }
+    assert utilization_period_caption(period.as_dict()) == "Since 05-10-2026 (portal go-live)"
+
+
+def test_period_after_go_live_is_unchanged(go_live):
+    period = utilization_period("2026-10-07", "2026-10-31")
+    assert (period.start, period.clamped) == (date(2026, 10, 7), False)
+    assert utilization_period_caption(period.as_dict()) == ""
+
+
+def test_period_entirely_before_go_live_is_empty(go_live):
+    period = utilization_period(date(2026, 9, 1), date(2026, 9, 30))
+    assert period.is_empty
+    assert period.as_dict()["utilization_period_from"] is None
+    assert utilization_period_caption(period.as_dict()) == "Period is before portal go-live (05-10-2026)"
+
+
+def test_no_go_live_setting_means_no_clamp(settings):
+    settings.PORTAL_GO_LIVE_DATE = ""
+    period = utilization_period(date(2026, 9, 1), date(2026, 9, 30))
+    assert (period.start, period.clamped, period.is_empty) == (date(2026, 9, 1), False, False)
+
+
+@pytest.fixture
+def straddling_equipment(egs_factory, go_live):
+    f = egs_factory
+    eq = f.equipment(weekly_view_time_from=time(9, 0), weekly_view_time_to=time(17, 30))
+    f.booking(f.student(), eq, _at(go_live - timedelta(days=3), 10), slot_count=2)  # Friday before go-live
+    f.slot(eq, _at(go_live, 10), minutes=120)
+    f.booking(f.student(), eq, _at(go_live, 12), slot_count=1)
+    return eq
+
+
+@pytest.mark.django_db
+def test_slots_before_go_live_are_not_counted(straddling_equipment):
+    result = compute_utilization(straddling_equipment, date(2026, 9, 28), date(2026, 10, 9))
+    assert (result["booked_hours"], result["available_hours"]) == (1.0, 3.0)
+    assert result["utilization_factor"] == round(1 / 3, 4)
+    assert result["utilization_period_from"] == "2026-10-05" and result["utilization_period_clamped"] is True
+
+
+@pytest.mark.django_db
+def test_period_before_go_live_is_not_applicable(straddling_equipment):
+    result = compute_utilization(straddling_equipment, date(2026, 9, 1), date(2026, 10, 4))
+    assert result["utilization_factor"] is None
+    assert result["utilization_period_from"] is None
+
+
+@pytest.mark.django_db
+def test_equipment_report_slot_hours_start_at_go_live(straddling_equipment):
+    from iic_booking.equipment.reports import get_equipment_report_data
+
+    summary = get_equipment_report_data("2026-10-01", "2026-10-09", [straddling_equipment.pk])["summary"]
+    assert summary["utilization_factor"] == round(1 / 3, 4)
+    assert summary["utilized_hours"] == 1.0
+    assert summary["utilization_period_from"] == "2026-10-05" and summary["utilization_period_clamped"] is True
+
+    before = get_equipment_report_data("2026-09-01", "2026-09-30", [straddling_equipment.pk])["summary"]
+    assert before["utilization_factor"] is None and before["utilization_period_from"] is None
 
 
 # --- database: compute_utilization and the equipment report -----------------------------------------------

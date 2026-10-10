@@ -12,6 +12,9 @@ both hours. Booked slots are BOOKED slots. The factor is ``None`` when there are
 
 Window fallback: the slot's own equipment, then its multi-mode parent, then ``UTILIZATION_DEFAULT_VIEW_WINDOW``
 (``("HH:MM", "HH:MM")``), else the whole day.
+
+The period never starts before ``PORTAL_GO_LIVE_DATE`` (first bookings on the new portal); a period that ends
+before it has no slots, so the factor is ``None``.
 """
 
 from __future__ import annotations
@@ -38,6 +41,61 @@ AVAILABLE_SLOT_STATUSES = frozenset(
     }
 )
 _BOOKING_STATUSES = frozenset({SlotStatus.BOOKED, SlotStatus.BOOKING_NOT_UTILIZED})
+
+
+def portal_go_live_date() -> Optional[date]:
+    raw = getattr(settings, "PORTAL_GO_LIVE_DATE", None)
+    if not raw:
+        return None
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    return date.fromisoformat(str(raw).strip())
+
+
+@dataclass(frozen=True)
+class UtilizationPeriod:
+    """Requested ``start``..``end`` with ``start`` moved up to the portal go-live date."""
+
+    start: date
+    end: date
+    requested_start: date
+
+    @property
+    def is_empty(self) -> bool:
+        return self.start > self.end
+
+    @property
+    def clamped(self) -> bool:
+        return self.start > self.requested_start
+
+    def as_dict(self) -> dict:
+        return {
+            "utilization_period_from": None if self.is_empty else self.start.isoformat(),
+            "utilization_period_to": None if self.is_empty else self.end.isoformat(),
+            "utilization_period_clamped": self.clamped,
+            "portal_go_live_date": go_live.isoformat() if (go_live := portal_go_live_date()) else None,
+        }
+
+
+def utilization_period_caption(summary: dict) -> str:
+    """'' unless the go-live date shortened the period: 'Since 05-10-2026 (portal go-live)' or 'Before ...'."""
+    go_live = summary.get("portal_go_live_date")
+    if not go_live:
+        return ""
+    go_live_dmy = date.fromisoformat(go_live).strftime("%d-%m-%Y")
+    if summary.get("utilization_period_from") is None and "utilization_period_to" in summary:
+        return f"Period is before portal go-live ({go_live_dmy})"
+    if summary.get("utilization_period_clamped"):
+        return f"Since {go_live_dmy} (portal go-live)"
+    return ""
+
+
+def utilization_period(start, end) -> UtilizationPeriod:
+    requested_start, end_d = _as_date(start), _as_date(end)
+    go_live = portal_go_live_date()
+    return UtilizationPeriod(max(requested_start, go_live) if go_live else requested_start, end_d, requested_start)
 
 
 def _parse_time(value) -> Optional[time]:
@@ -207,14 +265,18 @@ def _as_date(value) -> date:
 
 
 def compute_utilization_by_equipment(equipment_ids: Iterable[int], start, end) -> dict[int, UtilizationTally]:
-    """Tallies keyed by equipment id for ``start``..``end`` (dates, inclusive); multi-mode children fold into parents."""
+    """
+    Tallies keyed by equipment id for ``start``..``end`` (dates, inclusive, clamped to the portal go-live date);
+    multi-mode children fold into parents.
+    """
     from .mode_utils import expand_equipment_ids_for_mode_rollup
 
-    start_d, end_d = _as_date(start), _as_date(end)
+    period = utilization_period(start, end)
+    start_d, end_d = period.start, period.end
     ids = [int(i) for i in equipment_ids]
     expanded, rollup = expand_equipment_ids_for_mode_rollup(ids)
     tallies = {rollup.get(i, i): UtilizationTally() for i in ids}
-    if not expanded:
+    if not expanded or period.is_empty:
         return tallies
     calendar = WorkingCalendar.for_range(start_d, end_d + timedelta(days=7))
     equipment = {
@@ -246,4 +308,4 @@ def compute_utilization(equipment, start, end) -> dict:
     eid = int(getattr(equipment, "equipment_id", None) or getattr(equipment, "pk", None) or equipment)
     tallies = compute_utilization_by_equipment([eid], start, end)
     tally = next(iter(tallies.values()), UtilizationTally())
-    return {"equipment_id": eid, **tally.as_dict()}
+    return {"equipment_id": eid, **tally.as_dict(), **utilization_period(start, end).as_dict()}

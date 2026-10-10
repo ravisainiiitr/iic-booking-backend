@@ -8,9 +8,13 @@ on:
   workflow_dispatch:
     inputs:
       periods:
-        description: "Comma-separated periods: last30, mtd, or YYYY-MM-DD:YYYY-MM-DD"
+        description: "Comma-separated periods: golive (go-live to today), last30, mtd, or YYYY-MM-DD:YYYY-MM-DD"
         required: false
-        default: "last30,mtd,2026-01-01:2026-05-31"
+        default: "golive,last30,mtd"
+      go_live:
+        description: "Portal go-live date, used only when the deployed settings have no PORTAL_GO_LIVE_DATE"
+        required: false
+        default: "2026-10-05"
       equipment:
         description: "Comma-separated equipment ids (blank = all)"
         required: false
@@ -28,6 +32,7 @@ jobs:
         env:
           UTIL_PERIODS: ${{ inputs.periods }}
           UTIL_EQUIPMENT: ${{ inputs.equipment }}
+          UTIL_GO_LIVE: ${{ inputs.go_live }}
         run: |
           set -euo pipefail
           SRC="$GITHUB_WORKSPACE/iic_booking/equipment/utilization.py"
@@ -43,11 +48,12 @@ jobs:
               CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
               test -n "$CID"
               docker cp "$SRC" "$CID:/tmp/utilization_probe.py"
-              docker exec -i -w /app -e UTIL_PERIODS="$UTIL_PERIODS" -e UTIL_EQUIPMENT="$UTIL_EQUIPMENT" "$CID" python - <<'PY'
+              docker exec -i -w /app -e UTIL_PERIODS="$UTIL_PERIODS" -e UTIL_EQUIPMENT="$UTIL_EQUIPMENT" -e UTIL_GO_LIVE="$UTIL_GO_LIVE" "$CID" python - <<'PY'
           import importlib.util, os, sys, django
           os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
           django.setup()
           from datetime import date, timedelta
+          from django.conf import settings
           from django.db import transaction
           from django.utils import timezone
           from iic_booking.equipment.models import Equipment
@@ -57,10 +63,16 @@ jobs:
           sys.modules[spec.name] = util
           spec.loader.exec_module(util)
 
+          if not getattr(settings, "PORTAL_GO_LIVE_DATE", None) and os.environ.get("UTIL_GO_LIVE"):
+              settings.PORTAL_GO_LIVE_DATE = os.environ["UTIL_GO_LIVE"]
+          go_live = util.portal_go_live_date()
+          print(f"go_live={go_live}")
           today = timezone.localdate()
           periods = []
           for token in [t.strip() for t in os.environ.get("UTIL_PERIODS", "").split(",") if t.strip()]:
-              if token == "last30":
+              if token == "golive":
+                  periods.append(("since go-live", go_live or today, today))
+              elif token == "last30":
                   periods.append(("last 30 days", today - timedelta(days=29), today))
               elif token == "mtd":
                   periods.append(("month to date", today.replace(day=1), today))
@@ -79,7 +91,9 @@ jobs:
                   tallies = util.compute_utilization_by_equipment(list(equipment), start, end)
                   transaction.set_rollback(True)
               total = util.UtilizationTally()
-              print(f"\n== {label} {start}..{end}")
+              period = util.utilization_period(start, end)
+              effective = "none (before go-live)" if period.is_empty else f"{period.start}..{period.end}"
+              print(f"\n== {label} {start}..{end} effective={effective}")
               print("id | code | window | all_slot_h | booked_all_h | before | window_slot_h | booked_window_h | after | booked_outside_h")
               for eid, t in sorted(tallies.items(), key=lambda kv: getattr(equipment.get(kv[0]), "code", "") or ""):
                   if not t.slots:
