@@ -21,6 +21,7 @@ from django.db.models.functions import Coalesce
 from iic_booking.equipment.admin_dashboard_summary import _Scope
 
 from .common import bounds, int_values, iso, money, multi, page_meta, page_params, parse_date
+from .supervisors import resolve_supervisors
 from .users import CATEGORIES, PROGRAMMES, _annotated, _classification_table, programme_for
 
 RECENT = 10
@@ -42,13 +43,24 @@ class _Everyone:
 
 def _visible(scope: _Scope, user_id: int):
     """The user if the viewer may open their card (Users overview population or a supervisor of it)."""
-    found = _annotated(scope).filter(pk=user_id).select_related("department", "supervisor").first()
+    from iic_booking.users.models import RegistrationApproval
+    from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
+
+    found = _annotated(scope).filter(pk=user_id).select_related("department").first()
     if found is None and not scope.is_institute and scope.department_id:
-        supervises = get_user_model().objects.filter(
-            supervisor_id=user_id, department_id=scope.department_id, is_test_account=False
+        members = get_user_model().objects.filter(department_id=scope.department_id, is_test_account=False)
+        joined = WalletJoinRequest.objects.filter(
+            Q(wallet__user_id=user_id) | Q(faculty_id=user_id),
+            status__in=[WalletJoinRequestStatus.APPROVED, WalletJoinRequestStatus.PENDING],
+            student__in=members,
         )
-        if supervises.exists():
-            found = _annotated(_Everyone()).filter(pk=user_id).select_related("department", "supervisor").first()
+        supervises = (
+            members.filter(supervisor_id=user_id).exists()
+            or joined.exists()
+            or RegistrationApproval.objects.filter(faculty_id=user_id, user__in=members).exists()
+        )
+        if supervises:
+            found = _annotated(_Everyone()).filter(pk=user_id).select_related("department").first()
     if found is None:
         raise CardError("User not found.")
     return found
@@ -170,7 +182,7 @@ def build_user_card(viewer, user_id: int, request=None) -> dict[str, Any]:
         if person.category == "iitr_student"
         else None
     )
-    supervisor = person.supervisor if person.supervisor_id else None
+    supervisor = resolve_supervisors([person.pk]).get(person.pk)
     phones = [p for p in ((person.phone_number or "").strip(), (person.secondary_phone_number or "").strip()) if p]
 
     bookings = _bookings_scope(viewer).filter(user_id=person.pk)
@@ -207,11 +219,7 @@ def build_user_card(viewer, user_id: int, request=None) -> dict[str, Any]:
                 if person.department_id
                 else None
             ),
-            "supervisor": (
-                {"id": supervisor.pk, "name": get_user_display_name(supervisor), "email": supervisor.email or ""}
-                if supervisor
-                else None
-            ),
+            "supervisor": supervisor,
             "is_active": bool(person.is_active),
             "is_test_account": bool(person.is_test_account),
             "date_joined": iso(person.date_joined),

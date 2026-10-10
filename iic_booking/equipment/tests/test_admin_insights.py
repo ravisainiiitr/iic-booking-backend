@@ -291,7 +291,7 @@ def test_users_query_count_is_constant(people, django_assert_max_num_queries):
     for _ in range(8):
         UserFactory(user_type=UserType.STUDENT, department=people[0].department)
     admin = _admin()
-    with django_assert_max_num_queries(16):
+    with django_assert_max_num_queries(24):
         build_user_insights(admin, {})
 
 

@@ -39,6 +39,7 @@ from iic_booking.equipment.admin_dashboard_summary import _Scope, _users
 from iic_booking.users.models.user_type import UserType
 
 from .common import bounds, flag, int_values, iso, multi, page_meta, page_params, parse_date, scope_payload
+from .supervisors import resolve_supervisors
 
 CATEGORIES = {
     "iitr_faculty": "IITR Faculty",
@@ -353,16 +354,19 @@ def _trend(qs, params, now) -> dict[str, Any]:
     return {"granularity": granularity, "series": series}
 
 
-def _wallet_owners(rows: list[dict]) -> dict[int, int]:
-    """User id -> wallet ledger owner id (their own wallet, else their supervisor's for IITR Students)."""
+def _wallet_owners(rows: list[dict], supervisors: dict[int, dict]) -> dict[int, int]:
+    """User id -> wallet ledger owner id (their own wallet, else the supervisor's wallet they joined)."""
     from iic_booking.users.models.wallet import Wallet
 
-    candidates = {r["id"] for r in rows} | {r["supervisor_id"] for r in rows if r["supervisor_id"]}
+    joined = {uid: s["id"] for uid, s in supervisors.items() if s["source"] == "wallet" and s["id"]}
+    candidates = {r["id"] for r in rows} | {r["supervisor_id"] for r in rows if r["supervisor_id"]} | set(joined.values())
     with_wallet = set(Wallet.objects.filter(user_id__in=candidates).values_list("user_id", flat=True))
     out = {}
     for r in rows:
         if r["id"] in with_wallet:
             out[r["id"]] = r["id"]
+        elif joined.get(r["id"]) in with_wallet:
+            out[r["id"]] = joined[r["id"]]
         elif r["category"] == "iitr_student" and r["supervisor_id"] in with_wallet:
             out[r["id"]] = r["supervisor_id"]
     return out
@@ -432,7 +436,8 @@ def build_user_insights(user, params) -> dict[str, Any]:
     )
     type_labels = {code.lower(): str(label) for code, label in UserType.get_choices()}
     table = _classification_table()
-    wallets = _wallet_owners(page) if is_main_admin(user) else {}
+    supervisors = resolve_supervisors(r["id"] for r in page)
+    wallets = _wallet_owners(page, supervisors) if is_main_admin(user) else {}
     results = []
     for r in page:
         programme = (
@@ -464,6 +469,7 @@ def build_user_insights(user, params) -> dict[str, Any]:
                 "bookings_count": r["bookings_count"] or 0,
                 "last_booking_at": iso(r["last_booking_at"]),
                 "wallet_owner_id": wallets.get(r["id"]),
+                "supervisor": supervisors.get(r["id"]),
             }
         )
     payload = {

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from iic_booking.equipment.admin_insights.supervisors import supervisor_label
+
 from .. import spec
 from ..bridge import collect_rows
 from ..registry import register
@@ -87,12 +89,16 @@ def users_overview(request):
     summary = (first or {}).get("summary") or {}
     for row in rows:
         row["department_name"] = (row.get("department") or {}).get("name") or ""
+        row["supervisor_name"] = supervisor_label(row.get("supervisor"))
+        row["supervisor_email"] = (row.get("supervisor") or {}).get("email") or ""
     columns = [
         SNO,
         C("name", "Name", width=1.6, align="left"),
         C("category_display", "Category", width=1.1),
         C("programme_display", "Programme", width=0.9),
         C("department_name", "Department / organisation", width=1.6),
+        C("supervisor_name", "Supervisor", width=1.4),
+        C("supervisor_email", "Supervisor email", width=1.6),
         C("email", "Email", width=1.8),
         C("phone", "Mobile", width=1.0),
         C("date_joined", "Joined (IST)", spec.DATETIME, 1.0),
