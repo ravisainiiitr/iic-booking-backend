@@ -1,0 +1,59 @@
+# Probe: which supervisor links exist for one user (by institute ID), and what the user card resolves.
+# Read-only; prints flags, statuses and counts only (no names, emails or secrets).
+name: Probe User Supervisor
+
+on:
+  workflow_dispatch:
+    inputs:
+      emp_id:
+        description: Institute ID (enrolment / employee number) of the user
+        required: true
+        type: string
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Supervisor sources
+        env:
+          EMP_ID: ${{ inputs.emp_id }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -i -w /app -e EMP_ID="$EMP_ID" "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter
+          from django.contrib.auth import get_user_model
+          from iic_booking.users.models import SupervisorInvite
+          from iic_booking.users.models.wallet import SubWalletTransaction, WalletJoinRequest
+
+          users = list(get_user_model().objects.filter(emp_id=os.environ["EMP_ID"]))
+          print("matching_users=", len(users))
+          for u in users:
+              print("user_pk=", u.pk, "user_type=", u.user_type, "alias=", u.user_type_alias, "test=", u.is_test_account)
+              print("profile_supervisor_set=", bool(u.supervisor_id), "supervisor_approved=", u.supervisor_approved,
+                    "needs_supervisor_approval=", u.needs_supervisor_approval())
+              jr = WalletJoinRequest.objects.filter(student=u)
+              print("join_requests_by_status=", dict(Counter(jr.values_list("status", flat=True))))
+              print("join_requests_with_wallet=", jr.exclude(wallet__isnull=True).count(),
+                    "faculty_is_wallet_owner=", sum(1 for f, w in jr.values_list("faculty_id", "wallet__user_id") if f == w))
+              inv = SupervisorInvite.objects.filter(student=u)
+              print("supervisor_invites_by_status=", dict(Counter(inv.values_list("status", flat=True))),
+                    "with_name=", inv.exclude(supervisor_name="").count())
+              tx = SubWalletTransaction.objects.filter(related_user=u).exclude(sub_wallet__wallet__user=u)
+              print("txns_on_other_wallets=", tx.count(), "by_type=", dict(Counter(tx.values_list("transaction_type", flat=True))),
+                    "distinct_owners=", tx.values("sub_wallet__wallet__user_id").distinct().count())
+              print("own_wallet_txns=", SubWalletTransaction.objects.filter(related_user=u, sub_wallet__wallet__user=u).count())
+              from iic_booking.equipment.models import Booking
+              print("bookings=", Booking.objects.filter(user=u).count())
+              try:
+                  from iic_booking.equipment.admin_insights.supervisors import resolve_supervisors
+                  r = resolve_supervisors([u.pk]).get(u.pk)
+                  print("resolved=", None if r is None else {"source": r["source"], "pending": r["pending"],
+                        "portal_user": bool(r.get("id")), "has_department": bool(r.get("department"))})
+              except ImportError:
+                  print("resolved= (resolver not deployed yet)")
+          PY
