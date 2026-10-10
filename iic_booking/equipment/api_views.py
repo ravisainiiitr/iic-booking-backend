@@ -19194,13 +19194,20 @@ def admin_adjust_reward_points(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_semesters(request):
-    """List semesters for dropdowns. Optional ?active_only=1 to restrict to active semesters."""
+    """List semesters for dropdowns. Optional ?active_only=1 to restrict to active semesters.
+
+    ``academic_years`` always offers the current and next academic year (plus years with an active semester),
+    whether or not a semester row exists yet; creating a call for one creates its semester on demand.
+    """
+    from iic_booking.equipment import academic_years
+
     active_only = request.query_params.get("active_only", "").strip() == "1"
     qs = Semester.objects.all()
     if active_only:
         qs = qs.filter(is_active=True)
     qs = qs.order_by("-start_date")
     return Response({
+        "academic_years": academic_years.options(),
         "semesters": [
             {
                 "id": s.id,
@@ -19732,20 +19739,9 @@ def reject_equipment_nomination(request, nomination_id):
 # ----- TA nomination call (OIC/Admin initiates; email to all Faculty) -----
 
 def _academic_year_label_from_semester(semester_obj):
-    if semester_obj is None:
-        return ""
-    text = f"{getattr(semester_obj, 'code', '')} {getattr(semester_obj, 'name', '')}".strip()
-    m_short = re.search(r"\b(\d{4}-\d{2})\b", text)
-    if m_short:
-        return m_short.group(1)
-    m_full = re.search(r"\b(\d{4}-\d{4})\b", text)
-    if m_full:
-        a, b = m_full.group(1).split("-")
-        return f"{a}-{b[-2:]}"
-    m_year = re.search(r"\b(20\d{2})\b", text)
-    if m_year:
-        return m_year.group(1)
-    return getattr(semester_obj, "name", "") or getattr(semester_obj, "code", "") or ""
+    from iic_booking.equipment.academic_years import label_from_semester
+
+    return label_from_semester(semester_obj)
 
 def _ta_call_to_dict(call):
     """Build API response dict for an EquipmentOperatingTACall."""
@@ -19780,7 +19776,7 @@ def create_ta_nomination_call(request):
     On success, sends an email to all Internal (Faculty) users with instrument name, number of
     operators required, eligibility criteria, expected duty hours, benefits, and nomination deadline.
     """
-    if not check_operator_permission(request.user):
+    if _nomination_decider_equipment_ids(request.user) == set():
         return Response(
             {"error": "Only admin or OIC (manager) can initiate a TA nomination call."},
             status=status.HTTP_403_FORBIDDEN,
@@ -19788,8 +19784,11 @@ def create_ta_nomination_call(request):
     from iic_booking.users.models.user import User
     from django.utils import timezone as tz
 
+    from iic_booking.equipment import academic_years
+
     equipment_id = request.data.get("equipment_id")
     semester_id = request.data.get("semester_id")
+    academic_year = str(request.data.get("academic_year") or "").strip()
     number_of_operators_required = request.data.get("number_of_operators_required")
     eligibility_criteria = (request.data.get("eligibility_criteria") or "").strip()
     expected_duty_hours = (request.data.get("expected_duty_hours") or "").strip()
@@ -19797,11 +19796,16 @@ def create_ta_nomination_call(request):
     benefits = (request.data.get("benefits") or "").strip()
     nomination_deadline_str = request.data.get("nomination_deadline")
 
-    if not equipment_id or not semester_id or number_of_operators_required is None:
+    if not equipment_id or not (semester_id or academic_year) or number_of_operators_required is None:
         return Response(
-            {"error": "equipment_id, semester_id, and number_of_operators_required are required."},
+            {"error": "equipment_id, academic_year (or semester_id), and number_of_operators_required are required."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    if academic_year:
+        try:
+            academic_years.parse_label(academic_year)
+        except academic_years.AcademicYearError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     try:
         number_of_operators_required = int(number_of_operators_required)
     except (TypeError, ValueError):
@@ -19834,14 +19838,20 @@ def create_ta_nomination_call(request):
         return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
     if request.user.user_type != UserType.ADMIN:
         oic_equipment_ids = get_equipment_ids_managed_by_oic(request.user.id)
-        if equipment_id not in oic_equipment_ids:
+        if equipment.equipment_id not in oic_equipment_ids:
             return Response(
                 {"error": "You can only initiate TA calls for equipment you are marked as OIC."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-    try:
-        semester = Semester.objects.get(pk=semester_id)
-    except Semester.DoesNotExist:
+    semester = Semester.objects.filter(pk=semester_id).first() if semester_id else None
+    if semester is not None and academic_year and _academic_year_label_from_semester(semester) != academic_year:
+        semester = None
+    if semester is None and academic_year:
+        try:
+            semester = academic_years.ensure_semester(academic_year)
+        except academic_years.AcademicYearError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    if semester is None:
         return Response({"error": "Semester not found."}, status=status.HTTP_404_NOT_FOUND)
 
     call = EquipmentOperatingTACall.objects.create(
@@ -19908,18 +19918,15 @@ def create_ta_nomination_call(request):
 @permission_classes([IsAuthenticated])
 def list_ta_nomination_calls(request):
     """List TA nomination calls. Admin sees all; OIC sees only calls for equipment they manage."""
-    if not check_operator_permission(request.user):
+    decider_ids = _nomination_decider_equipment_ids(request.user)
+    if decider_ids == set() and not check_operator_permission(request.user):
         return Response(
             {"error": "Only admin or OIC (manager) can list TA nomination calls."},
             status=status.HTTP_403_FORBIDDEN,
         )
     qs = EquipmentOperatingTACall.objects.all().select_related("equipment", "semester", "created_by")
-    if request.user.user_type != UserType.ADMIN:
-        oic_equipment_ids = get_equipment_ids_managed_by_oic(request.user.id)
-        if not oic_equipment_ids:
-            qs = qs.none()
-        else:
-            qs = qs.filter(equipment_id__in=oic_equipment_ids)
+    if decider_ids is not None:
+        qs = qs.filter(equipment_id__in=decider_ids) if decider_ids else qs.none()
     semester_id = request.query_params.get("semester_id")
     if semester_id:
         qs = qs.filter(semester_id=semester_id)
