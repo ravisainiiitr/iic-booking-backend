@@ -40,7 +40,7 @@ def wallet_ledger_options(request):
 @permission_classes([IsMainAdmin])
 def wallet_ledger_owner_detail(request, owner_id: int):
     try:
-        return Response(svc.owner_detail(owner_id))
+        return Response(svc.owner_detail(owner_id, request=request))
     except svc.LedgerError as exc:
         return _error(exc)
 

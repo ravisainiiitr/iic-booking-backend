@@ -168,7 +168,15 @@ class OwnerListTests(LedgerBase):
         chem = next(s for s in data["sub_wallets"] if s["id"] == self.sw1.pk)
         self.assertEqual(chem["transaction_count"], 3)
         self.assertNotIn(str(self.chem.pk), [d["value"] for d in data["credit_departments"]])
+        self.assertIsNone(data["profile_picture_url"])
         self.assertEqual(self.client.get(detail(self.student.pk)).status_code, 404)
+
+    def test_owner_detail_profile_picture_uses_stable_proxy_url(self):
+        User.objects.filter(pk=self.fac.pk).update(profile_picture="profile_pictures/alpha.jpg")
+        url = self.client.get(detail(self.fac.pk)).data["profile_picture_url"]
+        self.assertTrue(url.startswith("http"), url)
+        self.assertIn(f"/users/{self.fac.pk}/profile-picture/", url)
+        self.assertNotIn("Signature=", url)
 
 
 class TransactionListTests(LedgerBase):

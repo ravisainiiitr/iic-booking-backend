@@ -379,7 +379,7 @@ def filter_options() -> dict[str, Any]:
     }
 
 
-def owner_detail(owner_id) -> dict[str, Any]:
+def owner_detail(owner_id, request=None) -> dict[str, Any]:
     wallet = owners_queryset().filter(user_id=_int(owner_id)).first()
     if wallet is None:
         raise LedgerError("WALLET_NOT_FOUND", "This user has no wallet.", status=404)
@@ -429,6 +429,7 @@ def owner_detail(owner_id) -> dict[str, Any]:
         {
             "designation": getattr(user, "designation", "") or "",
             "phone": " · ".join(phones),
+            "profile_picture_url": user.get_profile_picture_url_or_none(request=request),
             "wallet_created_at": wallet.created_at.isoformat() if wallet.created_at else None,
             "total_credits": _money(sum((Decimal(i["total_credits"]) for i in data["sub_wallets"]), ZERO)),
             "total_debits": _money(sum((Decimal(i["total_debits"]) for i in data["sub_wallets"]), ZERO)),
