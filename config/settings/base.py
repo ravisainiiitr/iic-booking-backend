@@ -77,6 +77,12 @@ EQUIPMENT_GROUP_AUTO_ALLOCATION_ENABLED = env.bool(
 EQUIPMENT_GROUP_STAFF_CROSS_RESCHEDULING_ENABLED = env.bool(
     "EQUIPMENT_GROUP_STAFF_CROSS_RESCHEDULING_ENABLED", default=True
 )
+# Facility user groups: add booking users to equipment / category / lab groups as they book (False = stop; the
+# backfill command rebuilds later). Group emails go out in batches of BATCH_SIZE with a pause between batches.
+FACILITY_GROUPS_AUTO_MEMBERSHIP = env.bool("FACILITY_GROUPS_AUTO_MEMBERSHIP", default=True)
+FACILITY_GROUP_EMAIL_MAX_RECIPIENTS = env.int("FACILITY_GROUP_EMAIL_MAX_RECIPIENTS", default=5000)
+FACILITY_GROUP_EMAIL_BATCH_SIZE = env.int("FACILITY_GROUP_EMAIL_BATCH_SIZE", default=50)
+FACILITY_GROUP_EMAIL_BATCH_PAUSE_SECONDS = env.int("FACILITY_GROUP_EMAIL_BATCH_PAUSE_SECONDS", default=5)
 
 # URLS
 # ------------------------------------------------------------------------------
@@ -130,6 +136,7 @@ LOCAL_APPS = [
     "iic_booking.training.apps.TrainingConfig",
     "iic_booking.procurement_management.apps.ProcurementManagementConfig",
     "iic_booking.department_modules.apps.DepartmentModulesConfig",
+    "iic_booking.facility_groups.apps.FacilityGroupsConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps

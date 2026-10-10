@@ -667,6 +667,8 @@ urlpatterns = router.urls + [
         include((department_modules_urls.admin_urlpatterns, "department_modules_admin")),
     ),
     path("v1/department-modules/", include("iic_booking.department_modules.urls")),
+    # Facility user groups + group email (Main Admin)
+    path("v1/admin/facility-groups/", include("iic_booking.facility_groups.urls")),
     path("v1/portal-migration/booking-status/", portal_booking_status, name="portal-migration-booking-status-v1"),
     path("v1/portal-migration/admin/state/", portal_migration_admin_state, name="portal-migration-admin-state-v1"),
     path("v1/portal-migration/admin/dashboard/", portal_migration_dashboard, name="portal-migration-admin-dashboard-v1"),

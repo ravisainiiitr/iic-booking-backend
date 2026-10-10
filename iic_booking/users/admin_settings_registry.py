@@ -127,6 +127,13 @@ ADMIN_SETTINGS_MODULE_TREE: list[dict[str, Any]] = [
         "path": "/admin-settings/communication",
     },
     {
+        "key": "admin_settings.facility_user_groups",
+        "label": "User Groups & Group Email",
+        "description": "Users grouped by equipment, category and lab from their bookings, custom groups, and emails to groups with CC / BCC",
+        "path": "/admin-settings/user-groups",
+        "main_admin_only": True,
+    },
+    {
         "key": "admin_settings.inbox_email",
         "label": "Inbox Email",
         "description": "Fetch and view the configured IMAP mailbox",
