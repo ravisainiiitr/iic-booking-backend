@@ -122,7 +122,7 @@ jobs:
                   f"credit_opted_in={r.credit_facility_opted_in} cancellation_source={r.cancellation_source or '-'}"
               )
               mentions = WalletRechargeParseEntry.objects.filter(
-                  Q(payment__icontains=txn) | Q(payment__iregex=rf"WRR-{pk}\b")
+                  Q(payment__icontains=txn) | Q(payment__iregex=rf"WRR-{pk}([^0-9]|$)")
               )
               print(f"cashbook_rows_quoting_this_txn={mentions.count()} ids={list(mentions.values_list('id', flat=True)[:10])}")
               print("audit_log:")
@@ -139,18 +139,14 @@ jobs:
               if sub is None:
                   print("sub_wallet=none")
                   continue
-              credit_q = SubWalletTransaction.objects.filter(sub_wallet=sub, transaction_type="credit").filter(
-                  Q(description__iregex=rf"WRR-{pk}\b") | Q(description__icontains=txn)
-              )
+              ref_re = re.compile(rf"(WRR-{pk}(?!\d)|{re.escape(txn)})", re.I)
+              all_txns = list(SubWalletTransaction.objects.filter(sub_wallet=sub).order_by("created_at", "pk"))
               print(f"sub_wallet_id={sub.pk} balance_now={sub.balance} wallet_total_balance={r.wallet.total_balance}")
-              credits = list(credit_q.order_by("created_at"))
+              credits = [t for t in all_txns if t.transaction_type == "credit" and ref_re.search(t.description or "")]
               print(f"recharge_credit_entries={[(c.pk, str(c.amount), c.created_at.isoformat()) for c in credits]}")
-              other_refs = SubWalletTransaction.objects.filter(sub_wallet=sub).filter(
-                  Q(description__iregex=rf"WRR-{pk}\b") | Q(description__icontains=txn)
-              ).exclude(pk__in=[c.pk for c in credits])
+              other_refs = [t for t in all_txns if ref_re.search(t.description or "") and t not in credits]
               print(f"other_entries_referencing_txn={[(t.pk, t.transaction_type, str(t.amount), kind(t.description), t.created_at.isoformat()) for t in other_refs]}")
               anchor = credits[0] if credits else None
-              all_txns = list(SubWalletTransaction.objects.filter(sub_wallet=sub).order_by("created_at", "pk"))
               running = Decimal("0.00")
               before_credit = None
               for t in all_txns:
@@ -158,6 +154,8 @@ jobs:
                       before_credit = running
                   running += t.amount if t.transaction_type == "credit" else -t.amount
               print(f"ledger_sum={running} matches_balance={running == sub.balance} entries_total={len(all_txns)} balance_before_credit_by_ledger={before_credit}")
+              for t in all_txns[-30:]:
+                  print(f"  entry {t.created_at} id={t.pk} {t.transaction_type} {t.amount} kind={kind(t.description)} refs={codes(t.description)} is_this_recharge={t in credits}")
               if anchor is not None:
                   since = [t for t in all_txns if (t.created_at, t.pk) > (anchor.created_at, anchor.pk)]
                   deb = sum((t.amount for t in since if t.transaction_type == "debit"), Decimal("0"))
