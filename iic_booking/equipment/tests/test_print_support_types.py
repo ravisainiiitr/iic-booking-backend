@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import math
 from decimal import Decimal
+from io import StringIO
 
 import pytest
+from django.core.management import call_command
 
 from iic_booking.equipment.calculators import ChargeCalculationEngine
 from iic_booking.equipment.fabrication import (
@@ -17,7 +19,7 @@ from iic_booking.equipment.fabrication import (
     inject_print_parts,
     print_part_options_text,
 )
-from iic_booking.equipment.models import ChargeProfile, PrintAnalysis
+from iic_booking.equipment.models import ChargeProfile, Equipment, PrintAnalysis
 from iic_booking.equipment.print_estimate_model import (
     ADHESION_BRIM,
     ADHESION_RAFT,
@@ -302,3 +304,51 @@ def test_oic_enables_types_and_users_book_with_them(egs_factory, media_tmp):
                           {"material_id": pla.pk, "adhesion": "", "support_type": ""}, format="json")
     assert recalc.data["estimate_breakdown"]["adhesion"] == "none"
     assert recalc.data["estimate_breakdown"]["support_type"] == "tree"  # the printer's default
+
+
+@pytest.mark.django_db
+def test_every_print_equipment_offers_the_support_choice_without_oic_setup(egs_factory, media_tmp):
+    eq = print_equipment(egs_factory)
+    Equipment.objects.filter(pk=eq.pk).update(
+        code="IICTEST-3DP-01", name="3D Printer (test)", make="", model_information="", print_estimate_profile={}
+    )
+    pla = print_material(eq)
+    student, _ = funded_student(egs_factory)
+    client = egs_factory.client_for(student)
+    url = f"/api/equipments/{eq.pk}/print-materials/"
+
+    defaults = client.get(url).data["support_defaults"]
+    assert defaults["supports_available"] and defaults["supports_by_default"]
+    assert len(defaults["support_types"]) == 8 and defaults["default_support_type"] == "normal"
+    assert [a["key"] for a in defaults["adhesion_types"]] == ["none", "brim", "raft"]
+
+    # Supports switched off for Auto (OIC override, bioprinter preset): the choice stays; Auto adds none, a chosen
+    # mode and type are estimated.
+    data = stl_bytes(t_shape())
+    for stored in ({"overrides": {"supports": False}}, {"preset": "fdm_bio"}):
+        Equipment.objects.filter(pk=eq.pk).update(print_estimate_profile=stored)
+        defaults = client.get(url).data["support_defaults"]
+        assert defaults["supports_available"] and not defaults["supports_by_default"]
+        assert len(defaults["support_types"]) == 8
+        auto = _analyze(client, eq, pla, data)
+        chosen = _analyze(client, eq, pla, data, support_mode="everywhere", support_type="tree")
+        assert auto.status_code == 200 and chosen.status_code == 200, (auto.data, chosen.data)
+        assert auto.data["estimate_breakdown"]["support_mode"] == SUPPORT_NONE
+        est = chosen.data["estimate_breakdown"]
+        assert est["support_mode"] == SUPPORT_EVERYWHERE and est["support_type"] == "tree" and est["support_g"] > 0
+
+    Equipment.objects.filter(pk=eq.pk).update(print_estimate_profile={"preset": "sls_sinterit"})
+    defaults = client.get(url).data["support_defaults"]
+    assert not defaults["supports_available"] and defaults["support_types"] == []
+    Equipment.objects.filter(pk=eq.pk).update(print_estimate_profile={"preset": "resin_msla"})
+    defaults = client.get(url).data["support_defaults"]
+    assert [t["key"] for t in defaults["support_types"]] == ["resin_light", "resin_medium", "resin_heavy"]
+
+    Equipment.objects.filter(pk=eq.pk).update(print_estimate_profile={})
+    out = StringIO()
+    call_command("audit_print_support_options", "--code", "IICTEST-3DP", stdout=out)
+    report = out.getvalue()
+    assert "code=IICTEST-3DP-01 preset=fdm_classic(detected) technology=FDM supports_shown=yes" in report
+    assert "types=normal,lines,zigzag,snug,concentric,gyroid,tree,organic default_type=normal" in report
+    assert "adhesion=none,brim,raft oic_configured=no" in report
+    assert "SUMMARY print_3d_equipment=1 supports_shown=1 hidden_powder=0" in report

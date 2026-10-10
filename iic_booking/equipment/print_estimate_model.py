@@ -191,6 +191,12 @@ def support_types_for(technology: str) -> List[str]:
     return [k for k, v in SUPPORT_TYPES.items() if v["technology"] == technology]
 
 
+def supports_offered(technology: str) -> bool:
+    """Whether users see the supports choice: every 3D printer except powder beds (the loose powder holds the part).
+    The preset's / OIC's ``supports`` flag only sets whether Auto adds supports."""
+    return technology != TECH_SLS
+
+
 def nearest_angle_index(angle_deg) -> int:
     try:
         a = float(angle_deg)
@@ -389,7 +395,7 @@ PARAMETER_SPECS: Dict[str, Tuple[str, str, Optional[float], Optional[float]]] = 
     "area_s_per_cm2": ("Extra time per cm² per layer", "s", 0, 60),
     "lift_mm": ("Part lift on supports", "mm", 0, 50),
     "warmup_min": ("Warm-up / calibration", "min", 0, 600),
-    "supports": ("Estimate supports", "", None, None),
+    "supports": ("Add supports in Auto (users can still choose)", "", None, None),
     "support_density_pct": ("Default support density", "%", 0, 100),
     "support_interface_layers": ("Support interface layers", "", 0, 10),
     "support_layer_overhead_s": ("Extra time per support layer", "s", 0, 60),
@@ -1085,11 +1091,14 @@ def _num(profile, key, default=0.0) -> float:
 
 
 def resolve_support_mode(f: MeshFeatures, profile: Dict[str, Any], opts: SupportOptions) -> str:
-    """The support mode actually estimated: printers without supports (powder, bioprinters) use none; MultiJet
+    """The support mode actually estimated: powder printers use none; printers set to print without supports
+    (bioprinters, or the OIC's 'Supports in Auto' off) use none in Auto but honour a mode the user chose; MultiJet
     always fills every overhang with wax; Auto is 'touching build plate' on FDM (everywhere on resin) when the
     model has overhangs."""
     tech = profile.get("technology", TECH_FDM)
-    if tech == TECH_SLS or not bool(profile.get("supports", True)):
+    if tech == TECH_SLS:
+        return SUPPORT_NONE
+    if not bool(profile.get("supports", True)) and opts.mode in (SUPPORT_AUTO, SUPPORT_NONE):
         return SUPPORT_NONE
     if tech == TECH_MJP:
         return SUPPORT_EVERYWHERE

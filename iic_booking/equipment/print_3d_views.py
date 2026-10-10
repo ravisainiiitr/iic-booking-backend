@@ -54,11 +54,11 @@ from .print_estimate_model import (
     SUPPORT_MODES,
     TECH_FDM,
     TECH_RESIN,
-    TECH_SLS,
     TECHNOLOGY_LABELS,
     resolve_profile,
     resolved_support_options,
     stored_profile,
+    supports_offered,
 )
 from .print_orientation import ORIENTATION_KEY, evaluate_orientations, parse_orientation
 from .print_size_limit import analyses_size_error, check_stl_files, print_size_limit_payload
@@ -412,7 +412,8 @@ def _support_defaults(equipment) -> dict:
         "brim_width_mm": float(profile.get("brim_width_mm") or 0) if tech == TECH_FDM else None,
         "technology": tech,
         "technology_label": TECHNOLOGY_LABELS.get(tech, ""),
-        "supports_available": bool(profile.get("supports", True)) and tech != TECH_SLS,
+        "supports_available": supports_offered(tech),
+        "supports_by_default": bool(profile.get("supports", True)) and supports_offered(tech),
         "modes_selectable": tech in (TECH_FDM, TECH_RESIN),
         "density_pct": float(profile.get("support_density_pct") or 0),
         "angle_deg": DEFAULT_SUPPORT_ANGLE,

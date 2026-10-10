@@ -21,6 +21,7 @@ from .print_estimate_model import (
     resolve_profile,
     resolved_support_options,
     stored_profile,
+    supports_offered,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,7 +76,7 @@ def profile_payload(equipment) -> Dict[str, Any]:
         "overrides": {k: v for k, v in (stored.get("overrides") or {}).items() if k in keys},
         "calibration": stored.get(CALIBRATION_KEY) or None,
         "support_material_ids": [int(i) for i in stored.get(SUPPORT_MATERIAL_IDS_KEY) or []],
-        "supports_available": bool(effective.get("supports", True)) and tech != "SLS",
+        "supports_available": supports_offered(tech),
         "support_options": resolved_support_options(stored, tech),
     }
 
