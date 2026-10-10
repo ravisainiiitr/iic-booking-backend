@@ -8,9 +8,9 @@ from typing import Any, Optional
 
 from .reports import get_equipment_report_data
 from .document_exports import _pdf_letterhead_story_lines
-from .utilization import utilization_period_caption
 
 UTILIZATION_FACTOR_LABEL = "Utilization factor (booked ÷ slot hours in weekly view window, excl. weekends & holidays)"
+AVAILABLE_HOURS_LABEL = "Available slot hours (weekly view window, Mon–Fri excl. holidays, from portal go-live)"
 
 
 def _utilization_pct_text(value) -> str:
@@ -151,6 +151,8 @@ def build_report_pdf(
         )
     )
     story.append(Paragraph(_report_duration_caption(data), subtitle_style))
+    if hdr.get("utilization_period_note"):
+        story.append(Paragraph(escape(str(hdr["utilization_period_note"])), subtitle_style))
     story.append(Spacer(1, 0.4 * cm))
 
     # Equipment names in the revenue table and utilization charts jump to the equipment's section.
@@ -164,8 +166,6 @@ def build_report_pdf(
     story.append(Anchor("summary", summary_title))
     story.append(Paragraph(escape(summary_title), heading_style))
     summary = data.get("summary", {}) or {}
-    period_caption = utilization_period_caption(summary)
-    period_note = f"; {period_caption}" if period_caption else ""
     fin_rows = [["Metric", "Value"]]
     if include_revenue:
         fin_rows += [
@@ -174,27 +174,23 @@ def build_report_pdf(
             ["Revenue (external)", f"₹{float(summary.get('revenue_external', 0) or 0):.2f}"],
         ]
     fin_rows += [
-        ["Slot hours (all status)", f"{float(summary.get('total_hours', 0) or 0):.2f}"],
-        ["Utilized hours (BOOKED slots)", f"{float(summary.get('utilized_hours', 0) or 0):.2f}"],
-        ["Downtime hours (maint. + op. absent)", f"{float(summary.get('downtime_hours', 0) or 0):.2f}"],
+        [AVAILABLE_HOURS_LABEL, f"{float(summary.get('utilization_available_hours', 0) or 0):.2f}"],
+        ["Utilized hours (booked slots, same window)", f"{float(summary.get('utilized_hours', 0) or 0):.2f}"],
+        ["Downtime hours (maint. + op. absent; part of available hours)", f"{float(summary.get('downtime_hours', 0) or 0):.2f}"],
         ["Disruption hours (downtime + other reasons)", f"{float(summary.get('disruption_hours', 0) or 0):.2f}"],
         [
             UTILIZATION_FACTOR_LABEL,
             f"{_utilization_pct_text(summary.get('utilization_factor'))} "
             f"({float(summary.get('utilization_booked_hours', 0) or 0):.2f} / "
-            f"{float(summary.get('utilization_available_hours', 0) or 0):.2f} h{period_note})",
-        ],
-        [
-            "Available hours (Mon–Fri, excl. holidays; slot time window)",
-            f"{float(summary.get('available_hours_working_window', 0) or 0):.2f}",
+            f"{float(summary.get('utilization_available_hours', 0) or 0):.2f} h)",
         ],
         [
             "Completed booking hours (same window)",
             f"{float(summary.get('completed_hours_in_working_window', 0) or 0):.2f}",
         ],
         [
-            "Utilization vs working capacity (completed / available window)",
-            f"{float(summary.get('utilization_vs_working_capacity', 0) or 0) * 100:.2f}%",
+            "Utilization vs capacity (completed ÷ available hours)",
+            _utilization_pct_text(summary.get("utilization_vs_working_capacity")),
         ],
     ]
     t0 = Table(fin_rows, repeatRows=1)
@@ -249,10 +245,7 @@ def build_report_pdf(
                 "Booking hours (total / int. / ext.)",
                 f"{eq.get('total_booking_hours', 0)} / {eq.get('booking_hours_internal', 0)} / {eq.get('booking_hours_external', 0)}",
             ],
-            [
-                "Available hours (working window, Mon–Fri excl. holidays)",
-                str(eq.get("available_hours_working_window", 0)),
-            ],
+            [AVAILABLE_HOURS_LABEL, str(eq.get("utilization_available_hours", 0))],
             [
                 "Slot hours on weekends & holidays (incl. institute holidays)",
                 str(eq.get("available_hours_weekend_or_holiday", 0)),
@@ -267,8 +260,8 @@ def build_report_pdf(
                 f"({eq.get('utilization_booked_hours', 0)} / {eq.get('utilization_available_hours', 0)} h)",
             ],
             [
-                "Utilization vs working capacity",
-                f"{float(eq.get('utilization_vs_working_capacity', 0) or 0) * 100:.2f}%",
+                "Utilization vs capacity (completed ÷ available hours)",
+                _utilization_pct_text(eq.get("utilization_vs_working_capacity")),
             ],
             ["Hours — booking not utilized", str(eq.get("booking_not_utilized_hours", 0))],
             ["Hours — under maintenance", str(eq.get("under_maintenance_hours", 0))],
@@ -452,6 +445,7 @@ def build_report_excel(
     ws["A2"] = str(hdr.get("report_title", "Equipment Performance Report"))
     ws["A2"].font = Font(bold=True, size=11)
     ws["A3"] = _report_duration_caption(data)
+    ws["A4"] = str(hdr.get("utilization_period_note") or "")
     row = 5
 
     # Financial summary
@@ -470,40 +464,20 @@ def build_report_excel(
         ws.cell(row=row, column=1, value="Revenue (external)")
         ws.cell(row=row, column=2, value=float(summary.get("revenue_external", 0) or 0))
         row += 1
-    ws.cell(row=row, column=1, value="Total hours")
-    ws.cell(row=row, column=2, value=float(summary.get("total_hours", 0) or 0))
-    row += 1
-    ws.cell(row=row, column=1, value="Utilized hours")
-    ws.cell(row=row, column=2, value=float(summary.get("utilized_hours", 0) or 0))
-    row += 1
-    ws.cell(row=row, column=1, value="Downtime hours")
-    ws.cell(row=row, column=2, value=float(summary.get("downtime_hours", 0) or 0))
-    row += 1
-    ws.cell(row=row, column=1, value="Disruption hours")
-    ws.cell(row=row, column=2, value=float(summary.get("disruption_hours", 0) or 0))
-    row += 1
-    ws.cell(row=row, column=1, value=UTILIZATION_FACTOR_LABEL)
-    ws.cell(row=row, column=2, value=_utilization_cell_value(summary.get("utilization_factor")))
-    row += 1
-    if caption := utilization_period_caption(summary):
-        ws.cell(row=row, column=1, value="Utilization period")
-        ws.cell(row=row, column=2, value=caption)
+    for label, value in (
+        (AVAILABLE_HOURS_LABEL, float(summary.get("utilization_available_hours", 0) or 0)),
+        ("Booked hours (same window)", float(summary.get("utilization_booked_hours", 0) or 0)),
+        ("Downtime hours (maint. + op. absent; part of available hours)", float(summary.get("downtime_hours", 0) or 0)),
+        ("Disruption hours (downtime + other reasons)", float(summary.get("disruption_hours", 0) or 0)),
+        (UTILIZATION_FACTOR_LABEL, _utilization_cell_value(summary.get("utilization_factor"))),
+        ("Completed hours (same window)", float(summary.get("completed_hours_in_working_window", 0) or 0)),
+        ("Utilization vs capacity (completed ÷ available hours)",
+         _utilization_cell_value(summary.get("utilization_vs_working_capacity"))),
+    ):
+        ws.cell(row=row, column=1, value=label)
+        ws.cell(row=row, column=2, value=value)
         row += 1
-    ws.cell(row=row, column=1, value="Booked hours (weekly view window, working days)")
-    ws.cell(row=row, column=2, value=float(summary.get("utilization_booked_hours", 0) or 0))
     row += 1
-    ws.cell(row=row, column=1, value="Slot hours (weekly view window, working days)")
-    ws.cell(row=row, column=2, value=float(summary.get("utilization_available_hours", 0) or 0))
-    row += 1
-    ws.cell(row=row, column=1, value="Available hours (working window)")
-    ws.cell(row=row, column=2, value=float(summary.get("available_hours_working_window", 0) or 0))
-    row += 1
-    ws.cell(row=row, column=1, value="Completed hours (working window)")
-    ws.cell(row=row, column=2, value=float(summary.get("completed_hours_in_working_window", 0) or 0))
-    row += 1
-    ws.cell(row=row, column=1, value="Utilization vs working capacity")
-    ws.cell(row=row, column=2, value=float(summary.get("utilization_vs_working_capacity", 0) or 0))
-    row += 2
 
     # Per-equipment headers
     headers = [
@@ -597,7 +571,7 @@ def build_report_excel(
         col += 1
         ws.cell(row=row, column=col, value=_utilization_cell_value(eq.get("utilization_factor")))
         col += 1
-        ws.cell(row=row, column=col, value=float(eq.get("utilization_vs_working_capacity", 0) or 0))
+        ws.cell(row=row, column=col, value=_utilization_cell_value(eq.get("utilization_vs_working_capacity")))
         col += 1
         ws.cell(row=row, column=col, value=eq.get("total_bookings_in_period", 0))
         col += 1

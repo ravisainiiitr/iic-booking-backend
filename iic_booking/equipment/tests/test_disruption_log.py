@@ -531,7 +531,10 @@ def test_report_disruption_hours_include_scheduled_and_recorded_other_reasons():
     DailySlot.objects.filter(pk=s11.pk).update(status=SlotStatus.BLOCKED, blocked_label="Holiday style block")
     _bulk(admin, eq, status="OPERATOR_ABSENT", slot_ids=[s12.pk])
 
-    data = get_equipment_report_data(day.isoformat(), day.isoformat(), [eq.pk])
+    # Reports count slot time that has passed: read it the day after.
+    day_after = timezone.make_aware(datetime.combine(day + timedelta(days=1), time(12, 0)))
+    with patch("iic_booking.equipment.utilization._now", return_value=day_after):
+        data = get_equipment_report_data(day.isoformat(), day.isoformat(), [eq.pk])
     summary = data["summary"]
     assert summary["downtime_hours"] == pytest.approx(2.0)  # scheduled maintenance + operator absent
     assert summary["disruption_hours"] == pytest.approx(3.0)  # + the recorded Other Reasons slot only

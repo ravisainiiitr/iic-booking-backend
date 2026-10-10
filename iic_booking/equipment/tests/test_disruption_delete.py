@@ -194,13 +194,15 @@ def test_deleted_other_reasons_entry_leaves_report_disruption_hours():
     day = _future_weekday()
     s9, *_ = _slots(eq, day)
     _bulk(admin, eq, status="BLOCKED", slot_ids=[s9.pk], blocked_label="Power cut")
-    assert get_equipment_report_data(day.isoformat(), day.isoformat(), [eq.pk])["summary"]["disruption_hours"] == (
-        pytest.approx(1.0)
-    )
+
+    def disruption_hours():
+        # Reports count slot time that has passed: read it the day after.
+        with patch("iic_booking.equipment.utilization._now", return_value=s9.end_datetime + timedelta(days=1)):
+            return get_equipment_report_data(day.isoformat(), day.isoformat(), [eq.pk])["summary"]["disruption_hours"]
+
+    assert disruption_hours() == pytest.approx(1.0)
     assert _delete(admin, DisruptionEvent.objects.get(equipment=eq)).status_code == 200
-    assert get_equipment_report_data(day.isoformat(), day.isoformat(), [eq.pk])["summary"]["disruption_hours"] == (
-        pytest.approx(0.0)
-    )
+    assert disruption_hours() == pytest.approx(0.0)
 
 
 def test_main_admin_can_list_and_restore_deleted_entries():

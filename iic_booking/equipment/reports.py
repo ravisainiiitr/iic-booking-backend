@@ -26,10 +26,10 @@ from .models import (
     SlotStatus,
 )
 from .utilization import (
+    AVAILABLE_SLOT_STATUSES,
     UtilizationTally,
     ViewWindow,
     WorkingCalendar,
-    slot_hours,
     utilization_period,
     utilization_ratio,
     view_window_for,
@@ -389,6 +389,8 @@ def _equipment_report_payload(
                 "period_display": _human,
                 "month_year": _human,
                 "report_duration_suffix": _dur_suffix,
+                "utilization_period_display": slot_period.display(),
+                "utilization_period_note": slot_period.note(),
             },
             "equipment": [],
             "utilization_pie": [{"name": "No data", "value": 0, "hours": 0}],
@@ -408,7 +410,7 @@ def _equipment_report_payload(
                 "revenue_external": 0.0,
                 "available_hours_working_window": 0.0,
                 "completed_hours_in_working_window": 0.0,
-                "utilization_vs_working_capacity": 0.0,
+                "utilization_vs_working_capacity": None,
             },
             "financial": {
                 "revenue_by_user_type": [],
@@ -422,7 +424,7 @@ def _equipment_report_payload(
     slots_in_range = (
         DailySlot.objects.filter(
             date__gte=slot_period.start,
-            date__lte=end,
+            date__lte=slot_period.end,
             slot_master__equipment_id__in=eq_ids,
         )
         .select_related("slot_master", "slot_master__equipment", "booking", "booking__user")
@@ -431,9 +433,6 @@ def _equipment_report_payload(
     eq_slot_stats: dict[int, dict[str, float | int]] = {}
     eq_perf_slots: dict[int, dict[str, float]] = defaultdict(
         lambda: {
-            "available_hours_working_window": 0.0,
-            "available_hours_weekend_or_holiday": 0.0,
-            "completed_hours_working_window": 0.0,
             "blocked_hours": 0.0,
             "other_disruption_hours": 0.0,
         }
@@ -471,7 +470,7 @@ def _equipment_report_payload(
             event__is_deleted=False,
             released_at__isnull=True,
             daily_slot__date__gte=slot_period.start,
-            daily_slot__date__lte=end,
+            daily_slot__date__lte=slot_period.end,
             daily_slot__slot_master__equipment_id__in=eq_ids,
         ).values_list("daily_slot_id", flat=True)
     )
@@ -480,14 +479,27 @@ def _equipment_report_payload(
         eid = mode_rollup.get(ds.slot_master.equipment_id, ds.slot_master.equipment_id)
         if eid not in eq_slot_stats:
             continue
+        if (span := slot_period.clip(ds.start_datetime, ds.end_datetime)) is None:
+            continue
+        slot_start, slot_end = span
         eq = ds.slot_master.equipment
-        hrs = slot_hours(ds.start_datetime, ds.end_datetime)
         st = ds.status
         bk = ds.booking
         # Test-account bookings must not affect utilization / disruption stats.
         is_test_bk = bool(
             bk is not None and getattr(getattr(bk, "user", None), "is_test_account", False)
         )
+        if eq.equipment_id not in view_windows:
+            view_windows[eq.equipment_id] = view_window_for(eq, equipment_by_id.get(eid))
+        window = view_windows[eq.equipment_id]
+        # Every slot-hour figure is the slot's time inside the weekly view window on working days, so the
+        # status breakdown below adds up to the utilization's available hours.
+        hrs = utilization[eid].add(
+            st, slot_start, slot_end, window, calendar, test_booking=is_test_bk,
+            completed=bool(bk and not is_test_bk and bk.status == BookingStatus.COMPLETED),
+        )
+        if st not in AVAILABLE_SLOT_STATUSES:
+            hrs = window_hours(slot_start, slot_end, window, calendar)[0]
 
         if st == SlotStatus.UNDER_MAINTENANCE:
             eq_slot_stats[eid]["under_maintenance_slots"] += 1
@@ -517,16 +529,6 @@ def _equipment_report_payload(
 
         if bk and not is_test_bk and bk.status == BookingStatus.OTHER_DISRUPTION:
             eq_perf_slots[eid]["other_disruption_hours"] += hrs
-
-        if eq.equipment_id not in view_windows:
-            view_windows[eq.equipment_id] = view_window_for(eq, equipment_by_id.get(eid))
-        window = view_windows[eq.equipment_id]
-        utilization[eid].add(st, ds.start_datetime, ds.end_datetime, window, calendar, test_booking=is_test_bk)
-        working_hrs, off_hrs = window_hours(ds.start_datetime, ds.end_datetime, window, calendar)
-        eq_perf_slots[eid]["available_hours_working_window"] += working_hrs
-        if bk and not is_test_bk and bk.status == BookingStatus.COMPLETED:
-            eq_perf_slots[eid]["completed_hours_working_window"] += working_hrs
-        eq_perf_slots[eid]["available_hours_weekend_or_holiday"] += off_hrs
 
     from iic_booking.users.test_accounts import exclude_test_bookings
 
@@ -701,18 +703,11 @@ def _equipment_report_payload(
     )
 
     equipment_payload = []
-    sum_avail_working = 0.0
-    sum_completed_working = 0.0
 
     for eq in equipment_list:
         eid = eq.equipment_id
         slot_s = eq_slot_stats.get(eid, {})
         perf = eq_perf_slots[eid]
-        avail_w = float(perf["available_hours_working_window"])
-        comp_w = float(perf["completed_hours_working_window"])
-        sum_avail_working += avail_w
-        sum_completed_working += comp_w
-        util_working = round((comp_w / avail_w) if avail_w > 0 else 0.0, 4)
         util = utilization[eid]
 
         managers_payload = []
@@ -776,10 +771,10 @@ def _equipment_report_payload(
                 "total_booking_hours": round(booking_minutes_total.get(eid, 0) / 60.0, 2),
                 "booking_hours_internal": round(booking_minutes_int.get(eid, 0) / 60.0, 2),
                 "booking_hours_external": round(booking_minutes_ext.get(eid, 0) / 60.0, 2),
-                "available_hours_working_window": round(avail_w, 2),
-                "available_hours_weekend_or_holiday": round(float(perf["available_hours_weekend_or_holiday"]), 2),
-                "completed_slot_hours_working_window": round(comp_w, 2),
-                "utilization_vs_working_capacity": util_working,
+                "available_hours_working_window": round(util.available_hours, 2),
+                "available_hours_weekend_or_holiday": round(util.off_day_hours, 2),
+                "completed_slot_hours_working_window": round(util.completed_hours, 2),
+                "utilization_vs_working_capacity": utilization_ratio(util.completed_hours, util.available_hours),
                 "utilization_factor": util.factor,
                 "utilization_booked_hours": round(util.booked_hours, 2),
                 "utilization_available_hours": round(util.available_hours, 2),
@@ -822,6 +817,7 @@ def _equipment_report_payload(
     total_nu = sum(float(s.get("booking_not_utilized_hours", 0)) for s in eq_slot_stats.values())
     total_nob = sum(float(s.get("no_booking_hours", 0)) for s in eq_slot_stats.values())
     total_booked = sum(float(s.get("booked_hours", 0)) for s in eq_slot_stats.values())
+    # Equals the utilization's available hours (same clipping, same statuses).
     total_hours = float(total_um + total_sm + total_oa + total_nu + total_nob + total_booked)
     # Downtime: maintenance (unplanned + scheduled) and operator absent. Disruption adds Other Reasons.
     downtime_hours = float(total_um + total_sm + total_oa)
@@ -843,10 +839,6 @@ def _equipment_report_payload(
     utilization_pie = [p for p in utilization_pie if p["hours"] > 0]
     if not utilization_pie:
         utilization_pie = [{"name": "No slot data", "value": 0, "hours": 0}]
-
-    util_vs_working_global = (
-        round((sum_completed_working / sum_avail_working) if sum_avail_working > 0 else 0.0, 4)
-    )
 
     _today = timezone.localdate()
     human_range = f"{start.strftime('%d %b %Y')} – {end.strftime('%d %b %Y')}"
@@ -879,6 +871,8 @@ def _equipment_report_payload(
             "period_display": human_range,
             "month_year": human_range,
             "report_duration_suffix": duration_suffix,
+            "utilization_period_display": slot_period.display(),
+            "utilization_period_note": slot_period.note(),
         },
         "equipment": equipment_payload,
         "utilization_pie": utilization_pie,
@@ -896,9 +890,9 @@ def _equipment_report_payload(
             "revenue_total": float(total_revenue or 0),
             "revenue_internal": float(revenue_internal or 0),
             "revenue_external": float(revenue_external or 0),
-            "available_hours_working_window": round(sum_avail_working, 2),
-            "completed_hours_in_working_window": round(sum_completed_working, 2),
-            "utilization_vs_working_capacity": util_vs_working_global,
+            "available_hours_working_window": round(util_total.available_hours, 2),
+            "completed_hours_in_working_window": round(util_total.completed_hours, 2),
+            "utilization_vs_working_capacity": utilization_ratio(util_total.completed_hours, util_total.available_hours),
         },
         "financial": {
             "revenue_by_user_type": revenue_by_user_type,

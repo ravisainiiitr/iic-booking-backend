@@ -180,13 +180,14 @@ def _equipment_parts(request):
                  " · ".join(filter(None, [UTILIZATION_FORMULA, utilization_period_caption(summary)]))),
         spec.Kpi("Utilized hours", summary.get("utilized_hours", 0), spec.NUMBER),
         spec.Kpi("Downtime hours", summary.get("downtime_hours", 0), spec.NUMBER,
-                 "Under / scheduled maintenance + operator absent"),
+                 "Under / scheduled maintenance + operator absent (part of available hours)"),
         spec.Kpi("Disruption hours", summary.get("disruption_hours", 0), spec.NUMBER,
                  "Downtime + Other Reasons recorded as disruptions"),
-        spec.Kpi("Available hours (work window)", summary.get("available_hours_working_window", 0), spec.NUMBER),
+        spec.Kpi("Available hours (work window)", summary.get("utilization_available_hours", 0), spec.NUMBER,
+                 "Same hours as the utilization factor"),
         spec.Kpi("Completed hours (work window)", summary.get("completed_hours_in_working_window", 0), spec.NUMBER),
-        spec.Kpi("Utilization vs working capacity", summary.get("utilization_vs_working_capacity", 0),
-                 spec.PERCENT),
+        spec.Kpi("Utilization vs capacity", _utilization_or_na(summary.get("utilization_vs_working_capacity")),
+                 spec.PERCENT, "Completed hours ÷ available hours"),
     ]
 
     tables = [] if not money else [
@@ -240,7 +241,8 @@ def _equipment_parts(request):
             C("completed_slot_hours_working_window", "Completed h (work window)", spec.NUMBER, 0.9, total=True),
             C("utilization_factor", "Utilization factor", spec.PERCENT, 0.9,
               value=lambda r: _utilization_or_na(r.get("utilization_factor"))),
-            C("utilization_vs_working_capacity", "Utilization vs capacity", spec.PERCENT, 0.9),
+            C("utilization_vs_working_capacity", "Utilization vs capacity", spec.PERCENT, 0.9,
+              value=lambda r: _utilization_or_na(r.get("utilization_vs_working_capacity"))),
             C("available_hours_weekend_or_holiday", "Available h (weekend/holiday)", spec.NUMBER, 0.9, total=True),
             C("blocked_hours", "Blocked h", spec.NUMBER, 0.7, total=True),
             C("other_disruption_hours", "Other disruption h", spec.NUMBER, 0.8, total=True),

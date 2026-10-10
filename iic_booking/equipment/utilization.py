@@ -13,8 +13,12 @@ both hours. Booked slots are BOOKED slots. The factor is ``None`` when there are
 Window fallback: the slot's own equipment, then its multi-mode parent, then ``UTILIZATION_DEFAULT_VIEW_WINDOW``
 (``("HH:MM", "HH:MM")``), else the whole day.
 
-The period never starts before ``PORTAL_GO_LIVE_DATE`` (first bookings on the new portal); a period that ends
-before it has no slots, so the factor is ``None``.
+The period never starts before ``PORTAL_GO_LIVE_DATE`` (first bookings on the new portal) and never runs past
+now (a slot in progress counts up to now); a period with no days left has no slots, so the factor is ``None``.
+
+Available hours = booked + booking not utilized + no booking + downtime (maintenance, scheduled maintenance,
+operator absent), all clipped the same way: downtime lowers the factor. "Other reasons" blocks are not offered
+time and are reported separately. Completed hours (completed bookings) share the same denominator.
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ from typing import Iterable, Optional
 from django.conf import settings
 from django.utils import timezone
 
-from .models import DailySlot, Equipment, Holiday, SlotStatus
+from .models import BookingStatus, DailySlot, Equipment, Holiday, SlotStatus
 
 UTILIZATION_FORMULA = "Booked hours ÷ available hours within weekly view window, excluding weekends and holidays"
 
@@ -54,48 +58,92 @@ def portal_go_live_date() -> Optional[date]:
     return date.fromisoformat(str(raw).strip())
 
 
+def _human(day: date) -> str:
+    return day.strftime("%d %b %Y")
+
+
 @dataclass(frozen=True)
 class UtilizationPeriod:
-    """Requested ``start``..``end`` with ``start`` moved up to the portal go-live date."""
+    """Requested ``start``..``end`` with ``start`` moved up to the portal go-live date and ``end`` capped at today."""
 
     start: date
     end: date
     requested_start: date
+    requested_end: Optional[date] = None
+    until: Optional[datetime] = None  # "now" when the period reaches today: later slot time is not counted yet
 
     @property
     def is_empty(self) -> bool:
         return self.start > self.end
 
+    def clip(self, start_dt, end_dt):
+        """Slot ``(start, end)`` cut at ``until``; ``None`` when the slot has not started yet."""
+        if self.until is None or end_dt is None:
+            return start_dt, end_dt
+        if start_dt is not None and start_dt >= self.until:
+            return None
+        return start_dt, min(end_dt, self.until)
+
     @property
     def clamped(self) -> bool:
         return self.start > self.requested_start
+
+    @property
+    def capped(self) -> bool:
+        return self.requested_end is not None and self.end < self.requested_end
+
+    def display(self) -> str:
+        return "" if self.is_empty else f"{_human(self.start)} – {_human(self.end)}"
+
+    def note(self) -> str:
+        """'' when slot hours cover the requested period; otherwise the period they do cover and why."""
+        go_live = portal_go_live_date()
+        if self.is_empty:
+            if go_live and self.requested_end is not None and self.requested_end < go_live:
+                return f"Effective period for utilization: none (period is before portal go-live, {_human(go_live)})"
+            return "Effective period for utilization: none (period has not started yet)"
+        if not (self.clamped or self.capped):
+            return ""
+        reasons = []
+        if self.clamped and go_live:
+            reasons.append(f"portal go-live {_human(go_live)}")
+        if self.capped:
+            reasons.append("till current date")
+        return f"Effective period for utilization: {self.display()} ({'; '.join(reasons)})"
 
     def as_dict(self) -> dict:
         return {
             "utilization_period_from": None if self.is_empty else self.start.isoformat(),
             "utilization_period_to": None if self.is_empty else self.end.isoformat(),
             "utilization_period_clamped": self.clamped,
+            "utilization_period_display": self.display(),
+            "utilization_period_note": self.note(),
             "portal_go_live_date": go_live.isoformat() if (go_live := portal_go_live_date()) else None,
         }
 
 
 def utilization_period_caption(summary: dict) -> str:
-    """'' unless the go-live date shortened the period: 'Since 05-10-2026 (portal go-live)' or 'Before ...'."""
-    go_live = summary.get("portal_go_live_date")
-    if not go_live:
-        return ""
-    go_live_dmy = date.fromisoformat(go_live).strftime("%d-%m-%Y")
-    if summary.get("utilization_period_from") is None and "utilization_period_to" in summary:
-        return f"Period is before portal go-live ({go_live_dmy})"
-    if summary.get("utilization_period_clamped"):
-        return f"Since {go_live_dmy} (portal go-live)"
-    return ""
+    """The report's effective-period note ('' when the slot hours cover the whole requested period)."""
+    return summary.get("utilization_period_note") or ""
+
+
+def _now() -> datetime:
+    return timezone.now()
 
 
 def utilization_period(start, end) -> UtilizationPeriod:
-    requested_start, end_d = _as_date(start), _as_date(end)
+    """Slot-hour period: never before ``PORTAL_GO_LIVE_DATE`` and never after now."""
+    requested_start, requested_end = _as_date(start), _as_date(end)
     go_live = portal_go_live_date()
-    return UtilizationPeriod(max(requested_start, go_live) if go_live else requested_start, end_d, requested_start)
+    now = _now()
+    today = timezone.localdate(now)
+    return UtilizationPeriod(
+        max(requested_start, go_live) if go_live else requested_start,
+        min(requested_end, today),
+        requested_start,
+        requested_end,
+        now if requested_end >= today else None,
+    )
 
 
 def _parse_time(value) -> Optional[time]:
@@ -218,24 +266,32 @@ class UtilizationTally:
     booked_hours_outside_window: float = 0.0
     all_slot_booked_hours: float = 0.0
     all_slot_hours: float = 0.0
+    completed_hours: float = 0.0
+    off_day_hours: float = 0.0
     slots: int = 0
 
-    def add(self, status, start_dt, end_dt, window: ViewWindow, calendar: WorkingCalendar, *, test_booking=False):
+    def add(self, status, start_dt, end_dt, window: ViewWindow, calendar: WorkingCalendar, *, test_booking=False,
+            completed=False) -> float:
+        """Count one slot; returns its available hours (0 for excluded slots). ``completed``: booking completed."""
         if status not in AVAILABLE_SLOT_STATUSES or (test_booking and status in _BOOKING_STATUSES):
-            return
+            return 0.0
         hours = slot_hours(start_dt, end_dt)
-        working, _ = window_hours(start_dt, end_dt, window, calendar)
+        working, off = window_hours(start_dt, end_dt, window, calendar)
         self.slots += 1
         self.all_slot_hours += hours
         self.available_hours += working
+        self.off_day_hours += off
         if status == SlotStatus.BOOKED:
             self.all_slot_booked_hours += hours
             self.booked_hours += working
             self.booked_hours_outside_window += max(0.0, hours - working)
+            if completed:
+                self.completed_hours += working
+        return working
 
     def merge(self, other: "UtilizationTally") -> "UtilizationTally":
         for name in ("booked_hours", "available_hours", "booked_hours_outside_window", "all_slot_booked_hours",
-                     "all_slot_hours", "slots"):
+                     "all_slot_hours", "completed_hours", "off_day_hours", "slots"):
             setattr(self, name, getattr(self, name) + getattr(other, name))
         return self
 
@@ -253,6 +309,7 @@ class UtilizationTally:
             "booked_hours": round(self.booked_hours, 2),
             "available_hours": round(self.available_hours, 2),
             "booked_hours_outside_window": round(self.booked_hours_outside_window, 2),
+            "completed_hours": round(self.completed_hours, 2),
         }
 
 
@@ -266,7 +323,7 @@ def _as_date(value) -> date:
 
 def compute_utilization_by_equipment(equipment_ids: Iterable[int], start, end) -> dict[int, UtilizationTally]:
     """
-    Tallies keyed by equipment id for ``start``..``end`` (dates, inclusive, clamped to the portal go-live date);
+    Tallies keyed by equipment id for ``start``..``end`` (dates, inclusive, from go-live, till today);
     multi-mode children fold into parents.
     """
     from .mode_utils import expand_equipment_ids_for_mode_rollup
@@ -292,13 +349,17 @@ def compute_utilization_by_equipment(equipment_ids: Iterable[int], start, end) -
     rows = (
         DailySlot.objects.filter(date__gte=start_d, date__lte=end_d, slot_master__equipment_id__in=expanded)
         .values_list("slot_master__equipment_id", "status", "start_datetime", "end_datetime",
-                     "booking__user__is_test_account")
+                     "booking__user__is_test_account", "booking__status")
         .iterator(chunk_size=2000)
     )
-    for eid, status, start_dt, end_dt, is_test in rows:
+    for eid, status, start_dt, end_dt, is_test, booking_status in rows:
         target = rollup.get(eid, eid)
+        if (span := period.clip(start_dt, end_dt)) is None:
+            continue
+        start_dt, end_dt = span
         tallies.setdefault(target, UtilizationTally()).add(
-            status, start_dt, end_dt, windows[eid], calendar, test_booking=bool(is_test)
+            status, start_dt, end_dt, windows[eid], calendar, test_booking=bool(is_test),
+            completed=booking_status == BookingStatus.COMPLETED,
         )
     return tallies
 

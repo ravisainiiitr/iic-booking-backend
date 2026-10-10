@@ -134,6 +134,13 @@ def test_window_falls_back_to_parent_then_setting(settings):
 # --- portal go-live date ---------------------------------------------------------------------------------------
 
 GO_LIVE = date(2026, 10, 5)
+TODAY = SATURDAY
+
+
+@pytest.fixture(autouse=True)
+def today(monkeypatch):
+    monkeypatch.setattr("iic_booking.equipment.utilization._now", lambda: _at(TODAY, 23, 59))
+    return TODAY
 
 
 @pytest.fixture
@@ -149,22 +156,52 @@ def test_period_start_is_clamped_to_go_live(go_live):
         "utilization_period_from": "2026-10-05",
         "utilization_period_to": "2026-10-10",
         "utilization_period_clamped": True,
+        "utilization_period_display": "05 Oct 2026 – 10 Oct 2026",
+        "utilization_period_note": "Effective period for utilization: 05 Oct 2026 – 10 Oct 2026 "
+                                   "(portal go-live 05 Oct 2026)",
         "portal_go_live_date": "2026-10-05",
     }
-    assert utilization_period_caption(period.as_dict()) == "Since 05-10-2026 (portal go-live)"
+    assert utilization_period_caption(period.as_dict()) == period.note()
 
 
 def test_period_after_go_live_is_unchanged(go_live):
-    period = utilization_period("2026-10-07", "2026-10-31")
-    assert (period.start, period.clamped) == (date(2026, 10, 7), False)
+    period = utilization_period("2026-10-06", "2026-10-09")
+    assert (period.start, period.end, period.clamped, period.capped) == (date(2026, 10, 6), FRIDAY, False, False)
     assert utilization_period_caption(period.as_dict()) == ""
+
+
+def test_period_end_is_capped_at_today(go_live):
+    period = utilization_period("2026-01-01", "2026-10-31")
+    assert (period.start, period.end, period.clamped, period.capped) == (go_live, TODAY, True, True)
+    assert period.note() == ("Effective period for utilization: 05 Oct 2026 – 10 Oct 2026 "
+                             "(portal go-live 05 Oct 2026; till current date)")
 
 
 def test_period_entirely_before_go_live_is_empty(go_live):
     period = utilization_period(date(2026, 9, 1), date(2026, 9, 30))
     assert period.is_empty
     assert period.as_dict()["utilization_period_from"] is None
-    assert utilization_period_caption(period.as_dict()) == "Period is before portal go-live (05-10-2026)"
+    assert utilization_period_caption(period.as_dict()) == (
+        "Effective period for utilization: none (period is before portal go-live, 05 Oct 2026)"
+    )
+
+
+def test_future_period_is_empty(go_live):
+    period = utilization_period(date(2026, 11, 1), date(2026, 11, 30))
+    assert period.is_empty
+    assert period.note() == "Effective period for utilization: none (period has not started yet)"
+
+
+@pytest.mark.django_db
+def test_slot_time_counts_only_up_to_now(egs_factory, monkeypatch):
+    f = egs_factory
+    eq = f.equipment()
+    f.booking(f.student(), eq, _at(MONDAY, 10), slot_count=2)  # 10:00-12:00, half elapsed
+    f.slot(eq, _at(MONDAY, 14), minutes=120)  # later today: not counted yet
+    monkeypatch.setattr("iic_booking.equipment.utilization._now", lambda: _at(MONDAY, 11))
+    result = compute_utilization(eq, MONDAY, MONDAY + timedelta(days=30))
+    assert (result["booked_hours"], result["available_hours"], result["utilization_factor"]) == (1.0, 1.0, 1.0)
+    assert result["utilization_period_to"] == MONDAY.isoformat()
 
 
 def test_no_go_live_setting_means_no_clamp(settings):
@@ -289,5 +326,85 @@ def test_equipment_report_uses_the_shared_utilization(office_equipment, egs_fact
     assert summary["utilization_factor"] == expected["utilization_factor"]
     assert summary["utilization_booked_hours"] == 2.0
     assert summary["utilization_available_hours"] == 4.5
-    # Working-window capacity uses the same clipping: 2 + 2 + 0.5 + 1 (test booking) + 0 (blocked at 19:00).
-    assert rows[office_equipment.pk]["available_hours_working_window"] == 5.5
+
+
+@pytest.mark.django_db
+def test_report_cards_share_one_denominator(office_equipment):
+    from iic_booking.equipment.models import BookingStatus
+    from iic_booking.equipment.reports import get_equipment_report_data
+
+    office_equipment.bookings.filter(daily_slots__date=MONDAY, user__is_test_account=False).update(
+        status=BookingStatus.COMPLETED
+    )
+    data = get_equipment_report_data(MONDAY.isoformat(), SATURDAY.isoformat(), [office_equipment.pk])
+    summary, row = data["summary"], data["equipment"][0]
+    # Available = booked 2 + no booking 2 + 0.5 (17:00-17:30); the test booking, blocked, holiday and weekend
+    # slots and the out-of-window hours are in none of the cards.
+    for payload in (summary, row):
+        assert payload["utilization_available_hours"] == payload["available_hours_working_window"] == 4.5
+        assert payload["utilization_vs_working_capacity"] == round(2.0 / 4.5, 4)
+    assert summary["total_hours"] == 4.5
+    assert summary["completed_hours_in_working_window"] == row["completed_slot_hours_working_window"] == 2.0
+    pie = {p["name"]: p["hours"] for p in data["utilization_pie"]}
+    assert pie == {"Utilized (Booked)": 2.0, "No booking": 2.5}
+    assert sum(pie.values()) == summary["utilization_available_hours"]
+    assert row["available_hours_weekend_or_holiday"] == 4.0  # Tuesday holiday 10-12 + Saturday 10-12
+
+
+@pytest.fixture
+def xps_like(egs_factory, go_live):
+    """09:00-21:00 window; unbooked slots before go-live; fully booked working days after it."""
+    f = egs_factory
+    eq = f.equipment(weekly_view_time_from=time(9, 0), weekly_view_time_to=time(21, 0))
+    for day in range(1, 8):  # 28 Sep - 4 Oct: available, never booked (portal not open yet)
+        f.slot(eq, _at(go_live - timedelta(days=day), 9), minutes=12 * 60)
+    tuesday = go_live + timedelta(days=1)
+    monday_booking = f.booking(f.student(), eq, _at(go_live, 9), slot_count=12)  # 09:00-21:00
+    monday_booking.status = "COMPLETED"
+    monday_booking.save(update_fields=["status"])
+    f.slot(eq, _at(go_live, 21), minutes=180, status=SlotStatus.NOT_AVAILABLE)  # outside the window
+    f.booking(f.student(), eq, _at(tuesday, 9), slot_count=3)  # 09:00-12:00
+    f.slot(eq, _at(tuesday, 12), minutes=9 * 60, status=SlotStatus.NOT_AVAILABLE)
+    f.slot(eq, _at(SATURDAY, 9), minutes=12 * 60, status=SlotStatus.NOT_AVAILABLE)
+    return eq
+
+
+@pytest.mark.django_db
+def test_report_from_january_counts_only_go_live_to_today(xps_like):
+    from iic_booking.equipment.reports import get_equipment_report_data
+
+    data = get_equipment_report_data("2026-01-01", "2026-10-10", [xps_like.pk])
+    summary = data["summary"]
+    assert summary["utilization_factor"] == 1.0
+    assert summary["utilization_booked_hours"] == summary["utilization_available_hours"] == 15.0
+    assert summary["available_hours_working_window"] == summary["total_hours"] == 15.0
+    assert summary["completed_hours_in_working_window"] == 12.0
+    assert summary["utilization_vs_working_capacity"] == 0.8
+    assert summary["utilization_period_from"] == "2026-10-05" and summary["utilization_period_to"] == "2026-10-10"
+    assert data["date_from"] == "2026-01-01"  # revenue and booking counts keep the requested range
+    assert data["report_header"]["utilization_period_note"] == (
+        "Effective period for utilization: 05 Oct 2026 – 10 Oct 2026 (portal go-live 05 Oct 2026)"
+    )
+
+
+@pytest.mark.django_db
+def test_every_reports_role_gets_the_same_utilization(xps_like, egs_factory):
+    from iic_booking.equipment.models import EquipmentManager, EquipmentOperator
+    from iic_booking.users.models.user_type import UserType
+    from iic_booking.users.tests.factories import UserFactory
+
+    f = egs_factory
+    users = {ut: UserFactory(user_type=ut, admin_approved=True, department=f.department)
+             for ut in (UserType.ADMIN, UserType.FINANCE, UserType.MANAGER, UserType.OPERATOR)}
+    EquipmentManager.objects.create(equipment=xps_like, manager=users[UserType.MANAGER])
+    EquipmentOperator.objects.create(equipment=xps_like, operator=users[UserType.OPERATOR])
+    keys = ("utilization_factor", "utilization_booked_hours", "utilization_available_hours",
+            "available_hours_working_window", "completed_hours_in_working_window", "utilization_vs_working_capacity",
+            "utilization_period_from", "utilization_period_to")
+    params = {"date_from": "2026-01-01", "date_to": "2026-10-10", "equipment_id": xps_like.pk}
+    seen = {}
+    for ut, user in users.items():
+        res = f.client_for(user).get("/api/admin/equipment-reports/", params)
+        assert res.status_code == 200, (ut, res.content[:300])
+        seen[ut] = tuple(res.data["summary"][k] for k in keys)
+    assert set(seen.values()) == {(1.0, 15.0, 15.0, 15.0, 12.0, 0.8, "2026-10-05", "2026-10-10")}, seen
