@@ -1,0 +1,80 @@
+Subject: Revised Wallet Recharge Procedure – IIC Equipment Booking Portal (Project Funds via SRIC Portal and Direct Recharge)
+
+Dear Prof. A. Sample,
+
+The Institute Instrumentation Centre (IIC) has revised the procedure for recharging wallets on the Institute Equipment Booking Portal (https://equip.iitr.ac.in). Recharges from project funds are now raised directly on the SRIC Portal and reach your IIC wallet automatically. When no project funds can be used, the Direct Cash Deposit / Bank Transfer option remains available to faculty members and to students linked to their supervisor's wallet.
+
+AT A GLANCE
+- Recharge from project funds: SRIC Portal (rnd.iitr.ac.in) > Ledger > New Wallet Recharge. Credited automatically, usually within minutes.
+- No project funds available: Booking Portal > Wallet > Recharge Wallet > Direct Cash Deposit / Bank Transfer, then pay at the SRIC Bill Section.
+- Students: the same Direct Cash Deposit / Bank Transfer option is on the student's own Wallet page; the amount is credited to the supervisor's wallet.
+- Discontinued: Project Grant requests raised on the Booking Portal, and recharge by uploading a payment receipt.
+
+WHAT HAS CHANGED, AND WHY
+- The earlier Project Grant recharge request on the Booking Portal (OTP, then approval by the SRIC Office by email) has been discontinued. Any such request that was still pending has been withdrawn; please raise it afresh on the SRIC Portal.
+- Project-funded recharges are now made on the SRIC Portal, where the project ledger is maintained. SRIC sends each recharge to the Booking Portal electronically, so no separate approval email, paperwork or manual entry is needed.
+- Every credit is tied to its unique SRIC Ledger ID and is credited only once, and you receive a confirmation email for each credit.
+
+OPTION A (FACULTY): RECHARGE FROM PROJECT FUNDS THROUGH THE SRIC PORTAL
+1. Sign in to the SRIC Portal at https://rnd.iitr.ac.in
+2. In the left menu, open Ledger > New Wallet Recharge.
+3. Under Select Project, search by project number or title and select the project that will fund the recharge.
+4. Choose the Receiver Type: IIC for IIC instruments, or Tinkering for Tinkering Lab facilities. This decides which of your wallet balances is credited.
+5. Enter the Amount and a Remark, check the Recharge Summary and click Submit Recharge.
+6. The amount is credited to your IIC wallet automatically, and you receive a confirmation email with the SRIC Ledger ID, project number and new balance. To check at once, open Wallet > How to recharge on the Booking Portal and click Refresh.
+The attached PDF guide shows each SRIC Portal screen. Recharges from project funds can be made only by the faculty member (Principal Investigator).
+
+OPTION B (FACULTY, WHEN NO PROJECT FUNDS ARE AVAILABLE): DIRECT CASH DEPOSIT / BANK TRANSFER
+1. Sign in to the Booking Portal (https://equip.iitr.ac.in) and click Wallet management > Open Wallet on your Dashboard (or Wallet in your profile menu).
+2. Click Recharge Wallet and select Direct Cash Deposit / Bank Transfer as the Recharge method.
+3. Under Credit to, select the department, and enter the Amount (Rs.) (minimum Rs. 100).
+4. Read the undertaking (that no project funds are currently available for this recharge) and tick "I agree to the above undertaking".
+5. Click Send OTP, enter the 6-digit OTP sent to your registered email (valid for 10 minutes) and click Verify & Submit.
+6. Note the Transaction ID shown on screen (it is also emailed to you). Deposit the amount at the SRIC Bill Section, or complete the bank transfer, quoting this Transaction ID.
+7. When the SRIC Bill Section approves the request on receipt of the funds, the amount is credited to your wallet at once and you are informed by email.
+
+FOR YOUR STUDENTS: DIRECT RECHARGE FROM THE STUDENT'S DASHBOARD
+IITR students linked to your wallet can recharge it themselves. Please share these steps with your research group:
+1. Sign in to the Booking Portal and click Wallet management > Open Wallet on the Dashboard.
+2. Click Recharge Wallet and choose Direct Cash Deposit / Bank Transfer.
+3. Select the department under Credit to, enter the Amount (Rs.) (minimum Rs. 100) and tick "I agree to the above undertaking".
+4. Click Send OTP, enter the OTP from the email and click Verify & Submit. Note the Transaction ID.
+5. Deposit the amount at the SRIC Bill Section, or complete the bank transfer, quoting the Transaction ID.
+6. On approval, the amount is credited to your (the supervisor's) wallet for the selected department and can be used for bookings by you and your linked students.
+You receive a copy of every recharge request raised by your students and of its outcome. A student who is not yet linked to your wallet can send you a link request from the same Wallet page.
+
+VERIFICATION AND TIMELINES
+- SRIC Portal recharge: the Booking Portal checks for new SRIC recharges every 5 minutes, so a recharge is normally credited within minutes. Checks pause during peak booking time (Wednesday 8:55–9:15 PM IST); a recharge made then is credited right after. An entry that cannot be matched automatically is checked by the IIC office and shows as "Being checked" until it is credited.
+- Direct Cash Deposit / Bank Transfer: credited as soon as the SRIC Bill Section approves the request. Receipt of funds is then confirmed against the SRIC cash-book (entries dated on or after 30 September 2026).
+- Every credit: confirmed by email and listed in your wallet transactions with its reference.
+
+IMPORTANT
+- Choose the Receiver Type carefully. Your wallet keeps a separate balance for each department, and a booking is paid from the balance of the equipment's department.
+- SRIC recharges are matched to your account by your Employee ID. If a recharge is not credited within one working day, raise a Support Ticket quoting the SRIC Ledger ID.
+- Use Direct Cash Deposit / Bank Transfer only when project funds cannot be used, as stated in the undertaking. The SRIC Bill Section accepts a deposit only against a valid Transaction ID.
+- Recharge by uploading a payment receipt is no longer accepted.
+
+QUICK LINKS
+- Your Wallet: https://equip.iitr.ac.in/wallet
+- Recharge from a project (procedure and Refresh): https://equip.iitr.ac.in/wallet/recharge-from-project
+- SRIC Portal: https://rnd.iitr.ac.in
+
+HELP AND CONTACT
+- Support Ticket: sign in and open Support Tickets (https://equip.iitr.ac.in/tickets); please quote the Transaction ID or SRIC Ledger ID.
+- Email: iicbooking@iitr.ac.in
+- User Guide: https://equip.iitr.ac.in/user-guide (Wallet section)
+- SRIC Portal access or project ledger: please contact the SRIC Office.
+
+We thank you for your cooperation.
+
+With regards,
+Head, Institute Instrumentation Centre
+Indian Institute of Technology Roorkee
+
+Thank you for using the Institute Equipment Booking Portal.
+Indian Institute of Technology Roorkee
+Equipment Booking Portal
+
+Need assistance?
+Raise a Support Ticket from the portal after sign-in.
+Visit: https://equip.iitr.ac.in
