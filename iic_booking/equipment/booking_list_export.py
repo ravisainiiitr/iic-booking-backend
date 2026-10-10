@@ -553,8 +553,8 @@ def _sample_set_rows(rows, labels):
             yield row, index + 1, values
 
 
-def _input_table_groups(rows) -> list[tuple[str, list[str], list[list]]]:
-    """[(title, columns, rows)] per equipment / table field / column layout; rows are [booking, set, row #, cells…]."""
+def _input_table_groups(rows, link_for=lambda row: row.get("link")) -> list[tuple[str, list[str], list[list]]]:
+    """[(title, columns, rows)] per equipment / table field / column layout; rows are [booking, set, row #, cells…, link]."""
     groups: dict[tuple, list[list]] = {}
     for row in rows:
         detail = row.get("detail")
@@ -575,7 +575,7 @@ def _input_table_groups(rows) -> list[tuple[str, list[str], list[list]]]:
                 bucket = groups.setdefault(key, [])
                 for number, cells in enumerate(data, start=1):
                     bucket.append([row["booking_id"], set_index, number, *cells, *[""] * (width - len(cells)),
-                                   row.get("link")])
+                                   link_for(row)])
     ordered = sorted(groups.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1].lower()))
     return [(f"{equipment} — {label}" if equipment else label, list(cols), data)
             for (equipment, label, cols), data in ordered]
@@ -586,6 +586,16 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
 
     wb = Workbook(write_only=True)
     register_xlsx_styles(wb)
+
+    from openpyxl.utils import get_column_letter
+
+    # The Bookings sheet's Booking ID opens the live booking in the portal; the other sheets' Booking IDs
+    # jump to that booking's row on the Bookings sheet (header in row 1).
+    id_col = next((i for i, c in enumerate(columns) if c.key == "booking_id"), 0)
+    booking_rows = {id(row): f"#'Bookings'!{get_column_letter(id_col + 1)}{i + 2}" for i, row in enumerate(rows)}
+
+    def row_link(row):
+        return booking_rows.get(id(row)) or row.get("link")
 
     bookings = SheetWriter(wb, "Bookings")
     bookings.header([c.label for c in columns])
@@ -601,7 +611,7 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
     sets.header(["Booking ID", "Equipment", "Sample set", *labels])
     for i, (row, number, values) in enumerate(_sample_set_rows(rows, labels)):
         sets.row([row["booking_id"], xlsx_text(row.get("equipment") or ""), number, *values],
-                 ["text", "text", "int", *["text"] * len(labels)], striped=i % 2 == 1, links=[row.get("link")])
+                 ["text", "text", "int", *["text"] * len(labels)], striped=i % 2 == 1, links=[row_link(row)])
     if not sets.data_rows:
         sets.blank()
         sets.line("None of the exported bookings has user inputs.", "exp_note")
@@ -609,7 +619,7 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
     sets.flush(autofilter_columns=3 + len(labels))
 
     tables = SheetWriter(wb, "Input tables", max_width=40)
-    groups = _input_table_groups(rows)
+    groups = _input_table_groups(rows, row_link)
     for title, cols, data in groups:
         tables.line(xlsx_text(title), "exp_band")
         tables.header(["Booking ID", "Sample set", "Row #", *cols])
@@ -634,7 +644,7 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
                 sheet.row(
                     [row["booking_id"], xlsx_text(row.get("equipment") or ""), number, xlsx_text(description),
                      float(amount) if amount is not None else None],
-                    ["text", "text", "int", "text", "money"], striped=stripe, links=[row.get("link")],
+                    ["text", "text", "int", "text", "money"], striped=stripe, links=[row_link(row)],
                 )
             stripe = not stripe
         if not sheet.data_rows:
@@ -669,8 +679,7 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
     if charges:
         sheet_notes.append(("Charges", "Charge breakdown lines of each booking (₹)."))
     for label, text in sheet_notes:
-        info.row([label, text], ["text", "longtext"])
-        info.rows[-1][0] = (label, "exp_label")
+        info.row([label, text], ["text", "longtext"], links=[f"#'{label}'!A1"])
     info.widths[0] = max(info.widths.get(0, 0), 22)
     info.flush()
 

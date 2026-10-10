@@ -38,6 +38,15 @@ def _pdf_grid_style(header_hex: str, font_size: float = 7) -> list:
     ]
 
 
+def _xlsx_internal_link(cell, location: str, *, bold: bool = False) -> None:
+    """Make ``cell`` jump to ``location`` (e.g. ``'Equipment Report'!A12``) within the workbook."""
+    from openpyxl.styles import Font
+    from openpyxl.worksheet.hyperlink import Hyperlink
+
+    cell.hyperlink = Hyperlink(ref=cell.coordinate, location=location)
+    cell.font = Font(color="1D4ED8", underline="single", bold=bold)
+
+
 def _xlsx_center_tables(wb) -> None:
     """Centre every bordered (table) cell horizontally and vertically."""
     from openpyxl.styles import Alignment
@@ -70,6 +79,9 @@ def build_report_pdf(
         PageBreak,
     )
     from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    from xml.sax.saxutils import escape
+
+    from .pdf_anchor import Anchor, internal_link
 
     data = get_equipment_report_data(
         date_from=date_from,
@@ -129,8 +141,16 @@ def build_report_pdf(
     story.append(Paragraph(_report_duration_caption(data), subtitle_style))
     story.append(Spacer(1, 0.4 * cm))
 
+    # Equipment names in the revenue table and utilization charts jump to the equipment's section.
+    equipment_list = data.get("equipment") or []
+    section_keys: dict[str, str] = {}
+    for idx, eq in enumerate(equipment_list):
+        section_keys.setdefault(str(eq.get("code") or ""), f"equipment-{idx}")
+
     # Financial + KPI summary
-    story.append(Paragraph("Financial & KPI summary" if include_revenue else "KPI summary", heading_style))
+    summary_title = "Financial & KPI summary" if include_revenue else "KPI summary"
+    story.append(Anchor("summary", summary_title))
+    story.append(Paragraph(escape(summary_title), heading_style))
     summary = data.get("summary", {}) or {}
     fin_rows = [["Metric", "Value"]]
     if include_revenue:
@@ -164,6 +184,7 @@ def build_report_pdf(
     story.append(Spacer(1, 0.6 * cm))
 
     # Per-equipment performance (two-column metric tables)
+    story.append(Anchor("per-equipment", "Per-equipment performance", closed=len(equipment_list) > 30))
     story.append(Paragraph("Per-equipment performance", heading_style))
     crit_labels = {
         "on_time_operator_availability": "On-time & operator availability (Yes)",
@@ -173,9 +194,10 @@ def build_report_pdf(
         "compliance_booking_request_parameters": "Compliance with booking parameters (Yes)",
     }
 
-    for idx, eq in enumerate(data.get("equipment") or []):
+    for idx, eq in enumerate(equipment_list):
         if idx > 0:
             story.append(PageBreak())
+        story.append(Anchor(f"equipment-{idx}", f"{eq.get('name', '')} ({eq.get('code', '')})", level=1))
         oics = eq.get("officers_in_charge") or []
         ops = eq.get("lab_operators") or []
         oic_line = ", ".join(f"{x.get('name', '')} ({x.get('email', '')})" for x in oics) or "—"
@@ -262,12 +284,16 @@ def build_report_pdf(
     financial = data.get("financial", {}) or {}
     r_equipment = financial.get("revenue_by_equipment", []) or []
     if r_equipment:
+        story.append(Anchor("revenue-by-equipment", "Revenue by equipment"))
         story.append(Paragraph("Revenue by equipment (top 20)", heading_style))
         rows_rev_eq = [["S.No.", "Equipment", "Bookings", "Revenue"]]
+        cell_center = ParagraphStyle(name="RevCell", parent=body_style, fontSize=7, leading=9, alignment=TA_CENTER)
         for sno, r in enumerate(r_equipment[:20], start=1):
+            label = escape(f"{r.get('equipment__code','')} — {r.get('equipment__name','')}")
+            key = section_keys.get(str(r.get("equipment__code") or ""))
             rows_rev_eq.append([
                 str(sno),
-                f"{r.get('equipment__code','')} — {r.get('equipment__name','')}",
+                Paragraph(internal_link(label, key) if key else label, cell_center),
                 str(r.get("count", 0) or 0),
                 f"₹{float(r.get('total', 0) or 0):.2f}",
             ])
@@ -278,6 +304,7 @@ def build_report_pdf(
 
     r_ext = financial.get("revenue_by_external_category", []) or []
     if r_ext:
+        story.append(Anchor("external-revenue", "External revenue by category"))
         story.append(Paragraph("External revenue by category", heading_style))
         rows_rev_ext = [["Category", "Bookings", "Revenue"]]
         for r in r_ext:
@@ -292,6 +319,7 @@ def build_report_pdf(
         story.append(Spacer(1, 0.4 * cm))
 
     # Per-equipment utilization pie charts
+    story.append(Anchor("utilization-by-equipment", "Utilization by equipment"))
     story.append(Paragraph("Utilization by equipment (hours)", heading_style))
     from reportlab.graphics.shapes import Drawing
     from reportlab.graphics.charts.piecharts import Pie as PieChartDrawing
@@ -325,7 +353,7 @@ def build_report_pdf(
             spaceBefore=8,
             spaceAfter=4,
         )
-        story.append(Paragraph(f"{name} ({code})", eq_heading_style))
+        story.append(Paragraph(internal_link(escape(f"{name} ({code})"), f"equipment-{pie_idx}"), eq_heading_style))
         values = []
         labels = []
         for i, (key, label) in enumerate(UTILIZATION_CATEGORIES):
@@ -354,6 +382,7 @@ def build_report_pdf(
 
     story.append(Spacer(1, 0.5 * cm))
 
+    story.append(Anchor("overall-utilization", "Overall utilization"))
     story.append(Paragraph("Overall utilization (all equipment, hours)", heading_style))
     pie_rows = [["Category", "Hours"]]
     for p in data.get("utilization_pie", []):
@@ -488,7 +517,9 @@ def build_report_excel(
         cell.alignment = Alignment(horizontal="center", wrap_text=True)
         cell.border = thin_border
     row += 1
+    main_rows: list[int] = []
     for eq in data["equipment"]:
+        main_rows.append(row)
         oics = ", ".join(str(x.get("name", "")) for x in (eq.get("officers_in_charge") or []))
         ops = ", ".join(str(x.get("name", "")) for x in (eq.get("lab_operators") or []))
         ur = eq.get("user_ratings") or {}
@@ -587,6 +618,9 @@ def build_report_excel(
     # Revenue breakdown sheets
     financial = data.get("financial", {}) or {}
     r_equipment = financial.get("revenue_by_equipment", []) or []
+    main_row_by_code: dict[str, int] = {}
+    for eq, eq_main_row in zip(data["equipment"], main_rows):
+        main_row_by_code.setdefault(str(eq.get("code") or ""), eq_main_row)
     if r_equipment:
         ws3 = wb.create_sheet("Revenue by Equipment", 2)
         ws3["A1"] = "Revenue by Equipment (completed bookings)"
@@ -602,6 +636,9 @@ def build_report_excel(
         rr += 1
         for r in r_equipment:
             ws3.cell(row=rr, column=1, value=f"{r.get('equipment__code','')} — {r.get('equipment__name','')}")
+            target = main_row_by_code.get(str(r.get("equipment__code") or ""))
+            if target:
+                _xlsx_internal_link(ws3.cell(row=rr, column=1), f"'{ws.title}'!A{target}")
             ws3.cell(row=rr, column=2, value=int(r.get("count", 0) or 0))
             ws3.cell(row=rr, column=3, value=float(r.get("total", 0) or 0))
             for c in range(1, 4):
@@ -647,11 +684,12 @@ def build_report_excel(
         ("blocked_hours", "Blocked"),
         ("no_booking_hours", "No booking"),
     ]
-    for eq in data["equipment"]:
+    for eq, eq_main_row in zip(data["equipment"], main_rows):
         name = eq.get("name", "") or "Equipment"
         code = eq.get("code", "")
         ws2.cell(row=eq_row, column=1, value=f"{name} ({code})")
-        ws2.cell(row=eq_row, column=1).font = Font(bold=True)
+        _xlsx_internal_link(ws2.cell(row=eq_row, column=1), f"'{ws.title}'!A{eq_main_row}", bold=True)
+        _xlsx_internal_link(ws.cell(row=eq_main_row, column=1), f"'{ws2.title}'!A{eq_row}")
         eq_row += 1
         ws2.cell(row=eq_row, column=1, value="Category")
         ws2.cell(row=eq_row, column=2, value="Hours")

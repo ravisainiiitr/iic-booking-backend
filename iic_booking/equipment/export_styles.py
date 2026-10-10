@@ -285,7 +285,7 @@ class SheetWriter:
         self.rows.append([(label, "exp_header") for label in labels])
 
     def row(self, values, kinds, *, striped: bool = False, links=None) -> None:
-        """``links``: optional URL per column (None for plain cells)."""
+        """``links``: optional URL per column (None for plain cells); ``#'Sheet'!A2`` links within the workbook."""
         out = []
         links = list(links or [])
         for i, (value, kind) in enumerate(zip(values, kinds)):
@@ -307,6 +307,7 @@ class SheetWriter:
     def flush(self, *, autofilter_columns: int = 0, min_width: int = 8) -> None:
         from openpyxl.cell import WriteOnlyCell
         from openpyxl.utils import get_column_letter
+        from openpyxl.worksheet.hyperlink import Hyperlink
 
         for index, width in self.widths.items():
             letter = get_column_letter(index + 1)
@@ -323,6 +324,6 @@ class SheetWriter:
                 cell.style = style
                 url = self.links.get((row_index, col_index))
                 if url:
-                    cell.hyperlink = url
+                    cell.hyperlink = Hyperlink(ref="", location=url[1:]) if url.startswith("#") else url
                 cells.append(cell)
             self.ws.append(cells)

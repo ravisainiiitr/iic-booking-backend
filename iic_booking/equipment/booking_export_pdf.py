@@ -29,12 +29,19 @@ from .export_styles import markup
 from .export_styles import money_text
 from .export_styles import pdf_styles
 from .export_styles import register_fonts
+from .pdf_anchor import Anchor
 
 # Card fields that are already in the header band.
 _BAND_KEYS = {"sno", "booking_id", "equipment", "status"}
 # A table row cannot split across pages: longer values go in a paragraph, table cells are capped.
 _LONG_TEXT = 500
 _CELL_MAX_LINES = 50
+SUMMARY_ANCHOR = "summary"
+
+
+def booking_anchor(row) -> str:
+    """Named destination of a booking's details card (S.No. is unique within one export)."""
+    return f"booking-{row.get('sno')}"
 
 
 class _Builder:
@@ -196,9 +203,11 @@ class _Builder:
         from reportlab.platypus import TableStyle
 
         badge_w = 4.6 * 28.35
+        # The card's Booking ID opens the live booking in the portal; "Back to summary" stays in the PDF.
         left = [
             self.p(row.get("booking_id") or "", self.S.band_id, link=row.get("link") or "", link_color="#ffffff"),
             self.p(row.get("equipment") or "", self.S.band_sub),
+            self.p("Back to summary", self.S.band_sub, link=f"#{SUMMARY_ANCHOR}", link_color="#dbeafe"),
         ]
         band = Table(
             [[left, self.badge(row.get("status_code") or "", row.get("status") or "")]],
@@ -275,7 +284,8 @@ class _Builder:
         from .booking_export_details import BookingDetail
 
         detail: BookingDetail | None = row.get("detail")
-        flow: list = [self.band(row), Spacer(1, 4)]
+        outline_title = f"{row.get('sno')}. {row.get('booking_id') or 'Booking'}"
+        flow: list = [Anchor(booking_anchor(row), outline_title, level=1), self.band(row), Spacer(1, 4)]
         pairs = []
         for col in columns:
             if col.key in _BAND_KEYS:
@@ -404,7 +414,8 @@ class _Builder:
                         cells.append(self.p(value or "", self.S.cell_bold.clone(
                             "exp_status_c", textColor=colors.HexColor(fg), alignment=1)))
                     elif key == "booking_id":
-                        cells.append(self.p(value or "", self.S.cell_center, link=row.get("link") or ""))
+                        # Every summary row has a details card further down this PDF.
+                        cells.append(self.p(value or "", self.S.cell_center, link=f"#{booking_anchor(row)}"))
                     else:
                         cells.append(self.p("" if value is None else value, self.S.cell_center))
                 data.append(cells)
@@ -486,20 +497,31 @@ def _numbered_canvas(fonts: Fonts, generated_at: str):
     from reportlab.pdfgen import canvas as rl_canvas
 
     class NumberedCanvas(rl_canvas.Canvas):
-        """Page header (from page 2) and footer with "Page X of Y", drawn once the page count is known."""
+        """Page header (from page 2) and footer with "Page X of Y", drawn once the page count is known.
+
+        Pages are only emitted in :meth:`save`, so named destinations are recorded per page and registered
+        while their page is emitted; otherwise every internal link would point at page 1.
+        """
 
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self._saved_pages = []
+            self._page_bookmarks = []
+
+        def bookmarkPage(self, key, *args, **kwargs):
+            self._page_bookmarks.append((key, args, kwargs))
 
         def showPage(self):
             self._saved_pages.append(dict(self.__dict__))
+            self._page_bookmarks = []
             self._startPage()
 
         def save(self):
             total = len(self._saved_pages)
             for state in self._saved_pages:
                 self.__dict__.update(state)
+                for key, args, kwargs in state["_page_bookmarks"]:
+                    rl_canvas.Canvas.bookmarkPage(self, key, *args, **kwargs)
                 width, height = self._pagesize
                 left, right = 1.6 * cm, width - 1.6 * cm
                 self.setStrokeColor(colors.HexColor(RULE))
@@ -565,6 +587,7 @@ def render_pdf(columns, rows, *, summary, generated_at, status_counts=(), view_l
     story.append(b.cover_panels(rows, summary=summary, generated_at=generated_at, view_label=view_label,
                                 status_counts=counts))
     story.append(Spacer(1, 0.6 * cm))
+    story.append(Anchor(SUMMARY_ANCHOR, "Summary"))
     story.append(b.p("Summary", S.h2))
     if rows:
         story.extend(b.summary_table(rows, columns))
@@ -573,6 +596,7 @@ def render_pdf(columns, rows, *, summary, generated_at, status_counts=(), view_l
 
     if rows:
         story.append(PageBreak())
+        story.append(Anchor("booking-details", "Booking details", closed=len(rows) > 30))
         story.append(b.p("Booking details", S.h2))
         for row in rows:
             story.append(KeepTogether(b.card(row, columns)))
