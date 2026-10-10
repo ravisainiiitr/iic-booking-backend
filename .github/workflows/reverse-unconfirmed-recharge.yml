@@ -1,0 +1,62 @@
+# Reverse Project Grant wallet recharges that were approved only by the requester / wallet owner (no SRIC
+# approval, no SRIC cash-book receipt, no fund receipt verification). Dry run by default (also prints the
+# notice text with the name masked). To apply, set confirm to exactly "REVERSE <txns>" (e.g.
+# "REVERSE IIC-TXN-000049,IIC-TXN-000043"). Nothing is reversed unless every named request passes all checks
+# (unspent credit, balance stays >= 0). Each reversal is a Main Admin ledger debit (WAD-…) and the request is
+# cancelled by the administrator; the wallet owner (and the requester, if different) get an email and an
+# in-portal notice. Re-running is safe. Output is ids, flags and amounts only.
+name: Reverse Unconfirmed Recharge
+
+on:
+  workflow_dispatch:
+    inputs:
+      txns:
+        description: "Comma-separated transaction numbers, e.g. IIC-TXN-000049,IIC-TXN-000043"
+        required: true
+      confirm:
+        description: 'Empty = dry run. To apply: REVERSE <txns> (same order as above)'
+        required: false
+        default: ""
+
+concurrency:
+  group: reverse-unconfirmed-recharge
+  cancel-in-progress: false
+
+jobs:
+  reverse:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Reverse
+        env:
+          TXNS: ${{ inputs.txns }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TXNS" =~ ^(IIC-TXN-[0-9]{6})(,IIC-TXN-[0-9]{6}){0,9}$ ]]; then
+            echo "txns must be up to 10 comma-separated IIC-TXN-###### numbers"; exit 1
+          fi
+          if [[ -n "$CONFIRM" && "$CONFIRM" != "REVERSE $TXNS" ]]; then
+            echo "confirm must be exactly: REVERSE $TXNS"; exit 1
+          fi
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              if [[ -n "$CONFIRM" ]]; then
+                docker exec -i -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
+                  python manage.py reverse_unconfirmed_recharge --txn "$TXNS" --apply --confirm "$CONFIRM"
+              else
+                docker exec -i -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
+                  python manage.py reverse_unconfirmed_recharge --txn "$TXNS" --preview-notice
+              fi
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
