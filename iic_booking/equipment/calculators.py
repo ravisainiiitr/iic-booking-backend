@@ -576,9 +576,14 @@ class TimeCalculationEngine:
         input_values: Dict[str, Any],
         slot_duration_minutes: Optional[int],
     ) -> int:
-        """LASER_CUT_2D: booked duration once slots exist; otherwise the optional time formula or one slot."""
-        from .fabrication import BOOKED_MINUTES_KEY
+        """LASER_CUT_2D: the machine-time estimate from the DXF cut paths when every part has one; otherwise the
+        booked duration once slots exist, else the optional time formula or one slot."""
+        from .fabrication import BOOKED_MINUTES_KEY, LASER_ESTIMATE_KEY
 
+        estimate = input_values.get(LASER_ESTIMATE_KEY)
+        estimated = int(safe_float(estimate.get("total_min", 0), 0.0)) if isinstance(estimate, dict) else 0
+        if estimated > 0:
+            return estimated
         booked = int(safe_float(input_values.get(BOOKED_MINUTES_KEY, 0), 0.0))
         if booked > 0:
             return booked

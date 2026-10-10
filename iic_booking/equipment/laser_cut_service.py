@@ -56,6 +56,7 @@ class DxfAnalysisResult:
     area_mm2: Decimal
     entity_count: int
     warnings: list[str] = field(default_factory=list)
+    cut_features: dict = field(default_factory=dict)
 
 
 def _iter_cut_entities(entities, depth: int, counter: list[int], warnings: list[str]):
@@ -161,6 +162,8 @@ def analyze_dxf_bytes(data: bytes, *, units_override: str | None = None) -> DxfA
     if width <= 0 or height <= 0:
         raise DxfParseError("The drawing has zero width or height; a 2D outline is required.")
 
+    cut_features = cut_features_or_warning(entities, bbox, warnings)
+
     return DxfAnalysisResult(
         detected_units=detected,
         units=units,
@@ -171,7 +174,48 @@ def analyze_dxf_bytes(data: bytes, *, units_override: str | None = None) -> DxfA
         area_mm2=area,
         entity_count=counter[0],
         warnings=warnings,
+        cut_features=cut_features,
     )
+
+
+def cut_features_or_warning(entities, bbox: dict, warnings: list[str]) -> dict:
+    """Toolpath features for the time estimate; a failure only means no estimate for this part."""
+    from .laser_time_model import compute_cut_features
+
+    try:
+        features = compute_cut_features(entities, bbox)
+    except Exception:  # noqa: BLE001 - the upload must not fail because the time estimate could not be made
+        logger.exception("Could not measure the cut path of a DXF")
+        warnings.append("The cutting path could not be measured, so no machine time is estimated for this part.")
+        return {}
+    if features.get("duplicates"):
+        warnings.append(
+            f"{features['duplicates']} overlapping duplicate line(s) were ignored; remove them so they are not cut twice."
+        )
+    return features
+
+
+def analyze_dxf_cut_features(data: bytes) -> dict:
+    """Cut features of a stored DXF (for parts uploaded before the time estimate). Raises DxfParseError."""
+    doc, _auditor = _read_document(data)
+    warnings: list[str] = []
+    entities = list(_iter_cut_entities(doc.modelspace(), 0, [0], warnings))
+    if not entities:
+        raise DxfParseError("No cut geometry was found in the drawing.")
+    from ezdxf import bbox as ezbbox
+
+    extents = ezbbox.extents(entities, fast=False)
+    if not extents.has_data:
+        raise DxfParseError("Could not measure the drawing's size.")
+    bbox = {
+        "min_x": float(extents.extmin.x),
+        "min_y": float(extents.extmin.y),
+        "max_x": float(extents.extmax.x),
+        "max_y": float(extents.extmax.y),
+    }
+    from .laser_time_model import compute_cut_features
+
+    return compute_cut_features(entities, bbox)
 
 
 def part_fits_sheet(width_mm, height_mm, sheet_width_mm, sheet_height_mm) -> bool:

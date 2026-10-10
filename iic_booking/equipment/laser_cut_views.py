@@ -161,6 +161,7 @@ def _create_laser_analysis(*, equipment, user, batch, sequence, filename, data, 
         analysis.height_mm = result.height_mm
         analysis.area_mm2 = result.area_mm2
         analysis.entity_count = result.entity_count
+        analysis.cut_features = result.cut_features
         analysis.warnings = result.warnings
     analysis.dxf_file.save(filename, ContentFile(data), save=False)
     analysis.save()

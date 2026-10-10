@@ -30,6 +30,9 @@ from .models import (
     LaserSheetMaterial,
     PrintMaterial,
 )
+from .laser_estimate_settings import ESTIMATE_PROFILE_KEYS as LASER_ESTIMATE_PROFILE_KEYS
+from .laser_estimate_settings import apply_profile_update as apply_laser_profile_update
+from .laser_estimate_settings import profile_payload as laser_profile_payload
 from .print_estimate_calibration import apply_profile_update, profile_payload
 from .serializers import LaserSheetMaterialSerializer, LaserSheetMaterialWriteSerializer, PrintMaterialSerializer
 
@@ -174,6 +177,7 @@ def _equipment_row(eq):
         row["laser_sheet_materials"] = LaserSheetMaterialSerializer(
             eq.laser_sheet_materials.all().order_by("display_order", "name"), many=True
         ).data
+        row["laser_estimate"] = laser_profile_payload(eq)
     row["supported_material_ids"] = sorted(supported_materials(eq).values_list("pk", flat=True))
     return row
 
@@ -211,7 +215,9 @@ def fabrication_material_equipment(request):
             fabrication_replace_window_hours?, supported_material_ids?,
             max_print_size_x_mm? / _y_mm? / _z_mm? (blank = no limit), allow_print_rotation_to_fit?,
             print_estimate_preset? ("" = detect from Make / Model), print_estimate_overrides? {param: value},
-            print_estimate_calibration? ("fit" | "apply" | "off")}.
+            print_estimate_calibration? ("fit" | "apply" | "off"),
+            laser_estimate_preset? ("" = detect from Make / Model / Name), laser_estimate_overrides? {param: value},
+            laser_estimate_material_overrides? {material_id: {cut_speed_mm_s?, pierce_s?}}}.
     """
     qs = fabrication_manageable_equipment_qs(request.user).select_related("internal_department")
     if request.method == "GET":
@@ -293,6 +299,16 @@ def fabrication_material_equipment(request):
         if err:
             return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
         update_fields.append("print_estimate_profile")
+    if any(k in data for k in LASER_ESTIMATE_PROFILE_KEYS):
+        if eq.profile_type != EquipmentProfileType.LASER_CUT_2D:
+            return Response(
+                {"error": "The cutting time estimate applies to 2D laser cutting equipment only."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        err = apply_laser_profile_update(eq, data)
+        if err:
+            return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+        update_fields.append("laser_estimate_profile")
     # A rejected material list rolls back the other settings sent in the same request.
     with transaction.atomic():
         if update_fields:
