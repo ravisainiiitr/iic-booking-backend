@@ -165,6 +165,29 @@ class ProcurementManagementConfiguration(TimeStamped):
     plan_submission_open = models.BooleanField(default=True)
     amc_reminder_days = models.PositiveIntegerField(default=60)
 
+    accounts_budget_check = models.BooleanField(
+        default=False, db_default=False,
+        help_text=_("Add an Accounts In Charge budget-availability check before HOD approval."),
+    )
+    direct_purchase_limit = money(
+        default=Decimal("50000.00"),
+        db_default=Decimal("50000.00"),
+        validators=[MinValueValidator(ZERO)],
+        help_text=_("GFR Rule 154: purchase without quotation up to this value (incl. GST)."),
+    )
+    purchase_committee_limit = money(
+        default=Decimal("1000000.00"),
+        db_default=Decimal("1000000.00"),
+        validators=[MinValueValidator(ZERO)],
+        help_text=_("GFR Rule 155: purchase through a local purchase committee up to this value."),
+    )
+    limited_tender_limit = money(
+        default=Decimal("5000000.00"),
+        db_default=Decimal("5000000.00"),
+        validators=[MinValueValidator(ZERO)],
+        help_text=_("GFR Rule 162: limited tender enquiry up to this value; open tender above."),
+    )
+
     updated_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
 
     class Meta:
@@ -180,6 +203,9 @@ class ProcurementRoleAssignment(TimeStamped):
     user = models.ForeignKey(USER, on_delete=models.CASCADE, related_name="pm_role_assignments")
     role = models.CharField(max_length=20, choices=[(r.value, r.label) for r in c.ASSIGNABLE_ROLES])
     permissions = models.JSONField(default=list, blank=True, help_text=_("Granular Office permissions."))
+    equipment_ids = models.JSONField(
+        default=list, db_default=[], blank=True, help_text=_("Lab In Charge: equipment in their charge (empty = every equipment of the department).")
+    )
     active = models.BooleanField(default=True)
     assigned_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
 
@@ -296,6 +322,8 @@ class Item(ArchivableModel, TimeStamped):
     legacy_inventory_item = models.ForeignKey(
         "equipment.InventoryItem", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
     )
+    part_number = models.CharField(max_length=120, blank=True, default="", db_default="", help_text=_("Make / part number (spares)."))
+    tracks_batch = models.BooleanField(default=False, db_default=False, help_text=_("Record batch / lot and expiry on receipts."))
     active = models.BooleanField(default=True)
     created_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
 
@@ -305,6 +333,24 @@ class Item(ArchivableModel, TimeStamped):
 
     def __str__(self) -> str:
         return f"{self.code} {self.name}"
+
+
+class ItemEquipmentLink(TimeStamped):
+    """Which consumables / spares / accessories an equipment uses — drives suggested requirement lines."""
+
+    department = models.ForeignKey("users.Department", on_delete=models.CASCADE, related_name="pm_item_links")
+    item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name="equipment_links")
+    equipment = models.ForeignKey("equipment.Equipment", on_delete=models.CASCADE, related_name="pm_item_links")
+    usage = models.CharField(max_length=12, choices=c.LinkUsage.choices, default=c.LinkUsage.CONSUMABLE)
+    typical_quantity = qty(default=Decimal("1.000"), validators=[MinValueValidator(ZERO_QTY)])
+    notes = models.CharField(max_length=255, blank=True, default="")
+    active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    class Meta:
+        ordering = ["usage", "item__name"]
+        constraints = [models.UniqueConstraint(fields=["item", "equipment"], name="pm_item_link_unique")]
+        indexes = [models.Index(fields=["equipment", "active"])]
 
 
 class NumberSequence(models.Model):
@@ -359,6 +405,15 @@ class PurchaseRequest(ArchivableModel, TimeStamped):
     submitted_at = models.DateTimeField(null=True, blank=True)
     approved_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    stage_entered_at = models.DateTimeField(
+        null=True, blank=True, help_text=_("When the request reached its current status (SLA ageing).")
+    )
+    maintenance_record = models.ForeignKey(
+        "MaintenanceRecord", on_delete=models.SET_NULL, null=True, blank=True, related_name="requests"
+    )
+    disruption_event = models.ForeignKey(
+        "equipment.DisruptionEvent", on_delete=models.SET_NULL, null=True, blank=True, related_name="pm_requests"
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -390,6 +445,12 @@ class PurchaseRequestLine(TimeStamped):
     gst_rate = models.DecimalField(max_digits=5, decimal_places=2, default=ZERO, validators=[MinValueValidator(ZERO)])
     line_total = money()
     issued_quantity = qty()
+    fulfilment = models.CharField(max_length=10, choices=c.LineFulfilment.choices, blank=True, default="", db_default="")
+    store_note = models.TextField(blank=True, default="", db_default="")
+    store_original = models.JSONField(
+        default=dict, db_default={}, blank=True, help_text=_("The requester's values before OC Stores modified the line.")
+    )
+    added_by_stores = models.BooleanField(default=False, db_default=False)
 
     class Meta:
         ordering = ["id"]
@@ -428,6 +489,9 @@ class ProcurementDocument(ArchivableModel, TimeStamped):
         "AMCServiceRecord", on_delete=models.PROTECT, null=True, blank=True, related_name="documents"
     )
     quotation = models.ForeignKey("Quotation", on_delete=models.PROTECT, null=True, blank=True, related_name="documents")
+    maintenance_record = models.ForeignKey(
+        "MaintenanceRecord", on_delete=models.PROTECT, null=True, blank=True, related_name="documents"
+    )
 
     class Meta:
         ordering = ["page_group", "page_number", "id"]
@@ -615,6 +679,11 @@ class ProcurementRecord(ArchivableModel, TimeStamped):
     payment_reference = models.CharField(max_length=120, blank=True, default="")
     purchase_date = models.DateField(null=True, blank=True)
     purchased_by_name = models.CharField(max_length=255, blank=True, default="")
+    purchase_mode = models.CharField(max_length=24, choices=c.PurchaseMode.choices, blank=True, default="", db_default="")
+    purchase_mode_reason = models.TextField(blank=True, default="", db_default="")
+    gem_reference = models.CharField(
+        max_length=120, blank=True, default="", db_default="", help_text=_("GeM order / contract number.")
+    )
     remarks = models.TextField(blank=True, default="")
     created_by = models.ForeignKey(USER, on_delete=models.PROTECT, related_name="+")
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -676,6 +745,9 @@ class Invoice(ArchivableModel, TimeStamped):
     payment_status = models.CharField(max_length=20, choices=c.PaymentStatus.choices, default=c.PaymentStatus.UNPAID)
     remarks = models.TextField(blank=True, default="")
     recorded_by = models.ForeignKey(USER, on_delete=models.PROTECT, related_name="+")
+    forwarded_to_accounts_at = models.DateTimeField(null=True, blank=True)
+    forwarded_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    forward_note = models.TextField(blank=True, default="", db_default="")
 
     class Meta:
         ordering = ["-invoice_date", "-id"]
@@ -701,6 +773,31 @@ class InvoiceLine(TimeStamped):
 # ---------------------------------------------------------------------------
 # Assets
 # ---------------------------------------------------------------------------
+class AssetRegister(ArchivableModel, TimeStamped):
+    """A physical register book (GFR Form 22 / dead-stock register). Entries are identified by page and serial."""
+
+    department = models.ForeignKey("users.Department", on_delete=models.PROTECT, related_name="pm_asset_registers")
+    register_type = models.CharField(max_length=16, choices=c.RegisterType.choices)
+    code = models.CharField(max_length=40, help_text=_("Short code written on the register cover, e.g. MAJ-1."))
+    name = models.CharField(max_length=255)
+    volume = models.CharField(max_length=40, blank=True, default="")
+    laboratory = models.ForeignKey("sync.Laboratory", on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    custodian = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    opened_on = models.DateField(null=True, blank=True)
+    closed_on = models.DateField(null=True, blank=True)
+    total_pages = models.PositiveIntegerField(null=True, blank=True)
+    remarks = models.TextField(blank=True, default="")
+    active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    class Meta:
+        ordering = ["register_type", "code"]
+        constraints = [models.UniqueConstraint(fields=["department", "code"], name="pm_register_unique_code")]
+
+    def __str__(self) -> str:
+        return f"{self.code} {self.name}"
+
+
 class Asset(ArchivableModel, TimeStamped):
     number = models.CharField(max_length=40, unique=True)
     department = models.ForeignKey("users.Department", on_delete=models.PROTECT, related_name="pm_assets")
@@ -732,16 +829,130 @@ class Asset(ArchivableModel, TimeStamped):
     remarks = models.TextField(blank=True, default="")
     created_by = models.ForeignKey(USER, on_delete=models.PROTECT, related_name="+")
 
+    # Physical register identification
+    register = models.ForeignKey(AssetRegister, on_delete=models.PROTECT, null=True, blank=True, related_name="entries")
+    register_page = models.PositiveIntegerField(null=True, blank=True)
+    register_serial = models.CharField(max_length=20, blank=True, default="", db_default="", help_text=_("Serial number on the page."))
+    register_entry_date = models.DateField(null=True, blank=True)
+    legacy_ref = models.CharField(max_length=120, blank=True, default="", db_default="", help_text=_("Old stock / asset number."))
+    parent = models.ForeignKey(
+        "self", on_delete=models.PROTECT, null=True, blank=True, related_name="accessories",
+        help_text=_("Main asset this accessory / sub-asset belongs to."),
+    )
+    quantity = models.PositiveIntegerField(default=1, db_default=1)
+    supplier_name = models.CharField(max_length=255, blank=True, default="", db_default="")
+    po_number = models.CharField(max_length=80, blank=True, default="", db_default="")
+    po_date = models.DateField(null=True, blank=True)
+    invoice_number = models.CharField(max_length=80, blank=True, default="", db_default="")
+    invoice_date = models.DateField(null=True, blank=True)
+    funding_source = models.CharField(max_length=255, blank=True, default="", db_default="")
+    project_code = models.CharField(max_length=80, blank=True, default="", db_default="")
+    installation_date = models.DateField(null=True, blank=True)
+    amc_until = models.DateField(null=True, blank=True)
+    condition = models.CharField(max_length=16, choices=c.AssetCondition.choices, blank=True, default="", db_default="")
+    useful_life_years = models.PositiveSmallIntegerField(null=True, blank=True)
+    depreciation_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    last_verified_on = models.DateField(null=True, blank=True)
+    last_verification_result = models.CharField(
+        max_length=16, choices=c.VerificationResult.choices, blank=True, default="", db_default=""
+    )
+
     class Meta:
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["department", "status"]),
             models.Index(fields=["serial_number"]),
             models.Index(fields=["equipment"]),
+            models.Index(fields=["register", "register_page"]),
+            models.Index(fields=["asset_tag"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["register", "register_page", "register_serial"],
+                condition=models.Q(register__isnull=False, register_page__isnull=False, is_archived=False)
+                & ~models.Q(register_serial=""),
+                name="pm_asset_unique_register_entry",
+            )
         ]
 
     def __str__(self) -> str:
         return f"{self.number} {self.description}"
+
+    @property
+    def register_ref(self) -> str:
+        if not self.register_id:
+            return ""
+        parts = [self.register.code]
+        if self.register_page:
+            parts.append(f"p.{self.register_page}")
+        if self.register_serial:
+            parts.append(f"s.{self.register_serial}")
+        return " / ".join(parts)
+
+
+class VerificationCampaign(TimeStamped):
+    """An annual (or ad-hoc) physical verification drive (GFR Rule 213)."""
+
+    number = models.CharField(max_length=40, unique=True)
+    department = models.ForeignKey("users.Department", on_delete=models.PROTECT, related_name="pm_verification_campaigns")
+    title = models.CharField(max_length=255)
+    financial_year = models.CharField(max_length=7)
+    register = models.ForeignKey(AssetRegister, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    laboratory = models.ForeignKey("sync.Laboratory", on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    committee = models.TextField(blank=True, default="", help_text=_("Verification committee members."))
+    status = models.CharField(max_length=8, choices=c.CampaignStatus.choices, default=c.CampaignStatus.OPEN)
+    started_on = models.DateField(default=timezone.localdate)
+    closed_on = models.DateField(null=True, blank=True)
+    remarks = models.TextField(blank=True, default="")
+    created_by = models.ForeignKey(USER, on_delete=models.PROTECT, related_name="+")
+    closed_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    class Meta:
+        ordering = ["-started_on", "-id"]
+
+
+class AssetVerification(AppendOnlyModel):
+    department = models.ForeignKey("users.Department", on_delete=models.PROTECT, related_name="pm_asset_verifications")
+    asset = models.ForeignKey(Asset, on_delete=models.PROTECT, related_name="verifications")
+    campaign = models.ForeignKey(
+        VerificationCampaign, on_delete=models.PROTECT, null=True, blank=True, related_name="verifications"
+    )
+    verified_on = models.DateField(default=timezone.localdate)
+    verified_by = models.ForeignKey(USER, on_delete=models.PROTECT, related_name="+")
+    result = models.CharField(max_length=16, choices=c.VerificationResult.choices)
+    condition = models.CharField(max_length=16, choices=c.AssetCondition.choices, blank=True, default="")
+    quantity_found = models.PositiveIntegerField(null=True, blank=True)
+    location_seen = models.CharField(max_length=255, blank=True, default="")
+    remarks = models.TextField(blank=True, default="")
+    method = models.CharField(max_length=8, choices=c.VerificationMethod.choices, default=c.VerificationMethod.MANUAL)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-verified_on", "-id"]
+        indexes = [models.Index(fields=["campaign", "asset"]), models.Index(fields=["asset", "verified_on"])]
+
+
+class AssetDisposal(AppendOnlyModel):
+    """Condemnation, write-off and disposal decisions (GFR Rules 214-217)."""
+
+    number = models.CharField(max_length=40, unique=True)
+    department = models.ForeignKey("users.Department", on_delete=models.PROTECT, related_name="pm_asset_disposals")
+    asset = models.ForeignKey(Asset, on_delete=models.PROTECT, related_name="disposals")
+    action = models.CharField(max_length=10, choices=c.DisposalAction.choices)
+    mode = models.CharField(max_length=12, choices=c.DisposalMode.choices, blank=True, default="")
+    board_reference = models.CharField(max_length=255, blank=True, default="")
+    sanction_reference = models.CharField(max_length=255, blank=True, default="")
+    sanction_date = models.DateField(null=True, blank=True)
+    book_value = money(null=True, blank=True, default=None)
+    realised_value = money(null=True, blank=True, default=None)
+    from_status = models.CharField(max_length=24, blank=True, default="")
+    to_status = models.CharField(max_length=24)
+    remarks = models.TextField(blank=True, default="")
+    recorded_by = models.ForeignKey(USER, on_delete=models.PROTECT, related_name="+")
+    recorded_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-recorded_at", "-id"]
 
 
 class AssetStatusHistory(AppendOnlyModel):
@@ -843,6 +1054,15 @@ class StockTransaction(AppendOnlyModel):
     remarks = models.TextField(blank=True, default="")
     performed_by = models.ForeignKey(USER, on_delete=models.PROTECT, related_name="+")
     created_at = models.DateTimeField(default=timezone.now)
+    batch_number = models.CharField(max_length=60, blank=True, default="", db_default="")
+    expiry_date = models.DateField(null=True, blank=True)
+    reason_code = models.CharField(max_length=20, choices=c.StockReason.choices, blank=True, default="", db_default="")
+    equipment = models.ForeignKey(
+        "equipment.Equipment", on_delete=models.PROTECT, null=True, blank=True, related_name="pm_stock_transactions"
+    )
+    maintenance_record = models.ForeignKey(
+        "MaintenanceRecord", on_delete=models.PROTECT, null=True, blank=True, related_name="parts_used"
+    )
 
     class Meta:
         ordering = ["transaction_date", "id"]
@@ -889,6 +1109,58 @@ class AMCServiceRecord(ArchivableModel, TimeStamped):
         constraints = [
             models.CheckConstraint(condition=models.Q(end_date__gte=models.F("start_date")), name="pm_amc_end_after_start")
         ]
+
+
+# ---------------------------------------------------------------------------
+# Maintenance history
+# ---------------------------------------------------------------------------
+class MaintenanceRecord(ArchivableModel, TimeStamped):
+    """One repair / service / calibration episode of an equipment: downtime, cause, action, cost and parts used.
+
+    Parts used are ``StockTransaction`` issues linked to the record; follow-up requirements link back through
+    ``PurchaseRequest.maintenance_record``."""
+
+    number = models.CharField(max_length=40, unique=True)
+    department = models.ForeignKey("users.Department", on_delete=models.PROTECT, related_name="pm_maintenance_records")
+    equipment = models.ForeignKey("equipment.Equipment", on_delete=models.PROTECT, related_name="pm_maintenance_records")
+    asset = models.ForeignKey(Asset, on_delete=models.PROTECT, null=True, blank=True, related_name="maintenance_records")
+    disruption_event = models.ForeignKey(
+        "equipment.DisruptionEvent", on_delete=models.SET_NULL, null=True, blank=True, related_name="pm_maintenance_records"
+    )
+    amc_record = models.ForeignKey(
+        AMCServiceRecord, on_delete=models.PROTECT, null=True, blank=True, related_name="maintenance_records"
+    )
+    kind = models.CharField(max_length=12, choices=c.MaintenanceKind.choices, default=c.MaintenanceKind.BREAKDOWN)
+    downtime_start = models.DateTimeField(null=True, blank=True)
+    downtime_end = models.DateTimeField(null=True, blank=True)
+    cause = models.TextField(blank=True, default="")
+    action_taken = models.TextField(blank=True, default="")
+    vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    service_provider = models.CharField(max_length=255, blank=True, default="")
+    service_report_reference = models.CharField(max_length=120, blank=True, default="")
+    service_cost = money(validators=[MinValueValidator(ZERO)])
+    other_cost = money(validators=[MinValueValidator(ZERO)])
+    parts_cost = money()
+    under_warranty_or_amc = models.BooleanField(default=False)
+    remarks = models.TextField(blank=True, default="")
+    recorded_by = models.ForeignKey(USER, on_delete=models.PROTECT, related_name="+")
+
+    class Meta:
+        ordering = ["-downtime_start", "-created_at"]
+        indexes = [models.Index(fields=["equipment", "downtime_start"]), models.Index(fields=["department", "created_at"])]
+
+    def __str__(self) -> str:
+        return f"{self.number} {self.equipment_id}"
+
+    @property
+    def total_cost(self) -> Decimal:
+        return (self.service_cost or ZERO) + (self.other_cost or ZERO) + (self.parts_cost or ZERO)
+
+    @property
+    def downtime_hours(self) -> float | None:
+        if not self.downtime_start or not self.downtime_end:
+            return None
+        return round((self.downtime_end - self.downtime_start).total_seconds() / 3600, 1)
 
 
 # ---------------------------------------------------------------------------

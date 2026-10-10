@@ -253,7 +253,7 @@ def test_procurement_request_raised_submitted_and_linked(settings, tmp_path):
 
     opts = _client(oic).get(f"{LIST_URL}procurement-options/", {"equipment": eq.pk}).data
     assert opts["available"] is True
-    assert {c["value"] for c in opts["categories"]} == {"CONSUMABLE", "MINOR_ASSET", "MAJOR_ASSET"}
+    assert {"CONSUMABLE", "MINOR_ASSET", "MAJOR_ASSET"} <= {c["value"] for c in opts["categories"]}
     assert _client(_user(UserType.STUDENT)).post(
         f"{LIST_URL}{event.pk}/procurement-request/", PAYLOAD, format="json"
     ).status_code == 403

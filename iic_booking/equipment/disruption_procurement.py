@@ -21,7 +21,11 @@ CATEGORIES = (
     ("CONSUMABLE", "Consumables", "consumables_enabled"),
     ("MINOR_ASSET", "Minor assets", "minor_purchase_enabled"),
     ("MAJOR_ASSET", "Major assets", "major_purchase_enabled"),
+    ("REPAIR_MAINTENANCE", "Repair / maintenance", "amc_enabled"),
+    ("SERVICE", "Service / calibration", "amc_enabled"),
+    ("AMC", "AMC / CMC", "amc_enabled"),
 )
+CATEGORY_NATURE = {"REPAIR_MAINTENANCE": "AMC_SERVICE", "SERVICE": "AMC_SERVICE", "AMC": "AMC_SERVICE"}
 MAX_ITEMS = 50
 
 
@@ -46,12 +50,41 @@ def procurement_options(user, equipment) -> dict:
             return out
         if not access.can_raise_for_equipment(scope, dept_id, equipment):
             return out
+        from iic_booking.procurement_management.models import RequestTypeConfig
+
         cfg = access.get_config(dept_id)
-        categories = [{"value": v, "label": label} for v, label, flag in CATEGORIES if getattr(cfg, flag, False)]
+        active_types = set(
+            RequestTypeConfig.objects.filter(department_id=dept_id, active=True).values_list("code", flat=True)
+        )
+        categories = [
+            {"value": v, "label": label}
+            for v, label, flag in CATEGORIES
+            if getattr(cfg, flag, False) and (v in active_types or not active_types)
+        ]
+        can_record = _can_record_maintenance(scope, dept_id, equipment)
     except Exception:
         logger.exception("Could not resolve procurement options for equipment %s", getattr(equipment, "pk", None))
         return out
-    return {"available": bool(categories), "categories": categories}
+    return {
+        "available": bool(categories),
+        "categories": categories,
+        "department_id": dept_id,
+        "inventory_suggestions": True,
+        "can_record_maintenance": can_record,
+        "maintenance_kinds": _maintenance_kinds(),
+    }
+
+
+def _can_record_maintenance(scope, dept_id, equipment) -> bool:
+    from iic_booking.procurement_management import maintenance
+
+    return maintenance.can_record(scope, dept_id, equipment.pk)
+
+
+def _maintenance_kinds() -> list[dict]:
+    from iic_booking.procurement_management.constants import MaintenanceKind
+
+    return [{"value": k.value, "label": str(k.label)} for k in MaintenanceKind]
 
 
 def _decimal(raw, *, field: str, allow_zero: bool) -> Decimal:
@@ -74,10 +107,16 @@ def _clean_items(raw_items) -> list[dict]:
         if not isinstance(raw, dict):
             raise DisruptionProcurementError("Each item needs a name and quantity.")
         name = str(raw.get("name") or "").replace("\x00", "").strip()[:255]
-        if not name:
+        item_id = raw.get("item_id")
+        try:
+            item_id = int(item_id) if item_id not in (None, "") else None
+        except (TypeError, ValueError):
+            raise DisruptionProcurementError("Unknown inventory item.")
+        if not name and item_id is None:
             raise DisruptionProcurementError("Each item needs a name.")
         items.append(
             {
+                "item_id": item_id,
                 "name": name,
                 "quantity": _decimal(raw.get("quantity"), field="quantity", allow_zero=False),
                 "estimated_cost": _decimal(raw.get("estimated_cost"), field="estimated cost", allow_zero=True),
@@ -148,7 +187,7 @@ def raise_procurement_request(event, user, data, *, request=None) -> dict:
     category = str(data.get("category") or "").strip().upper()
     labels = {c["value"]: c["label"] for c in options["categories"]}
     if category not in labels:
-        raise DisruptionProcurementError("Choose consumables, minor assets or major assets.")
+        raise DisruptionProcurementError("Choose what the request is for (consumables, assets, repair, service or AMC).")
     items = _clean_items(data.get("items"))
     notes = str(data.get("notes") or "").replace("\x00", "").strip()[:4000]
     summary = _event_summary(event)
@@ -167,14 +206,15 @@ def raise_procurement_request(event, user, data, *, request=None) -> dict:
         spec = "\n".join(
             p for p in (i["notes"], "Recommended by the service person." if i["recommended"] else "") if p
         )
-        lines.append(
-            {
-                "description": i["name"],
-                "quantity": str(i["quantity"]),
-                "estimated_unit_price": str(i["estimated_cost"]),
-                "specification": spec,
-            }
-        )
+        line = {
+            "description": i["name"],
+            "quantity": str(i["quantity"]),
+            "estimated_unit_price": str(i["estimated_cost"]),
+            "specification": spec,
+        }
+        if i["item_id"]:
+            line["item_id"] = i["item_id"]
+        lines.append(line)
     payload = {
         "equipment_id": equipment.pk,
         "request_type": category,
@@ -184,7 +224,9 @@ def raise_procurement_request(event, user, data, *, request=None) -> dict:
         "lines": lines,
     }
     cat = (
-        ItemCategory.objects.filter(department_id=equipment.internal_department_id, nature=category, active=True)
+        ItemCategory.objects.filter(
+            department_id=equipment.internal_department_id, nature=CATEGORY_NATURE.get(category, category), active=True
+        )
         .order_by("id")
         .first()
     )
@@ -192,9 +234,16 @@ def raise_procurement_request(event, user, data, *, request=None) -> dict:
         payload["category_id"] = cat.pk
     scope = access.scope_for(user)
     submitted, submit_error = False, ""
+    maintenance_number = ""
     try:
         with transaction.atomic():
             pr = requests_service.create_request(scope, payload, request=request)
+            pr.disruption_event = event
+            maint = _maintenance_for(scope, event, data.get("maintenance"), request)
+            if maint is not None:
+                pr.maintenance_record = maint
+                maintenance_number = maint.number
+            pr.save(update_fields=["disruption_event", "maintenance_record", "updated_at"])
             attached, skipped = (0, 0)
             if data.get("attach_service_reports", True):
                 attached, skipped = _attach_reports(scope, pr, event, request)
@@ -224,4 +273,19 @@ def raise_procurement_request(event, user, data, *, request=None) -> dict:
         "submit_error": submit_error,
         "reports_attached": attached,
         "reports_skipped": skipped,
+        "maintenance_record": maintenance_number,
     }
+
+
+def _maintenance_for(scope, event, raw, request):
+    """Reuse the event's maintenance record or create one when the prompt asked to record maintenance."""
+    from iic_booking.procurement_management import maintenance
+    from iic_booking.procurement_management.models import MaintenanceRecord
+
+    existing = MaintenanceRecord.objects.filter(disruption_event=event, is_archived=False).order_by("-id").first()
+    if not isinstance(raw, dict) or not raw:
+        return existing
+    if existing is not None:
+        return maintenance.update(scope, existing, raw, request=request)
+    return maintenance.create(scope, raw, request=request, disruption_event=event)
+

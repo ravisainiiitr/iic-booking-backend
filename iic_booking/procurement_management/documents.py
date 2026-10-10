@@ -130,7 +130,7 @@ def can_view(scope, doc: ProcurementDocument) -> bool:
         return True
     if doc.purchase_request_id:
         return PurchaseRequest.objects.filter(access.visible_requests_q(scope), pk=doc.purchase_request_id).exists()
-    lab_eq = set(scope.oic_equipment) | set(scope.operator_equipment)
+    lab_eq = set(scope.lab_equipment)
     if doc.asset_id and doc.asset.equipment_id in lab_eq:
         return True
     if doc.amc_record_id and doc.amc_record.equipment_id in lab_eq:

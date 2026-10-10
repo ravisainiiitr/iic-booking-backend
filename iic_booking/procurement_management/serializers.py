@@ -73,6 +73,7 @@ def role_assignment(row) -> dict:
         "user": user_brief(row.user),
         "role": row.role,
         "permissions": row.permissions or [],
+        "equipment_ids": row.equipment_ids or [],
         "active": row.active,
         "updated_at": iso(row.updated_at),
     }
@@ -154,6 +155,8 @@ def item(i) -> dict:
         "default_gst_rate": m(i.default_gst_rate.rate) if i.default_gst_rate_id else None,
         "min_level": q(i.min_level),
         "reorder_level": q(i.reorder_level),
+        "part_number": i.part_number,
+        "tracks_batch": i.tracks_batch,
         "active": i.active,
         "is_archived": i.is_archived,
     }
@@ -238,6 +241,10 @@ def request_line(line) -> dict:
         "gst_rate": m(line.gst_rate),
         "line_total": m(line.line_total),
         "issued_quantity": q(line.issued_quantity),
+        "fulfilment": line.fulfilment,
+        "store_note": line.store_note,
+        "store_original": line.store_original or {},
+        "added_by_stores": line.added_by_stores,
     }
 
 
@@ -283,6 +290,9 @@ def invoice(inv, *, detail: bool = False) -> dict:
         "recorded_by": user_brief(inv.recorded_by),
         "created_at": iso(inv.created_at),
         "is_archived": inv.is_archived,
+        "forwarded_to_accounts_at": iso(inv.forwarded_to_accounts_at),
+        "forwarded_by": user_brief(inv.forwarded_by) if inv.forwarded_by_id else None,
+        "forward_note": inv.forward_note,
     }
     if detail:
         out["lines"] = [invoice_line(x) for x in inv.lines.all()]
@@ -340,6 +350,9 @@ def procurement_record(rec, *, detail: bool = False, blockers=None) -> dict:
         "selected_vendor": {"id": rec.selected_vendor_id, "name": rec.selected_vendor.name} if rec.selected_vendor_id else None,
         "payment_status": rec.payment_status,
         "paid_amount": m(rec.paid_amount),
+        "purchase_mode": rec.purchase_mode,
+        "purchase_mode_reason": rec.purchase_mode_reason,
+        "gem_reference": rec.gem_reference,
         "created_by": user_brief(rec.created_by),
         "created_at": iso(rec.created_at),
         "completed_at": iso(rec.completed_at),
@@ -463,6 +476,10 @@ def purchase_request(r, *, detail: bool = False, scope=None) -> dict:
         "completed_at": iso(r.completed_at),
         "created_at": iso(r.created_at),
         "updated_at": iso(r.updated_at),
+        "stage_entered_at": iso(r.stage_entered_at),
+        "stage_age_days": stage_age_days(r),
+        "maintenance_record_id": r.maintenance_record_id,
+        "disruption_event_id": r.disruption_event_id,
     }
     if detail:
         out["justification"] = r.justification
@@ -477,6 +494,17 @@ def purchase_request(r, *, detail: bool = False, scope=None) -> dict:
 
             out["available_actions"] = available_actions(r, scope)
     return out
+
+
+def stage_age_days(r) -> int | None:
+    from django.utils import timezone
+
+    from . import constants as c
+
+    if r.status not in c.PENDING_STATUSES:
+        return None
+    since = r.stage_entered_at or r.submitted_at
+    return (timezone.now() - since).days if since else None
 
 
 def _vendor(v) -> dict | None:
@@ -541,8 +569,43 @@ def asset(a, *, detail: bool = False) -> dict:
         "remarks": a.remarks,
         "created_by": user_brief(a.created_by),
         "created_at": iso(a.created_at),
+        "register": register_brief(a.register) if a.register_id else None,
+        "register_page": a.register_page,
+        "register_serial": a.register_serial,
+        "register_entry_date": iso(a.register_entry_date),
+        "register_ref": a.register_ref,
+        "legacy_ref": a.legacy_ref,
+        "parent": {"id": a.parent_id, "number": a.parent.number, "description": a.parent.description,
+                   "asset_tag": a.parent.asset_tag} if a.parent_id else None,
+        "quantity": a.quantity,
+        "supplier_name": a.supplier_name,
+        "po_number": a.po_number,
+        "po_date": iso(a.po_date),
+        "invoice_number": a.invoice_number,
+        "invoice_date": iso(a.invoice_date),
+        "funding_source": a.funding_source,
+        "project_code": a.project_code,
+        "installation_date": iso(a.installation_date),
+        "amc_until": iso(a.amc_until),
+        "condition": a.condition,
+        "useful_life_years": a.useful_life_years,
+        "depreciation_rate": m(a.depreciation_rate),
+        "last_verified_on": iso(a.last_verified_on),
+        "last_verification_result": a.last_verification_result,
     }
     if detail:
+        out["accessories"] = [
+            {"id": x.pk, "number": x.number, "description": x.description, "asset_tag": x.asset_tag,
+             "register_ref": x.register_ref, "status": x.status, "cost": m(x.cost)}
+            for x in a.accessories.filter(is_archived=False).select_related("register")
+        ]
+        out["verifications"] = [asset_verification(v) for v in a.verifications.select_related("verified_by", "campaign")[:50]]
+        out["disposals"] = [asset_disposal(d) for d in a.disposals.select_related("recorded_by")]
+        out["maintenance_records"] = [
+            {"id": x.pk, "number": x.number, "kind": x.kind, "downtime_start": iso(x.downtime_start),
+             "downtime_end": iso(x.downtime_end), "total_cost": m(x.total_cost)}
+            for x in a.maintenance_records.filter(is_archived=False)[:50]
+        ]
         out["status_history"] = [
             {"from_status": h.from_status, "to_status": h.to_status, "reason": h.reason,
              "changed_by": user_brief(h.changed_by), "changed_at": iso(h.changed_at)}
@@ -597,6 +660,11 @@ def stock_transaction(t) -> dict:
         "remarks": t.remarks,
         "performed_by": user_brief(t.performed_by),
         "created_at": iso(t.created_at),
+        "batch_number": t.batch_number,
+        "expiry_date": iso(t.expiry_date),
+        "reason_code": t.reason_code,
+        "equipment_id": t.equipment_id,
+        "maintenance_record_id": t.maintenance_record_id,
     }
 
 
@@ -629,4 +697,141 @@ def amc_record(r, *, detail: bool = False, today=None) -> dict:
     if detail:
         out["renewals"] = [{"id": x.pk, "number": x.number, "status": x.status} for x in r.renewals.all()]
         out["documents"] = [document(d) for d in r.documents.filter(is_archived=False).select_related("uploaded_by")]
+    return out
+
+
+def register_brief(reg) -> dict | None:
+    if reg is None:
+        return None
+    return {"id": reg.pk, "code": reg.code, "name": reg.name, "register_type": reg.register_type, "volume": reg.volume}
+
+
+def asset_register(reg, *, entries: int | None = None) -> dict:
+    return {
+        **register_brief(reg),
+        "department": department_brief(reg.department),
+        "register_type_label": reg.get_register_type_display(),
+        "laboratory": lab_brief(reg.laboratory),
+        "custodian": user_brief(reg.custodian),
+        "opened_on": iso(reg.opened_on),
+        "closed_on": iso(reg.closed_on),
+        "total_pages": reg.total_pages,
+        "remarks": reg.remarks,
+        "active": reg.active,
+        "entry_count": entries,
+        "created_at": iso(reg.created_at),
+    }
+
+
+def asset_verification(v) -> dict:
+    return {
+        "id": v.pk,
+        "asset_id": v.asset_id,
+        "campaign": {"id": v.campaign_id, "number": v.campaign.number, "title": v.campaign.title} if v.campaign_id else None,
+        "verified_on": iso(v.verified_on),
+        "verified_by": user_brief(v.verified_by),
+        "result": v.result,
+        "result_label": v.get_result_display(),
+        "condition": v.condition,
+        "quantity_found": v.quantity_found,
+        "location_seen": v.location_seen,
+        "remarks": v.remarks,
+        "method": v.method,
+        "created_at": iso(v.created_at),
+    }
+
+
+def verification_campaign(cmp, *, stats: dict | None = None) -> dict:
+    return {
+        "id": cmp.pk,
+        "number": cmp.number,
+        "department": department_brief(cmp.department),
+        "title": cmp.title,
+        "financial_year": cmp.financial_year,
+        "register": register_brief(cmp.register) if cmp.register_id else None,
+        "laboratory": lab_brief(cmp.laboratory),
+        "committee": cmp.committee,
+        "status": cmp.status,
+        "started_on": iso(cmp.started_on),
+        "closed_on": iso(cmp.closed_on),
+        "remarks": cmp.remarks,
+        "created_by": user_brief(cmp.created_by),
+        "closed_by": user_brief(cmp.closed_by) if cmp.closed_by_id else None,
+        "stats": stats or {},
+    }
+
+
+def asset_disposal(d) -> dict:
+    return {
+        "id": d.pk,
+        "number": d.number,
+        "asset_id": d.asset_id,
+        "action": d.action,
+        "action_label": d.get_action_display(),
+        "mode": d.mode,
+        "board_reference": d.board_reference,
+        "sanction_reference": d.sanction_reference,
+        "sanction_date": iso(d.sanction_date),
+        "book_value": m(d.book_value),
+        "realised_value": m(d.realised_value),
+        "from_status": d.from_status,
+        "to_status": d.to_status,
+        "remarks": d.remarks,
+        "recorded_by": user_brief(d.recorded_by),
+        "recorded_at": iso(d.recorded_at),
+    }
+
+
+def item_link(link) -> dict:
+    return {
+        "id": link.pk,
+        "department_id": link.department_id,
+        "item": {"id": link.item_id, "code": link.item.code, "name": link.item.name, "uom": link.item.uom,
+                 "part_number": link.item.part_number},
+        "equipment": equipment_brief(link.equipment),
+        "usage": link.usage,
+        "typical_quantity": q(link.typical_quantity),
+        "notes": link.notes,
+        "active": link.active,
+    }
+
+
+def maintenance_record(rec, *, detail: bool = False) -> dict:
+    out = {
+        "id": rec.pk,
+        "number": rec.number,
+        "department": department_brief(rec.department),
+        "equipment": equipment_brief(rec.equipment),
+        "asset": {"id": rec.asset_id, "number": rec.asset.number, "description": rec.asset.description} if rec.asset_id else None,
+        "disruption_event_id": rec.disruption_event_id,
+        "amc_record_id": rec.amc_record_id,
+        "kind": rec.kind,
+        "kind_label": rec.get_kind_display(),
+        "downtime_start": iso(rec.downtime_start),
+        "downtime_end": iso(rec.downtime_end),
+        "downtime_hours": rec.downtime_hours,
+        "cause": rec.cause,
+        "action_taken": rec.action_taken,
+        "vendor": _vendor(rec.vendor),
+        "service_provider": rec.service_provider,
+        "service_report_reference": rec.service_report_reference,
+        "service_cost": m(rec.service_cost),
+        "other_cost": m(rec.other_cost),
+        "parts_cost": m(rec.parts_cost),
+        "total_cost": m(rec.total_cost),
+        "under_warranty_or_amc": rec.under_warranty_or_amc,
+        "remarks": rec.remarks,
+        "recorded_by": user_brief(rec.recorded_by),
+        "created_at": iso(rec.created_at),
+    }
+    if detail:
+        out["parts_used"] = [
+            stock_transaction(tx)
+            for tx in rec.parts_used.select_related("item", "laboratory", "issued_to", "performed_by")
+        ]
+        out["requests"] = [
+            {"id": r.pk, "number": r.number, "title": r.title, "status": r.status, "estimated_total": m(r.estimated_total)}
+            for r in rec.requests.all()
+        ]
+        out["documents"] = [document(d) for d in rec.documents.filter(is_archived=False).select_related("uploaded_by")]
     return out

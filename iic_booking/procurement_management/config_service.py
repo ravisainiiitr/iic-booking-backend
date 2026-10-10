@@ -34,12 +34,16 @@ BOOL_FIELDS = (
     "allow_resubmission",
     "plan_submission_open",
     "pilot_mode",
+    "accounts_budget_check",
 )
 MONEY_FIELDS = (
     "small_purchase_threshold",
     "hod_approval_threshold",
     "comparative_quotation_threshold",
     "asset_capitalization_threshold",
+    "direct_purchase_limit",
+    "purchase_committee_limit",
+    "limited_tender_limit",
 )
 CHOICE_FIELDS = {
     "variance_action": c.VarianceAction.values,
@@ -159,7 +163,7 @@ def _set_pilot_users(actor, cfg, raw_ids, *, reason: str = "", request=None) -> 
 
 
 def _clean_permissions(role: str, permissions) -> list[str]:
-    if role != c.ModuleRole.OFFICE and role != c.ModuleRole.OC_STORES:
+    if role not in (c.ModuleRole.OFFICE, c.ModuleRole.OC_STORES, c.ModuleRole.ACCOUNTS):
         return []
     if permissions is None:
         return list(c.ALL_OFFICE_PERMISSIONS) if role == c.ModuleRole.OFFICE else []
@@ -171,8 +175,30 @@ def _clean_permissions(role: str, permissions) -> list[str]:
     return sorted(set(permissions))
 
 
+def _clean_equipment_ids(role: str, department, raw) -> list[int]:
+    if role != c.ModuleRole.LAB_INCHARGE or raw in (None, ""):
+        return []
+    if not isinstance(raw, (list, tuple)):
+        raise ProcurementError("equipment_ids must be a list.", code="invalid_equipment", field="equipment_ids")
+    try:
+        ids = sorted({int(str(x)) for x in raw})
+    except (TypeError, ValueError):
+        raise ProcurementError("equipment_ids must be equipment ids.", code="invalid_equipment", field="equipment_ids")
+    from iic_booking.equipment.models import Equipment
+
+    found = set(Equipment.objects.filter(pk__in=ids, internal_department=department).values_list("pk", flat=True))
+    missing = [i for i in ids if i not in found]
+    if missing:
+        raise ProcurementError(
+            f"Equipment not in this department: {', '.join(map(str, missing))}.", code="invalid_equipment", field="equipment_ids"
+        )
+    return ids
+
+
 @transaction.atomic
-def assign_role(actor, department, user, role: str, permissions=None, *, request=None) -> ProcurementRoleAssignment:
+def assign_role(
+    actor, department, user, role: str, permissions=None, *, equipment_ids=None, request=None
+) -> ProcurementRoleAssignment:
     if not is_main_admin(actor):
         raise forbidden("Only the Main Administrator can assign Procurement & Assets roles.")
     if role not in [r.value for r in c.ASSIGNABLE_ROLES]:
@@ -184,11 +210,14 @@ def assign_role(actor, department, user, role: str, permissions=None, *, request
             field="user_id",
         )
     perms = _clean_permissions(role, permissions)
+    eq_ids = _clean_equipment_ids(role, department, equipment_ids)
     row, created = ProcurementRoleAssignment.objects.select_for_update().get_or_create(
-        department=department, user=user, role=role, defaults={"permissions": perms, "assigned_by": actor}
+        department=department, user=user, role=role,
+        defaults={"permissions": perms, "equipment_ids": eq_ids, "assigned_by": actor},
     )
-    before = {} if created else {"active": row.active, "permissions": row.permissions}
+    before = {} if created else {"active": row.active, "permissions": row.permissions, "equipment_ids": row.equipment_ids}
     row.permissions = perms
+    row.equipment_ids = eq_ids
     row.active = True
     row.assigned_by = actor
     row.save()
@@ -198,7 +227,7 @@ def assign_role(actor, department, user, role: str, permissions=None, *, request
         row,
         department=department,
         old=before,
-        new={"user_id": user.pk, "role": role, "permissions": perms, "active": True},
+        new={"user_id": user.pk, "role": role, "permissions": perms, "equipment_ids": eq_ids, "active": True},
         request=request,
     )
     return row

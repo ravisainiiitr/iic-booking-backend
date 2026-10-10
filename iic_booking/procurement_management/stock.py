@@ -66,6 +66,11 @@ def post(
     issued_to=None,
     remarks: str = "",
     request=None,
+    batch_number: str = "",
+    expiry_date=None,
+    reason_code: str = "",
+    equipment=None,
+    maintenance_record=None,
 ) -> StockTransaction:
     if item.department_id != department_id:
         raise ProcurementError("The item belongs to another department.", code="department_mismatch", field="item_id")
@@ -101,14 +106,37 @@ def post(
         transaction_date=tx_date or timezone.localdate(), reference_type=reference_type[:40],
         reference_number=reference_number[:80], purchase_request=purchase_request, procurement_record=procurement_record,
         invoice=invoice, issued_to=issued_to, remarks=remarks, performed_by=scope.user,
+        batch_number=(batch_number or "")[:60], expiry_date=expiry_date, reason_code=reason_code or "",
+        equipment=equipment, maintenance_record=maintenance_record,
     )
     audit.record(
         scope.user, f"stock.{tx_type.lower()}", tx, department=item.department,
         new={"item": item.code, "quantity": quantity, "balance_after": new_qty, "laboratory": getattr(laboratory, "pk", None),
-             "reference": reference_number},
+             "reference": reference_number, "batch": batch_number or None, "reason_code": reason_code or None,
+             "equipment": getattr(equipment, "pk", None)},
         reason=remarks, request=request,
     )
+    if signed < 0 and laboratory is None:
+        _alert_low_stock(bal, item, before=new_qty - signed)
     return tx
+
+
+def _alert_low_stock(bal: StockBalance, item, *, before: Decimal) -> None:
+    """Notify OC Stores the moment the central balance crosses its reorder / minimum level."""
+    level = bal.reorder_level or bal.min_level or item.reorder_level or item.min_level
+    if not level or not (bal.quantity <= level < before):
+        return
+    from . import notify
+
+    notify.notify(
+        notify.department_role_users(bal.department_id, c.ModuleRole.OC_STORES),
+        department_id=bal.department_id,
+        title=f"Low stock: {item.name}",
+        message=f"{item.code} {item.name} is down to {bal.quantity} {item.uom} (reorder level {level}).",
+        link="/procurement/stock?low=1",
+        event="stock_low",
+        extra={"item_id": item.pk},
+    )
 
 
 def issue_for_request(scope, r, lines, quantities, *, request=None) -> list[StockTransaction]:
@@ -171,7 +199,22 @@ def manual_entry(scope, department, data: dict, *, request=None) -> StockTransac
     scope.require_perm(department.pk, P.STOCK)
     tx_type = choice(data.get("tx_type"), MANUAL_TYPES, "tx_type")
     item = _item(data.get("item_id"), department.pk)
+    reason_code = choice(data.get("reason_code"), [""] + list(c.StockReason.values), "reason_code", default="")
+    if tx_type in (T.ADJUSTMENT_IN, T.ADJUSTMENT_OUT) and not reason_code:
+        reason_code = c.StockReason.OTHER
     remarks = req_str(data, "remarks", max_len=2000, required=tx_type in REASON_REQUIRED)
+    batch = req_str(data, "batch_number", max_len=60, required=False)
+    expiry = parse_day(data.get("expiry_date"), "expiry_date")
+    if item.tracks_batch and tx_type in (T.OPENING, T.RECEIPT) and not batch:
+        raise ProcurementError(f"{item.name} is batch-tracked — give the batch / lot number.", code="required", field="batch_number")
+    equipment = None
+    eid = parse_int(data.get("equipment_id"), "equipment_id")
+    if eid:
+        from iic_booking.equipment.models import Equipment
+
+        equipment = Equipment.objects.filter(pk=eid, internal_department_id=department.pk).first()
+        if equipment is None:
+            raise ProcurementError("Equipment not found in this department.", code="invalid_equipment", field="equipment_id")
     issued_to = None
     if tx_type == T.ISSUE:
         uid = parse_int(data.get("issued_to_id"), "issued_to_id")
@@ -189,7 +232,8 @@ def manual_entry(scope, department, data: dict, *, request=None) -> StockTransac
         laboratory=_lab(data.get("laboratory_id"), department.pk),
         unit_cost=parse_money(data.get("unit_cost"), "unit_cost", required=False), tx_date=tx_date,
         reference_type="Manual", reference_number=req_str(data, "reference_number", max_len=80, required=False),
-        issued_to=issued_to, remarks=remarks, request=request,
+        issued_to=issued_to, remarks=remarks, request=request, batch_number=batch, expiry_date=expiry,
+        reason_code=reason_code, equipment=equipment,
     )
 
 

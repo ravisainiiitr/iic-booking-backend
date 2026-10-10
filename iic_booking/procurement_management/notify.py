@@ -81,6 +81,8 @@ def stage_approvers(r, stage: str) -> list:
         users = equipment_oic_users(r.equipment)
     elif stage == S.STORES:
         users = department_role_users(r.department_id, R.OC_STORES)
+    elif stage == S.ACCOUNTS:
+        users = department_role_users(r.department_id, R.ACCOUNTS)
     elif stage == S.HOD:
         users = hod_users(r.department_id)
     else:
