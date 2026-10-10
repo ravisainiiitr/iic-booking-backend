@@ -17,7 +17,7 @@ jobs:
           echo "django_container=$CID"
           test -n "$CID"
           docker exec -i -w /app "$CID" python - <<'PY'
-          import os, time, django
+          import os, time, urllib.parse, urllib.request, django
           os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
           django.setup()
           from django.conf import settings
@@ -69,4 +69,22 @@ jobs:
                   body = getattr(resp, "content", b"") or b""
                   print(f"    view status={resp.status_code} {time.monotonic() - t:.2f}s type={resp.get('Content-Type')} "
                         f"len={len(body)} head={body[:5]!r}")
+                  req = factory.get(f"/api/print-analyses/{a.id}/stl-presign/")
+                  force_authenticate(req, user=b.user)
+                  presign = pv.presign_print_analysis_stl(req, analysis_id=str(a.id))
+                  signed = str((getattr(presign, "data", None) or {}).get("url") or "")
+                  host = urllib.parse.urlsplit(signed).netloc or "(relative)"
+                  print(f"    presign status={presign.status_code} host={host}")
+                  if signed.startswith("http"):
+                      t = time.monotonic()
+                      try:
+                          with urllib.request.urlopen(urllib.request.Request(signed, headers={"Origin": "https://equip.iitr.ac.in"}), timeout=60) as r:
+                              head = r.read(5)
+                              print(f"    s3 GET status={r.status} acao={r.headers.get('Access-Control-Allow-Origin')} "
+                                    f"len={r.headers.get('Content-Length')} head={head!r} {time.monotonic() - t:.2f}s")
+                      except Exception as e:
+                          print(f"    s3 GET error {type(e).__name__} {getattr(e, 'code', '')}")
+              for p in BookingSerializer(b, context={"request": None}).data.get("fabrication_parts") or []:
+                  print(f"  preview fields: file_available={p.get('file_available')} volume_cm3={p.get('volume_cm3')} "
+                        f"layer_height_mm={p.get('layer_height_mm')} print_minutes={p.get('print_minutes')}")
           PY
