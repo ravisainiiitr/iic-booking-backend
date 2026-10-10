@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -118,7 +118,7 @@ def test_equipment_department_admin_scope(labs):
     assert eq["b"].pk not in {r["equipment_id"] for r in data["results"]}
 
 
-def test_equipment_row_details(labs):
+def test_equipment_row_details(labs, monkeypatch):
     a, _b, eq = labs
     active, repair = eq["active"], eq["repair"]
     oic = UserFactory(user_type=UserType.MANAGER, name="Ravi Kumar")
@@ -128,7 +128,10 @@ def test_equipment_row_details(labs):
         equipment=repair, disruption_type="UNDER_MAINTENANCE", scope="EQUIPMENT", start_at=now - timedelta(hours=5)
     )
     student = a.student()
-    past = timezone.localtime(now - timedelta(days=2)).replace(minute=0, second=0, microsecond=0)
+    # Utilisation clock: Thursday after go-live; Wednesday 10:00 booked, 12:00 free.
+    clock = timezone.make_aware(datetime(2026, 10, 8, 15, 0))
+    monkeypatch.setattr("iic_booking.equipment.utilization._now", lambda: clock)
+    past = clock - timedelta(days=1, hours=5)
     a.booking(student, active, past, total_charge="50.00")
     a.slot(active, past + timedelta(hours=2))
     a.booking(student, active, a.future(days=2), total_charge="50.00")
@@ -168,7 +171,12 @@ def test_equipment_query_count_is_constant(labs, django_assert_max_num_queries):
     for _ in range(6):
         a.equipment()
     admin = _admin()
-    with django_assert_max_num_queries(8):
+    build_equipment_insights(admin, {})  # test-data marks are cached after the first read
+    with django_assert_max_num_queries(12):
+        build_equipment_insights(admin, {})
+    for _ in range(6):
+        a.equipment()
+    with django_assert_max_num_queries(12):
         build_equipment_insights(admin, {})
 
 

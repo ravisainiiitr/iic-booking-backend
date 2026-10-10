@@ -3027,6 +3027,11 @@ def admin_api_router():
             profile_type = self.request.query_params.get("profile_type", "").strip()
             if profile_type:
                 qs = qs.filter(profile_type=profile_type)
+            if self.request.query_params.get("test"):
+                from iic_booking.equipment.testdata import q_test_equipment
+                from iic_booking.users.test_accounts import filter_by_test_param
+
+                qs = filter_by_test_param(qs, self.request.query_params.get("test"), test_q=q_test_equipment())
             category_id = self.request.query_params.get("category", "").strip()
             if category_id:
                 try:

@@ -28,11 +28,9 @@ from .models import (
 from .utilization import (
     AVAILABLE_SLOT_STATUSES,
     UtilizationTally,
-    ViewWindow,
-    WorkingCalendar,
     utilization_period,
     utilization_ratio,
-    view_window_for,
+    utilization_scope,
     window_hours,
 )
 
@@ -318,11 +316,13 @@ def _equipment_report_payload(
     else:
         end = start.replace(day=monthrange(start.year, start.month)[1])
 
-    calendar = WorkingCalendar.for_range(start, end + timedelta(days=7))
+    from .testdata import exclude_test_equipment, exclude_test_users, get_test_equipment_ids
+
     # Slot-hour figures (utilization, slot outcomes, downtime, capacity) start at the portal go-live date.
     slot_period = utilization_period(start, end)
 
-    qs_equipment = Equipment.objects.all().order_by("code")
+    # Test equipment (and its modes) is left out of every figure.
+    qs_equipment = exclude_test_equipment(Equipment.objects.all()).order_by("code")
     if equipment_ids is not None:
         qs_equipment = qs_equipment.filter(equipment_id__in=equipment_ids)
 
@@ -330,11 +330,11 @@ def _equipment_report_payload(
         qs_equipment.prefetch_related(
             Prefetch(
                 "equipment_managers",
-                queryset=EquipmentManager.objects.select_related("manager"),
+                queryset=exclude_test_users(EquipmentManager.objects.select_related("manager"), prefix="manager__"),
             ),
             Prefetch(
                 "equipment_operators",
-                queryset=EquipmentOperator.objects.select_related("operator"),
+                queryset=exclude_test_users(EquipmentOperator.objects.select_related("operator"), prefix="operator__"),
             ),
         )
     )
@@ -342,6 +342,8 @@ def _equipment_report_payload(
     from .mode_utils import expand_equipment_ids_for_mode_rollup
 
     eq_ids, mode_rollup = expand_equipment_ids_for_mode_rollup(original_eq_ids)
+    test_ids = get_test_equipment_ids(eq_ids)
+    eq_ids = [eid for eid in eq_ids if eid not in test_ids]
     # Report rows are parent (or standalone) only; children fold into parent utilization.
     payload_eq_ids = sorted({mode_rollup.get(eid, eid) for eid in original_eq_ids})
     if set(eq_ids) != set(original_eq_ids):
@@ -350,11 +352,13 @@ def _equipment_report_payload(
             for e in Equipment.objects.filter(equipment_id__in=eq_ids).prefetch_related(
                 Prefetch(
                     "equipment_managers",
-                    queryset=EquipmentManager.objects.select_related("manager"),
+                    queryset=exclude_test_users(EquipmentManager.objects.select_related("manager"), prefix="manager__"),
                 ),
                 Prefetch(
                     "equipment_operators",
-                    queryset=EquipmentOperator.objects.select_related("operator"),
+                    queryset=exclude_test_users(
+                        EquipmentOperator.objects.select_related("operator"), prefix="operator__"
+                    ),
                 ),
             )
         }
@@ -421,14 +425,7 @@ def _equipment_report_payload(
             },
         }
 
-    slots_in_range = (
-        DailySlot.objects.filter(
-            date__gte=slot_period.start,
-            date__lte=slot_period.end,
-            slot_master__equipment_id__in=eq_ids,
-        )
-        .select_related("slot_master", "slot_master__equipment", "booking", "booking__user")
-    )
+    scope = utilization_scope(eq_ids, start, end, period=slot_period)
 
     eq_slot_stats: dict[int, dict[str, float | int]] = {}
     eq_perf_slots: dict[int, dict[str, float]] = defaultdict(
@@ -438,7 +435,6 @@ def _equipment_report_payload(
         }
     )
     utilization: dict[int, UtilizationTally] = defaultdict(UtilizationTally)
-    view_windows: dict[int, ViewWindow] = {}
 
     for eid in eq_ids:
         rollup_eid = mode_rollup.get(eid, eid)
@@ -475,31 +471,18 @@ def _equipment_report_payload(
         ).values_list("daily_slot_id", flat=True)
     )
 
-    for ds in slots_in_range.iterator(chunk_size=500):
-        eid = mode_rollup.get(ds.slot_master.equipment_id, ds.slot_master.equipment_id)
+    for slot in scope.slots():
+        eid = slot.target_id
         if eid not in eq_slot_stats:
             continue
-        if (span := slot_period.clip(ds.start_datetime, ds.end_datetime)) is None:
-            continue
-        slot_start, slot_end = span
-        eq = ds.slot_master.equipment
-        st = ds.status
-        bk = ds.booking
+        st = slot.status
         # Test-account bookings must not affect utilization / disruption stats.
-        is_test_bk = bool(
-            bk is not None and getattr(getattr(bk, "user", None), "is_test_account", False)
-        )
-        if eq.equipment_id not in view_windows:
-            view_windows[eq.equipment_id] = view_window_for(eq, equipment_by_id.get(eid))
-        window = view_windows[eq.equipment_id]
+        is_test_bk = slot.test_booking
         # Every slot-hour figure is the slot's time inside the weekly view window on working days, so the
         # status breakdown below adds up to the utilization's available hours.
-        hrs = utilization[eid].add(
-            st, slot_start, slot_end, window, calendar, test_booking=is_test_bk,
-            completed=bool(bk and not is_test_bk and bk.status == BookingStatus.COMPLETED),
-        )
+        hrs = scope.add(utilization, slot)
         if st not in AVAILABLE_SLOT_STATUSES:
-            hrs = window_hours(slot_start, slot_end, window, calendar)[0]
+            hrs = window_hours(slot.start, slot.end, slot.window, scope.calendar)[0]
 
         if st == SlotStatus.UNDER_MAINTENANCE:
             eq_slot_stats[eid]["under_maintenance_slots"] += 1
@@ -521,13 +504,13 @@ def _equipment_report_payload(
             eq_slot_stats[eid]["booked_hours"] += hrs
         elif st == SlotStatus.BLOCKED:
             eq_perf_slots[eid]["blocked_hours"] += hrs
-            if ds.pk in other_reason_slot_ids:
+            if slot.slot_id in other_reason_slot_ids:
                 eq_slot_stats[eid]["other_reasons_slots"] += 1
                 eq_slot_stats[eid]["other_reasons_hours"] += hrs
         elif st == SlotStatus.NOT_AVAILABLE:
             eq_perf_slots[eid]["blocked_hours"] += hrs
 
-        if bk and not is_test_bk and bk.status == BookingStatus.OTHER_DISRUPTION:
+        if slot.booking_id and not is_test_bk and slot.booking_status == BookingStatus.OTHER_DISRUPTION:
             eq_perf_slots[eid]["other_disruption_hours"] += hrs
 
     from iic_booking.users.test_accounts import exclude_test_bookings

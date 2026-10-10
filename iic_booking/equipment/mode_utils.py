@@ -414,9 +414,9 @@ def expand_equipment_ids_for_mode_rollup(equipment_ids: Sequence[int]) -> tuple[
         return [], {}
 
     eqs = list(
-        Equipment.objects.filter(equipment_id__in=equipment_ids).only(
-            "equipment_id", "parent_equipment_id"
-        )
+        Equipment.objects.filter(equipment_id__in=equipment_ids)
+        .select_related("parent_equipment")
+        .only("equipment_id", "enable_multi_mode", "parent_equipment", "parent_equipment__enable_multi_mode")
     )
     # Only roll up families where multi-mode is enabled
     parent_ids: set[int] = set()

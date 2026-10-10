@@ -24,10 +24,15 @@ def _kpis_from(breakdown, kind=spec.INTEGER) -> list[spec.Kpi]:
     return [spec.Kpi(item.get("label") or "", item.get("count", 0), kind) for item in breakdown or []]
 
 
+def _flag(request, name: str) -> bool:
+    return str(request.query_params.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 @register("admin-equipment-overview")
 def equipment_overview(request):
     rows, first = collect_rows(request, "admin-insights-equipment", page_param="page", limit_param="page_size")
     summary = (first or {}).get("summary") or {}
+    include_profile = _flag(request, "include_profile_type")
     for row in rows:
         row["category_name"] = (row.get("category") or {}).get("name") or ""
         row["department_name"] = (row.get("department") or {}).get("name") or ""
@@ -40,7 +45,7 @@ def equipment_overview(request):
         C("category_name", "Category", width=1.1),
         C("department_name", "Department", width=1.1),
         C("oic_names", "Officer in Charge", width=1.4),
-        C("profile_type_display", "Profile", width=0.9),
+        *([C("profile_type_display", "Profile", width=0.9)] if include_profile else []),
         C("down_since", "Down since (IST)", spec.DATETIME, 1.1),
         C("downtime_hours", "Down for (h)", spec.NUMBER, 0.7),
         C("last_status_change", "Last status change (IST)", spec.DATETIME, 1.1),
@@ -52,7 +57,13 @@ def equipment_overview(request):
     kpis = [spec.Kpi("Equipment", summary.get("total", len(rows)), spec.INTEGER)]
     kpis += _kpis_from(summary.get("by_status"))
     if summary.get("utilisation") is not None:
-        kpis.append(spec.Kpi("Utilisation (30 days)", summary["utilisation"], spec.PERCENT, "Booked ÷ slot hours"))
+        hint = (
+            f"Booked {summary.get('utilisation_booked_hours', 0)} h ÷ available "
+            f"{summary.get('utilisation_available_hours', 0)} h (weekly view window, Mon–Fri excl. holidays)"
+        )
+        if summary.get("utilisation_period_display"):
+            hint += f"; counted {summary['utilisation_period_display']}"
+        kpis.append(spec.Kpi("Utilisation (30 days)", summary["utilisation"], spec.PERCENT, hint))
     breakdowns = [
         spec.Table(
             key,
@@ -65,7 +76,7 @@ def equipment_overview(request):
             ("by_category", "By category", "Category"),
             ("by_department", "By department", "Department"),
             ("by_oic", "By Officer in Charge", "Officer in Charge"),
-            ("by_profile_type", "By profile type", "Profile type"),
+            *([("by_profile_type", "By profile type", "Profile type")] if include_profile else []),
         )
     ]
     filters = filter_pairs(request, [
@@ -77,6 +88,8 @@ def equipment_overview(request):
         ("profile_type", "Profile type", "text"),
         ("search", "Search", "text"),
     ])
+    if include_profile:
+        filters.append(("Profile type breakdown", "Included"))
     return make_document(
         request, title="Equipment overview", slug="equipment-overview", tables=[table, *breakdowns],
         filters=filters, kpis=kpis, landscape=True,

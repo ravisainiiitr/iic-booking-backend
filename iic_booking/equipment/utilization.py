@@ -8,7 +8,8 @@ and clipped, so a 24-hour slot with a 09:00-17:30 window counts 8.5 hours per wo
 
 Available slots are AVAILABLE, BOOKED, BOOKING_NOT_UTILIZED, UNDER_MAINTENANCE, SCHEDULED_MAINT and
 OPERATOR_ABSENT; BLOCKED, NOT_AVAILABLE and RESERVED_EXTERNAL slots and test-account bookings are left out of
-both hours. Booked slots are BOOKED slots. The factor is ``None`` when there are no available hours.
+both hours, and test equipment is left out altogether. Booked slots are BOOKED slots. The factor is ``None`` when
+there are no available hours.
 
 Window fallback: the slot's own equipment, then its multi-mode parent, then ``UTILIZATION_DEFAULT_VIEW_WINDOW``
 (``("HH:MM", "HH:MM")``), else the whole day.
@@ -129,6 +130,10 @@ def utilization_period_caption(summary: dict) -> str:
 
 def _now() -> datetime:
     return timezone.now()
+
+
+def utilization_today() -> date:
+    return timezone.localdate(_now())
 
 
 def utilization_period(start, end) -> UtilizationPeriod:
@@ -321,21 +326,81 @@ def _as_date(value) -> date:
     return date.fromisoformat(str(value))
 
 
-def compute_utilization_by_equipment(equipment_ids: Iterable[int], start, end) -> dict[int, UtilizationTally]:
+@dataclass(frozen=True)
+class CountedSlot:
+    """One slot of the period, already cut at "now", with the window of its own equipment."""
+
+    slot_id: int
+    equipment_id: int
+    target_id: int  # multi-mode parent (or the equipment itself)
+    status: str
+    start: datetime
+    end: datetime
+    window: ViewWindow
+    test_booking: bool
+    booking_id: Optional[int]
+    booking_status: Optional[str]
+
+    @property
+    def completed(self) -> bool:
+        return not self.test_booking and self.booking_status == BookingStatus.COMPLETED
+
+
+@dataclass
+class UtilizationScope:
+    """Equipment, period, calendar and windows that every utilization figure is computed over."""
+
+    period: UtilizationPeriod
+    calendar: WorkingCalendar
+    rollup: dict[int, int]
+    expanded: list[int]
+    targets: list[int]
+    windows: dict[int, ViewWindow]
+    test_equipment: frozenset[int] = frozenset()
+
+    def tallies(self) -> dict[int, UtilizationTally]:
+        return {t: UtilizationTally() for t in self.targets}
+
+    def add(self, tallies: dict[int, UtilizationTally], slot: CountedSlot) -> float:
+        return tallies.setdefault(slot.target_id, UtilizationTally()).add(
+            slot.status, slot.start, slot.end, slot.window, self.calendar,
+            test_booking=slot.test_booking, completed=slot.completed,
+        )
+
+    def slots(self):
+        if not self.expanded or self.period.is_empty:
+            return
+        rows = (
+            DailySlot.objects.filter(
+                date__gte=self.period.start, date__lte=self.period.end, slot_master__equipment_id__in=self.expanded
+            )
+            .order_by()
+            .values_list("pk", "slot_master__equipment_id", "status", "start_datetime", "end_datetime",
+                         "booking_id", "booking__user__is_test_account", "booking__status")
+            .iterator(chunk_size=2000)
+        )
+        for pk, eid, status, start_dt, end_dt, booking_id, is_test, booking_status in rows:
+            if (span := self.period.clip(start_dt, end_dt)) is None:
+                continue
+            yield CountedSlot(pk, eid, self.rollup.get(eid, eid), status, span[0], span[1], self.windows[eid],
+                              bool(is_test), booking_id, booking_status)
+
+
+def utilization_scope(equipment_ids: Iterable[int], start, end, *, period=None) -> UtilizationScope:
     """
-    Tallies keyed by equipment id for ``start``..``end`` (dates, inclusive, from go-live, till today);
-    multi-mode children fold into parents.
+    Scope for ``start``..``end`` (dates, inclusive, from go-live, till now): multi-mode children fold into parents,
+    test equipment (``iic_booking.equipment.testdata``) is left out.
     """
     from .mode_utils import expand_equipment_ids_for_mode_rollup
+    from .testdata import get_test_equipment_ids
 
-    period = utilization_period(start, end)
-    start_d, end_d = period.start, period.end
+    period = period or utilization_period(start, end)
     ids = [int(i) for i in equipment_ids]
     expanded, rollup = expand_equipment_ids_for_mode_rollup(ids)
-    tallies = {rollup.get(i, i): UtilizationTally() for i in ids}
-    if not expanded or period.is_empty:
-        return tallies
-    calendar = WorkingCalendar.for_range(start_d, end_d + timedelta(days=7))
+    test_ids = frozenset(get_test_equipment_ids(expanded)) if expanded else frozenset()
+    expanded = [eid for eid in expanded if eid not in test_ids]
+    targets = list(dict.fromkeys(rollup.get(i, i) for i in ids if i not in test_ids and rollup.get(i, i) not in test_ids))
+    calendar = WorkingCalendar.for_range(period.start, max(period.start, period.end) + timedelta(days=7))
     equipment = {
         e.equipment_id: e
         for e in Equipment.objects.filter(equipment_id__in=set(expanded) | set(rollup.values())).only(
@@ -346,21 +411,17 @@ def compute_utilization_by_equipment(equipment_ids: Iterable[int], start, end) -
         eid: view_window_for(equipment.get(eid), equipment.get(rollup.get(eid, eid)))
         for eid in expanded
     }
-    rows = (
-        DailySlot.objects.filter(date__gte=start_d, date__lte=end_d, slot_master__equipment_id__in=expanded)
-        .values_list("slot_master__equipment_id", "status", "start_datetime", "end_datetime",
-                     "booking__user__is_test_account", "booking__status")
-        .iterator(chunk_size=2000)
-    )
-    for eid, status, start_dt, end_dt, is_test, booking_status in rows:
-        target = rollup.get(eid, eid)
-        if (span := period.clip(start_dt, end_dt)) is None:
-            continue
-        start_dt, end_dt = span
-        tallies.setdefault(target, UtilizationTally()).add(
-            status, start_dt, end_dt, windows[eid], calendar, test_booking=bool(is_test),
-            completed=booking_status == BookingStatus.COMPLETED,
-        )
+    return UtilizationScope(period, calendar, rollup, expanded, targets, windows, test_ids)
+
+
+def compute_utilization_by_equipment(equipment_ids: Iterable[int], start, end) -> dict[int, UtilizationTally]:
+    """
+    Tallies keyed by equipment id (multi-mode parent) for ``start``..``end``; test equipment has no tally.
+    """
+    scope = utilization_scope(equipment_ids, start, end)
+    tallies = scope.tallies()
+    for slot in scope.slots():
+        scope.add(tallies, slot)
     return tallies
 
 

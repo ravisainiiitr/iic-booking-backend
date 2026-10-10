@@ -10,9 +10,10 @@ Per equipment, in a fixed number of queries:
   start or end.
 - Upcoming bookings: bookings (test accounts excluded) awaiting payment, pending, held or booked with a slot that
   has not started yet.
-- 30-day utilisation: the Reports definition — booked slot hours ÷ all slot hours (booked, not utilized, available,
-  under maintenance, scheduled maintenance, operator absent and Other Reasons blocks); test-account slots excluded.
-  Empty when the equipment had no such slots (e.g. modes that share their parent's calendar).
+- 30-day utilisation: the Reports utilization factor (``iic_booking.equipment.utilization``) for the last 30 days,
+  from portal go-live, till now — booked ÷ available slot hours inside the weekly view window on working days.
+  Modes of a multi-mode instrument are counted on the parent's row (``utilisation_counted_under`` on the mode);
+  test equipment and test-account bookings are not counted. Empty when there are no available hours.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from collections import Counter, defaultdict
 from datetime import timedelta
 from typing import Any
 
-from django.db.models import Count, DurationField, ExpressionWrapper, F, Max, Min, Q, Sum, Value
+from django.db.models import Count, Max, Min, Q, Value
 from django.db.models.functions import Coalesce, Upper
 from django.utils import timezone
 
@@ -31,8 +32,9 @@ from iic_booking.equipment.admin_dashboard_summary import (
     _equipment_status,
     _Scope,
 )
+from iic_booking.equipment.utilization import UTILIZATION_FORMULA, UtilizationTally
 
-from .common import iso, multi, int_values, page_meta, page_params, scope_payload, share
+from .common import iso, multi, int_values, page_meta, page_params, scope_payload
 
 UTILISATION_DAYS = 30
 UPCOMING_STATUSES = ("PENDING", "PENDING_PAYMENT", "HOLD", "BOOKED")
@@ -178,46 +180,17 @@ def _upcoming(ids: list[int], now) -> dict[int, dict[str, Any]]:
     return {r["equipment_id"]: {"count": r["n"] or 0, "next_at": r["next_at"]} for r in rows}
 
 
-def _utilisation(ids: list[int], now) -> dict[int, dict[str, float]]:
-    from iic_booking.equipment.models import DailySlot, DisruptionEventSlot, DisruptionType, SlotStatus
+def _utilisation(ids: list[int]):
+    """Per multi-mode parent (or standalone equipment) tallies of the last 30 days, the period and the rollup."""
+    from iic_booking.equipment.utilization import utilization_period, utilization_scope, utilization_today
 
-    today = timezone.localdate(now)
-    start = today - timedelta(days=UTILISATION_DAYS - 1)
-    other_reason_slots = DisruptionEventSlot.objects.filter(
-        event__disruption_type=DisruptionType.OTHER,
-        event__is_deleted=False,
-        released_at__isnull=True,
-        daily_slot__date__gte=start,
-        daily_slot__date__lte=today,
-    ).values("daily_slot_id")
-    real = ~Q(booking__user__is_test_account=True)
-    booked = Q(status=SlotStatus.BOOKED) & real
-    counted = (
-        booked
-        | (Q(status=SlotStatus.BOOKING_NOT_UTILIZED) & real)
-        | Q(
-            status__in=(
-                SlotStatus.AVAILABLE,
-                SlotStatus.UNDER_MAINTENANCE,
-                SlotStatus.SCHEDULED_MAINTENANCE,
-                SlotStatus.OPERATOR_ABSENT,
-            )
-        )
-        | (Q(status=SlotStatus.BLOCKED) & Q(pk__in=other_reason_slots))
-    )
-    duration = ExpressionWrapper(F("end_datetime") - F("start_datetime"), output_field=DurationField())
-    rows = (
-        DailySlot.objects.filter(slot_master__equipment_id__in=ids, date__gte=start, date__lte=today)
-        .order_by()
-        .values("slot_master__equipment_id")
-        .annotate(booked=Sum(duration, filter=booked), total=Sum(duration, filter=counted))
-    )
-    out = {}
-    for r in rows:
-        total = r["total"].total_seconds() / 3600 if r["total"] else 0.0
-        used = r["booked"].total_seconds() / 3600 if r["booked"] else 0.0
-        out[r["slot_master__equipment_id"]] = {"booked_hours": round(used, 2), "slot_hours": round(total, 2)}
-    return out
+    today = utilization_today()
+    period = utilization_period(today - timedelta(days=UTILISATION_DAYS - 1), today)
+    scope = utilization_scope(ids, period.requested_start, today, period=period)
+    tallies: dict[int, UtilizationTally] = scope.tallies()
+    for slot in scope.slots():
+        scope.add(tallies, slot)
+    return tallies, period, scope
 
 
 def _breakdown(counter: Counter, labels: dict, *, none_label: str) -> list[dict[str, Any]]:
@@ -286,7 +259,7 @@ def build_equipment_insights(user, params) -> dict[str, Any]:
     managers = _managers(ids)
     down_since, last_change = _disruptions(ids)
     upcoming = _upcoming(ids, now)
-    usage = _utilisation(ids, now)
+    usage, util_period, util_scope = _utilisation(ids)
     status_labels = dict(EquipmentStatus.choices)
     profile_labels = dict(EquipmentProfileType.choices)
 
@@ -299,17 +272,13 @@ def build_equipment_insights(user, params) -> dict[str, Any]:
     category_names: dict = {}
     department_names: dict = {}
     oic_names: dict = {}
-    booked_total = slot_total = 0.0
     for r in records:
         eid = r["equipment_id"]
         group = status_group(r["status"])
         oics = managers.get(eid, [])
         since = down_since.get(eid) if group != "operational" else None
-        use = usage.get(eid)
-        utilisation = share(use["booked_hours"], use["slot_hours"]) if use else None
-        if use:
-            booked_total += use["booked_hours"]
-            slot_total += use["slot_hours"]
+        counted_under = util_scope.rollup.get(eid, eid)
+        use = usage.get(eid) if counted_under == eid else None
         up = upcoming.get(eid) or {}
         rows.append(
             {
@@ -340,9 +309,12 @@ def build_equipment_insights(user, params) -> dict[str, Any]:
                 "last_status_change": iso(last_change.get(eid)),
                 "upcoming_bookings": up.get("count", 0),
                 "next_booking_at": iso(up.get("next_at")),
-                "utilisation": utilisation,
-                "booked_hours_30d": use["booked_hours"] if use else 0.0,
-                "slot_hours_30d": use["slot_hours"] if use else 0.0,
+                "utilisation": use.factor if use else None,
+                "booked_hours_30d": round(use.booked_hours, 2) if use else 0.0,
+                # Available slot hours (the utilisation's denominator).
+                "slot_hours_30d": round(use.available_hours, 2) if use else 0.0,
+                "utilisation_counted_under": counted_under if counted_under != eid else None,
+                "utilisation_test_excluded": eid in util_scope.test_equipment,
             }
         )
         by_status[group] += 1
@@ -357,6 +329,10 @@ def build_equipment_insights(user, params) -> dict[str, Any]:
                 oic_names[oic["id"]] = oic["name"]
         else:
             by_oic[None] += 1
+
+    total_use = UtilizationTally()
+    for tally in usage.values():
+        total_use.merge(tally)
 
     sort = str(params.get("sort") or "name").strip()
     key = SORTS.get(sort.lstrip("-"), SORTS["name"])
@@ -382,8 +358,15 @@ def build_equipment_insights(user, params) -> dict[str, Any]:
             "by_oic": _breakdown(by_oic, oic_names, none_label="No OIC assigned"),
             "test_only": sum(1 for r in rows if r["test_only"]),
             "upcoming_bookings": sum(r["upcoming_bookings"] for r in rows),
-            "utilisation": share(booked_total, slot_total),
+            "utilisation": total_use.factor,
             "utilisation_days": UTILISATION_DAYS,
+            "utilisation_booked_hours": round(total_use.booked_hours, 2),
+            "utilisation_available_hours": round(total_use.available_hours, 2),
+            "utilisation_formula": UTILIZATION_FORMULA,
+            "utilisation_period_from": util_period.start.isoformat() if not util_period.is_empty else None,
+            "utilisation_period_to": util_period.end.isoformat() if not util_period.is_empty else None,
+            "utilisation_period_display": util_period.display(),
+            "utilisation_period_note": util_period.note(),
         },
         "results": rows[offset : offset + size],
         **page_meta(total, offset, size),

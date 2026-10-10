@@ -408,3 +408,130 @@ def test_every_reports_role_gets_the_same_utilization(xps_like, egs_factory):
         assert res.status_code == 200, (ut, res.content[:300])
         seen[ut] = tuple(res.data["summary"][k] for k in keys)
     assert set(seen.values()) == {(1.0, 15.0, 15.0, 15.0, 12.0, 0.8, "2026-10-05", "2026-10-10")}, seen
+
+
+# --- test data and the Equipment overview ------------------------------------------------------------------------
+
+
+def _admin_user():
+    from iic_booking.users.models.user_type import UserType
+    from iic_booking.users.tests.factories import UserFactory
+
+    return UserFactory(user_type=UserType.ADMIN, admin_approved=True)
+
+
+@pytest.fixture
+def test_equipment(egs_factory, go_live):
+    """A test-only instrument and one in a category marked as test data, each with an idle slot after go-live."""
+    from iic_booking.equipment.models import EquipmentCategory
+    from iic_booking.equipment.testdata import forget_marks, mark
+    from iic_booking.equipment.testdata_models import TestDataKind
+
+    f = egs_factory
+    flagged = f.equipment(visible_to_test_accounts_only=True)
+    category = EquipmentCategory.objects.create(name="Sample Category")
+    mark(TestDataKind.CATEGORY, category)
+    categorised = f.equipment(category=category)
+    for eq in (flagged, categorised):
+        f.slot(eq, _at(go_live, 10), minutes=120)
+    yield flagged, categorised
+    forget_marks()
+
+
+@pytest.mark.django_db
+def test_test_equipment_and_test_oics_are_left_out_of_reports(xps_like, test_equipment, egs_factory):
+    from iic_booking.equipment.models import EquipmentManager
+    from iic_booking.equipment.reports import get_equipment_report_data
+    from iic_booking.equipment.utilization import compute_utilization_by_equipment
+    from iic_booking.users.models.user_type import UserType
+    from iic_booking.users.tests.factories import UserFactory
+
+    flagged, categorised = test_equipment
+    tallies = compute_utilization_by_equipment([xps_like.pk, flagged.pk, categorised.pk], "2026-10-01", "2026-10-10")
+    assert set(tallies) == {xps_like.pk}
+
+    real_oic = UserFactory(user_type=UserType.MANAGER, admin_approved=True)
+    test_oic = UserFactory(user_type=UserType.MANAGER, admin_approved=True, is_test_account=True)
+    for oic in (real_oic, test_oic):
+        EquipmentManager.objects.create(equipment=xps_like, manager=oic)
+
+    data = get_equipment_report_data("2026-10-01", "2026-10-10")
+    rows = {r["equipment_id"]: r for r in data["equipment"]}
+    assert flagged.pk not in rows and categorised.pk not in rows
+    assert [o["id"] for o in rows[xps_like.pk]["officers_in_charge"]] == [real_oic.pk]
+    assert data["summary"]["utilization_available_hours"] == 15.0
+    assert get_equipment_report_data("2026-10-01", "2026-10-10", [flagged.pk])["equipment"] == []
+
+
+@pytest.mark.django_db
+def test_equipment_overview_shows_the_report_utilization(xps_like, test_equipment, egs_factory):
+    from iic_booking.equipment.reports import get_equipment_report_data
+
+    flagged, _categorised = test_equipment
+    res = egs_factory.client_for(_admin_user()).get("/api/admin/insights/equipment/", {"page_size": 100})
+    assert res.status_code == 200, res.content[:300]
+    body = res.json()
+    summary, rows = body["summary"], {r["equipment_id"]: r for r in body["results"]}
+    report = get_equipment_report_data("2026-09-11", "2026-10-10", [xps_like.pk])["summary"]
+    # Last 30 days from go-live (05 Oct) till now: the same 15 of 15 hours as Reports; test equipment not counted.
+    assert summary["utilisation"] == report["utilization_factor"] == 1.0
+    assert summary["utilisation_booked_hours"] == summary["utilisation_available_hours"] == 15.0
+    assert (summary["utilisation_period_from"], summary["utilisation_period_to"]) == ("2026-10-05", "2026-10-10")
+    assert summary["utilisation_period_note"] == (
+        "Effective period for utilization: 05 Oct 2026 – 10 Oct 2026 (portal go-live 05 Oct 2026)"
+    )
+    assert (rows[xps_like.pk]["utilisation"], rows[xps_like.pk]["slot_hours_30d"]) == (1.0, 15.0)
+    assert rows[flagged.pk]["utilisation"] is None and rows[flagged.pk]["utilisation_test_excluded"] is True
+
+
+@pytest.mark.django_db
+def test_equipment_overview_counts_modes_on_the_parent_row(egs_factory, go_live):
+    f = egs_factory
+    parent = f.equipment(enable_multi_mode=True)
+    mode = f.equipment(parent_equipment=parent)
+    f.booking(f.student(), mode, _at(go_live, 10), slot_count=1)
+    f.slot(parent, _at(go_live, 11), minutes=60)
+    res = f.client_for(_admin_user()).get("/api/admin/insights/equipment/", {"page_size": 500})
+    rows = {r["equipment_id"]: r for r in res.json()["results"]}
+    assert rows[parent.pk]["utilisation"] == 0.5
+    assert rows[mode.pk]["utilisation"] is None and rows[mode.pk]["utilisation_counted_under"] == parent.pk
+
+
+@pytest.mark.django_db
+def test_equipment_overview_export_profile_type_is_optional(xps_like, egs_factory):
+    client = egs_factory.client_for(_admin_user())
+    without = client.get("/api/exports/admin-equipment-overview/", {"export_format": "csv"})
+    assert without.status_code == 200
+    text = without.content.decode("utf-8-sig")
+    assert "Profile" not in text and "By profile type" not in text
+    with_profile = client.get(
+        "/api/exports/admin-equipment-overview/", {"export_format": "csv", "include_profile_type": "1"}
+    ).content.decode("utf-8-sig")
+    assert "Profile" in with_profile
+
+
+@pytest.mark.django_db
+def test_admin_equipment_list_can_hide_test_equipment(xps_like, test_equipment, egs_factory):
+    flagged, categorised = test_equipment
+    client = egs_factory.client_for(_admin_user())
+
+    def ids(**params):
+        res = client.get("/api/admin/equipment/", {"page_size": 500, **params})
+        body = res.json()
+        return {e["equipment_id"] for e in (body["results"] if isinstance(body, dict) else body)}
+
+    assert {flagged.pk, categorised.pk} <= ids()
+    hidden = ids(test="hide")
+    assert xps_like.pk in hidden and not ({flagged.pk, categorised.pk} & hidden)
+
+
+@pytest.mark.django_db
+def test_booking_statistics_leave_out_test_equipment(xps_like, test_equipment, egs_factory):
+    from iic_booking.equipment.booking_report_metrics import report_bookings_scope
+
+    flagged, categorised = test_equipment
+    f = egs_factory
+    f.booking(f.student(), categorised, _at(SATURDAY, 10), slot_count=1)
+    qs, scope = report_bookings_scope(_admin_user())
+    equipment = set(qs.values_list("equipment_id", flat=True))
+    assert xps_like.pk in equipment and categorised.pk not in equipment
