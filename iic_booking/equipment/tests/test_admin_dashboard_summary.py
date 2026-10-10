@@ -216,7 +216,7 @@ def test_query_count_does_not_grow_with_bookings(two_departments, django_assert_
     for days in range(1, 6):
         _book(f, two_departments["students"][0], two_departments["eq"][0], f.future(days=days))
     admin = _admin()
-    with django_assert_max_num_queries(24):
+    with django_assert_max_num_queries(30):
         build_admin_dashboard_summary(admin)
 
 
@@ -226,4 +226,8 @@ def test_unique_cache_key_per_department():
     a = _Scope(UserFactory(user_type=UserType.DEPT_ADMIN, department=_EgsFactory().department))
     b = _Scope(UserFactory(user_type=UserType.DEPT_ADMIN, department=_EgsFactory().department))
     assert a.cache_key != b.cache_key
+    admin = UserFactory(user_type=UserType.ADMIN)
+    picked = _Scope(admin, str(a.department_id))
+    assert picked.department_id == a.department_id and picked.is_institute
+    assert picked.cache_key not in (a.cache_key, _Scope(admin).cache_key)
     assert _Scope(UserFactory(user_type=UserType.ADMIN)).cache_key.endswith(":institute")

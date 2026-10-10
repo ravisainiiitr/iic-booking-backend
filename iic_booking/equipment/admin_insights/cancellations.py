@@ -3,7 +3,8 @@
 A cancellation is a booking that ended without being carried out — cancelled, refunded, or stopped by the lab
 (under maintenance, operator unavailable, analysis not possible) — counted once, on the day it happened
 (``BookingCancellation.cancelled_at``). Bookings marked not utilized (no-shows) are tracked too but only included when
-asked for. Bookings of test accounts are excluded; a Department Administrator sees their department's equipment.
+asked for. Test data (``equipment.testdata``) is excluded; a Department Administrator sees their department's
+equipment, and the Main Administrator can narrow to one department (``?dept=``).
 
 - Rate: cancellations ÷ bookings created in the same dates (same equipment / user filters).
 - Late: less than 24 hours before the first booked slot started (or after it started).
@@ -26,7 +27,20 @@ from django.utils import timezone
 
 from iic_booking.equipment.admin_dashboard_summary import _Scope
 
-from .common import bounds, flag, int_values, iso, money, multi, page_meta, page_params, period, scope_payload, share
+from .common import (
+    bounds,
+    flag,
+    int_values,
+    iso,
+    money,
+    multi,
+    page_meta,
+    page_params,
+    period,
+    scope_for,
+    scope_payload,
+    share,
+)
 from .users import CATEGORIES, category_case
 
 TOP = 15
@@ -66,13 +80,12 @@ def _choices():
     )
 
 
-def _scoped(user):
-    """Cancellation rows of bookings on the user's Reports scope (test accounts excluded)."""
+def _scoped(scope: _Scope):
+    """Cancellation rows of bookings on the scope (test users and test equipment excluded)."""
     from iic_booking.equipment.booking_cancellation_log import TRACKED_STATUSES
-    from iic_booking.equipment.booking_report_metrics import report_bookings_scope
     from iic_booking.equipment.models import BookingCancellation
 
-    bookings, _ = report_bookings_scope(user)
+    bookings = scope.bookings()
     case, code = category_case("booking__user__")
     lead_bucket = Case(
         *[
@@ -158,10 +171,8 @@ def _filtered(qs, params, start, end):
     return qs
 
 
-def _bookings_created(user, params, start, end) -> int:
-    from iic_booking.equipment.booking_report_metrics import report_bookings_scope
-
-    bookings, _ = report_bookings_scope(user)
+def _bookings_created(scope: _Scope, params, start, end) -> int:
+    bookings = scope.bookings()
     start_at, end_at = bounds(start, end)
     case, code = category_case("user__")
     qs = bookings.order_by().filter(created_at__gte=start_at, created_at__lt=end_at)
@@ -308,17 +319,22 @@ def refill_status(rows: list[dict]) -> dict[int, str]:
     return out
 
 
-def _options(user, scope: _Scope) -> dict[str, Any]:
+def _options(scope: _Scope) -> dict[str, Any]:
     from iic_booking.equipment.models import Equipment, EquipmentManager
+    from iic_booking.equipment.testdata import exclude_test_equipment
     from iic_booking.users.display import get_user_display_name
 
     roles, reasons, qualities = _choices()
-    equipment = scope.by_department(Equipment.objects.all(), "internal_department_id").order_by("name")
+    equipment = exclude_test_equipment(Equipment.objects.all())
+    equipment = scope.by_department(equipment, "internal_department_id").order_by("name")
     managers = {}
-    for em in EquipmentManager.objects.filter(equipment_id__in=equipment.values("pk")).select_related("manager"):
+    for em in (
+        EquipmentManager.objects.filter(equipment_id__in=equipment.values("pk"), manager__is_test_account=False)
+        .select_related("manager")
+    ):
         managers[em.manager_id] = get_user_display_name(em.manager)
     departments = (
-        _scoped(user)
+        _scoped(scope)
         .exclude(booking__user__department__isnull=True)
         .values("booking__user__department_id", "booking__user__department__name")
         .distinct()
@@ -384,11 +400,11 @@ def _row(c, roles, reasons, qualities, refills) -> dict[str, Any]:
 
 
 def build_cancellation_insights(user, params) -> dict[str, Any]:
-    scope = _Scope(user)
+    scope = scope_for(user, params)
     now = timezone.now()
     start, end = period(params, now=now)
     roles, reasons, qualities = _choices()
-    base = _scoped(user)
+    base = _scoped(scope)
     qs = _filtered(base, params, start, end)
 
     span = (end - start).days + 1
@@ -396,8 +412,8 @@ def build_cancellation_insights(user, params) -> dict[str, Any]:
     prev_start = prev_end - timedelta(days=span - 1)
     previous = _totals(_filtered(base, params, prev_start, prev_end))
     totals = _totals(qs)
-    created = _bookings_created(user, params, start, end)
-    created_prev = _bookings_created(user, params, prev_start, prev_end)
+    created = _bookings_created(scope, params, start, end)
+    created_prev = _bookings_created(scope, params, prev_start, prev_end)
 
     refill_rows = list(qs.values("id", "booking_id", "cancelled_at", "released_slot_ids"))
     refills = refill_status(refill_rows)
@@ -469,26 +485,27 @@ def build_cancellation_insights(user, params) -> dict[str, Any]:
         **page_meta(totals["total"], offset, size),
     }
     if params.get("with_options"):
-        payload["options"] = _options(user, scope)
+        payload["options"] = _options(scope)
     return payload
 
 
-def cancellation_card(user, now) -> dict[str, Any]:
+def cancellation_card(user, now, *, scope: _Scope | None = None) -> dict[str, Any]:
     """Dashboard card: cancellations in the last ``CARD_DAYS`` days against the ``CARD_DAYS`` before."""
+    scope = scope or _Scope(user)
     today = timezone.localdate(now)
     start = today - timedelta(days=CARD_DAYS - 1)
     prev_end = start - timedelta(days=1)
     prev_start = prev_end - timedelta(days=CARD_DAYS - 1)
-    base = _scoped(user).exclude(reason="NO_SHOW")
+    base = _scoped(scope).exclude(reason="NO_SHOW")
     current = base.filter(cancelled_at__gte=bounds(start, today)[0], cancelled_at__lt=bounds(start, today)[1])
     row = current.aggregate(total=Count("pk"), late=Count("pk", filter=LATE), refund=Sum("refund_amount"))
     p0, p1 = bounds(prev_start, prev_end)
     previous_total = base.filter(cancelled_at__gte=p0, cancelled_at__lt=p1).count()
-    created = _bookings_created(user, {}, start, today)
+    created = _bookings_created(scope, {}, start, today)
     total = row["total"] or 0
     from .refund_requests import refund_request_card
 
-    refunds = refund_request_card(user, start, today)
+    refunds = refund_request_card(scope, start, today)
     return {
         "days": CARD_DAYS,
         "total": total,

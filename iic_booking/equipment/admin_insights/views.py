@@ -54,6 +54,15 @@ def admin_insights_refund_requests(request):
     return _respond(request, build_refund_request_insights)
 
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def admin_insights_staff_proficiency(request):
+    """GET /api/admin/insights/staff-proficiency/ — Lab Operators and OICs ranked by how short they keep their queue."""
+    from .proficiency import build_staff_proficiency
+
+    return _respond(request, build_staff_proficiency)
+
+
 def _card_response(request, build):
     from .user_card import CardError
 

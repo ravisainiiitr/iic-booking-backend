@@ -164,6 +164,52 @@ def test_equipment_search_sort_and_options(labs):
     assert paged["page"] == 2 and len(paged["results"]) == 2 and paged["total_pages"] == 2
 
 
+def test_test_equipment_and_test_oics_are_left_out(labs):
+    from iic_booking.equipment.models import EquipmentCategory
+    from iic_booking.equipment.testdata import mark
+    from iic_booking.equipment.testdata_models import TestDataKind
+
+    a, _b, eq = labs
+    hidden = a.equipment(visible_to_test_accounts_only=True)
+    marked = a.equipment(name="Sample 3D Printer (TEST)")
+    mark(TestDataKind.EQUIPMENT, marked)
+    category = EquipmentCategory.objects.create(name="Test category", code="TESTCAT")
+    in_test_category = a.equipment(category=category)
+    mark(TestDataKind.CATEGORY, category)
+    test_oic = UserFactory(user_type=UserType.MANAGER, name="Test Officer In Charge", is_test_account=True)
+    EquipmentManager.objects.create(equipment=eq["active"], manager=test_oic)
+
+    data = _get(_admin(), EQUIPMENT, with_options="1")
+    ids = {r["equipment_id"] for r in data["results"]}
+    assert not ids & {hidden.pk, marked.pk, in_test_category.pk}
+    assert data["card"]["total"] == data["summary"]["total"] == 4
+    assert "test_only" not in data["summary"]
+    assert test_oic.pk not in {o["id"] for o in data["options"]["oics"]}
+    assert all(o["id"] != test_oic.pk for r in data["results"] for o in r["officers_in_charge"])
+    summary = _get(_admin(), "/api/admin/dashboard-summary/", refresh="1")
+    assert summary["equipment"]["total"] == 4
+
+
+def test_main_admin_department_selector(labs):
+    a, b, eq = labs
+    admin = _admin()
+    data = _get(admin, EQUIPMENT, dept=str(b.department.pk))
+    assert data["scope"] == "institute" and data["selected_department_id"] == b.department.pk
+    assert [r["equipment_id"] for r in data["results"]] == [eq["b"].pk]
+    assert data["card"]["total"] == 1
+    assert {d["id"] for d in data["departments"]} >= {a.department.pk, b.department.pk}
+
+    everything = _get(admin, "/api/admin/dashboard-summary/")
+    only_b = _get(admin, "/api/admin/dashboard-summary/", dept=str(b.department.pk))
+    assert everything["equipment"]["total"] == 4 and only_b["equipment"]["total"] == 1
+    assert only_b["department"]["id"] == b.department.pk
+
+    # A Department Administrator cannot look at another department.
+    own = _get(_dept_admin(a.department), EQUIPMENT, dept=str(b.department.pk))
+    assert eq["b"].pk not in {r["equipment_id"] for r in own["results"]}
+    assert own["departments"] == []
+
+
 def test_equipment_query_count_is_constant(labs, django_assert_max_num_queries):
     from iic_booking.equipment.admin_insights.equipment import build_equipment_insights
 
@@ -172,11 +218,11 @@ def test_equipment_query_count_is_constant(labs, django_assert_max_num_queries):
         a.equipment()
     admin = _admin()
     build_equipment_insights(admin, {})  # test-data marks are cached after the first read
-    with django_assert_max_num_queries(12):
+    with django_assert_max_num_queries(13):
         build_equipment_insights(admin, {})
     for _ in range(6):
         a.equipment()
-    with django_assert_max_num_queries(12):
+    with django_assert_max_num_queries(13):
         build_equipment_insights(admin, {})
 
 

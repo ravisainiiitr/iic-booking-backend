@@ -1,14 +1,15 @@
 """Equipment overview behind the dashboard's Equipment card.
 
 Counts use the card's definition (``_equipment_status``): every equipment record in scope (modes of multi-mode
-instruments are records of their own), Disposed left out of the total. Operational = ACTIVE; Under maintenance =
-REPAIR / MAINTENANCE / INACTIVE; anything else (including no status) = Other. Disposed equipment is listed only when
-the status filter asks for it, so the unfiltered list adds up to the card.
+instruments are records of their own), Disposed left out of the total, test equipment (``equipment.testdata``)
+never included. Operational = ACTIVE; Under maintenance = REPAIR / MAINTENANCE / INACTIVE; anything else (including
+no status) = Other. Disposed equipment is listed only when the status filter asks for it, so the unfiltered list
+adds up to the card.
 
 Per equipment, in a fixed number of queries:
 - Down since / last status change: whole-equipment disruptions (not deleted) — the open one's start, and the latest
   start or end.
-- Upcoming bookings: bookings (test accounts excluded) awaiting payment, pending, held or booked with a slot that
+- Upcoming bookings: bookings (test data excluded) awaiting payment, pending, held or booked with a slot that
   has not started yet.
 - 30-day utilisation: the Reports utilization factor (``iic_booking.equipment.utilization``) for the last 30 days,
   from portal go-live, till now — booked ÷ available slot hours inside the weekly view window on working days.
@@ -34,7 +35,7 @@ from iic_booking.equipment.admin_dashboard_summary import (
 )
 from iic_booking.equipment.utilization import UTILIZATION_FORMULA, UtilizationTally
 
-from .common import iso, multi, int_values, page_meta, page_params, scope_payload
+from .common import iso, multi, int_values, page_meta, page_params, scope_for, scope_payload
 
 UTILISATION_DAYS = 30
 UPCOMING_STATUSES = ("PENDING", "PENDING_PAYMENT", "HOLD", "BOOKED")
@@ -91,8 +92,9 @@ def _status_q(values: list[str]) -> Q | None:
 
 def _base(scope: _Scope):
     from iic_booking.equipment.models import Equipment
+    from iic_booking.equipment.testdata import exclude_test_equipment
 
-    qs = scope.by_department(Equipment.objects.all(), "internal_department_id").order_by()
+    qs = scope.by_department(exclude_test_equipment(Equipment.objects.all()), "internal_department_id").order_by()
     return qs.annotate(status_code=Upper(Coalesce("status", Value(""))))
 
 
@@ -121,11 +123,6 @@ def _filtered(scope: _Scope, params):
         if "none" in oics:
             q |= Q(equipment_managers__isnull=True)
         qs = qs.filter(pk__in=_base(scope).filter(q).values("pk"))
-    test_only = str(params.get("test_only") or "").strip().lower()
-    if test_only in ("1", "true", "yes"):
-        qs = qs.filter(visible_to_test_accounts_only=True)
-    elif test_only in ("0", "false", "no"):
-        qs = qs.filter(visible_to_test_accounts_only=False)
     search = str(params.get("search") or "").strip()
     if search:
         qs = qs.filter(Q(name__icontains=search) | Q(code__icontains=search))
@@ -138,7 +135,7 @@ def _managers(ids: list[int]) -> dict[int, list[dict[str, Any]]]:
 
     out: dict[int, list[dict[str, Any]]] = defaultdict(list)
     rows = (
-        EquipmentManager.objects.filter(equipment_id__in=ids)
+        EquipmentManager.objects.filter(equipment_id__in=ids, manager__is_test_account=False)
         .select_related("manager")
         .order_by("equipment_id", "equipment_manager_id")
     )
@@ -211,7 +208,9 @@ def _options(scope: _Scope) -> dict[str, Any]:
         EquipmentCategory.objects.filter(equipment__in=ids).distinct().order_by("name").values("id", "name")
     )
     managers = {}
-    for em in EquipmentManager.objects.filter(equipment_id__in=ids).select_related("manager"):
+    for em in EquipmentManager.objects.filter(equipment_id__in=ids, manager__is_test_account=False).select_related(
+        "manager"
+    ):
         managers[em.manager_id] = get_user_display_name(em.manager)
     options = {
         "statuses": [{"value": k, "label": v} for k, v in STATUS_GROUPS.items()],
@@ -236,7 +235,7 @@ def _options(scope: _Scope) -> dict[str, Any]:
 def build_equipment_insights(user, params) -> dict[str, Any]:
     from iic_booking.equipment.models import EquipmentProfileType, EquipmentStatus
 
-    scope = _Scope(user)
+    scope = scope_for(user, params)
     now = timezone.now()
     qs = _filtered(scope, params)
     records = list(
@@ -252,7 +251,6 @@ def build_equipment_insights(user, params) -> dict[str, Any]:
             "internal_department__name",
             "parent_equipment_id",
             "parent_equipment__name",
-            "visible_to_test_accounts_only",
         )
     )
     ids = [r["equipment_id"] for r in records]
@@ -267,11 +265,11 @@ def build_equipment_insights(user, params) -> dict[str, Any]:
     by_status: Counter = Counter()
     by_category: Counter = Counter()
     by_department: Counter = Counter()
-    by_profile: Counter = Counter()
     by_oic: Counter = Counter()
     category_names: dict = {}
     department_names: dict = {}
     oic_names: dict = {}
+    by_profile: Counter = Counter()
     for r in records:
         eid = r["equipment_id"]
         group = status_group(r["status"])
@@ -302,7 +300,6 @@ def build_equipment_insights(user, params) -> dict[str, Any]:
                     if r["parent_equipment_id"]
                     else None
                 ),
-                "test_only": bool(r["visible_to_test_accounts_only"]),
                 "officers_in_charge": oics,
                 "down_since": iso(since),
                 "downtime_hours": round((now - since).total_seconds() / 3600, 1) if since else None,
@@ -318,11 +315,11 @@ def build_equipment_insights(user, params) -> dict[str, Any]:
             }
         )
         by_status[group] += 1
+        by_profile[r["profile_type"] or None] += 1
         by_category[r["category_id"]] += 1
         category_names[r["category_id"]] = r["category__name"]
         by_department[r["internal_department_id"]] += 1
         department_names[r["internal_department_id"]] = r["internal_department__name"]
-        by_profile[r["profile_type"] or None] += 1
         if oics:
             for oic in oics:
                 by_oic[oic["id"]] += 1
@@ -352,11 +349,11 @@ def build_equipment_insights(user, params) -> dict[str, Any]:
             ],
             "by_category": _breakdown(by_category, category_names, none_label="No category"),
             "by_department": _breakdown(by_department, department_names, none_label="No department"),
+            "by_oic": _breakdown(by_oic, oic_names, none_label="No OIC assigned"),
+            # Exports only, when the profile type is asked for (the page does not show it).
             "by_profile_type": _breakdown(
                 by_profile, {k: str(v) for k, v in profile_labels.items()}, none_label="Not set"
             ),
-            "by_oic": _breakdown(by_oic, oic_names, none_label="No OIC assigned"),
-            "test_only": sum(1 for r in rows if r["test_only"]),
             "upcoming_bookings": sum(r["upcoming_bookings"] for r in rows),
             "utilisation": total_use.factor,
             "utilisation_days": UTILISATION_DAYS,

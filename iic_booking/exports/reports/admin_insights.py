@@ -51,7 +51,6 @@ def equipment_overview(request):
         C("last_status_change", "Last status change (IST)", spec.DATETIME, 1.1),
         C("upcoming_bookings", "Upcoming bookings", spec.INTEGER, 0.7, total=True),
         C("utilisation", "Utilisation (30 days)", spec.PERCENT, 0.8),
-        C("test_only", "Test only", spec.BOOL, 0.5),
     ]
     table = spec.Table("equipment", "Equipment", columns, numbered(rows), sheet_name="Equipment")
     kpis = [spec.Kpi("Equipment", summary.get("total", len(rows)), spec.INTEGER)]
@@ -80,6 +79,7 @@ def equipment_overview(request):
         )
     ]
     filters = filter_pairs(request, [
+        ("dept", "Showing department", "department"),
         ("status", "Status", {"OPERATIONAL": "Operational", "UNDER_MAINTENANCE": "Under maintenance",
                               "OTHER": "Other", "DISPOSED": "Disposed", "ALL": "All"}),
         ("category", "Category", "text"),
@@ -152,6 +152,7 @@ def users_overview(request):
         numbered([dict(o) for o in summary.get("external_by_organisation") or []]), sheet_name="By organisation",
     )
     filters = filter_pairs(request, [
+        ("dept", "Showing department", "department"),
         ("status", "Status", {"ACTIVE": "Active", "INACTIVE": "Inactive", "ALL": "All"}),
         ("segment", "Internal / external", {"INTERNAL": "Internal", "EXTERNAL": "External"}),
         ("category", "Category", {k.upper(): v for k, v in _user_categories().items()}),
@@ -248,6 +249,7 @@ def cancellations(request):
     ]
     filters = [("Dates", f"{data.get('date_from', '')} to {data.get('date_to', '')}")]
     filters += filter_pairs(request, [
+        ("dept", "Showing department", "department"),
         ("equipment", "Equipment", "equipment"),
         ("role", "Cancelled by", "text"),
         ("reason", "Reason", "text"),
@@ -336,6 +338,7 @@ def refund_requests(request):
     ]
     filters = [("Dates", f"{data.get('date_from', '')} to {data.get('date_to', '')}")]
     filters += filter_pairs(request, [
+        ("dept", "Showing department", "department"),
         ("source", "Type", "text"),
         ("status", "Status", "text"),
         ("window", "Window", {"WITHIN": "Within the window", "OUTSIDE": "Inside the cut-off"}),

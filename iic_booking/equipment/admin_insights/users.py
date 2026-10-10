@@ -38,7 +38,7 @@ from django.utils import timezone
 from iic_booking.equipment.admin_dashboard_summary import _Scope, _users
 from iic_booking.users.models.user_type import UserType
 
-from .common import bounds, flag, int_values, iso, multi, page_meta, page_params, parse_date, scope_payload
+from .common import bounds, flag, int_values, iso, multi, page_meta, page_params, parse_date, scope_for, scope_payload
 from .supervisors import resolve_supervisors
 
 CATEGORIES = {
@@ -397,7 +397,7 @@ def build_user_insights(user, params) -> dict[str, Any]:
     from iic_booking.equipment.models import Booking
     from iic_booking.users.admin_wallet_ledger import is_main_admin
 
-    scope = _Scope(user)
+    scope = scope_for(user, params)
     now = timezone.now()
     qs = _filtered(scope, params, now)
     summary = _summary(qs, params, now)

@@ -481,7 +481,7 @@ def test_equipment_overview_shows_the_report_utilization(xps_like, test_equipmen
         "Effective period for utilization: 05 Oct 2026 – 10 Oct 2026 (portal go-live 05 Oct 2026)"
     )
     assert (rows[xps_like.pk]["utilisation"], rows[xps_like.pk]["slot_hours_30d"]) == (1.0, 15.0)
-    assert rows[flagged.pk]["utilisation"] is None and rows[flagged.pk]["utilisation_test_excluded"] is True
+    assert flagged.pk not in rows
 
 
 @pytest.mark.django_db

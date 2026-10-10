@@ -92,10 +92,21 @@ def share(part, whole) -> float | None:
     return round(float(part) / float(whole), 4) if whole else None
 
 
+def scope_for(user, params) -> _Scope:
+    """The viewer's scope; a Main Administrator narrows it to one department with ``?dept=<id>``."""
+    return _Scope(user, params.get("dept") if params is not None else None)
+
+
 def scope_payload(scope: _Scope) -> dict[str, Any]:
+    from iic_booking.equipment.admin_dashboard_summary import department_choices
     from iic_booking.users.models.department import Department
 
     department = None
-    if not scope.is_institute and scope.department_id:
+    if scope.department_id:
         department = Department.objects.filter(pk=scope.department_id).values("id", "name").first()
-    return {"scope": "institute" if scope.is_institute else "department", "department": department}
+    return {
+        "scope": "institute" if scope.is_institute else "department",
+        "department": department,
+        "selected_department_id": scope.department_id if scope.selected_department else None,
+        "departments": department_choices(scope),
+    }

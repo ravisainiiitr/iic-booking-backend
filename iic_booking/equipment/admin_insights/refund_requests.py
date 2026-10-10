@@ -10,8 +10,8 @@ Every way a user asks for their money back, one row each:
 
 Only requests made before the first booked slot started count. Window: the equipment's cancel / reschedule hours
 (default 48 h); a request at least that long before the slot is within the stipulated window. The period filters
-on when the request was made. Test accounts are excluded; a Department Administrator sees their department's
-equipment. The wallet transaction is the refund credit naming the booking, posted after the request.
+on when the request was made. Test data is excluded; a Department Administrator sees their department's
+equipment, the Main Administrator optionally one department (``?dept=``). The wallet transaction is the refund credit naming the booking, posted after the request.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from django.utils import timezone
 
 from iic_booking.equipment.admin_dashboard_summary import _Scope
 
-from .common import bounds, iso, money, multi, page_meta, page_params, period, scope_payload, share
+from .common import bounds, iso, money, multi, page_meta, page_params, period, scope_for, scope_payload, share
 from .users import CATEGORIES, category_case
 
 SOURCES = {
@@ -72,12 +72,10 @@ def _first_slot_start():
 
 
 def _scoped(qs, user, params):
-    """``qs`` (rows with a ``booking``) on the user's Reports scope with the page's booking filters."""
-    from iic_booking.equipment.booking_report_metrics import report_bookings_scope
-
+    """``qs`` (rows with a ``booking``) on the user's scope (``?dept=``) with the page's booking filters."""
     from .cancellations import _apply_filters
 
-    bookings, _ = report_bookings_scope(user)
+    bookings = scope_for(user, params).bookings()
     case, code = category_case("booking__user__")
     qs = (
         qs.filter(booking_id__in=bookings.order_by().values("pk"))
@@ -405,7 +403,7 @@ def build_refund_request_insights(user, params) -> dict[str, Any]:
 
     from .cancellations import _bookings_created
 
-    scope = _Scope(user)
+    scope = scope_for(user, params)
     now = timezone.now()
     start, end = period(params, now=now)
     rows = collect(user, params, start, end)
@@ -413,7 +411,7 @@ def build_refund_request_insights(user, params) -> dict[str, Any]:
     prev_end = start - timedelta(days=1)
     prev_start = prev_end - timedelta(days=span - 1)
     previous = collect(user, params, prev_start, prev_end)
-    summary = summarize(rows, bookings_created=_bookings_created(user, params, start, end))
+    summary = summarize(rows, bookings_created=_bookings_created(scope, params, start, end))
     summary["previous"] = {
         "date_from": prev_start.isoformat(),
         "date_to": prev_end.isoformat(),
@@ -440,7 +438,7 @@ def build_refund_request_insights(user, params) -> dict[str, Any]:
     if params.get("with_options"):
         from .cancellations import _options
 
-        base = _options(user, scope)
+        base = _options(scope)
         payload["options"] = {
             "equipment": base["equipment"],
             "categories": base["categories"],
@@ -452,8 +450,8 @@ def build_refund_request_insights(user, params) -> dict[str, Any]:
     return payload
 
 
-def refund_request_card(user, start, end) -> dict[str, Any]:
-    rows = collect(user, {}, start, end)
+def refund_request_card(scope: _Scope, start, end) -> dict[str, Any]:
+    rows = collect(scope.user, {"dept": scope.department_id if scope.selected_department else None}, start, end)
     users: dict[int, int] = defaultdict(int)
     for r in rows:
         users[r["booking"].user_id] += 1

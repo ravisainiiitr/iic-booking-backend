@@ -43,24 +43,72 @@ MAINTENANCE_STATUSES = ("MAINTENANCE", "REPAIR", "INACTIVE")
 
 
 class _Scope:
-    """Institute (Main Administrator) or one internal department (Department Administrator)."""
+    """Institute (Main Administrator) or one internal department (Department Administrator).
 
-    def __init__(self, user):
+    The Main Administrator may pick one department (``department``, the pages' ``?dept=``): ``is_institute`` stays
+    true (institute-only items such as the department list remain), but every figure follows that department.
+    Test data (``equipment.testdata``) is never counted.
+    """
+
+    def __init__(self, user, department=None):
         self.user = user
         self.is_institute = getattr(user, "user_type", None) == UserType.ADMIN
         self.department_id = None if self.is_institute else getattr(user, "department_id", None)
+        if self.is_institute and str(department or "").strip().isdigit():
+            self.department_id = int(str(department).strip())
+
+    @property
+    def selected_department(self) -> bool:
+        return self.is_institute and self.department_id is not None
 
     @property
     def cache_key(self) -> str:
-        return f"{CACHE_PREFIX}:{SCOPE_INSTITUTE}" if self.is_institute else f"{CACHE_PREFIX}:dept:{self.department_id or 0}"
+        if self.is_institute:
+            suffix = f":dept:{self.department_id}" if self.department_id is not None else ""
+            return f"{CACHE_PREFIX}:{SCOPE_INSTITUTE}{suffix}"
+        return f"{CACHE_PREFIX}:dept:{self.department_id or 0}"
 
     def by_department(self, qs: QuerySet, field: str) -> QuerySet:
         """Restrict ``qs`` to the department through ``field`` (an internal-department id lookup)."""
-        if self.is_institute:
-            return qs
-        if not self.department_id:
-            return qs.none()
+        if self.department_id is None:
+            return qs if self.is_institute else qs.none()
         return qs.filter(**{field: self.department_id})
+
+    def bookings(self) -> QuerySet:
+        """Bookings on the Reports scope, test data left out, on the chosen department's equipment."""
+        from .booking_report_metrics import report_bookings_scope
+        from .testdata import exclude_test_bookings
+
+        qs, _label = report_bookings_scope(self.user)
+        qs = exclude_test_bookings(qs)
+        if self.selected_department:
+            qs = qs.filter(equipment__internal_department_id=self.department_id)
+        return qs
+
+
+def scope_from_params(user, params) -> _Scope:
+    return _Scope(user, (params or {}).get("dept"))
+
+
+def department_choices(scope: _Scope) -> list[dict[str, Any]]:
+    """Departments the Main Administrator can pick: those owning (non-test) equipment or with (non-test) users."""
+    from django.contrib.auth import get_user_model
+
+    from iic_booking.users.models.department import Department
+
+    from .models import Equipment
+    from .testdata import exclude_test_equipment
+
+    if not scope.is_institute:
+        return []
+    owning = exclude_test_equipment(Equipment.objects.all()).exclude(status="DISPOSED").values("internal_department_id")
+    with_users = get_user_model().objects.filter(is_test_account=False).values("department_id")
+    rows = Department.objects.filter(Q(pk__in=owning) | Q(pk__in=with_users)).order_by("name")
+    owners = set(owning.filter(internal_department_id__isnull=False).values_list("internal_department_id", flat=True))
+    return [
+        {"id": d.pk, "name": d.name, "code": d.code or "", "owns_equipment": d.pk in owners}
+        for d in rows.only("id", "name", "code")
+    ]
 
 
 def can_view_admin_dashboard(user) -> bool:
@@ -215,9 +263,11 @@ def _recent_bookings(bookings: QuerySet) -> list[dict[str, Any]]:
 
 def _equipment_status(scope: _Scope) -> dict[str, int]:
     from .models import Equipment
+    from .testdata import exclude_test_equipment
 
     counts = {"total": 0, "operational": 0, "under_maintenance": 0, "disposed": 0, "other": 0}
-    rows = scope.by_department(Equipment.objects.all(), "internal_department_id").order_by().values("status").annotate(
+    equipment = exclude_test_equipment(Equipment.objects.all())
+    rows = scope.by_department(equipment, "internal_department_id").order_by().values("status").annotate(
         n=Count("pk")
     )
     for r in rows:
@@ -251,18 +301,21 @@ def _users(scope: _Scope, now: datetime) -> dict[str, int]:
 
 def _waitlist(scope: _Scope) -> dict[str, int]:
     from .models import WaitlistEntry
+    from .testdata import exclude_test_equipment, exclude_test_users
 
     qs = scope.by_department(WaitlistEntry.objects.filter(status="ACTIVE"), "equipment__internal_department_id")
-    return {"active": qs.count()}
+    return {"active": exclude_test_equipment(exclude_test_users(qs, "user__"), "equipment__").count()}
 
 
 def _booking_attempts(scope: _Scope, now: datetime) -> dict[str, Any]:
     from .models import BookingAttemptLog, BookingAttemptOutcome
+    from .testdata import exclude_test_equipment, exclude_test_users
 
     qs = scope.by_department(
         BookingAttemptLog.objects.filter(requested_at__gte=now - timedelta(days=ATTEMPT_DAYS)),
         "equipment__internal_department_id",
     ).order_by()
+    qs = exclude_test_equipment(exclude_test_users(qs, "user__"), "equipment__")
     row = qs.aggregate(total=Count("pk"), failed=Count("pk", filter=Q(outcome=BookingAttemptOutcome.FAILED)))
     from .failure_reasons import explain
 
@@ -301,10 +354,14 @@ def _ratings(scope: _Scope, bookings: QuerySet, now: datetime) -> dict[str, Any]
         "portal_average": None,
         "portal_count": 0,
     }
-    if scope.is_institute:
+    if scope.is_institute and not scope.selected_department:
         from iic_booking.support.models import PortalFeedback
 
-        portal = PortalFeedback.objects.order_by().aggregate(avg=Avg("overall_rating"), n=Count("pk"))
+        portal = (
+            PortalFeedback.objects.exclude(user__is_test_account=True)
+            .order_by()
+            .aggregate(avg=Avg("overall_rating"), n=Count("pk"))
+        )
         payload["portal_average"] = round(float(portal["avg"]), 2) if portal["avg"] is not None else None
         payload["portal_count"] = portal["n"] or 0
     return payload
@@ -351,7 +408,7 @@ def _attention(scope: _Scope, disrupted: int) -> list[dict[str, Any]]:
 
 
 def _department(scope: _Scope) -> dict[str, Any] | None:
-    if scope.is_institute or not scope.department_id:
+    if not scope.department_id:
         return None
     from iic_booking.users.models.department import Department
 
@@ -359,21 +416,21 @@ def _department(scope: _Scope) -> dict[str, Any] | None:
     return dept
 
 
-def build_admin_dashboard_summary(user) -> dict[str, Any]:
+def build_admin_dashboard_summary(user, department=None) -> dict[str, Any]:
     from iic_booking.platform_compat.manifest import build_version_payload
 
-    from .booking_report_metrics import report_bookings_scope
-
-    scope = _Scope(user)
+    scope = _Scope(user, department)
     now = timezone.now()
-    bookings, _label = report_bookings_scope(user)
+    bookings = scope.bookings()
 
     payload: dict[str, Any] = {
         "scope": SCOPE_INSTITUTE if scope.is_institute else SCOPE_DEPARTMENT,
         "generated_at": now.isoformat(),
         "cache_seconds": CACHE_SECONDS,
+        "selected_department_id": scope.department_id if scope.selected_department else None,
     }
     _safely(payload, "department", None, lambda: _department(scope))
+    _safely(payload, "departments", [], lambda: department_choices(scope))
 
     figures: dict[str, Any] = {}
     _safely(figures, "figures", {}, lambda: _booking_figures(bookings, now))
@@ -399,7 +456,7 @@ def build_admin_dashboard_summary(user) -> dict[str, Any]:
 
         # A savepoint keeps the rest of the summary working if the cancellations table is not migrated yet.
         with transaction.atomic():
-            return cancellation_card(user, now)
+            return cancellation_card(user, now, scope=scope)
 
     _safely(payload, "cancellations", None, cancellations)
     _safely(payload, "waitlist", None, lambda: _waitlist(scope))
@@ -440,10 +497,10 @@ def admin_dashboard_summary(request):
             {"error": "Only the Main Administrator or a Department Administrator can view this overview."},
             status=status.HTTP_403_FORBIDDEN,
         )
-    scope = _Scope(user)
+    scope = scope_from_params(user, request.query_params)
     refresh = str(request.query_params.get("refresh") or "").strip().lower() in ("1", "true", "yes")
     payload = None if refresh else cache.get(scope.cache_key)
     if payload is None:
-        payload = build_admin_dashboard_summary(user)
+        payload = build_admin_dashboard_summary(user, scope.department_id if scope.selected_department else None)
         cache.set(scope.cache_key, payload, CACHE_SECONDS)
     return Response(payload, status=status.HTTP_200_OK)
