@@ -235,6 +235,9 @@ SUPPORT_SETTING_KEYS = (
     "support_angle_deg",
     "support_material_id",
     "support_material_code",
+    "support_type",
+    "support_interface",
+    "adhesion",
 )
 
 

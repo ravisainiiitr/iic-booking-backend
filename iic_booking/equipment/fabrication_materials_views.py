@@ -125,6 +125,7 @@ ESTIMATE_PROFILE_KEYS = (
     "print_estimate_overrides",
     "print_estimate_calibration",
     "print_estimate_support_material_ids",
+    "print_estimate_support_options",
 )
 MAX_PRINT_SIZE_LIMIT_MM = Decimal("10000")
 PRINT_SIZE_FIELDS = ("max_print_size_x_mm", "max_print_size_y_mm", "max_print_size_z_mm")

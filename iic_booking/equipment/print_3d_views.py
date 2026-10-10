@@ -57,6 +57,8 @@ from .print_estimate_model import (
     TECH_SLS,
     TECHNOLOGY_LABELS,
     resolve_profile,
+    resolved_support_options,
+    stored_profile,
 )
 from .print_orientation import ORIENTATION_KEY, evaluate_orientations, parse_orientation
 from .print_size_limit import analyses_size_error, check_stl_files, print_size_limit_payload
@@ -142,7 +144,8 @@ def _support_settings_from_request(data, equipment, previous=None):
 
     support_mode: auto | none | buildplate | everywhere; support_density_pct 0-100 and support_angle_deg 30-70
     (blank = printer default); support_material_id: one of the printer's support materials (blank / "same" =
-    the model material)."""
+    the model material); support_type and adhesion: one the printer offers (blank = printer default / none);
+    support_interface: true / false (blank = on)."""
     out = {k: v for k, v in (previous or {}).items() if k in SUPPORT_SETTING_KEYS}
     if "support_mode" in data:
         mode = str(data.get("support_mode") or SUPPORT_AUTO).strip().lower()
@@ -181,7 +184,33 @@ def _support_settings_from_request(data, equipment, previous=None):
                 return None, "This support material is not offered on this printer."
             out["support_material_id"] = material.pk
             out["support_material_code"] = material.code
+    options = None
+    for key, kind, label in (
+        ("support_type", "types", "This support type is not offered on this printer."),
+        ("adhesion", "adhesion", "This bed adhesion option is not offered on this printer."),
+    ):
+        if key not in data:
+            continue
+        raw = str(data.get(key) or "").strip().lower()
+        if not raw:
+            out.pop(key, None)
+            continue
+        if options is None:
+            options = _printer_support_options(equipment)
+        if raw not in {o["key"] for o in options[kind] if o["enabled"]}:
+            return None, label
+        out[key] = raw
+    if "support_interface" in data:
+        raw = data.get("support_interface")
+        if raw in (None, ""):
+            out.pop("support_interface", None)
+        else:
+            out["support_interface"] = str(raw).strip().lower() not in ("false", "0", "no", "off", "none")
     return out, None
+
+
+def _printer_support_options(equipment) -> dict:
+    return resolved_support_options(stored_profile(equipment), resolve_profile(equipment).get("technology", TECH_FDM))
 
 
 def _slicer_settings_from_request(data, equipment, previous=None):
@@ -371,7 +400,16 @@ def equipment_print_materials(request, pk):
 def _support_defaults(equipment) -> dict:
     profile = resolve_profile(equipment)
     tech = profile.get("technology")
+    options = resolved_support_options(stored_profile(equipment), tech)
+    public = ("key", "label", "description", "slicers", "volume_factor", "speed_factor")
     return {
+        "support_types": [{k: t[k] for k in public} for t in options["types"] if t["enabled"]],
+        "default_support_type": options["default_type"],
+        "interface_layers": int(profile.get("support_interface_layers") or 0) if tech == TECH_FDM else 0,
+        "adhesion_types": [
+            {k: a[k] for k in ("key", "label", "description")} for a in options["adhesion"] if a["enabled"]
+        ],
+        "brim_width_mm": float(profile.get("brim_width_mm") or 0) if tech == TECH_FDM else None,
         "technology": tech,
         "technology_label": TECHNOLOGY_LABELS.get(tech, ""),
         "supports_available": bool(profile.get("supports", True)) and tech != TECH_SLS,

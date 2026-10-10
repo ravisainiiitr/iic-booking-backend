@@ -22,6 +22,7 @@ from .fabrication import (
     active_print_analyses_for_booking,
     fabrication_parts_summary,
     is_fabrication_equipment,
+    print_part_options_text,
 )
 from .models import Booking, BookingEventType, BookingStatus, EquipmentOperator, EquipmentProfileType
 
@@ -410,7 +411,7 @@ def user_part_lines(booking) -> list[str]:
                 part.get("material_name") or part.get("material_code") or ""
             )
         else:
-            material = print_material
+            material = ", ".join(t for t in (print_material, print_part_options_text(part)) if t)
         line = f"{part.get('name') or part.get('filename') or 'Part'} × {part.get('quantity') or 1}"
         lines.append(f"{line} — {material}" if material else line)
     return lines
