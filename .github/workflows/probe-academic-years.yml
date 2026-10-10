@@ -1,0 +1,38 @@
+# Probe: what the TA Nomination Call "Academic Year" picker gets in production.
+# Read-only; prints semester metadata and the computed academic-year options only (no users, no secrets).
+name: Probe Academic Years
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Semesters and academic-year options
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          echo "django_container=$CID"
+          test -n "$CID"
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.utils import timezone
+          from iic_booking.equipment.models import Semester
+
+          qs = Semester.objects.order_by("-start_date", "-id")
+          print(f"today={timezone.localdate()} semesters_total={qs.count()} semesters_active={qs.filter(is_active=True).count()}")
+          print("code | name | start | end | active")
+          for s in qs[:30]:
+              print(f"{s.code} | {s.name} | {s.start_date} | {s.end_date} | {s.is_active}")
+          try:
+              from iic_booking.equipment import academic_years
+          except ImportError:
+              print("academic_years module: not deployed (picker lists active semesters only)")
+          else:
+              print("academic_years.options():")
+              for o in academic_years.options():
+                  print(f"  {o['label']} semester_id={o['semester_id']} current={o['is_current']} available={o['available']}")
+          PY
