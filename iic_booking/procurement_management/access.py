@@ -9,7 +9,10 @@ Roles are resolved per department:
 * HOD                 — the department's current ``HeadOfDepartmentAssignment`` (active and within its effective
                         dates; ``Department.head`` only when the department has none, see ``hod_department_ids``) or an
                         explicit HOD / Competent Authority ``ProcurementRoleAssignment``.
-* OC Stores / Office / Auditor — ``ProcurementRoleAssignment`` rows (Office carries granular permissions).
+* OC Stores / Office / Auditor / Accounts In Charge — ``ProcurementRoleAssignment`` rows (Office carries granular
+                        permissions; Accounts implies invoices, payments, budget and reports).
+* Lab In Charge       — ``ProcurementRoleAssignment`` with an equipment scope (``equipment_ids``; empty = every
+                        equipment of the department). Acts like lab staff for those equipment.
 
 Everything is filtered to departments whose ``ProcurementManagementConfiguration.module_enabled`` is true, so a
 disabled department behaves as if the module did not exist. ``MODULE_USER_TYPES`` (Main Admin, Department
@@ -36,7 +39,8 @@ from .models import ProcurementManagementConfiguration, ProcurementRoleAssignmen
 
 R = c.ModuleRole
 P = c.OfficePermission
-DEPT_WIDE_ROLES = frozenset({R.OC_STORES, R.OFFICE, R.HOD, R.AUDITOR, R.MAIN_ADMIN})
+DEPT_WIDE_ROLES = frozenset({R.OC_STORES, R.OFFICE, R.HOD, R.AUDITOR, R.MAIN_ADMIN, R.ACCOUNTS})
+LAB_ROLES = frozenset({R.OIC, R.LAB_OPERATOR, R.LAB_INCHARGE})
 
 
 MODULE_USER_TYPES = frozenset(
@@ -217,11 +221,34 @@ class UserScope:
         return dict(Equipment.objects.filter(equipment_id__in=ids).values_list("equipment_id", "internal_department_id"))
 
     @cached_property
+    def _assignment_rows(self) -> list:
+        return list(ProcurementRoleAssignment.objects.filter(user=self.user, active=True))
+
+    @cached_property
     def assignments(self) -> dict[int, dict[str, set[str]]]:
         out: dict[int, dict[str, set[str]]] = {}
-        for row in ProcurementRoleAssignment.objects.filter(user=self.user, active=True):
+        for row in self._assignment_rows:
             out.setdefault(row.department_id, {})[row.role] = set(row.permissions or [])
         return out
+
+    @cached_property
+    def incharge_equipment(self) -> dict[int, int | None]:
+        """Equipment in the user's charge as Lab In Charge (only in enabled departments)."""
+        from iic_booking.equipment.models import Equipment
+
+        rows = [r for r in self._assignment_rows if r.role == R.LAB_INCHARGE and r.department_id in self.enabled]
+        if not rows:
+            return {}
+        q = Q(pk__in=[])
+        for row in rows:
+            ids = [int(x) for x in (row.equipment_ids or []) if str(x).isdigit()]
+            q |= Q(internal_department_id=row.department_id, **({"equipment_id__in": ids} if ids else {}))
+        return dict(Equipment.objects.filter(q).values_list("equipment_id", "internal_department_id"))
+
+    @cached_property
+    def lab_equipment(self) -> dict[int, int | None]:
+        """Every equipment the user works with as OIC, Lab Operator or Lab In Charge."""
+        return {**self.operator_equipment, **self.incharge_equipment, **self.oic_equipment}
 
     @cached_property
     def hod_departments(self) -> set[int]:
@@ -272,6 +299,8 @@ class UserScope:
             perms |= by_role.get(R.OFFICE, set())
         if R.OC_STORES in roles:
             perms |= set(c.STORES_PERMISSIONS) | by_role.get(R.OC_STORES, set())
+        if R.ACCOUNTS in roles:
+            perms |= set(c.ACCOUNTS_PERMISSIONS) | by_role.get(R.ACCOUNTS, set())
         if roles & {R.HOD, R.AUDITOR}:
             perms.add(P.REPORTS)
         return perms & set(c.ALL_OFFICE_PERMISSIONS)
@@ -284,6 +313,12 @@ class UserScope:
 
     def is_operator_for(self, equipment_id) -> bool:
         return bool(equipment_id) and equipment_id in self.operator_equipment
+
+    def is_incharge_for(self, equipment_id) -> bool:
+        return bool(equipment_id) and equipment_id in self.incharge_equipment
+
+    def is_lab_staff_for(self, equipment_id) -> bool:
+        return bool(equipment_id) and equipment_id in self.lab_equipment
 
     def require_any_department(self) -> None:
         if not self.department_ids():
@@ -321,8 +356,9 @@ def visible_requests_q(scope: UserScope) -> Q:
     if wide:
         q |= Q(department_id__in=wide)
     q |= Q(requested_by=scope.user, department_id__in=scope.department_ids())
-    if scope.oic_equipment:
-        q |= Q(equipment_id__in=list(scope.oic_equipment), department_id__in=scope.department_ids())
+    watched = set(scope.oic_equipment) | set(scope.incharge_equipment)
+    if watched:
+        q |= Q(equipment_id__in=list(watched), department_id__in=scope.department_ids())
     return q
 
 
@@ -338,7 +374,7 @@ def visible_department_wide_q(scope: UserScope, *, extra: Q | None = None) -> Q:
 
 
 def lab_staff_equipment_q(scope: UserScope, field_name: str = "equipment_id") -> Q | None:
-    ids = list(set(scope.oic_equipment) | set(scope.operator_equipment))
+    ids = list(scope.lab_equipment)
     if not ids:
         return None
     return Q(**{f"{field_name}__in": ids})
@@ -410,10 +446,12 @@ def raising_role(scope: UserScope, dept_id: int, equipment=None) -> str:
     eid = getattr(equipment, "pk", None)
     if eid and scope.is_oic_for(eid):
         return R.OIC
+    if eid and scope.is_incharge_for(eid):
+        return R.LAB_INCHARGE
     if eid and scope.is_operator_for(eid):
         return R.LAB_OPERATOR
     roles = scope.roles(dept_id)
-    for role in (R.OFFICE, R.OC_STORES, R.HOD, R.MAIN_ADMIN, R.OIC, R.LAB_OPERATOR):
+    for role in (R.OFFICE, R.OC_STORES, R.ACCOUNTS, R.HOD, R.MAIN_ADMIN, R.OIC, R.LAB_INCHARGE, R.LAB_OPERATOR):
         if role in roles:
             return role
     raise forbidden("You cannot raise requests in this department.")
@@ -422,5 +460,4 @@ def raising_role(scope: UserScope, dept_id: int, equipment=None) -> str:
 def can_raise_for_equipment(scope: UserScope, dept_id: int, equipment) -> bool:
     if equipment is None:
         return True
-    eid = equipment.pk
-    return scope.is_oic_for(eid) or scope.is_operator_for(eid) or scope.dept_wide(dept_id)
+    return scope.is_lab_staff_for(equipment.pk) or scope.dept_wide(dept_id)

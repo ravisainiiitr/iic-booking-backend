@@ -1,6 +1,15 @@
 from django.urls import path, re_path
 
-from . import views_assets, views_config, views_masters, views_planning, views_procurement, views_reports, views_requests
+from . import (
+    views_assets,
+    views_config,
+    views_inventory,
+    views_masters,
+    views_planning,
+    views_procurement,
+    views_reports,
+    views_requests,
+)
 
 app_name = "procurement_management"
 
@@ -34,6 +43,8 @@ urlpatterns = [
     path("requests/<int:pk>/", views_requests.request_detail, name="request-detail"),
     path("requests/<int:pk>/documents/", views_requests.request_documents, name="request-documents"),
     path("requests/<int:pk>/offline-hod-decision/", views_requests.request_offline_hod, name="request-offline-hod"),
+    path("requests/<int:pk>/stores-edit/", views_inventory.request_stores_edit, name="request-stores-edit"),
+    path("requests/<int:pk>/stock-check/", views_inventory.request_stock_check, name="request-stock-check"),
     re_path(
         r"^requests/(?P<pk>\d+)/(?P<action>submit|resubmit|approve|reject|hold|resume|cancel|stores-review|issue)/$",
         views_requests.request_action,
@@ -67,11 +78,37 @@ urlpatterns = [
     path("records/<int:pk>/complete/", views_procurement.record_complete, name="record-complete"),
     path("records/<int:pk>/documents/", views_procurement.record_documents, name="record-documents"),
     path("records/<int:pk>/invoices/", views_procurement.record_invoices, name="record-invoices"),
+    path("records/<int:pk>/purchase-mode/", views_inventory.record_purchase_mode, name="record-purchase-mode"),
+    path("invoices/<int:pk>/forward/", views_inventory.invoice_forward, name="invoice-forward"),
+    path("accounts/bills/", views_inventory.accounts_bills, name="accounts-bills"),
     path("invoices/<int:pk>/", views_procurement.invoice_detail, name="invoice-detail"),
     path("invoices/<int:pk>/variance-review/", views_procurement.invoice_variance_review, name="invoice-variance-review"),
     path("invoices/<int:pk>/payments/", views_procurement.invoice_payment, name="invoice-payment"),
     path("documents/<int:pk>/download/", views_requests.document_download, name="document-download"),
     path("documents/<int:pk>/archive/", views_requests.document_archive, name="document-archive"),
+    # Asset registers (books), import, labels, verification, disposal
+    path("registers/", views_inventory.registers_list, name="registers"),
+    path("registers/<int:pk>/", views_inventory.register_detail, name="register-detail"),
+    path("registers/<int:pk>/entries/", views_inventory.register_entries, name="register-entries"),
+    path("assets/lookup/", views_inventory.asset_lookup, name="asset-lookup"),
+    path("assets/labels/", views_inventory.asset_labels, name="asset-labels"),
+    path("assets/import/template/", views_inventory.import_template, name="asset-import-template"),
+    path("assets/import/preview/", views_inventory.import_preview, name="asset-import-preview"),
+    path("assets/import/commit/", views_inventory.import_commit, name="asset-import-commit"),
+    path("assets/<int:pk>/verifications/", views_inventory.asset_verifications, name="asset-verifications"),
+    path("assets/<int:pk>/dispose/", views_inventory.asset_dispose, name="asset-dispose"),
+    path("verification/campaigns/", views_inventory.campaigns, name="verification-campaigns"),
+    path("verification/campaigns/<int:pk>/", views_inventory.campaign_detail, name="verification-campaign-detail"),
+    path("verification/campaigns/<int:pk>/close/", views_inventory.campaign_close, name="verification-campaign-close"),
+    path("verification/campaigns/<int:pk>/assets/", views_inventory.campaign_assets, name="verification-campaign-assets"),
+    # Equipment-linked inventory and maintenance
+    path("item-links/", views_inventory.item_links_list, name="item-links"),
+    path("item-links/<int:pk>/", views_inventory.item_link_detail, name="item-link-detail"),
+    path("equipment/<int:pk>/suggested-lines/", views_inventory.equipment_suggested_lines, name="equipment-suggested-lines"),
+    path("equipment/<int:pk>/overview/", views_inventory.equipment_overview, name="equipment-overview"),
+    path("maintenance/", views_inventory.maintenance_list, name="maintenance"),
+    path("maintenance/<int:pk>/", views_inventory.maintenance_detail, name="maintenance-detail"),
+    path("maintenance/<int:pk>/raise-request/", views_inventory.maintenance_raise_request, name="maintenance-raise-request"),
     # Asset register and transfers
     path("assets/", views_assets.assets_list, name="assets"),
     path("assets/<int:pk>/", views_assets.asset_detail, name="asset-detail"),

@@ -197,7 +197,7 @@ def create_request(scope, data: dict, *, request=None) -> PurchaseRequest:
     if not access.can_raise_for_equipment(scope, dept.pk, equipment):
         raise forbidden("You can only raise requests for equipment you operate or manage.")
     role = access.raising_role(scope, dept.pk, equipment)
-    if role in (R.OIC, R.LAB_OPERATOR) and equipment is None:
+    if role in (R.OIC, R.LAB_OPERATOR, R.LAB_INCHARGE) and equipment is None:
         raise ProcurementError(
             "Choose the equipment this request is for.", code="equipment_required", field="equipment_id"
         )
@@ -280,5 +280,5 @@ def validate_for_submit(r: PurchaseRequest, cfg) -> None:
                 code="specification_required",
                 field="specification",
             )
-    if r.raised_as_role in (R.OIC, R.LAB_OPERATOR) and not r.equipment_id:
+    if r.raised_as_role in (R.OIC, R.LAB_OPERATOR, R.LAB_INCHARGE) and not r.equipment_id:
         raise ProcurementError("Choose the equipment this request is for.", code="equipment_required")

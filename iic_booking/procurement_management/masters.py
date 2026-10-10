@@ -208,7 +208,8 @@ def save_vendor(scope, department, data: dict, *, instance: Vendor | None = None
 # ---------------------------------------------------------------------------
 # Items
 # ---------------------------------------------------------------------------
-ITEM_FIELDS = ("name", "category", "uom", "specification", "hsn_sac", "default_gst_rate", "min_level", "reorder_level", "active")
+ITEM_FIELDS = ("name", "category", "uom", "specification", "hsn_sac", "default_gst_rate", "min_level", "reorder_level", "active",
+               "part_number", "tracks_batch")
 
 
 @transaction.atomic
@@ -227,7 +228,7 @@ def save_item(scope, department, data: dict, *, instance: Item | None = None, re
         it.category = cat
     if "uom" in data:
         it.uom = req_str(data, "uom", max_len=30)
-    for f, max_len in (("specification", 10000), ("hsn_sac", 20)):
+    for f, max_len in (("specification", 10000), ("hsn_sac", 20), ("part_number", 120)):
         if f in data:
             setattr(it, f, req_str(data, f, max_len=max_len, required=False))
     if it.hsn_sac and not re.fullmatch(r"\d{4,8}", it.hsn_sac):
@@ -247,6 +248,8 @@ def save_item(scope, department, data: dict, *, instance: Item | None = None, re
             setattr(it, f, Decimal("0.000") if raw in (None, "", 0, "0") else parse_qty(raw, f))
     if "active" in data:
         it.active = parse_bool(data["active"])
+    if "tracks_batch" in data:
+        it.tracks_batch = parse_bool(data["tracks_batch"])
     if instance is None:
         it.code = next_number(c.NumberPrefix.ITEM)
     it.save()

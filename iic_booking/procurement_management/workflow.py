@@ -6,7 +6,8 @@ Route (fixed at submission, stored on the request):
   2. OC Stores   — when the request type requires it. With ``stores_issue_flow`` Stores may mark the request
                    available (then issue from stock), partially available (issue now, the rest continues) or not
                    available (continues to purchase).
-  3. HOD         — request type rule ALWAYS, ABOVE_THRESHOLD (estimated total > configured HOD threshold) or the
+  3. Accounts    — optional budget-availability check by the Accounts In Charge (``accounts_budget_check``).
+  4. HOD         — request type rule ALWAYS, ABOVE_THRESHOLD (estimated total > configured HOD threshold) or the
                    category's ``hod_required_always``. Recorded in-app by the HOD, or offline by Office (with the
                    ``offline_approval`` permission) against an uploaded signed document — per ``hod_approval_mode``.
 
@@ -38,7 +39,7 @@ P = c.OfficePermission
 CANCELLABLE = frozenset(
     {RS.DRAFT, RS.PENDING_OIC, RS.PENDING_STORES, RS.PENDING_HOD, RS.ON_HOLD, RS.REJECTED, RS.APPROVED, RS.STORES_AVAILABLE}
 )
-STAGE_ROLE = {S.OIC: R.OIC, S.STORES: R.OC_STORES, S.HOD: R.HOD}
+STAGE_ROLE = {S.OIC: R.OIC, S.STORES: R.OC_STORES, S.ACCOUNTS: R.ACCOUNTS, S.HOD: R.HOD}
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,8 @@ def compute_route(r: PurchaseRequest, cfg) -> list[str]:
         route.append(S.OIC.value)
     if r.request_type.requires_stores:
         route.append(S.STORES.value)
+    if cfg.accounts_budget_check:
+        route.append(S.ACCOUNTS.value)
     if hod_required(r, cfg):
         route.append(S.HOD.value)
     return route
@@ -93,6 +96,8 @@ def can_act_on_stage(scope, r: PurchaseRequest, stage: str, cfg) -> bool:
         return scope.is_oic_for(r.equipment_id)
     if stage == S.STORES:
         return scope.has_role(r.department_id, R.OC_STORES)
+    if stage == S.ACCOUNTS:
+        return scope.has_role(r.department_id, R.ACCOUNTS)
     if stage == S.HOD:
         return scope.has_role(r.department_id, R.HOD) and cfg.hod_approval_mode != c.HodApprovalMode.OFFLINE
     return False
@@ -133,6 +138,10 @@ def _lock(r) -> PurchaseRequest:
 
 def _act(r, scope, *, stage, action, from_status, comments="", amount=None, request=None, **offline) -> ApprovalAction:
     from iic_booking.users.mobile_sessions import client_ip
+
+    if r.status != from_status:
+        r.stage_entered_at = timezone.now()
+        PurchaseRequest.objects.filter(pk=r.pk).update(stage_entered_at=r.stage_entered_at)
 
     roles = scope.roles(r.department_id)
     actor_role = STAGE_ROLE.get(stage, "") if STAGE_ROLE.get(stage) in roles else ""
@@ -369,6 +378,16 @@ def stores_review(scope, r: PurchaseRequest, *, decision: str, lines=None, comme
     _require_stage(scope, r, cfg, S.STORES)
     if not r.request_type.stores_issue_flow:
         raise ProcurementError("Availability review does not apply to this request type.", code="not_applicable")
+    if decision == "BY_LINES":
+        open_lines = [line for line in r.lines.all() if line.quantity > line.issued_quantity]
+        stock = [line for line in open_lines if line.fulfilment == c.LineFulfilment.STOCK]
+        if len(stock) == len(open_lines):
+            decision = "AVAILABLE"
+        elif not stock:
+            decision = "NOT_AVAILABLE"
+        else:
+            decision = "PARTIAL"
+            lines = [{"line_id": line.pk, "quantity": str(line.quantity - line.issued_quantity)} for line in stock]
     from_status = r.status
     if decision == "AVAILABLE":
         r.status = RS.STORES_AVAILABLE
@@ -380,7 +399,9 @@ def stores_review(scope, r: PurchaseRequest, *, decision: str, lines=None, comme
         _advance(r, scope, cfg, stage=S.STORES, action=A.STORES_NOT_AVAILABLE, comments=comments, request=request)
         return r
     if decision != "PARTIAL":
-        raise ProcurementError("decision must be AVAILABLE, PARTIAL or NOT_AVAILABLE.", code="invalid_choice", field="decision")
+        raise ProcurementError(
+            "decision must be AVAILABLE, PARTIAL, NOT_AVAILABLE or BY_LINES.", code="invalid_choice", field="decision"
+        )
     if not isinstance(lines, list) or not lines:
         raise ProcurementError("List the quantities available for each line.", code="lines_required", field="lines")
     by_id = {line.pk: line for line in r.lines.all()}
@@ -509,6 +530,8 @@ def available_actions(r: PurchaseRequest, scope) -> list[str]:
         out += ["approve", "reject", "hold"]
         if stage == S.STORES and r.request_type.stores_issue_flow:
             out.append("stores_review")
+        if stage == S.STORES:
+            out.append("stores_edit")
     if r.status == RS.ON_HOLD and can_act_on_stage(scope, r, _held_stage(r), cfg):
         out.append("resume")
     if can_record_offline(scope, r, cfg):
@@ -527,6 +550,7 @@ def pending_for_me_q(scope) -> Q:
     q = Q(pk__in=[])
     oic_eq = list(scope.oic_equipment)
     stores = [d for d in scope.department_ids() if scope.has_role(d, R.OC_STORES)]
+    accounts = [d for d in scope.department_ids() if scope.has_role(d, R.ACCOUNTS)]
     hod = [d for d in scope.department_ids() if scope.has_role(d, R.HOD)]
     offline = [d for d in scope.department_ids() if scope.has_perm(d, P.OFFLINE_APPROVAL)]
     enabled = list(scope.department_ids())
@@ -538,6 +562,8 @@ def pending_for_me_q(scope) -> Q:
         q |= at(RS.PENDING_OIC) & Q(equipment_id__in=oic_eq)
     if stores:
         q |= (at(RS.PENDING_STORES) | Q(status=RS.STORES_AVAILABLE)) & Q(department_id__in=stores)
+    if accounts:
+        q |= at(RS.PENDING_ACCOUNTS) & Q(department_id__in=accounts)
     if hod or offline:
         q |= at(RS.PENDING_HOD) & Q(department_id__in=list(set(hod) | set(offline)))
     return q & Q(department_id__in=enabled) & ~Q(requested_by=scope.user)

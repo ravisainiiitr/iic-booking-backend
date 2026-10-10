@@ -45,6 +45,69 @@ def _bva(dept_id, fy) -> dict:
     return {"financial_year": fy, "rows": [_money_dict(r) for r in data["rows"]], "total": _money_dict(data["total"])}
 
 
+AGEING_BUCKETS = (("0-3", 0, 3), ("4-7", 4, 7), ("8-15", 8, 15), (">15", 16, None))
+
+
+def ageing(qs, now=None) -> dict:
+    """Pending requests bucketed by days at their current stage (SLA ageing)."""
+    now = now or timezone.now()
+    out = {label: 0 for label, _, _ in AGEING_BUCKETS}
+    oldest = None
+    for entered, submitted in qs.values_list("stage_entered_at", "submitted_at"):
+        since = entered or submitted
+        if since is None:
+            continue
+        days = (now - since).days
+        oldest = days if oldest is None else max(oldest, days)
+        for label, lo, hi in AGEING_BUCKETS:
+            if days >= lo and (hi is None or days <= hi):
+                out[label] += 1
+                break
+    return {"buckets": out, "oldest_days": oldest}
+
+
+def _inventory_widgets(scope, dept, cfg, fy, lab_eq) -> dict:
+    from . import verification
+    from .fy import fy_bounds
+    from .models import AssetRegister, ItemEquipmentLink, MaintenanceRecord
+
+    start, end = fy_bounds(fy)
+    out: dict = {}
+    maint = MaintenanceRecord.objects.filter(department=dept, is_archived=False)
+    wide = scope.dept_wide(dept.pk)
+    if not wide:
+        maint = maint.filter(equipment_id__in=lab_eq)
+    fy_maint = list(maint.filter(Q(downtime_start__date__gte=start, downtime_start__date__lte=end) | Q(downtime_start__isnull=True, created_at__date__gte=start)))
+    out["maintenance"] = {
+        "this_year": len(fy_maint),
+        "open_downtime": maint.filter(downtime_start__isnull=False, downtime_end__isnull=True).count(),
+        "downtime_hours": round(sum((r.downtime_hours or 0) for r in fy_maint), 1),
+        "cost": s.m(sum((r.total_cost for r in fy_maint), 0)),
+    }
+    if cfg.asset_register_enabled:
+        if wide:
+            regs = AssetRegister.objects.filter(department=dept, is_archived=False)
+            out["registers"] = {
+                "count": regs.count(),
+                "by_type": _counts(regs, "register_type"),
+                "entries": Asset.objects.filter(department=dept, is_archived=False, register__isnull=False).count(),
+                "unregistered": Asset.objects.filter(department=dept, is_archived=False, register__isnull=True).count(),
+            }
+            out["verification"] = verification.department_summary([dept.pk], fy)
+        else:
+            mine = Asset.objects.filter(department=dept, is_archived=False, equipment_id__in=lab_eq)
+            out["my_assets"] = {
+                "count": mine.count(),
+                "not_verified_this_year": mine.exclude(last_verified_on__gte=start, last_verified_on__lte=end).count(),
+            }
+    if lab_eq:
+        linked = ItemEquipmentLink.objects.filter(department=dept, equipment_id__in=lab_eq, active=True).values_list("item_id", flat=True)
+        out["linked_low_stock"] = StockBalance.objects.filter(department=dept, laboratory__isnull=True, item_id__in=list(linked)).filter(
+            Q(min_level__gt=0, quantity__lt=F("min_level")) | Q(reorder_level__gt=0, quantity__lte=F("reorder_level"))
+        ).count()
+    return out
+
+
 def _counts(qs, field="status") -> dict:
     return {row[field]: row["n"] for row in qs.values(field).annotate(n=Count("id")).order_by(field)}
 
@@ -59,7 +122,7 @@ def dashboard(request):
     today = timezone.localdate()
     fy = cfg.current_financial_year or fy_label(today)
     reqs = PurchaseRequest.objects.filter(department=dept, is_archived=False)
-    lab_eq = list(set(scope.oic_equipment) | set(scope.operator_equipment))
+    lab_eq = list(scope.lab_equipment)
     horizon = today + timedelta(days=cfg.amc_reminder_days)
     amc_due = AMCServiceRecord.objects.filter(department=dept, status=c.AMCStatus.ACTIVE, end_date__gte=today, end_date__lte=horizon, is_archived=False)
     out = {
@@ -68,7 +131,31 @@ def dashboard(request):
         "roles": sorted(scope.roles(dept.pk)),
         "my_requests": _counts(reqs.filter(requested_by=scope.user)),
         "pending_approvals": reqs.filter(workflow.pending_for_me_q(scope)).count(),
+        "my_queue_ageing": ageing(reqs.filter(workflow.pending_for_me_q(scope))),
+        "pending_for_me": [
+            {"id": r.pk, "number": r.number, "title": r.title, "status": r.status, "status_label": r.get_status_display(),
+             "stage_age_days": s.stage_age_days(r), "estimated_total": s.m(r.estimated_total)}
+            for r in reqs.filter(workflow.pending_for_me_q(scope)).order_by("stage_entered_at", "submitted_at")[:10]
+        ],
     }
+    out.update(_inventory_widgets(scope, dept, cfg, fy, lab_eq))
+    roles = scope.roles(dept.pk)
+    if c.ModuleRole.OC_STORES in roles:
+        bills = Invoice.objects.filter(department=dept, is_archived=False)
+        out["stores"] = {
+            "pending_review": reqs.filter(status=RS.PENDING_STORES).count(),
+            "to_issue": reqs.filter(status=RS.STORES_AVAILABLE).count(),
+            "bills_to_forward": bills.filter(forwarded_to_accounts_at__isnull=True).exclude(payment_status=c.PaymentStatus.PAID).count(),
+        }
+    if c.ModuleRole.ACCOUNTS in roles or scope.has_perm(dept.pk, P.PAYMENTS):
+        fwd = Invoice.objects.filter(department=dept, is_archived=False, forwarded_to_accounts_at__isnull=False).exclude(
+            payment_status=c.PaymentStatus.PAID
+        )
+        out["accounts"] = {
+            "bills_pending": fwd.count(),
+            "amount_pending": s.m(fwd.aggregate(t=Sum(F("total_amount") - F("paid_amount")))["t"] or 0),
+            "budget_checks_pending": reqs.filter(status=RS.PENDING_ACCOUNTS).count(),
+        }
     if not scope.dept_wide(dept.pk):
         out["amc_expiring"] = amc_due.filter(equipment_id__in=lab_eq).count()
         out["my_requirements"] = _counts(PlanRequirement.objects.filter(department=dept, raised_by=scope.user, is_archived=False))
@@ -92,6 +179,7 @@ def dashboard(request):
         assets_by_status=_counts(Asset.objects.filter(department=dept, is_archived=False)),
         open_transfers=AssetTransfer.objects.filter(department=dept, status__in=(c.TransferStatus.REQUESTED, c.TransferStatus.APPROVED)).count(),
         amc_expiring=amc_due.count(),
+        pending_ageing=ageing(reqs.filter(status__in=list(c.PENDING_STATUSES))),
     )
     if budget.has_budget_visibility(scope, dept.pk):
         out["budget"] = _bva(dept.pk, fy)

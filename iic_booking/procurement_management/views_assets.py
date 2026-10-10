@@ -29,7 +29,8 @@ def assets_q(scope) -> Q:
 
 def _assets_qs():
     return Asset.objects.select_related(
-        "department", "laboratory", "equipment", "category", "procurement_record", "vendor", "custodian", "created_by"
+        "department", "laboratory", "equipment", "category", "procurement_record", "vendor", "custodian", "created_by",
+        "register", "parent",
     ).filter(is_archived=False)
 
 
@@ -38,17 +39,19 @@ def _get_asset(request, pk) -> Asset:
 
 
 ASSET_EXPORT_HEADERS = [
-    "Asset no.", "Description", "Category", "Make", "Model", "Serial no.", "Equipment", "Location", "Custodian",
-    "Status", "Purchase date", "Cost", "Funding", "FY", "Procurement record",
+    "Asset no.", "Asset tag", "Register ref", "Description", "Category", "Make", "Model", "Serial no.", "Equipment",
+    "Location", "Custodian", "Status", "Condition", "Purchase date", "Cost", "Funding", "FY", "Procurement record",
+    "Last verified",
 ]
 
 
 def _asset_row(a):
     return [
-        a.number, a.description, a.category.name, a.make, a.model_number, a.serial_number,
+        a.number, a.asset_tag, a.register_ref, a.description, a.category.name, a.make, a.model_number, a.serial_number,
         a.equipment.name if a.equipment_id else "", a.location, (s.user_brief(a.custodian) or {}).get("name", ""),
-        a.get_status_display(), s.iso(a.purchase_date) or "", s.m(a.cost), a.funding_type, a.financial_year,
-        a.procurement_record.number if a.procurement_record_id else "",
+        a.get_status_display(), a.get_condition_display() if a.condition else "", s.iso(a.purchase_date) or "",
+        s.m(a.cost), a.funding_source or a.funding_type, a.financial_year,
+        a.procurement_record.number if a.procurement_record_id else "", s.iso(a.last_verified_on) or "",
     ]
 
 
@@ -61,7 +64,8 @@ def assets_list(request):
     p = request.query_params
     qs = _assets_qs().filter(assets_q(scope))
     for key, field in (("department_id", "department_id"), ("equipment_id", "equipment_id"), ("category_id", "category_id"),
-                       ("procurement_record_id", "procurement_record_id")):
+                       ("procurement_record_id", "procurement_record_id"), ("register_id", "register_id"),
+                       ("register_page", "register_page"), ("parent_id", "parent_id")):
         val = parse_int(p.get(key), key)
         if val:
             qs = qs.filter(**{field: val})
@@ -70,13 +74,33 @@ def assets_list(request):
         qs = qs.filter(status__in=statuses)
     if p.get("financial_year"):
         qs = qs.filter(financial_year=p["financial_year"])
+    if p.get("register_type"):
+        qs = qs.filter(register__register_type__in=p["register_type"].split(","))
+    if p.get("register_serial"):
+        qs = qs.filter(register_serial__iexact=p["register_serial"].strip())
+    if p.get("condition"):
+        qs = qs.filter(condition__in=p["condition"].split(","))
+    if p.get("unregistered") and parse_bool(p["unregistered"]):
+        qs = qs.filter(register__isnull=True)
+    if p.get("main_only") and parse_bool(p["main_only"]):
+        qs = qs.filter(parent__isnull=True)
+    if p.get("verified_fy"):
+        from .fy import fy_bounds
+
+        try:
+            start, end = fy_bounds(p["verified_fy"])
+        except ValueError:
+            raise ProcurementError("verified_fy must look like 2026-27.", code="invalid", field="verified_fy")
+        flag = p.get("verified", "yes")
+        within = Q(last_verified_on__gte=start, last_verified_on__lte=end)
+        qs = qs.filter(within) if flag != "no" else qs.exclude(within)
     term = (p.get("q") or "").strip()
     if term:
-        qs = qs.filter(
-            Q(number__icontains=term) | Q(description__icontains=term) | Q(serial_number__icontains=term)
-            | Q(asset_tag__icontains=term) | Q(make__icontains=term) | Q(model_number__icontains=term)
-        )
-    qs = qs.order_by("-created_at")
+        from .registers import search_q
+
+        qs = qs.filter(search_q(term))
+    order = p.get("ordering")
+    qs = qs.order_by("register__code", "register_page", "register_serial", "id") if order == "register" else qs.order_by("-created_at")
     fmt = p.get("export")
     if fmt:
         if not any(scope.has_perm(d, P.REPORTS) or scope.has_perm(d, P.ASSETS) for d in scope.department_ids()):
@@ -242,7 +266,7 @@ def _amc_qs():
 
 
 def amc_q(scope) -> Q:
-    lab = set(scope.oic_equipment) | set(scope.operator_equipment)
+    lab = set(scope.lab_equipment)
     return access.visible_department_wide_q(scope, extra=Q(equipment_id__in=list(lab)) if lab else None)
 
 

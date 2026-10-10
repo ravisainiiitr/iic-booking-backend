@@ -63,6 +63,10 @@ def requests_list(request):
     eq = parse_int(p.get("equipment_id"), "equipment_id")
     if eq:
         qs = qs.filter(equipment_id=eq)
+    for key in ("maintenance_record_id", "disruption_event_id"):
+        val = parse_int(p.get(key), key)
+        if val:
+            qs = qs.filter(**{key: val})
     term = (p.get("q") or "").strip()
     if term:
         qs = qs.filter(Q(number__icontains=term) | Q(title__icontains=term) | Q(lines__description__icontains=term)).distinct()

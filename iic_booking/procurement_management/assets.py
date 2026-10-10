@@ -168,6 +168,16 @@ def register(scope, data: dict, *, request=None) -> list[Asset]:
     if clash:
         raise ProcurementError(f"Serial number already registered: {', '.join(clash)}.", code="duplicate_serial", serials=clash)
 
+    from . import registers
+
+    entries = registers.entry_values(data, dept_id, count, category=category, auto_place=record is not None)
+    extras = registers.extra_values(data, dept_id)
+    if record is not None:
+        extras["po_number"] = extras["po_number"] or record.po_number
+        extras["po_date"] = extras["po_date"] or record.po_date
+        if invoice is not None:
+            extras["invoice_number"] = extras["invoice_number"] or invoice.invoice_number
+            extras["invoice_date"] = extras["invoice_date"] or invoice.invoice_date
     status = choice(data.get("status"), [A.IN_STORE, A.UNDER_INSTALLATION, A.ACTIVE, A.IN_USE], "status", default=A.IN_STORE)
     cost = parse_money(data.get("cost"), "cost", required=record is None)
     purchase_date = parse_day(data.get("purchase_date"), "purchase_date")
@@ -191,15 +201,25 @@ def register(scope, data: dict, *, request=None) -> list[Asset]:
         location=req_str(data, "location", required=False),
         custodian=_user(data.get("custodian_id"), "custodian_id"),
         status=status, remarks=req_str(data, "remarks", max_len=5000, required=False), created_by=scope.user,
+        **extras,
     )
+    if not common["supplier_name"] and common["vendor"] is not None:
+        common["supplier_name"] = common["vendor"].name
     created = []
     for i in range(count):
-        asset = Asset.objects.create(
+        asset = Asset(
             number=next_number(c.NumberPrefix.ASSET), serial_number=serials[i],
-            asset_tag=req_str(data, "asset_tag", max_len=120, required=False) if count == 1 else "", **common,
+            asset_tag=req_str(data, "asset_tag", max_len=120, required=False) if count == 1 else "", **common, **entries[i],
         )
+        registers.save_entry(asset)
+        registers.ensure_tag(asset)
         _history(asset, "", status, "Registered" + (f" from {record.number}" if record else ""), scope.user)
-        audit.record(scope.user, "asset.registered", asset, new={"status": status, "cost": asset.cost, "record": getattr(record, "number", None)}, request=request)
+        audit.record(
+            scope.user, "asset.registered", asset,
+            new={"status": status, "cost": asset.cost, "record": getattr(record, "number", None), "register": asset.register_ref,
+                 "asset_tag": asset.asset_tag},
+            request=request,
+        )
         created.append(asset)
     if record is not None:
         _mark_asset_step(scope, record, request)
@@ -235,7 +255,12 @@ def update(scope, asset: Asset, data: dict, *, request=None) -> Asset:
     scope.require_perm(asset.department_id, P.ASSETS)
     if asset.status in c.ASSET_FINAL_STATUSES:
         raise ProcurementError("Disposed or retired assets cannot be edited.", code="asset_final")
-    fields = list(EDITABLE) + ["custodian", "warranty_until", "is_capitalized", "cost"]
+    from . import registers
+
+    fields = list(EDITABLE) + ["custodian", "warranty_until", "is_capitalized", "cost", "laboratory", "equipment",
+                               "register", "register_page", "register_serial", "register_entry_date", "parent",
+                               "condition", "quantity", "useful_life_years", "depreciation_rate", "funding_type",
+                               "financial_year", "purchase_date"] + [f for f, _ in registers.EXTRA_TEXT] + list(registers.EXTRA_DATES)
     before = audit.snapshot(asset, fields)
     for f in EDITABLE:
         if f in data:
@@ -251,13 +276,46 @@ def update(scope, asset: Asset, data: dict, *, request=None) -> Asset:
         asset.warranty_until = parse_day(data.get("warranty_until"), "warranty_until")
     if "is_capitalized" in data:
         asset.is_capitalized = bool(data.get("is_capitalized"))
+    if "laboratory_id" in data:
+        asset.laboratory = _lab_in(data.get("laboratory_id"), asset.department_id)
+    if "equipment_id" in data:
+        asset.equipment = _equipment_in(data.get("equipment_id"), asset.department_id)
+    if "purchase_date" in data:
+        asset.purchase_date = parse_day(data.get("purchase_date"), "purchase_date")
+    if "financial_year" in data:
+        asset.financial_year = req_str(data, "financial_year", max_len=7, required=False)
+    if "funding_type" in data:
+        asset.funding_type = choice(data.get("funding_type"), c.FundingType.values, "funding_type", default=c.FundingType.OTHER)
+    for f, v in registers.extra_values(data, asset.department_id, partial=True).items():
+        setattr(asset, f, v)
+    if asset.parent_id and (asset.parent_id == asset.pk or asset.accessories.filter(is_archived=False).exists()):
+        raise ProcurementError("An asset with accessories cannot itself be an accessory.", code="invalid_parent", field="parent_id")
+    if {"register_id", "register_page", "register_serial", "register_entry_date"} & set(data):
+        if "register_id" in data:
+            asset.register = registers.get_register(asset.department_id, data.get("register_id"))
+        if "register_page" in data:
+            asset.register_page = registers._page(data.get("register_page"), asset.register)
+        if "register_serial" in data:
+            asset.register_serial = req_str(data, "register_serial", max_len=20, required=False)
+        if "register_entry_date" in data:
+            asset.register_entry_date = parse_day(data.get("register_entry_date"), "register_entry_date")
+        if asset.register_id is None:
+            asset.register_page, asset.register_serial = None, ""
+        elif asset.register_page is None:
+            raise ProcurementError("Give the register page number.", code="required", field="register_page")
+        hit = registers.duplicate_entry(asset.register_id, asset.register_page, asset.register_serial, exclude_pk=asset.pk)
+        if hit is not None:
+            raise ProcurementError(
+                f"{asset.register.code} page {asset.register_page} serial {asset.register_serial} is already {hit.number}.",
+                code="duplicate_entry", field="register_serial", asset_id=hit.pk,
+            )
     reason = ""
     if "cost" in data:
         new_cost = parse_money(data.get("cost"), "cost")
         if new_cost != asset.cost:
             reason = req_reason(data)
             asset.cost = new_cost
-    asset.save()
+    registers.save_entry(asset)
     old, new = audit.diff(before, audit.snapshot(asset, fields))
     if new:
         audit.record(scope.user, "asset.updated", asset, old=old, new=new, reason=reason, request=request)
@@ -271,7 +329,8 @@ def change_status(scope, asset: Asset, data: dict, *, request=None) -> Asset:
     to_status = choice(data.get("status"), A.values, "status")
     reason = req_reason(data)
     full = scope.has_perm(asset.department_id, P.ASSETS)
-    if not full and not (scope.is_oic_for(asset.equipment_id) and to_status in LAB_REPORTABLE):
+    lab = scope.is_oic_for(asset.equipment_id) or scope.is_incharge_for(asset.equipment_id)
+    if not full and not (lab and to_status in LAB_REPORTABLE):
         raise forbidden()
     if asset.status in c.ASSET_FINAL_STATUSES:
         raise ProcurementError("Disposed or retired assets are final.", code="asset_final")
@@ -301,7 +360,7 @@ def request_transfer(scope, asset: Asset, data: dict, *, request=None) -> AssetT
     asset = _lock(asset)
     dept_id = asset.department_id
     _require_register(dept_id)
-    if not (scope.has_perm(dept_id, P.ASSETS) or scope.is_oic_for(asset.equipment_id)):
+    if not (scope.has_perm(dept_id, P.ASSETS) or scope.is_oic_for(asset.equipment_id) or scope.is_incharge_for(asset.equipment_id)):
         raise forbidden()
     if asset.status in c.ASSET_FINAL_STATUSES or asset.status in {A.LOST, A.CONDEMNED}:
         raise ProcurementError("This asset cannot be transferred.", code="invalid_status")

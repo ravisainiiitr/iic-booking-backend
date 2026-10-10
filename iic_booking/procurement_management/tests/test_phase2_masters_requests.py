@@ -107,6 +107,27 @@ class TestItems:
         assert body["default_gst_rate"] == "18.00"
         assert body["reorder_level"] == "5.000"
 
+    def test_item_part_number_and_batch_tracking(self, world):
+        cl = client_for(world.stores)
+        res = cl.post(
+            f"{API}/items/",
+            {
+                "department_id": world.dept.pk,
+                "name": "Turbo pump bearing",
+                "category_id": category(world.dept, "CONSUMABLE").pk,
+                "part_number": " TP-B-220 ",
+                "tracks_batch": True,
+            },
+            format="json",
+        )
+        assert res.status_code == 201, res.json()
+        assert res.json()["part_number"] == "TP-B-220"
+        assert res.json()["tracks_batch"] is True
+        upd = cl.patch(f"{API}/items/{res.json()['id']}/", {"tracks_batch": False}, format="json")
+        assert upd.status_code == 200, upd.json()
+        assert upd.json()["tracks_batch"] is False
+        assert upd.json()["part_number"] == "TP-B-220"
+
     def test_item_category_must_belong_to_department(self, world):
         other_cat = category(world.other_dept, "CONSUMABLE")
         res = client_for(world.stores).post(

@@ -22,9 +22,10 @@ P = c.OfficePermission
 def _menus(scope, dept_id, cfg) -> dict:
     roles = scope.roles(dept_id)
     perms = scope.permissions(dept_id)
-    lab_staff = bool(roles & {R.OIC, R.LAB_OPERATOR})
+    lab_staff = bool(roles & {R.OIC, R.LAB_OPERATOR, R.LAB_INCHARGE})
     wide = scope.dept_wide(dept_id)
     actor = bool(roles - {R.AUDITOR})
+    assets_mgr = P.ASSETS in perms
     return {
         "dashboard": True,
         "my_requests": actor,
@@ -34,7 +35,13 @@ def _menus(scope, dept_id, cfg) -> dict:
         "consumables": cfg.consumables_enabled and (wide or lab_staff),
         "assets": cfg.asset_register_enabled and (wide or lab_staff),
         "amc": cfg.amc_enabled and (wide or lab_staff),
-        "approvals": bool(roles & {R.OIC, R.OC_STORES, R.HOD, R.MAIN_ADMIN}) or P.OFFLINE_APPROVAL in perms,
+        "approvals": bool(roles & {R.OIC, R.OC_STORES, R.HOD, R.MAIN_ADMIN, R.ACCOUNTS}) or P.OFFLINE_APPROVAL in perms,
+        "registers": cfg.asset_register_enabled and (wide or lab_staff),
+        "register_import": cfg.asset_register_enabled and assets_mgr,
+        "verification": cfg.asset_register_enabled and (assets_mgr or R.OC_STORES in roles or R.AUDITOR in roles or lab_staff),
+        "maintenance": wide or lab_staff,
+        "accounts": R.ACCOUNTS in roles or P.PAYMENTS in perms,
+        "item_links": R.OC_STORES in roles or P.MASTERS in perms or bool(roles & {R.OIC, R.LAB_INCHARGE}),
         "consolidation": P.CONSOLIDATE in perms,
         "reports": P.REPORTS in perms,
         "configuration": R.MAIN_ADMIN in roles,
@@ -78,7 +85,7 @@ def bootstrap(request):
     if enabled:
         from iic_booking.equipment.models import Equipment
 
-        lab_ids = set(scope.oic_equipment) | set(scope.operator_equipment)
+        lab_ids = set(scope.lab_equipment)
         wide_depts = [d for d in dept_ids if scope.dept_wide(d)]
         rows = Equipment.objects.filter(
             Q(equipment_id__in=lab_ids, internal_department_id__in=dept_ids) | Q(internal_department_id__in=wide_depts)
@@ -95,6 +102,7 @@ def bootstrap(request):
             "menus": merged if enabled else {},
             "oic_equipment_ids": sorted(scope.oic_equipment) if enabled else [],
             "operator_equipment_ids": sorted(scope.operator_equipment) if enabled else [],
+            "incharge_equipment_ids": sorted(scope.incharge_equipment) if enabled else [],
             "equipment": equipment,
         }
     )
@@ -162,7 +170,9 @@ def role_assignments(request, department_id: int):
     if user is None:
         raise not_found("User not found.")
     role = req_str(data, "role", max_len=20)
-    row = config_service.assign_role(request.user, dept, user, role, data.get("permissions"), request=request)
+    row = config_service.assign_role(
+        request.user, dept, user, role, data.get("permissions"), equipment_ids=data.get("equipment_ids"), request=request
+    )
     return Response(s.role_assignment(row), status=201)
 
 

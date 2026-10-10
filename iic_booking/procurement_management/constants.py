@@ -18,9 +18,18 @@ class ModuleRole(models.TextChoices):
     HOD = "HOD", _("HOD / Competent Authority")
     AUDITOR = "AUDITOR", _("Auditor (read-only)")
     MAIN_ADMIN = "MAIN_ADMIN", _("Main Administrator")
+    ACCOUNTS = "ACCOUNTS", _("Accounts In Charge")
+    LAB_INCHARGE = "LAB_INCHARGE", _("Lab In Charge")
 
 
-ASSIGNABLE_ROLES = (ModuleRole.OC_STORES, ModuleRole.OFFICE, ModuleRole.HOD, ModuleRole.AUDITOR)
+ASSIGNABLE_ROLES = (
+    ModuleRole.OC_STORES,
+    ModuleRole.OFFICE,
+    ModuleRole.HOD,
+    ModuleRole.AUDITOR,
+    ModuleRole.ACCOUNTS,
+    ModuleRole.LAB_INCHARGE,
+)
 
 
 class OfficePermission(models.TextChoices):
@@ -43,6 +52,9 @@ class OfficePermission(models.TextChoices):
 ALL_OFFICE_PERMISSIONS = tuple(OfficePermission.values)
 STORES_PERMISSIONS = frozenset(
     {OfficePermission.STOCK, OfficePermission.ASSETS, OfficePermission.MASTERS, OfficePermission.REPORTS}
+)
+ACCOUNTS_PERMISSIONS = frozenset(
+    {OfficePermission.INVOICES, OfficePermission.PAYMENTS, OfficePermission.BUDGET, OfficePermission.REPORTS}
 )
 
 
@@ -117,6 +129,7 @@ class RequestStatus(models.TextChoices):
     PENDING_OIC = "PENDING_OIC", _("Pending OIC approval")
     PENDING_STORES = "PENDING_STORES", _("Pending OC Stores review")
     PENDING_HOD = "PENDING_HOD", _("Pending HOD approval")
+    PENDING_ACCOUNTS = "PENDING_ACCOUNTS", _("Pending Accounts budget check")
     ON_HOLD = "ON_HOLD", _("On hold")
     REJECTED = "REJECTED", _("Rejected")
     APPROVED = "APPROVED", _("Approved")
@@ -131,7 +144,9 @@ class RequestStatus(models.TextChoices):
     CANCELLED = "CANCELLED", _("Cancelled")
 
 
-PENDING_STATUSES = frozenset({RequestStatus.PENDING_OIC, RequestStatus.PENDING_STORES, RequestStatus.PENDING_HOD})
+PENDING_STATUSES = frozenset(
+    {RequestStatus.PENDING_OIC, RequestStatus.PENDING_STORES, RequestStatus.PENDING_ACCOUNTS, RequestStatus.PENDING_HOD}
+)
 TERMINAL_STATUSES = frozenset({RequestStatus.COMPLETED, RequestStatus.CANCELLED, RequestStatus.ISSUED})
 
 
@@ -142,11 +157,13 @@ class ApprovalStage(models.TextChoices):
     HOD = "HOD", _("HOD / Competent Authority")
     OFFICE = "OFFICE", _("Office")
     SYSTEM = "SYSTEM", _("System")
+    ACCOUNTS = "ACCOUNTS", _("Accounts In Charge")
 
 
 STAGE_STATUS = {
     ApprovalStage.OIC: RequestStatus.PENDING_OIC,
     ApprovalStage.STORES: RequestStatus.PENDING_STORES,
+    ApprovalStage.ACCOUNTS: RequestStatus.PENDING_ACCOUNTS,
     ApprovalStage.HOD: RequestStatus.PENDING_HOD,
 }
 
@@ -171,6 +188,7 @@ class ApprovalActionType(models.TextChoices):
     COMPLETE = "COMPLETE", _("Completed")
     SEND_FOR_APPROVAL = "SEND_FOR_APPROVAL", _("Sent for approval")
     REAPPROVAL_REQUIRED = "REAPPROVAL_REQUIRED", _("Re-approval required (bill variance)")
+    STORES_EDIT = "STORES_EDIT", _("Lines modified by OC Stores")
 
 
 class DocumentType(models.TextChoices):
@@ -367,3 +385,127 @@ class NumberPrefix(models.TextChoices):
     VENDOR = "VEN", _("Vendor")
     TRANSFER = "TRF", _("Asset transfer")
     STOCK = "STK", _("Stock transaction")
+    MAINTENANCE = "MNT", _("Maintenance record")
+    VERIFICATION = "PV", _("Physical verification")
+    DISPOSAL = "DSP", _("Condemnation / disposal")
+
+
+# ---------------------------------------------------------------------------
+# Registers, verification, disposal (GFR 2017 Rules 211-217)
+# ---------------------------------------------------------------------------
+class RegisterType(models.TextChoices):
+    MAJOR = "MAJOR", _("Major (fixed / non-consumable assets)")
+    MINOR = "MINOR", _("Minor (low-value / dead stock)")
+    LIMITED_LIFE = "LIMITED_LIFE", _("Limited-life assets")
+    CONSUMABLE = "CONSUMABLE", _("Consumable stock")
+
+
+REGISTER_TAG_CODE = {
+    RegisterType.MAJOR: "MAJ",
+    RegisterType.MINOR: "MIN",
+    RegisterType.LIMITED_LIFE: "LLA",
+    RegisterType.CONSUMABLE: "CON",
+}
+REGISTER_CATEGORY_NATURE = {
+    RegisterType.MAJOR: ItemNature.MAJOR_ASSET,
+    RegisterType.MINOR: ItemNature.MINOR_ASSET,
+    RegisterType.LIMITED_LIFE: ItemNature.LIMITED_LIFE_ASSET,
+}
+
+
+class AssetCondition(models.TextChoices):
+    NEW = "NEW", _("New")
+    GOOD = "GOOD", _("Good / serviceable")
+    FAIR = "FAIR", _("Fair")
+    POOR = "POOR", _("Poor / needs repair")
+    UNSERVICEABLE = "UNSERVICEABLE", _("Unserviceable")
+
+
+class VerificationResult(models.TextChoices):
+    FOUND = "FOUND", _("Found (in order)")
+    FOUND_DAMAGED = "FOUND_DAMAGED", _("Found — damaged / unserviceable")
+    SHORTAGE = "SHORTAGE", _("Found — quantity short")
+    NOT_FOUND = "NOT_FOUND", _("Not found")
+
+
+class VerificationMethod(models.TextChoices):
+    SCAN = "SCAN", _("QR scan")
+    MANUAL = "MANUAL", _("Manual")
+    IMPORT = "IMPORT", _("Imported")
+
+
+class CampaignStatus(models.TextChoices):
+    OPEN = "OPEN", _("Open")
+    CLOSED = "CLOSED", _("Closed")
+
+
+class DisposalAction(models.TextChoices):
+    CONDEMN = "CONDEMN", _("Condemned (survey / condemnation board)")
+    WRITE_OFF = "WRITE_OFF", _("Written off (loss / shortage)")
+    DISPOSE = "DISPOSE", _("Disposed")
+
+
+class DisposalMode(models.TextChoices):
+    AUCTION = "AUCTION", _("Public auction / e-auction")
+    SCRAP = "SCRAP", _("Sold as scrap")
+    BUY_BACK = "BUY_BACK", _("Buy-back / exchange")
+    TRANSFER = "TRANSFER", _("Transferred (free of cost)")
+    WRITE_OFF = "WRITE_OFF", _("Written off")
+    OTHER = "OTHER", _("Other")
+
+
+DISPOSAL_STATUS = {
+    DisposalAction.CONDEMN: AssetStatus.CONDEMNED,
+    DisposalAction.WRITE_OFF: AssetStatus.DISPOSED,
+    DisposalAction.DISPOSE: AssetStatus.DISPOSED,
+}
+
+
+# ---------------------------------------------------------------------------
+# Inventory linkage and stock reasons
+# ---------------------------------------------------------------------------
+class LinkUsage(models.TextChoices):
+    CONSUMABLE = "CONSUMABLE", _("Consumable")
+    SPARE = "SPARE", _("Spare part")
+    ACCESSORY = "ACCESSORY", _("Accessory")
+
+
+class StockReason(models.TextChoices):
+    DAMAGED = "DAMAGED", _("Damaged / broken")
+    EXPIRED = "EXPIRED", _("Expired")
+    COUNT_CORRECTION = "COUNT_CORRECTION", _("Physical count correction")
+    LOST = "LOST", _("Lost / pilferage")
+    CONSUMED_IN_REPAIR = "CONSUMED_IN_REPAIR", _("Used in repair / maintenance")
+    OTHER = "OTHER", _("Other")
+
+
+class LineFulfilment(models.TextChoices):
+    UNDECIDED = "", _("Not decided")
+    STOCK = "STOCK", _("Issue from stock")
+    PROCURE = "PROCURE", _("Procure")
+
+
+# ---------------------------------------------------------------------------
+# Procurement mode (GFR 2017 Rules 149, 154, 155, 161-166; thresholds configurable)
+# ---------------------------------------------------------------------------
+class PurchaseMode(models.TextChoices):
+    DIRECT = "DIRECT", _("Direct purchase (without quotation)")
+    GEM = "GEM", _("GeM (Government e-Marketplace)")
+    PURCHASE_COMMITTEE = "PURCHASE_COMMITTEE", _("Local Purchase Committee")
+    LIMITED_TENDER = "LIMITED_TENDER", _("Limited tender")
+    OPEN_TENDER = "OPEN_TENDER", _("Open / advertised tender")
+    SINGLE_TENDER = "SINGLE_TENDER", _("Single tender")
+    PROPRIETARY = "PROPRIETARY", _("Proprietary article (PAC)")
+    RATE_CONTRACT = "RATE_CONTRACT", _("Rate contract")
+
+
+# ---------------------------------------------------------------------------
+# Maintenance
+# ---------------------------------------------------------------------------
+class MaintenanceKind(models.TextChoices):
+    BREAKDOWN = "BREAKDOWN", _("Breakdown repair")
+    PREVENTIVE = "PREVENTIVE", _("Preventive maintenance")
+    CALIBRATION = "CALIBRATION", _("Calibration")
+    AMC_VISIT = "AMC_VISIT", _("AMC / CMC visit")
+    UPGRADE = "UPGRADE", _("Upgrade / modification")
+    OTHER = "OTHER", _("Other")
