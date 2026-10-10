@@ -151,7 +151,13 @@ def _revenue_table(key, title, label_header, label_value, rows, sheet):
     )
 
 
+def _utilization_or_na(value):
+    return "N/A" if value is None else value
+
+
 def _equipment_parts(request):
+    from iic_booking.equipment.utilization import UTILIZATION_FORMULA
+
     params = request.query_params.copy()
     for key in list(params.keys()):
         if key not in ("date_from", "date_to", "equipment_id"):
@@ -170,8 +176,8 @@ def _equipment_parts(request):
             spec.Kpi("Revenue (external)", summary.get("revenue_external", 0), spec.CURRENCY),
         ]
     kpis += [
-        spec.Kpi("Utilization factor", summary.get("utilization_factor", 0), spec.PERCENT,
-                 "Booked hours ÷ all slot hours"),
+        spec.Kpi("Utilization factor", _utilization_or_na(summary.get("utilization_factor")), spec.PERCENT,
+                 UTILIZATION_FORMULA),
         spec.Kpi("Utilized hours", summary.get("utilized_hours", 0), spec.NUMBER),
         spec.Kpi("Downtime hours", summary.get("downtime_hours", 0), spec.NUMBER,
                  "Under / scheduled maintenance + operator absent"),
@@ -232,6 +238,8 @@ def _equipment_parts(request):
             C("slot_window_display", "Slot window", width=1.1),
             C("available_hours_working_window", "Available h (work window)", spec.NUMBER, 0.9, total=True),
             C("completed_slot_hours_working_window", "Completed h (work window)", spec.NUMBER, 0.9, total=True),
+            C("utilization_factor", "Utilization factor", spec.PERCENT, 0.9,
+              value=lambda r: _utilization_or_na(r.get("utilization_factor"))),
             C("utilization_vs_working_capacity", "Utilization vs capacity", spec.PERCENT, 0.9),
             C("available_hours_weekend_or_holiday", "Available h (weekend/holiday)", spec.NUMBER, 0.9, total=True),
             C("blocked_hours", "Blocked h", spec.NUMBER, 0.7, total=True),

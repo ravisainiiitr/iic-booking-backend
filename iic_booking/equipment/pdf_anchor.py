@@ -8,6 +8,9 @@ from reportlab.platypus.flowables import Flowable
 class Anchor(Flowable):
     """Zero-size named destination at the current position, optionally listed in the PDF outline."""
 
+    # Without this a destination at the foot of a page points at the page before its content.
+    keepWithNext = True
+
     def __init__(self, key: str, title: str = "", level: int = 0, closed: bool = False):
         super().__init__()
         self.key = key
