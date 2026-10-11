@@ -238,6 +238,9 @@ def test_user_card_access_by_role(world):
     assert card(world.oic, world.ind).status_code == 404
     assert card(world.oic, world.outsider).status_code == 404
     assert card(world.finance, world.ind).status_code == 200
+    assert card(world.s1, world.oic).status_code == 200
+    assert card(world.operator, world.oic).status_code == 200
+    assert card(world.outsider, world.oic).status_code == 404
     full = card(world.admin, world.ind)
     assert full.status_code == 200 and full.data["access"] == "full"
     assert world.f.client_for(world.admin).get("/api/users/999999999/card/").status_code == 404

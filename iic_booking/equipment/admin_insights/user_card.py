@@ -216,7 +216,8 @@ def _scoped_bookings(viewer):
 
 
 def _within_scope(viewer, user_id: int, bookings) -> bool:
-    """The user booked within the viewer's scope, is the viewer's linked student, or asked their equipment for help."""
+    """The user booked within the viewer's scope, is the viewer's linked student, asked their equipment for help, or
+    is an OIC / Lab Operator of equipment the viewer booked or looks after."""
     from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
 
     if bookings.filter(user_id=user_id).exists():
@@ -226,14 +227,24 @@ def _within_scope(viewer, user_id: int, bookings) -> bool:
     ).exists():
         return True
     from iic_booking.equipment.api_views import _get_equipment_ids_for_log_access, check_operator_permission
-    from iic_booking.equipment.models import UrgentBookingRequest
+    from iic_booking.equipment.models import EquipmentManager, EquipmentOperator, UrgentBookingRequest
 
+    booked_equipment = bookings.values("equipment_id")
+    if (
+        EquipmentManager.objects.filter(manager_id=user_id, equipment_id__in=booked_equipment).exists()
+        or EquipmentOperator.objects.filter(operator_id=user_id, equipment_id__in=booked_equipment).exists()
+    ):
+        return True
     if not check_operator_permission(viewer):
         return False
     equipment_ids = _get_equipment_ids_for_log_access(viewer)
-    return bool(equipment_ids) and UrgentBookingRequest.objects.filter(
-        user_id=user_id, equipment_id__in=equipment_ids
-    ).exists()
+    if not equipment_ids:
+        return False
+    return (
+        UrgentBookingRequest.objects.filter(user_id=user_id, equipment_id__in=equipment_ids).exists()
+        or EquipmentManager.objects.filter(manager_id=user_id, equipment_id__in=equipment_ids).exists()
+        or EquipmentOperator.objects.filter(operator_id=user_id, equipment_id__in=equipment_ids).exists()
+    )
 
 
 def build_scoped_user_card(viewer, user_id: int, request=None) -> dict[str, Any]:

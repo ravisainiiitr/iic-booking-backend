@@ -145,8 +145,8 @@ def _revenue_table(key, title, label_header, label_value, rows, sheet, link=None
     return spec.Table(
         key, title,
         [C("label", label_header, width=2.4, value=label_value, link=link),
-         C("users", "Users", spec.INTEGER, 0.7),
          C("count", "Bookings", spec.INTEGER, 0.8, total=True),
+         C("users", "Users", spec.INTEGER, 0.7),
          C("total", "Revenue (₹)", spec.CURRENCY, 1.0, total=True)],
         list(rows or []), sheet_name=sheet, empty_message="No completed bookings in this period.",
     )
@@ -228,6 +228,10 @@ def _equipment_parts(request):
                        _drill_link("external_category", drill)),
         _revenue_table("revenue_month", "Revenue by month", "Month", lambda r: r.get("month_label") or "—",
                        financial.get("revenue_by_month"), "Revenue by month", _drill_link("month", drill)),
+        _revenue_table("revenue_user", "Top users by revenue", "User",
+                       lambda r: r.get("user__name") or r.get("user__email") or "—",
+                       financial.get("revenue_by_user"), "Top users",
+                       lambda r: drilldown_path("performance", "all", None, {**drill, "user": r.get("user_id")})),
     ]
     pie = [p for p in data.get("utilization_pie") or [] if float(p.get("hours") or 0) > 0]
     pie_total = sum(float(p.get("hours") or 0) for p in pie)
