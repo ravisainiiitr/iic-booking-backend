@@ -234,7 +234,11 @@ from iic_booking.users.api.payment_views import (
     finance_payment_receipt_process,
 )
 from iic_booking.payments.views import admin_fee_settings
-from iic_booking.users.api.finance_reports_views import finance_report_dashboard
+from iic_booking.users.api.finance_reports_views import (
+    finance_report_dashboard,
+    finance_report_drilldown,
+    finance_report_drilldown_bookings,
+)
 from iic_booking.users.api.sric_api_views import (
     sric_transfer_requests_list,
     sric_transfer_request_detail,
@@ -512,6 +516,7 @@ from iic_booking.equipment.admin_insights.views import (
     admin_insights_user_card,
     admin_insights_users,
     admin_insights_wallet_bookings,
+    user_card,
 )
 from iic_booking.equipment.pending_actions import pending_actions
 from iic_booking.equipment.publication_claim_views import (
@@ -1096,6 +1101,12 @@ urlpatterns = router.urls + [
         name="finance-payment-receipt-process",
     ),
     path("finance/reports/dashboard/", finance_report_dashboard, name="finance-report-dashboard"),
+    path("finance/reports/drilldown/", finance_report_drilldown, name="finance-report-drilldown"),
+    path(
+        "finance/reports/drilldown-bookings/",
+        finance_report_drilldown_bookings,
+        name="finance-report-drilldown-bookings",
+    ),
     path("exports/<slug:report_key>/", export_report, name="export-report"),
 
     # SRIC office integration API
@@ -1869,6 +1880,7 @@ urlpatterns = router.urls + [
         name="admin-insights-staff-proficiency",
     ),
     path("admin/insights/users/<int:user_id>/", admin_insights_user_card, name="admin-insights-user-card"),
+    path("users/<int:user_id>/card/", user_card, name="user-card"),
     path(
         "admin/insights/users/<int:user_id>/wallet-bookings/",
         admin_insights_wallet_bookings,

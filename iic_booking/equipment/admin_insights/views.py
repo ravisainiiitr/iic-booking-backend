@@ -85,6 +85,18 @@ def admin_insights_user_card(request, user_id: int):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+def user_card(request, user_id: int):
+    """GET /api/users/<id>/card/ — a user's ID card for any signed-in viewer, limited to what their role allows."""
+    from .user_card import CardError, build_scoped_user_card
+
+    try:
+        return Response(build_scoped_user_card(request.user, user_id, request), status=status.HTTP_200_OK)
+    except CardError as exc:
+        return Response({"error": exc.message}, status=exc.status)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
 def admin_insights_wallet_bookings(request, user_id: int):
     """GET /api/admin/insights/users/<id>/wallet-bookings/ — bookings by every user linked to the user's wallet."""
     from .user_card import build_wallet_bookings

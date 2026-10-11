@@ -37,21 +37,12 @@ from django.utils import timezone
 
 from iic_booking.equipment.admin_dashboard_summary import _Scope, _users
 from iic_booking.users.models.user_type import UserType
+from iic_booking.users.user_categories import CATEGORY_LABELS
 
 from .common import bounds, flag, int_values, iso, multi, page_meta, page_params, parse_date, scope_for, scope_payload
 from .supervisors import resolve_supervisors
 
-CATEGORIES = {
-    "iitr_faculty": "IITR Faculty",
-    "iitr_student": "IITR Students",
-    "iitr_startup": "IITR Startups",
-    "iitr_staff": "IITR Staff",
-    "external_academic": "External — Educational",
-    "external_industry": "Industry",
-    "government_rnd": "Govt R&D",
-    "external_startup": "External Startup / MSME",
-    "other": "Other",
-}
+CATEGORIES = CATEGORY_LABELS
 INTERNAL_CATEGORIES = ("iitr_faculty", "iitr_student", "iitr_startup", "iitr_staff")
 EXTERNAL_CATEGORIES = ("external_academic", "external_industry", "government_rnd", "external_startup", "other")
 STAFF_TYPES = (

@@ -177,7 +177,7 @@ def test_single_table_of_a_report(world):
     res = _export(world.f.client_for(world.admin), "equipment-performance", export_format="csv",
                   table="revenue_department")
     rows = _csv(res)
-    assert rows[0] == ["Department", "Bookings", "Revenue (₹)"]
+    assert rows[0] == ["S.No.", "Department", "Bookings", "Users", "Revenue (₹)"]
     bad = _export(world.f.client_for(world.admin), "equipment-performance", table="nope")
     assert bad.status_code == 400
 

@@ -8,6 +8,7 @@ for a date range. Used by admin report API, PDF/Excel exports, and monthly email
 from calendar import monthrange
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Any, Optional
 
 from django.db.models import Count, Prefetch, Q, Sum
@@ -72,7 +73,9 @@ def _is_internal_snapshot(ut: str | None) -> bool:
 
 
 def _is_external_snapshot(ut: str | None) -> bool:
-    return UserType.is_external_user(ut or "")
+    from .report_revenue import is_external_snapshot
+
+    return is_external_snapshot(ut)
 
 
 # Bookings counted as "served" for user/sample/hour stats (had slots in period). Fully refunded
@@ -294,32 +297,13 @@ def get_equipment_report_data(
     return payload
 
 
-def _equipment_report_payload(
-    date_from: Optional[str],
-    date_to: Optional[str],
-    equipment_ids: Optional[list[int]],
-    include_revenue: bool,
-) -> dict[str, Any]:
-    today = timezone.localdate()
-    if date_from:
-        try:
-            start = datetime.strptime(date_from, "%Y-%m-%d").date()
-        except ValueError:
-            start = today.replace(day=1)
-    else:
-        start = today.replace(day=1)
-    if date_to:
-        try:
-            end = datetime.strptime(date_to, "%Y-%m-%d").date()
-        except ValueError:
-            end = today
-    else:
-        end = start.replace(day=monthrange(start.year, start.month)[1])
+def report_equipment_scope(equipment_ids: Optional[list[int]]):
+    """``(equipment_list, equipment_by_id, eq_ids, mode_rollup)`` of a report.
 
+    ``equipment_list``: report rows (parent or standalone equipment, managers / operators prefetched);
+    ``eq_ids``: those rows plus their modes, test equipment left out; ``mode_rollup``: mode id → parent id.
+    """
     from .testdata import exclude_test_equipment, exclude_test_users, get_test_equipment_ids
-
-    # Slot-hour figures (utilization, slot outcomes, downtime, capacity) start at the portal go-live date.
-    slot_period = utilization_period(start, end)
 
     # Test equipment (and its modes) is left out of every figure.
     qs_equipment = exclude_test_equipment(Equipment.objects.all()).order_by("code")
@@ -366,6 +350,24 @@ def _equipment_report_payload(
     else:
         equipment_by_id = {e.equipment_id: e for e in equipment_list}
         equipment_list = [equipment_by_id[eid] for eid in payload_eq_ids if eid in equipment_by_id]
+    return equipment_list, equipment_by_id, eq_ids, mode_rollup
+
+
+def _equipment_report_payload(
+    date_from: Optional[str],
+    date_to: Optional[str],
+    equipment_ids: Optional[list[int]],
+    include_revenue: bool,
+) -> dict[str, Any]:
+    from .report_revenue import report_period
+
+    start, end = report_period(date_from, date_to)
+
+    # Slot-hour figures (utilization, slot outcomes, downtime, capacity) start at the portal go-live date.
+    slot_period = utilization_period(start, end)
+
+    equipment_list, equipment_by_id, eq_ids, mode_rollup = report_equipment_scope(equipment_ids)
+    payload_eq_ids = [e.equipment_id for e in equipment_list]
 
     def _report_title_for_equipment(base: str, eqs: list) -> str:
         if not eqs:
@@ -422,6 +424,7 @@ def _equipment_report_payload(
                 "revenue_by_user": [],
                 "revenue_by_equipment": [],
                 "revenue_by_external_category": [],
+                "revenue_by_month": [],
             },
         }
 
@@ -515,23 +518,9 @@ def _equipment_report_payload(
 
     from iic_booking.users.test_accounts import exclude_test_bookings
 
-    # Subquery instead of a daily_slots join: a join yields one row per slot, which inflates the
-    # grouped Count/Sum below (and DISTINCT + Meta.ordering splits GROUP BY per booking).
-    # Cancelled / refunded bookings lose their slots, so fall back to the released slot range.
-    slot_booking_ids = DailySlot.objects.filter(
-        date__gte=start,
-        date__lte=end,
-        booking__isnull=False,
-    ).values("booking_id")
-    bookings_in_range = exclude_test_bookings(
-        Booking.objects.filter(equipment_id__in=eq_ids).filter(
-            Q(booking_id__in=slot_booking_ids)
-            | Q(
-                released_slot_range__start_datetime__date__lte=end,
-                released_slot_range__end_datetime__date__gte=start,
-            )
-        )
-    ).order_by()
+    from .report_revenue import bookings_in_report_range, report_revenue_bookings
+
+    bookings_in_range = bookings_in_report_range(start, end, eq_ids)
     bookings_served = bookings_in_range.exclude(status__in=_SERVED_EXCLUDE_STATUSES)
 
     completed_in_range = bookings_in_range.filter(status=BookingStatus.COMPLETED)
@@ -620,70 +609,14 @@ def _equipment_report_payload(
         elif _is_external_snapshot(ut):
             booking_minutes_ext[eid] += tm
 
-    from iic_booking.users.test_accounts import exclude_test_revenue_bookings
-
-    completed_revenue_qs = exclude_test_revenue_bookings(completed_in_range).select_related(
-        "user", "user__department", "equipment"
+    revenue = (
+        _revenue_tables(report_revenue_bookings(start, end, eq_ids), mode_rollup, equipment_by_id)
+        if include_revenue
+        else _revenue_tables(None, mode_rollup, equipment_by_id)
     )
-    if not include_revenue:
-        completed_revenue_qs = completed_revenue_qs.none()
-    total_revenue = completed_revenue_qs.aggregate(total=Sum("total_charge"))["total"] or 0
-    revenue_internal = 0.0
-    revenue_external = 0.0
-    for b in completed_revenue_qs.iterator(chunk_size=200):
-        amt = float(b.total_charge or 0)
-        if _is_external_snapshot(b.user_type_snapshot):
-            revenue_external += amt
-        else:
-            revenue_internal += amt
-
-    revenue_by_user_type = list(
-        completed_revenue_qs.values("user_type_snapshot")
-        .annotate(total=Sum("total_charge"), count=Count("booking_id"))
-        .order_by("-total")
-    )
-    revenue_by_department = list(
-        completed_revenue_qs.values("user__department__name")
-        .annotate(total=Sum("total_charge"), count=Count("booking_id"))
-        .order_by("-total")
-    )
-    revenue_by_user = list(
-        completed_revenue_qs.values("user_id", "user__name", "user__email", "user__user_type")
-        .annotate(total=Sum("total_charge"), count=Count("booking_id"))
-        .order_by("-total")[:200]
-    )
-    for row in revenue_by_user:
-        row["user__name"] = apply_faculty_name_prefix(row.get("user__name"), row.pop("user__user_type", None))
-    # Roll revenue by equipment up to parent for multi-mode families
-    revenue_by_equipment_raw = list(
-        completed_revenue_qs.values("equipment_id", "equipment__code", "equipment__name")
-        .annotate(total=Sum("total_charge"), count=Count("booking_id"))
-        .order_by("-total")
-    )
-    rev_rolled: dict[int, dict] = {}
-    for row in revenue_by_equipment_raw:
-        rid = mode_rollup.get(row["equipment_id"], row["equipment_id"])
-        if rid not in rev_rolled:
-            parent_eq = equipment_by_id.get(rid)
-            rev_rolled[rid] = {
-                "equipment_id": rid,
-                "equipment__code": getattr(parent_eq, "code", None) or row.get("equipment__code"),
-                "equipment__name": getattr(parent_eq, "name", None) or row.get("equipment__name"),
-                "total": 0,
-                "count": 0,
-            }
-        rev_rolled[rid]["total"] += float(row["total"] or 0)
-        rev_rolled[rid]["count"] += int(row["count"] or 0)
-    revenue_by_equipment = sorted(rev_rolled.values(), key=lambda x: -float(x["total"]))
-    ext_rev_q = Q()
-    for code in ("external", "RND", "rnd", "Industry", "industry", "other", "Other"):
-        ext_rev_q |= Q(user_type_snapshot__iexact=code)
-    revenue_by_external_category = list(
-        completed_revenue_qs.filter(ext_rev_q)
-        .values("user_type_snapshot")
-        .annotate(total=Sum("total_charge"), count=Count("booking_id"))
-        .order_by("-total")
-    )
+    total_revenue = revenue["total"]
+    revenue_internal = revenue["internal"]
+    revenue_external = revenue["external"]
 
     equipment_payload = []
 
@@ -877,11 +810,95 @@ def _equipment_report_payload(
             "completed_hours_in_working_window": round(util_total.completed_hours, 2),
             "utilization_vs_working_capacity": utilization_ratio(util_total.completed_hours, util_total.available_hours),
         },
+        "financial": revenue["financial"],
+    }
+
+
+def _revenue_tables(qs, mode_rollup: dict[int, int], equipment_by_id: dict) -> dict[str, Any]:
+    """Revenue cards and tables, grouped from the same rows the drill-downs read (``report_revenue.revenue_rows``).
+
+    Every row carries ``drill_value``: the value of its drill-down segment (dimension = the table's dimension).
+    """
+    from django.contrib.auth import get_user_model
+
+    from .report_revenue import NO_DEPARTMENT, NOT_RECORDED, group, money, month_label, revenue_rows, row_category_label
+
+    rows = revenue_rows(qs, mode_rollup) if qs is not None else []
+    total = sum((r.charge for r in rows), Decimal("0"))
+    external = sum((r.charge for r in rows if r.external), Decimal("0"))
+
+    def _row(bucket, **extra):
+        return {**extra, "total": money(bucket.total), "count": bucket.count, "users": len(bucket.user_ids)}
+
+    def _category_row(bucket):
+        label = row_category_label(bucket.key)
+        return _row(
+            bucket, category=bucket.key, user_type_snapshot=label, user_type_label=label, drill_value=bucket.key
+        )
+
+    # Rows are user categories ("IITR Students" covers IITR and individual students); drill dimension "category".
+    by_user_type = [_category_row(b) for b in group(rows, lambda r: r.category)]
+    by_external = [_category_row(b) for b in group([r for r in rows if r.external], lambda r: r.category)]
+    dept_names = {r.department_id: r.department_name for r in rows}
+    by_department = [
+        _row(
+            b,
+            user__department_id=b.key,
+            user__department__name=dept_names.get(b.key) or None,
+            drill_value=b.key if b.key is not None else NO_DEPARTMENT,
+        )
+        for b in group(rows, lambda r: r.department_id)
+    ]
+    by_equipment = []
+    for b in group(rows, lambda r: r.family_id):
+        eq = equipment_by_id.get(b.key)
+        if eq is None:
+            eq = Equipment.objects.filter(pk=b.key).only("code", "name").first()
+        by_equipment.append(
+            _row(
+                b,
+                equipment_id=b.key,
+                equipment__code=getattr(eq, "code", "") or "",
+                equipment__name=getattr(eq, "name", "") or "",
+                drill_value=b.key,
+            )
+        )
+    user_buckets = group(rows, lambda r: r.user_id)[:200]
+    people = {
+        u["id"]: u
+        for u in get_user_model()
+        .objects.filter(pk__in=[b.key for b in user_buckets])
+        .values("id", "name", "email", "user_type")
+    }
+    by_user = []
+    for b in user_buckets:
+        u = people.get(b.key) or {}
+        by_user.append(
+            _row(
+                b,
+                user_id=b.key,
+                user__name=apply_faculty_name_prefix(u.get("name"), u.get("user_type")),
+                user__email=u.get("email") or "",
+                drill_value=b.key,
+            )
+        )
+    by_month = sorted(
+        (
+            _row(b, month=b.key, month_label=month_label(b.key), drill_value=b.key or NOT_RECORDED)
+            for b in group(rows, lambda r: r.month)
+        ),
+        key=lambda r: r["month"] or "9999",
+    )
+    return {
+        "total": money(total),
+        "internal": money(total - external),
+        "external": money(external),
         "financial": {
-            "revenue_by_user_type": revenue_by_user_type,
-            "revenue_by_department": revenue_by_department,
-            "revenue_by_user": revenue_by_user,
-            "revenue_by_equipment": revenue_by_equipment,
-            "revenue_by_external_category": revenue_by_external_category,
+            "revenue_by_user_type": by_user_type,
+            "revenue_by_department": by_department,
+            "revenue_by_user": by_user,
+            "revenue_by_equipment": by_equipment,
+            "revenue_by_external_category": by_external,
+            "revenue_by_month": by_month,
         },
     }

@@ -5119,6 +5119,47 @@ def admin_api_router():
             resp["Content-Disposition"] = f'attachment; filename="{filename}"'
             return resp
 
+        def _drill_source(self, request):
+            from iic_booking.equipment.report_drilldown import performance_source
+
+            return performance_source(
+                request.query_params.get("date_from") or None,
+                request.query_params.get("date_to") or None,
+                self._resolve_equipment_ids(request),
+                self._include_revenue(request),
+            )
+
+        def _drill(self, build):
+            from iic_booking.equipment.report_drilldown import DrilldownError
+
+            try:
+                return Response(build())
+            except DrilldownError as exc:
+                return Response({"error": exc.message}, status=exc.status)
+
+        @action(detail=False, methods=["get"], url_path="drilldown")
+        def drilldown(self, request):
+            """GET ?dimension=&value=&date_from=&date_to=&equipment_id= — users in one report row, adding up to it."""
+            from iic_booking.equipment.report_drilldown import segment_users
+
+            p = request.query_params
+            return self._drill(lambda: segment_users(self._drill_source(request), p.get("dimension"), p.get("value")))
+
+        @action(detail=False, methods=["get"], url_path="drilldown-bookings")
+        def drilldown_bookings(self, request):
+            """GET same filters + optional user=<id> — the bookings behind a report row (or one user's share of it)."""
+            from iic_booking.equipment.report_drilldown import segment_bookings
+
+            p = request.query_params
+            raw_user = (p.get("user") or "").strip()
+            if raw_user and not raw_user.isdigit():
+                return Response({"error": "Invalid user."}, status=400)
+            return self._drill(
+                lambda: segment_bookings(
+                    self._drill_source(request), p.get("dimension"), p.get("value"), int(raw_user) if raw_user else None
+                )
+            )
+
     router.register(r"equipment-reports", EquipmentReportViewSet, basename="admin-equipment-reports")
 
     from config.admin_extra_settings_api import register_extra_admin_routes

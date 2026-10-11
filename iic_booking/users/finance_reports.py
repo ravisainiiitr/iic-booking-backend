@@ -54,12 +54,21 @@ def _f(value: Any) -> float:
 
 
 def _is_external_snapshot(user_type_snapshot: Optional[str]) -> bool:
-    return (user_type_snapshot or "") in UserType.get_external_user_codes()
+    from iic_booking.equipment.report_revenue import is_external_snapshot
+
+    return is_external_snapshot(user_type_snapshot)
+
+
+def _org_category(code: Optional[str]) -> tuple[str, str]:
+    """``(category key, label)`` of a booking's user type, from the shared report categories."""
+    from iic_booking.equipment.report_revenue import row_category, row_category_label
+
+    category = row_category(code)
+    return category, row_category_label(category)
 
 
 def _org_category_label(code: Optional[str]) -> str:
-    code = code or "Unknown"
-    return _ORG_CATEGORY_LABELS.get(code, str(code))
+    return _org_category(code)[1]
 
 
 def _booking_hours(total_time_minutes: Optional[int]) -> float:
@@ -147,6 +156,21 @@ def _empty_report(user: Any, date_from: date, date_to: date, *, note: str = "") 
     }
 
 
+def _finance_bookings_qs(department_id: int, date_from: date, date_to: date):
+    return _department_scoped_bookings_qs(department_id).filter(
+        effective_date__date__gte=date_from,
+        effective_date__date__lte=date_to,
+    )
+
+
+def finance_revenue_bookings(user: Any, date_from: date, date_to: date):
+    """The bookings counted as revenue on the finance report (also read by its drill-downs)."""
+    department_id = getattr(user, "department_id", None)
+    if not department_id:
+        return Booking.objects.none()
+    return _finance_bookings_qs(department_id, date_from, date_to).filter(status__in=_REVENUE_STATUSES)
+
+
 def build_finance_report(*, user: Any, date_from: date, date_to: date) -> dict[str, Any]:
     """Build the Account In-charge (finance) executive report for [date_from, date_to] (inclusive)."""
     department_id = getattr(user, "department_id", None)
@@ -158,13 +182,10 @@ def build_finance_report(*, user: Any, date_from: date, date_to: date) -> dict[s
             note="No internal department is assigned to this account.",
         )
 
-    bookings_qs = _department_scoped_bookings_qs(department_id).filter(
-        effective_date__date__gte=date_from,
-        effective_date__date__lte=date_to,
-    )
+    bookings_qs = _finance_bookings_qs(department_id, date_from, date_to)
 
     revenue_rows = list(
-        bookings_qs.filter(status__in=_REVENUE_STATUSES).values(
+        finance_revenue_bookings(user, date_from, date_to).values(
             "booking_id",
             "total_charge",
             "user_type_snapshot",
@@ -173,6 +194,7 @@ def build_finance_report(*, user: Any, date_from: date, date_to: date) -> dict[s
             "equipment_id",
             "equipment__code",
             "equipment__name",
+            "equipment__internal_department_id",
             "equipment__internal_department__name",
         )
     )
@@ -205,12 +227,17 @@ def build_finance_report(*, user: Any, date_from: date, date_to: date) -> dict[s
             trend_bucket_by_day[day] += amt
 
         dept_name = row["equipment__internal_department__name"] or "Unassigned"
-        dept_row = dept_bucket.setdefault(dept_name, {"name": dept_name, "revenue": Decimal("0.00"), "bookings": 0})
+        dept_key = row["equipment__internal_department_id"] or "none"
+        dept_row = dept_bucket.setdefault(
+            dept_key, {"name": dept_name, "revenue": Decimal("0.00"), "bookings": 0, "drill_value": dept_key}
+        )
         dept_row["revenue"] += amt
         dept_row["bookings"] += 1
 
-        org_label = _org_category_label(row["user_type_snapshot"])
-        org_row = org_bucket.setdefault(org_label, {"name": org_label, "revenue": Decimal("0.00"), "bookings": 0})
+        org_key, org_label = _org_category(row["user_type_snapshot"])
+        org_row = org_bucket.setdefault(
+            org_key, {"name": org_label, "revenue": Decimal("0.00"), "bookings": 0, "drill_value": org_key}
+        )
         org_row["revenue"] += amt
         org_row["bookings"] += 1
 
@@ -222,6 +249,7 @@ def build_finance_report(*, user: Any, date_from: date, date_to: date) -> dict[s
                 "code": row["equipment__code"] or "",
                 "revenue": Decimal("0.00"),
                 "bookings": 0,
+                "drill_value": eid,
             },
         )
         equip_row["revenue"] += amt
@@ -243,13 +271,13 @@ def build_finance_report(*, user: Any, date_from: date, date_to: date) -> dict[s
 
         if is_ext:
             cat_row = external_cat_bucket.setdefault(
-                org_label, {"name": org_label, "revenue": Decimal("0.00"), "bookings": 0}
+                org_key, {"name": org_label, "revenue": Decimal("0.00"), "bookings": 0, "drill_value": org_key}
             )
             cat_row["revenue"] += amt
             cat_row["bookings"] += 1
         else:
             int_dept_row = internal_dept_bucket.setdefault(
-                dept_name, {"name": dept_name, "revenue": Decimal("0.00"), "bookings": 0}
+                dept_key, {"name": dept_name, "revenue": Decimal("0.00"), "bookings": 0, "drill_value": dept_key}
             )
             int_dept_row["revenue"] += amt
             int_dept_row["bookings"] += 1
@@ -260,6 +288,7 @@ def build_finance_report(*, user: Any, date_from: date, date_to: date) -> dict[s
                     "code": row["equipment__code"] or "",
                     "revenue": Decimal("0.00"),
                     "bookings": 0,
+                    "drill_value": eid,
                 },
             )
             int_equip_row["revenue"] += amt

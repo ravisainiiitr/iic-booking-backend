@@ -141,14 +141,36 @@ def _eq_label(row) -> str:
     return f"{name} ({code})" if code and name else (name or code)
 
 
-def _revenue_table(key, title, label_header, label_value, rows, sheet):
+def _revenue_table(key, title, label_header, label_value, rows, sheet, link=None):
     return spec.Table(
         key, title,
-        [C("label", label_header, width=2.4, value=label_value),
+        [C("label", label_header, width=2.4, value=label_value, link=link),
+         C("users", "Users", spec.INTEGER, 0.7),
          C("count", "Bookings", spec.INTEGER, 0.8, total=True),
          C("total", "Revenue (₹)", spec.CURRENCY, 1.0, total=True)],
-        list(rows or []), sheet_name=sheet, empty_message="No completed bookings in this period.", serial=False,
+        list(rows or []), sheet_name=sheet, empty_message="No completed bookings in this period.",
     )
+
+
+def drilldown_path(source: str, dimension: str, value, params: dict) -> str:
+    """Portal path of a report row's drill-down (users in the row → their bookings)."""
+    from urllib.parse import urlencode
+
+    query = {"src": source, "dim": dimension}
+    if value not in (None, ""):
+        query["val"] = str(value)
+    query.update({k: v for k, v in params.items() if v not in (None, "")})
+    return f"/reports/drilldown?{urlencode(query)}"
+
+
+def _drill_link(dimension: str, params: dict):
+    return lambda row: drilldown_path("performance", dimension, row.get("drill_value"), params)
+
+
+def _category_label(row) -> str:
+    from iic_booking.users.user_categories import category_label
+
+    return row.get("user_type_label") or category_label(row.get("user_type_snapshot"))
 
 
 def _utilization_or_na(value):
@@ -190,19 +212,22 @@ def _equipment_parts(request):
                  spec.PERCENT, "Completed hours ÷ available hours"),
     ]
 
+    drill = {"from": data.get("date_from"), "to": data.get("date_to"), "eq": request.query_params.get("equipment_id")}
     tables = [] if not money else [
-        _revenue_table("revenue_user_type", "Revenue by user type", "User type",
-                       lambda r: humanize(r.get("user_type_snapshot")) or "—",
-                       financial.get("revenue_by_user_type"), "Revenue by user type"),
+        _revenue_table("revenue_user_type", "Revenue by user type", "User type", _category_label,
+                       financial.get("revenue_by_user_type"), "Revenue by user type", _drill_link("category", drill)),
         _revenue_table("revenue_department", "Revenue by department", "Department",
-                       lambda r: r.get("user__department__name") or "—",
-                       financial.get("revenue_by_department"), "Revenue by department"),
+                       lambda r: r.get("user__department__name") or "No department",
+                       financial.get("revenue_by_department"), "Revenue by department",
+                       _drill_link("department", drill)),
         _revenue_table("revenue_equipment", "Revenue by equipment", "Equipment",
                        lambda r: _eq_label({"code": r.get("equipment__code"), "name": r.get("equipment__name")}),
-                       financial.get("revenue_by_equipment"), "Revenue by equipment"),
-        _revenue_table("revenue_external", "External revenue by category", "Category",
-                       lambda r: humanize(r.get("user_type_snapshot")) or "—",
-                       financial.get("revenue_by_external_category"), "External revenue"),
+                       financial.get("revenue_by_equipment"), "Revenue by equipment", _drill_link("equipment", drill)),
+        _revenue_table("revenue_external", "External revenue by category", "Category", _category_label,
+                       financial.get("revenue_by_external_category"), "External revenue",
+                       _drill_link("external_category", drill)),
+        _revenue_table("revenue_month", "Revenue by month", "Month", lambda r: r.get("month_label") or "—",
+                       financial.get("revenue_by_month"), "Revenue by month", _drill_link("month", drill)),
     ]
     pie = [p for p in data.get("utilization_pie") or [] if float(p.get("hours") or 0) > 0]
     pie_total = sum(float(p.get("hours") or 0) for p in pie)
@@ -346,6 +371,102 @@ def reports_statistics(request):
         subtitle = period
     return make_document(request, title="Reports & Statistics", slug="reports-and-statistics", tables=tables,
                          filters=filters, kpis=kpis, subtitle=subtitle)
+
+
+# ---------------------------------------------------------------------------
+# Drill-downs: the users behind a report row, and their bookings
+# ---------------------------------------------------------------------------
+
+_DRILL_VIEWS = {
+    "performance": ("admin-equipment-reports-drilldown", "admin-equipment-reports-drilldown-bookings"),
+    "finance": ("finance-report-drilldown", "finance-report-drilldown-bookings"),
+}
+_DRILL_PARAMS = ("dimension", "value", "date_from", "date_to", "equipment_id", "preset", "user")
+
+
+def _drill_call(request, which: int):
+    source = (request.query_params.get("src") or "performance").strip()
+    if source not in _DRILL_VIEWS:
+        raise ExportError("Unknown report.", status=400)
+    params = request.query_params.copy()
+    for key in list(params.keys()):
+        if key not in _DRILL_PARAMS:
+            params.pop(key)
+    return source, call_view(request, _DRILL_VIEWS[source][which], params) or {}
+
+
+def _drill_meta(source: str, data: dict) -> tuple[list, str, dict]:
+    segment = data.get("segment") or {}
+    filters = [
+        ("Report", data.get("report_title") or ""),
+        ("Period", data.get("period_display") or ""),
+        (segment.get("dimension_label") or "Breakdown", segment.get("label") or ""),
+    ]
+    if data.get("revenue_definition"):
+        filters.append(("Revenue counted", data["revenue_definition"]))
+    params = {"from": data.get("date_from"), "to": data.get("date_to")}
+    return filters, segment.get("label") or "", params
+
+
+@register("report-drilldown-users")
+def report_drilldown_users(request):
+    """Users behind one report row (S.No., name, category, department / organisation, bookings, revenue)."""
+    source, data = _drill_call(request, 0)
+    money = data.get("revenue_visible") is not False
+    segment = data.get("segment") or {}
+    filters, label, params = _drill_meta(source, data)
+    params["eq"] = request.query_params.get("equipment_id")
+    columns = [
+        C("name", "User", width=1.8, link=lambda r: drilldown_path(
+            source, segment.get("dimension"), segment.get("value"), {**params, "user": r.get("user_id")})),
+        C("email", "Email", width=1.9),
+        C("category_label", "Category", width=1.4),
+        C("department", "Department / organisation", width=1.8),
+        C("bookings", "Bookings", spec.INTEGER, 0.7, total=True),
+        *([C("revenue", "Revenue (₹)", spec.CURRENCY, 0.9, total=True)] if money else []),
+    ]
+    kpis = [spec.Kpi("Users", segment.get("users", 0), spec.INTEGER),
+            spec.Kpi("Bookings", segment.get("bookings", 0), spec.INTEGER)]
+    if money:
+        kpis.append(spec.Kpi("Revenue", segment.get("revenue", 0), spec.CURRENCY))
+    table = spec.Table("users", f"Users — {label}", columns, data.get("users") or [],
+                       empty_message="No users in this segment.")
+    return make_document(request, title=f"{data.get('report_title') or 'Report'} — {label}",
+                         slug="report-drilldown-users", tables=[table], filters=filters, kpis=kpis,
+                         subtitle=data.get("period_display") or "")
+
+
+@register("report-drilldown-bookings")
+def report_drilldown_bookings(request):
+    """Bookings behind one report row, or one user's share of it, each Booking ID linked to the booking."""
+    source, data = _drill_call(request, 1)
+    money = data.get("revenue_visible") is not False
+    segment = data.get("segment") or {}
+    filters, label, _ = _drill_meta(source, data)
+    user = data.get("user")
+    if user:
+        filters.append(("User", f"{user.get('name') or ''} ({user.get('email') or ''})"))
+    columns = [
+        C("display_id", "Booking ID", width=1.2, link=booking_link(request, display_key="display_id", pk_key="pk")),
+        *([] if user else [C("user.name", "User", width=1.5)]),
+        C("category_label", "Category", width=1.3),
+        C("equipment", "Equipment", width=1.9, value=lambda r: _eq_label(r.get("equipment") or {})),
+        C("slot_start", "Slot start (IST)", spec.DATETIME, 1.15),
+        C("completed_at", "Completed (IST)", spec.DATETIME, 1.15),
+        C("hours", "Hours", spec.NUMBER, 0.6, total=True),
+        *([C("charge", "Charge (₹)", spec.CURRENCY, 0.9, total=True)] if money else []),
+        C("status_display", "Status", width=0.9),
+    ]
+    kpis = [spec.Kpi("Bookings", data.get("count", 0), spec.INTEGER)]
+    if money:
+        total = (user or {}).get("revenue") if user else segment.get("revenue")
+        kpis.append(spec.Kpi("Revenue", total or 0, spec.CURRENCY))
+    who = f" — {user.get('name')}" if user else ""
+    table = spec.Table("bookings", f"Bookings — {label}{who}", columns, data.get("bookings") or [],
+                       empty_message="No bookings in this segment.")
+    return make_document(request, title=f"{data.get('report_title') or 'Report'} — {label}{who}",
+                         slug="report-drilldown-bookings", tables=[table], filters=filters, kpis=kpis,
+                         subtitle=data.get("period_display") or "")
 
 
 # ---------------------------------------------------------------------------

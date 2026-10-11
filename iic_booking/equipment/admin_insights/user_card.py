@@ -22,7 +22,7 @@ from iic_booking.equipment.admin_dashboard_summary import _Scope
 
 from .common import bounds, int_values, iso, money, multi, page_meta, page_params, parse_date
 from .supervisors import resolve_supervisors
-from .users import CATEGORIES, PROGRAMMES, _annotated, _classification_table, programme_for
+from .users import CATEGORIES, PROGRAMMES, _annotated, _classification_table, category_case, programme_for
 
 RECENT = 10
 CERTIFICATIONS = 25
@@ -170,12 +170,113 @@ def _certifications(user) -> list[dict[str, Any]]:
 
 def build_user_card(viewer, user_id: int, request=None) -> dict[str, Any]:
     from iic_booking.users.admin_wallet_ledger import is_main_admin
+
+    person = _visible(_Scope(viewer), user_id)
+    return _card_payload(viewer, person, request, is_main=is_main_admin(viewer), bookings=_bookings_scope(viewer))
+
+
+def _any_person(user_id: int, *, include_test: bool = False):
+    """``user_id`` annotated like the Users overview, outside any department scope (test accounts only for self)."""
+    if not include_test:
+        return _annotated(_Everyone()).filter(pk=user_id).select_related("department").first()
+    from django.db.models import CharField, Value
+    from django.db.models.functions import NullIf
+
+    case, code = category_case()
+    degree = Coalesce(
+        NullIf("channel_i_identity__student_degree_name", Value("")),
+        NullIf("degree_name", Value("")),
+        Value(""),
+        output_field=CharField(),
+    )
+    return (
+        get_user_model()
+        .objects.filter(pk=user_id)
+        .annotate(user_type_code=code, degree_key=degree)
+        .annotate(category=case)
+        .select_related("department")
+        .first()
+    )
+
+
+def _scoped_bookings(viewer):
+    """Bookings the viewer may see: their Reports scope; an Accounts In Charge sees their department's bookings."""
+    from iic_booking.users.models.user_type import UserType
+
+    if getattr(viewer, "user_type", None) == UserType.FINANCE:
+        from iic_booking.users.finance_reports import _department_scoped_bookings_qs
+
+        dept_id = getattr(viewer, "department_id", None)
+        if not dept_id:
+            from iic_booking.equipment.models import Booking
+
+            return Booking.objects.none()
+        return _department_scoped_bookings_qs(dept_id).order_by()
+    return _bookings_scope(viewer)
+
+
+def _within_scope(viewer, user_id: int, bookings) -> bool:
+    """The user booked within the viewer's scope, is the viewer's linked student, or asked their equipment for help."""
+    from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
+
+    if bookings.filter(user_id=user_id).exists():
+        return True
+    if WalletJoinRequest.objects.filter(
+        faculty=viewer, student_id=user_id, status=WalletJoinRequestStatus.APPROVED
+    ).exists():
+        return True
+    from iic_booking.equipment.api_views import _get_equipment_ids_for_log_access, check_operator_permission
+    from iic_booking.equipment.models import UrgentBookingRequest
+
+    if not check_operator_permission(viewer):
+        return False
+    equipment_ids = _get_equipment_ids_for_log_access(viewer)
+    return bool(equipment_ids) and UrgentBookingRequest.objects.filter(
+        user_id=user_id, equipment_id__in=equipment_ids
+    ).exists()
+
+
+def build_scoped_user_card(viewer, user_id: int, request=None) -> dict[str, Any]:
+    """The ID card any signed-in user may open, limited to what their role allows.
+
+    - Main / Department Administrators: the full card (as on the Users overview) for users in their population.
+    - Anyone: their own card.
+    - OIC / Lab Operators: users who booked (or sent an urgent request for) equipment they look after; Department
+      Administrators also users who booked their department's equipment; Accounts In Charge users who booked their
+      department's equipment; supervisors their approved linked students.
+
+    Outside the full card: no wallet balance, no linked users' bookings, and bookings limited to the viewer's scope.
+    """
+    from iic_booking.equipment.admin_dashboard_summary import can_view_admin_dashboard
+    from iic_booking.users.admin_wallet_ledger import is_main_admin
+
+    if can_view_admin_dashboard(viewer):
+        try:
+            card = build_user_card(viewer, user_id, request)
+        except CardError:
+            pass
+        else:
+            return {**card, "access": "full"}
+    if getattr(viewer, "pk", None) == user_id:
+        person = _any_person(user_id, include_test=True)
+        if person is None:
+            raise CardError("User not found.")
+        bookings = _bookings_scope(viewer)
+        return {**_card_payload(viewer, person, request, is_main=False, bookings=bookings, scoped=True), "access": "self"}
+    bookings = _scoped_bookings(viewer)
+    if not _within_scope(viewer, user_id, bookings):
+        raise CardError("User not found.")
+    person = _any_person(user_id)
+    if person is None:
+        raise CardError("User not found.")
+    payload = _card_payload(viewer, person, request, is_main=is_main_admin(viewer), bookings=bookings, scoped=True)
+    return {**payload, "access": "scoped"}
+
+
+def _card_payload(viewer, person, request, *, is_main: bool, bookings, scoped: bool = False) -> dict[str, Any]:
     from iic_booking.users.display import get_user_display_name
     from iic_booking.users.models.user_type import UserType
 
-    scope = _Scope(viewer)
-    person = _visible(scope, user_id)
-    is_main = is_main_admin(viewer)
     type_labels = {code.lower(): str(label) for code, label in UserType.get_choices()}
     programme = (
         programme_for(person.user_type_alias, person.degree_key, _classification_table())
@@ -185,7 +286,7 @@ def build_user_card(viewer, user_id: int, request=None) -> dict[str, Any]:
     supervisor = resolve_supervisors([person.pk]).get(person.pk)
     phones = [p for p in ((person.phone_number or "").strip(), (person.secondary_phone_number or "").strip()) if p]
 
-    bookings = _bookings_scope(viewer).filter(user_id=person.pk)
+    bookings = bookings.filter(user_id=person.pk)
     stats = bookings.aggregate(
         total=Count("pk"),
         charged=Sum("total_charge", filter=_charged_q()),
@@ -225,8 +326,10 @@ def build_user_card(viewer, user_id: int, request=None) -> dict[str, Any]:
             "date_joined": iso(person.date_joined),
             "last_login": iso(person.last_login),
         },
-        "wallet": _wallet_info(person, is_main),
-        "linked_wallet": {"owner_id": person.pk, "linked_users": len(linked)} if wallet is not None else None,
+        "wallet": None if scoped else _wallet_info(person, is_main),
+        "linked_wallet": (
+            {"owner_id": person.pk, "linked_users": len(linked)} if wallet is not None and not scoped else None
+        ),
         "certifications": _certifications(person),
         "bookings": {
             "total": stats["total"] or 0,

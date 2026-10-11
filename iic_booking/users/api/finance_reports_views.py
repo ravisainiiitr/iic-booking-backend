@@ -110,3 +110,45 @@ def finance_report_dashboard(request):
 
     data = build_finance_report(user=request.user, date_from=date_from, date_to=date_to)
     return Response(data, status=status.HTTP_200_OK)
+
+
+def _finance_drill(request, build):
+    from iic_booking.equipment.report_drilldown import DrilldownError, finance_source
+
+    if not _is_finance_or_admin(request.user):
+        return Response(
+            {"error": "Only the Account In-charge (Finance) or Admin can access this report."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    p = request.query_params
+    date_from, date_to = resolve_finance_report_date_range(p.get("preset"), p.get("date_from"), p.get("date_to"))
+    try:
+        return Response(build(finance_source(request.user, date_from, date_to), p), status=status.HTTP_200_OK)
+    except DrilldownError as exc:
+        return Response({"error": exc.message}, status=exc.status)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def finance_report_drilldown(request):
+    """GET /api/finance/reports/drilldown/?dimension=&value=&date_from=&date_to=&preset= — users in a report row."""
+    from iic_booking.equipment.report_drilldown import segment_users
+
+    return _finance_drill(request, lambda source, p: segment_users(source, p.get("dimension"), p.get("value")))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def finance_report_drilldown_bookings(request):
+    """GET same filters + optional user=<id> — the bookings behind a finance report row."""
+    from iic_booking.equipment.report_drilldown import segment_bookings
+
+    raw_user = (request.query_params.get("user") or "").strip()
+    if raw_user and not raw_user.isdigit():
+        return Response({"error": "Invalid user."}, status=status.HTTP_400_BAD_REQUEST)
+    return _finance_drill(
+        request,
+        lambda source, p: segment_bookings(
+            source, p.get("dimension"), p.get("value"), int(raw_user) if raw_user else None
+        ),
+    )
