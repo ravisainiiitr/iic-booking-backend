@@ -5,6 +5,8 @@ from iic_booking.users.api import sric_wallet_recharge_views as views
 urlpatterns = [
     path("wallet/sric-recharges/", views.my_sric_recharges, name="wallet-sric-recharges"),
     path("wallet/sric-recharges/refresh/", views.refresh_my_sric_recharges, name="wallet-sric-recharges-refresh"),
+    path("admin/sric-mailbox/status/", views.mailbox_status, name="admin-sric-mailbox-status"),
+    path("admin/sric-mailbox/refresh/", views.mailbox_refresh, name="admin-sric-mailbox-refresh"),
     path("admin/sric-wallet-recharges/", views.admin_list, name="admin-sric-wallet-recharges"),
     path("admin/sric-wallet-recharges/refresh/", views.admin_refresh, name="admin-sric-wallet-recharges-refresh"),
     path("admin/sric-wallet-recharges/credit-ready/", views.admin_credit_ready, name="admin-sric-wallet-recharges-credit-ready"),

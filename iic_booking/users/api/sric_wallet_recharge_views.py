@@ -191,6 +191,36 @@ def _refresh_response(request, *, admin: bool, per_user_seconds: int) -> Respons
     return Response(body)
 
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def mailbox_status(request):
+    """Main Administrator / Accounts In-charge: when the SRIC mailboxes were last read and the next automatic check."""
+    from iic_booking.users import sric_mailbox_sync as sync
+
+    if not sync.can_refresh(request.user):
+        return Response({"error": "Only the Main Administrator or Accounts In-charge can see this."}, status=status.HTTP_403_FORBIDDEN)
+    return Response(sync.status())
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def mailbox_refresh(request):
+    """Main Administrator / Accounts In-charge: read both SRIC mailboxes now (short cooldown between checks)."""
+    from iic_booking.users import sric_mailbox_sync as sync
+
+    if not sync.can_refresh(request.user):
+        return Response({"error": "Only the Main Administrator or Accounts In-charge can check the mailbox."}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        return Response(sync.refresh(request.user))
+    except sync.RefreshCooldown as exc:
+        resp = Response(
+            {"error": str(exc), "code": "COOLDOWN", "retry_after": exc.retry_after},
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+        resp["Retry-After"] = str(exc.retry_after)
+        return resp
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def refresh_my_sric_recharges(request):

@@ -30,7 +30,8 @@ from iic_booking.users.wallet_recharge_parser import parse_wallet_recharge_file
 logger = logging.getLogger(__name__)
 
 LOCK_KEY = "wallet_cashbook_mailbox_reader_lock"
-LOCK_SECONDS = 25 * 60
+LOCK_SECONDS = 10 * 60
+LAST_RUN_KEY = "wallet_cashbook_mailbox_last_run"
 DEFAULT_SENDER = "bills@sric.iitr.ac.in"
 MAX_MESSAGES_PER_RUN = 25
 BASELINE_UID = "baseline"
@@ -52,7 +53,11 @@ def _imap_config() -> dict[str, Any] | None:
     }
 
 
-def read_cashbook_mailbox(*, max_messages: int = MAX_MESSAGES_PER_RUN) -> dict[str, Any]:
+def last_run() -> dict[str, Any]:
+    return cache.get(LAST_RUN_KEY) or {}
+
+
+def read_cashbook_mailbox(*, max_messages: int = MAX_MESSAGES_PER_RUN, trigger: str = "schedule") -> dict[str, Any]:
     sric = WalletSricSettings.get_singleton()
     if not sric.auto_read_cashbook_mailbox:
         return {"status": "disabled"}
@@ -62,9 +67,18 @@ def read_cashbook_mailbox(*, max_messages: int = MAX_MESSAGES_PER_RUN) -> dict[s
     if not cache.add(LOCK_KEY, "1", LOCK_SECONDS):
         return {"status": "already_running"}
     try:
-        return _read(sric, config, max_messages)
+        result = _read(sric, config, max_messages)
     finally:
         cache.delete(LOCK_KEY)
+    from django.utils import timezone
+
+    cache.set(
+        LAST_RUN_KEY,
+        {"at": timezone.now().isoformat(), "trigger": trigger, **{k: v for k, v in result.items() if k != "errors"},
+         "error_count": len(result.get("errors") or [])},
+        None,
+    )
+    return result
 
 
 def _read(sric: WalletSricSettings, config: dict[str, Any], max_messages: int) -> dict[str, Any]:

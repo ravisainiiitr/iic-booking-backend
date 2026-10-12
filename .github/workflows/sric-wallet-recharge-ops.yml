@@ -33,6 +33,8 @@ on:
           - auto-credit-disable
           - recheck-review
           - recheck-review-apply
+          - sync-schedule-dry-run
+          - sync-schedule
       test_sender:
         description: "test-sender-dry-run / e2e: the one test sender address for this run (not saved)"
         required: false

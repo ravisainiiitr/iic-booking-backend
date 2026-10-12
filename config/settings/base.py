@@ -430,6 +430,10 @@ IMAP_USE_SSL = env.bool("IMAP_USE_SSL", default=True)
 IMAP_USER = env("IMAP_USER", default="")
 IMAP_PASSWORD = env("IMAP_PASSWORD", default="")
 IMAP_MAILBOX = env("IMAP_MAILBOX", default="INBOX")
+# SRIC mailbox readers (Wallet_Recharge.csv from no-reply@sric, cash-book from bills@sric): automatic check
+# interval (applied to the beat schedule by `sric_wallet_recharge sync-schedule`) and the Refresh-button cooldown.
+SRIC_MAILBOX_POLL_SECONDS = env.int("SRIC_MAILBOX_POLL_SECONDS", default=300)
+SRIC_MAILBOX_REFRESH_COOLDOWN_SECONDS = env.int("SRIC_MAILBOX_REFRESH_COOLDOWN_SECONDS", default=45)
 
 # Supervisor invites: institute email domains a student may invite (subdomains such as ch.iitr.ac.in
 # are accepted too) and how many invite emails one address may receive per 24 hours across all students.

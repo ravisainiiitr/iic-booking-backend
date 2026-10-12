@@ -33,6 +33,8 @@ class Command(BaseCommand):
                 "auto-credit-disable",
                 "recheck-review",
                 "recheck-review-apply",
+                "sync-schedule-dry-run",
+                "sync-schedule",
             ],
         )
         parser.add_argument("--employee-id", default="")
@@ -179,6 +181,14 @@ class Command(BaseCommand):
         if options["action"].startswith("recheck-review"):
             self._recheck(apply=options["action"] == "recheck-review-apply")
             return
+        if options["action"].startswith("sync-schedule"):
+            from iic_booking.users.sric_mailbox_sync import poll_seconds, sync_schedules
+
+            rows = sync_schedules(apply=options["action"] == "sync-schedule")
+            self.stdout.write(f"sync_schedule apply={options['action'] == 'sync-schedule'} target_seconds={poll_seconds()}")
+            for r in rows:
+                self.stdout.write("  " + " ".join(f"{k}={v}" for k, v in r.items()))
+            return
 
         from iic_booking.users.models.sric_wallet_recharge import (
             SricReceiverMapping,
@@ -236,6 +246,19 @@ class Command(BaseCommand):
             f"interval={getattr(getattr(task, 'interval', None), 'every', None)}{getattr(getattr(task, 'interval', None), 'period', '')} "
             f"last_run_at={getattr(task, 'last_run_at', None)} total_run_count={getattr(task, 'total_run_count', None)}"
         )
+        from iic_booking.users.sric_mailbox_sync import status as mailbox_status
+
+        mb = mailbox_status()
+        self.stdout.write(
+            f"mailbox poll_seconds={mb['poll_seconds']} cooldown_seconds={mb['cooldown_seconds']} running={mb['running']} "
+            f"last_checked_at={mb['last_checked_at']} next_check_at={mb['next_check_at']}"
+        )
+        for r in mb["readers"]:
+            self.stdout.write(
+                f"  reader={r['key']} enabled={r['enabled']} schedule_seconds={r['schedule_seconds']} "
+                f"schedule_enabled={r['schedule_enabled']} last_checked_at={r['last_checked_at']} next_check_at={r['next_check_at']} "
+                f"last_status={r['last_result'].get('status')}"
+            )
         for m in SricReceiverMapping.objects.select_related("department").order_by("code"):
             self.stdout.write(
                 f"receiver code={m.code} label={m.label} active={m.is_active} department_id={m.department_id} "

@@ -1,6 +1,8 @@
 # Read-only: stored SRIC Wallet_Recharge.csv emails and rows as the scanner recorded them. Prints record ids, dates,
 # statuses, review reasons, origin-check verdicts, receiver codes, amounts, Ledger IDs and how the Employee ID
-# matches portal users (none / one active faculty / ...). No names, Employee IDs, addresses or email bodies.
+# matches portal users (none / one active faculty / ...). For credited rows, the credit confirmation email's metadata
+# (time sent, recipient role and email domain, subject, CC copy count, in-app notice). No names, Employee IDs,
+# addresses or email bodies.
 name: Probe SRIC Wallet Rows
 
 on:
@@ -72,6 +74,35 @@ jobs:
                     f"credited_at={r.credited_at} confirmation_sent={bool(r.confirmation_sent_at)} reversed={bool(r.reversed_at)} "
                     f"duplicate_of={r.duplicate_of_id} history={[h.get('action') for h in (r.history or [])]}")
               print(f"    employee_match: {match_detail(r.employee_id)}")
+
+          from django.conf import settings as dj_settings
+          from iic_booking.communication.email_branding import format_inr
+          from iic_booking.communication.models import CommunicationLog
+          from iic_booking.users.models.sric_wallet_recharge import SricWalletRechargeSettings
+          from iic_booking.users.sric_wallet_recharge import _addresses
+          from iic_booking.users.test_accounts import email_redirects, is_test_user
+
+          def domain(addr):
+              return (addr or "").rsplit("@", 1)[-1].lower() if "@" in (addr or "") else "-"
+
+          cc_list = _addresses(SricWalletRechargeSettings.get_singleton().confirmation_cc_emails)
+          print(f"EMAIL backend={dj_settings.EMAIL_BACKEND.rsplit('.', 2)[-2]} cc_configured={len(cc_list)} "
+                f"cc_domains={sorted({domain(a) for a in cc_list})}")
+          for r in SricWalletRecharge.objects.filter(status="credited").select_related("matched_user", "department").order_by("pk"):
+              u = r.matched_user
+              test = is_test_user(u)
+              amount = format_inr(r.amount) or f"{r.amount:,.2f}"
+              subject = f"{'[TEST] ' if r.is_test else ''}[{r.reference}] {amount} credited to your {r.department.name if r.department else '-'} wallet"
+              lag = (r.confirmation_sent_at - r.credited_at).total_seconds() if r.confirmation_sent_at and r.credited_at else None
+              pushes = CommunicationLog.objects.filter(
+                  recipient_id=r.matched_user_id, communication_type="push_notification",
+                  metadata__event="wallet.sric_recharge_credited", metadata__sric_wallet_recharge_id=r.pk,
+              )
+              print(f"EMAIL ref={r.reference} credited_at={r.credited_at} confirmation_sent_at={r.confirmation_sent_at} "
+                    f"lag_s={lag} to_role={getattr(u, 'user_type', '-')} to_domain={domain(getattr(u, 'email', ''))} "
+                    f"owner_test={test} delivered_to={'test inbox(' + str(len(email_redirects())) + ')' if test else 'owner'} "
+                    f"cc_copies={0 if r.is_test else len(cc_list)} subject={subject!r} "
+                    f"in_app={[(p.status, str(p.sent_at or p.created_at)) for p in pushes]}")
 
           import datetime as dt
           from django.utils import timezone
