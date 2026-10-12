@@ -1,7 +1,9 @@
 # Production Apache: serve HTTP/2 with longer keep-alive so each visitor reuses one connection
 # instead of opening several (new connections to the server are slow on the network path).
-# action=check only reports the current setup; apply switches mpm_prefork -> mpm_event, enables
-# http2 and the iic-http2 conf; revert restores mpm_prefork without http2.
+# action=check only reports the current setup; keepalive only lengthens keep-alive (works with
+# mpm_prefork + mod_php, graceful reload); apply switches mpm_prefork -> mpm_event, enables http2
+# and the iic-http2 conf (refused while mod_php is loaded); revert restores mpm_prefork without
+# http2 and removes the keep-alive conf.
 # /etc/apache2 is backed up first; a failed configtest or health check restores the previous setup.
 name: Apache HTTP/2
 
@@ -9,10 +11,10 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: check, apply or revert
+        description: check, keepalive, apply or revert
         required: true
         type: choice
-        options: [check, apply, revert]
+        options: [check, keepalive, apply, revert]
 
 jobs:
   http2:
@@ -42,6 +44,27 @@ jobs:
           echo "--- public protocol"
           curl -sS -o /dev/null -m 15 --http2 -w 'equip https -> http_version=%{http_version} status=%{http_code}\n' \
             https://equip.iitr.ac.in/ || true
+
+      - name: Keep-alive only
+        if: inputs.action == 'keepalive'
+        run: |
+          set -euo pipefail
+          KA=iic-keepalive
+          sudo -n tee "/etc/apache2/conf-available/${KA}.conf" > /dev/null <<'EOF'
+          # Managed by the "Apache HTTP/2" workflow (iic-booking-backend).
+          KeepAlive On
+          MaxKeepAliveRequests 1000
+          KeepAliveTimeout 15
+          EOF
+          sudo -n a2enconf -q "$KA"
+          if ! sudo -n apache2ctl configtest; then
+            echo "configtest failed: rolling back"
+            sudo -n a2disconf -q "$KA" || true
+            sudo -n rm -f "/etc/apache2/conf-available/${KA}.conf"
+            exit 1
+          fi
+          sudo -n systemctl reload apache2
+          echo "keep-alive conf enabled and apache reloaded"
 
       - name: Apply
         if: inputs.action == 'apply'
@@ -98,8 +121,10 @@ jobs:
         if: inputs.action == 'revert'
         run: |
           set -euo pipefail
-          sudo -n a2disconf -q "$CONF" || true
-          sudo -n rm -f "/etc/apache2/conf-available/${CONF}.conf"
+          for c in "$CONF" iic-keepalive; do
+            sudo -n a2disconf -q "$c" || true
+            sudo -n rm -f "/etc/apache2/conf-available/${c}.conf"
+          done
           sudo -n a2dismod -q http2 || true
           sudo -n a2dismod -q mpm_event || true
           sudo -n a2enmod -q mpm_prefork
