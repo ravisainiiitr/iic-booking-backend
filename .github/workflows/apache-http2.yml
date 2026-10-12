@@ -84,13 +84,48 @@ jobs:
         if: inputs.action == 'apply'
         run: |
           set -euo pipefail
-          if sudo -n apache2ctl -M 2>/dev/null | grep -qi php; then
-            echo "mod_php is loaded; it requires mpm_prefork. Aborting."
+          # mod_php only works with mpm_prefork, so PHP sites move to php-fpm (same php.ini
+          # defaults, same www-data user and session dir).
+          PHPV=$(ls /etc/apache2/mods-enabled/ | sed -n 's/^php\([0-9.]*\)\.load$/\1/p' | head -1)
+          if [ -n "$PHPV" ] && [ ! -x "/usr/sbin/php-fpm${PHPV}" ]; then
+            echo "mod_php ${PHPV} is loaded but php${PHPV}-fpm is not installed. Aborting."
             exit 1
           fi
           BACKUP="/var/backups/apache2-$(date +%Y%m%d-%H%M%S).tgz"
           sudo -n tar -czf "$BACKUP" -C /etc apache2
           echo "backup: $BACKUP"
+          restore() {
+            echo "restoring previous setup from $BACKUP"
+            sudo -n rm -rf /etc/apache2
+            sudo -n tar -xzf "$BACKUP" -C /etc
+            sudo -n apache2ctl configtest && sudo -n systemctl restart apache2
+          }
+          trap 'echo "unexpected failure"; restore' ERR
+          PHP_SITES=$(sudo -n grep -lRi 'SetHandler application/x-httpd-php' /etc/apache2/sites-available || true)
+
+          if [ -n "$PHPV" ]; then
+            SOCK="/run/php/php${PHPV}-fpm.sock"
+            missing=""
+            for ini in /etc/php/${PHPV}/apache2/conf.d/*.ini; do
+              name=$(basename "$ini" .ini | sed 's/^[0-9]*-//')
+              ls /etc/php/${PHPV}/fpm/conf.d/ | grep -q -- "-${name}\.ini$" || missing="$missing $name"
+            done
+            if [ -n "$missing" ]; then
+              echo "enabling for fpm:$missing"
+              sudo -n phpenmod -v "$PHPV" -s fpm $missing
+            fi
+            sudo -n systemctl enable --now "php${PHPV}-fpm"
+            sudo -n systemctl restart "php${PHPV}-fpm"
+            sleep 2
+            [ -S "$SOCK" ] || { echo "php-fpm socket $SOCK missing. Aborting."; exit 1; }
+            for f in $PHP_SITES; do
+              sudo -n sed -i "s#SetHandler application/x-httpd-php#SetHandler \"proxy:unix:${SOCK}|fcgi://localhost\"#I" "$f"
+              echo "php handler -> php-fpm in $f"
+            done
+            sudo -n a2dismod -q "php${PHPV}"
+            sudo -n a2enmod -q proxy_fcgi setenvif
+            sudo -n a2enconf -q "php${PHPV}-fpm"
+          fi
           sudo -n tee "/etc/apache2/conf-available/${CONF}.conf" > /dev/null <<'EOF'
           # Managed by the "Apache HTTP/2" workflow (iic-booking-backend).
           Protocols h2 http/1.1
@@ -99,16 +134,11 @@ jobs:
           KeepAliveTimeout 15
           EOF
 
-          restore() {
-            echo "restoring previous setup from $BACKUP"
-            sudo -n rm -rf /etc/apache2
-            sudo -n tar -xzf "$BACKUP" -C /etc
-            sudo -n apache2ctl configtest && sudo -n systemctl restart apache2
-          }
-
           sudo -n a2dismod -q mpm_prefork || true
           sudo -n a2enmod -q mpm_event http2
           sudo -n a2enconf -q "$CONF"
+          sudo -n a2disconf -q iic-keepalive || true
+          trap - ERR
           if ! sudo -n apache2ctl configtest; then
             echo "configtest failed"
             restore
@@ -121,9 +151,22 @@ jobs:
           for path in / /api/health/; do
             code=$(curl -sk -o /dev/null -m 20 -w '%{http_code}' \
               --resolve equip.iitr.ac.in:443:127.0.0.1 "https://equip.iitr.ac.in${path}" || echo 000)
-            echo "local https ${path} -> ${code}"
+            echo "local https equip${path} -> ${code}"
             case "$code" in 2*|3*|401|403|404|405) ;; *) ok=0 ;; esac
           done
+          if [ -n "$PHP_SITES" ]; then
+            for path in / /index.php; do
+              body=$(curl -sk -m 20 --resolve iicbooking.iitr.ac.in:443:127.0.0.1 \
+                -w '\nHTTP_STATUS=%{http_code}' "https://iicbooking.iitr.ac.in${path}" || true)
+              code=$(printf '%s' "$body" | sed -n 's/^HTTP_STATUS=//p')
+              echo "local https iicbooking${path} -> ${code}"
+              if [ "$code" != 200 ] || printf '%s' "$body" | grep -q '<?php' \
+                 || ! printf '%s' "$body" | grep -q '<title>'; then
+                echo "php site check failed (status, raw source or missing page)"
+                ok=0
+              fi
+            done
+          fi
           if [ "$ok" != 1 ] || ! systemctl is-active --quiet apache2; then
             echo "health check failed"
             restore
@@ -135,16 +178,24 @@ jobs:
         if: inputs.action == 'revert'
         run: |
           set -euo pipefail
-          for c in "$CONF" iic-keepalive; do
-            sudo -n a2disconf -q "$c" || true
-            sudo -n rm -f "/etc/apache2/conf-available/${c}.conf"
-          done
-          sudo -n a2dismod -q http2 || true
-          sudo -n a2dismod -q mpm_event || true
-          sudo -n a2enmod -q mpm_prefork
+          # Restores /etc/apache2 as it was before the last apply (mod_php, prefork, keep-alive conf).
+          BACKUP=$(ls -1t /var/backups/apache2-*.tgz 2>/dev/null | head -1 || true)
+          if [ -n "$BACKUP" ]; then
+            echo "restoring $BACKUP"
+            sudo -n rm -rf /etc/apache2
+            sudo -n tar -xzf "$BACKUP" -C /etc
+          else
+            for c in "$CONF" iic-keepalive; do
+              sudo -n a2disconf -q "$c" || true
+              sudo -n rm -f "/etc/apache2/conf-available/${c}.conf"
+            done
+            sudo -n a2dismod -q http2 || true
+            sudo -n a2dismod -q mpm_event || true
+            sudo -n a2enmod -q mpm_prefork
+          fi
           sudo -n apache2ctl configtest
           sudo -n systemctl restart apache2
-          echo "reverted to mpm_prefork without http2"
+          echo "reverted"
 
       - name: Verify
         if: inputs.action != 'check'
