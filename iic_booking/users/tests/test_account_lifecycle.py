@@ -158,6 +158,8 @@ def _events(user) -> list[str]:
         ("B.Tech + M.Tech (Dual Degree)", DegreeCode.OTHER),
         ("MBA - Master of Business Administration", DegreeCode.OTHER),
         ("B.Arch.", DegreeCode.OTHER),
+        ("BS-MS - Bachelor of Science - Master of Science", DegreeCode.OTHER),
+        ("Post Doc. - Post-doctorate", DegreeCode.OTHER),
         ("", ""),
         (None, ""),
     ],

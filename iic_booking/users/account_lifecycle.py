@@ -141,7 +141,8 @@ def normalise_degree(name: Optional[str]) -> str:
 
     ``Ph.D. - Doctor of Philosophy``, ``PhD`` → phd; ``Int. M.Tech``, ``Integrated M.Tech``, ``IMTech`` → int_mtech;
     ``M.Tech.`` → mtech; ``M.Sc.`` → msc; ``B.Tech.`` → btech. Other integrated / dual degrees (``Int. M.Sc.``,
-    ``IDD``, ``B.Tech + M.Tech``) and every other programme → other (5 years, the same as Int. M.Tech).
+    ``IDD``, ``B.Tech + M.Tech``, ``BS-MS - Bachelor of Science - Master of Science``) and every other programme →
+    other (5 years, the same as Int. M.Tech).
     """
     raw = str(name or "").strip()
     if not raw:
@@ -153,9 +154,10 @@ def normalise_degree(name: Optional[str]) -> str:
         return DegreeCode.PHD
     integrated = (
         "INTEGRATED" in words
-        or compact.startswith(("INT", "IMTECH", "IMSC"))
+        or compact.startswith(("INT", "IMTECH", "IMSC", "BSMS"))
         or "DUAL" in words
         or "IDD" in words
+        or ("BACHELOR" in compact and "MASTER" in compact)
     )
     mtech = compact.startswith("MTECH") or "MASTEROFTECHNOLOGY" in compact
     if integrated and ("MTECH" in compact or "MASTEROFTECHNOLOGY" in compact) and "BTECH" not in compact and "DUAL" not in words and "IDD" not in words:
