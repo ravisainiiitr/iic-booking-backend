@@ -5,12 +5,19 @@ name: Probe SRIC Mail Relay
 
 on:
   workflow_dispatch:
+    inputs:
+      sender:
+        description: "Sender whose newest emails' hops are shown"
+        required: false
+        default: "bills@sric.iitr.ac.in"
 
 jobs:
   probe:
     runs-on: [self-hosted, Linux]
     steps:
       - name: Probe
+        env:
+          SENDER: ${{ inputs.sender }}
         run: |
           set -euo pipefail
           for d in \
@@ -22,7 +29,7 @@ jobs:
               cd "$d"
               CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
               test -n "$CID"
-              docker exec -i -w /app "$CID" python - <<'PY'
+              docker exec -i -e SENDER="${SENDER:-bills@sric.iitr.ac.in}" -w /app "$CID" python - <<'PY'
           import os, re, email, imaplib, socket, ipaddress
           from collections import Counter
           os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
@@ -63,13 +70,14 @@ jobs:
           def val(m, name):
               v = m.get(name)
               return " ".join(str(v).split())[:40] if v is not None else "(absent)"
-          typ, data = conn.uid("search", None, 'FROM "bills@sric.iitr.ac.in"')
+          sender = (os.environ.get("SENDER") or "bills@sric.iitr.ac.in").strip().replace('"', "")
+          typ, data = conn.uid("search", None, f'FROM "{sender}"')
           ids = data[0].split() if data and data[0] else []
-          for uid in ids[-3:]:
+          for uid in ids[-4:]:
               t, md = conn.uid("fetch", uid, "(BODY.PEEK[HEADER])")
               raw = next((p[1] for p in md if isinstance(p, tuple) and len(p) >= 2), b"")
               m = email.message_from_bytes(raw)
-              print("--- bills uid", uid.decode())
+              print("--- sender uid", uid.decode())
               for h in hops(m):
                   print("   hop", h)
               for name in ("mail_from_trusted_domains", "X-IronPort-Anti-Spam-Filtered", "X-ThreatScanner-Verdict", "X-IPAS-Result", "X-Originating-IP"):
