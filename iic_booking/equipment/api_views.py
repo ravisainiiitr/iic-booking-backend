@@ -13431,8 +13431,11 @@ def user_cancel_booking(request, booking_id):
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    # Repeat-sample bookings (source_booking_id set) cannot be cancelled by users
-    if getattr(booking, "source_booking_id", None) is not None:
+    from .reschedule_lock import lab_disruption_active
+
+    # Repeat-sample bookings (source_booking_id set) cannot be cancelled by users, unless the lab
+    # disrupted the slot (e.g. operator absent) and the user is choosing refund vs reschedule.
+    if getattr(booking, "source_booking_id", None) is not None and not lab_disruption_active(booking):
         return Response(
             {"error": "Repeat sample bookings cannot be cancelled by users. Please contact admin if you need to cancel."},
             status=status.HTTP_400_BAD_REQUEST,
@@ -13509,7 +13512,8 @@ def user_cancel_booking(request, booking_id):
     except CancellationValidationError as e:
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-    allow_started_slots = user_may_cancel_started_slots(request.user)
+    # A lab disruption (e.g. operator absent) usually lands on slots that already started.
+    allow_started_slots = user_may_cancel_started_slots(request.user) or lab_disruption_active(booking)
     if rejected_by_lab:
         should_refund = True
         allow_started_slots = True
@@ -13598,8 +13602,10 @@ def request_booking_cancellation(request, booking_id):
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    # Repeat-sample bookings cannot have cancellation requested by users
-    if getattr(booking, "source_booking_id", None) is not None:
+    from .reschedule_lock import lab_disruption_active
+
+    # Repeat-sample bookings cannot have cancellation requested by users (except during a lab disruption)
+    if getattr(booking, "source_booking_id", None) is not None and not lab_disruption_active(booking):
         return Response(
             {"error": "Repeat sample bookings cannot be cancelled by users. Please contact admin if you need to cancel."},
             status=status.HTTP_400_BAD_REQUEST,

@@ -3715,6 +3715,11 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     equipment_booking_not_utilize_window_hours = serializers.IntegerField(
         source='equipment.booking_not_utilize_window_hours', read_only=True, default=24
     )
+    # A lab-flagged disruption (e.g. operator absent) keeps the user's cancel / reschedule choice
+    # regardless of the reschedule-hours threshold; booking details needs these to show the buttons.
+    maintenance_disruption_flag = serializers.BooleanField(read_only=True)
+    disruption_kind = serializers.CharField(read_only=True, allow_null=True)
+    equipment_is_operational = serializers.SerializerMethodField()
     equipment_operator_unavailable_after_booking_end_hours = serializers.IntegerField(
         source='equipment.operator_unavailable_after_booking_end_hours', read_only=True, default=24
     )
@@ -3784,6 +3789,13 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     fabrication_workflow = serializers.SerializerMethodField()
     own_material_fixed_charge = serializers.SerializerMethodField()
     equipment_max_print_size = serializers.SerializerMethodField()
+
+    def get_equipment_is_operational(self, obj):
+        """Operational = ACTIVE (same rule as booking eligibility)."""
+        eq = getattr(obj, 'equipment', None)
+        if not eq:
+            return True
+        return (getattr(eq, 'status', None) or '').strip() == EquipmentStatus.ACTIVE
 
     def get_equipment_max_print_size(self, obj):
         """The 3D printer's maximum print size set by the OIC (also the preview's build plate); None otherwise."""
@@ -3966,6 +3978,9 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'equipment_user_rating_enabled',
             'equipment_booking_not_utilize_window_hours',
             'equipment_operator_unavailable_after_booking_end_hours',
+            'maintenance_disruption_flag',
+            'disruption_kind',
+            'equipment_is_operational',
             'equipment_profile_type',
             'equipment_profile_type_display',
             'charge_profile',
