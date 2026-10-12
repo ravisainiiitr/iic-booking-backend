@@ -29,6 +29,16 @@ jobs:
           echo "--- keep-alive / protocols"
           sudo -n grep -RhiE '^\s*(KeepAlive|MaxKeepAliveRequests|KeepAliveTimeout|Protocols|Timeout)\b' \
             /etc/apache2/apache2.conf /etc/apache2/conf-enabled /etc/apache2/sites-enabled 2>/dev/null || true
+          echo "--- sites and PHP usage"
+          ls -1 /etc/apache2/sites-enabled
+          sudo -n grep -RhiE '^\s*(DocumentRoot|Alias|ServerName|ServerAlias|.*\.php|SetHandler|ProxyPass\s)' \
+            /etc/apache2/sites-enabled 2>/dev/null | sed 's/^\s*//' | sort -u || true
+          for root in $(sudo -n grep -RhiE '^\s*DocumentRoot' /etc/apache2/sites-enabled 2>/dev/null | awk '{print $2}' | tr -d '"' | sort -u); do
+            echo "php files under $root: $(sudo -n find "$root" -maxdepth 4 -name '*.php' 2>/dev/null | wc -l)"
+          done
+          echo "successful .php requests in current access logs (path, count):"
+          sudo -n sh -c "cat /var/log/apache2/*access*.log 2>/dev/null" \
+            | awk '$7 ~ /\.php/ && $9 ~ /^2/ {print $7}' | sed 's/?.*//' | sort | uniq -c | sort -rn | head -10 || true
           echo "--- public protocol"
           curl -sS -o /dev/null -m 15 --http2 -w 'equip https -> http_version=%{http_version} status=%{http_code}\n' \
             https://equip.iitr.ac.in/ || true
