@@ -3,6 +3,8 @@
 # switches only the auto-credit setting (sender and origin checks untouched). Prints counts, flags and record ids only.
 # test-sender-* / find-test-faculty: one-off run-scoped test with an email from a test sender; the real faculty in
 # the file is only dry-run, the credit goes to an existing flagged test faculty account and is reversed afterwards.
+# recheck-review (dry run) / recheck-review-apply: rows waiting for review are re-checked (their emails fetched
+# again read-only for the origin check) and the ones that now qualify are credited through the normal path.
 name: SRIC Wallet Recharge Ops
 
 on:
@@ -29,6 +31,8 @@ on:
           - auto-credit-dry-run
           - auto-credit-enable
           - auto-credit-disable
+          - recheck-review
+          - recheck-review-apply
       test_sender:
         description: "test-sender-dry-run / e2e: the one test sender address for this run (not saved)"
         required: false

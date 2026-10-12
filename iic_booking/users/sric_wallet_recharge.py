@@ -119,11 +119,14 @@ class RowPlan:
         self.status = str(self.status)
 
 
-def plan_row(row: ParsedRow, fy: str, *, origin_verified: bool, config: SricWalletRechargeSettings) -> RowPlan:
+def plan_row(
+    row: ParsedRow, fy: str, *, origin_verified: bool, config: SricWalletRechargeSettings, exclude_pk: int | None = None
+) -> RowPlan:
     if row.ledger_id:
         existing = (
             SricWalletRecharge.objects.filter(ledger_id=row.ledger_id, financial_year=fy)
             .exclude(status=S.DUPLICATE)
+            .exclude(pk=exclude_pk)
             .first()
         )
         if existing:
@@ -500,6 +503,33 @@ def send_review_alert(row_ids: Iterable[int]) -> None:
             logger.exception("SRIC wallet recharge review alert failed")
 
 
+UNREADABLE_MAIL_STATUSES = (SricWalletMailStatus.PARSE_ERROR, SricWalletMailStatus.NO_ATTACHMENT, SricWalletMailStatus.ERROR)
+
+
+def send_unreadable_mail_alert(summaries: list[dict[str, Any]]) -> None:
+    """Tell the Main Administrator that SRIC emails arrived whose Wallet_Recharge.csv could not be read."""
+    from iic_booking.communication.styled_transactional_emails import _send
+    from iic_booking.communication.utils import get_frontend_absolute_url
+
+    link = get_frontend_absolute_url("/admin-settings/wallet-recharge-requests?tab=sric")
+    lines = [
+        f"Email of {s.get('date', '—')} (record {s.get('message_record_id', '—')}): "
+        f"{SricWalletMailStatus(s['status']).label}" + (f" — {s['error']}" if s.get("error") else "")
+        for s in summaries
+    ]
+    text = (
+        f"{len(summaries)} email(s) from the SRIC portal could not be read, so no wallet was credited from them.\n\n"
+        + "\n".join(lines)
+        + f"\n\nCheck the file and credit the faculty from: {link}\n"
+    )
+    logger.warning("SRIC wallet recharge: %s unreadable email(s): %s", len(summaries), [s.get("message_record_id") for s in summaries])
+    for to in review_alert_recipients():
+        try:
+            _send(to, f"SRIC wallet recharge: {len(summaries)} email(s) could not be read", text, None)
+        except Exception:  # noqa: BLE001
+            logger.exception("SRIC wallet recharge unreadable-mail alert failed")
+
+
 # --- Mailbox ----------------------------------------------------------------------------------------------------
 
 
@@ -631,6 +661,175 @@ def _fetch(conn, uid: str) -> bytes | None:
     return next((p[1] for p in data if isinstance(p, tuple) and len(p) >= 2), None)
 
 
+# --- Recheck rows waiting for review ----------------------------------------------------------------------------
+
+RECHECK_REASONS = (
+    "origin_unverified",
+    "unmatched_employee",
+    "ambiguous_employee",
+    "inactive_user",
+    "not_faculty",
+    "unknown_receiver",
+    "receiver_without_department",
+)
+RECHECK_DAYS = 60
+MAX_RECHECK_ROWS = 50
+
+
+def _recheck_candidates(*, with_mailbox: bool) -> list[SricWalletRecharge]:
+    qs = SricWalletRecharge.objects.filter(
+        status=S.NEEDS_REVIEW,
+        review_reason__in=RECHECK_REASONS,
+        is_test=False,
+        message__isnull=False,
+        message__is_test=False,
+        created_at__gte=timezone.now() - timedelta(days=RECHECK_DAYS),
+    ).select_related("message")
+    if not with_mailbox:
+        qs = qs.filter(origin_verified=True)
+    return list(qs.order_by("pk")[:MAX_RECHECK_ROWS])
+
+
+def _reverify_origin(conn, message: SricWalletMailMessage, config) -> tuple[bool, str] | None:
+    """Origin check of the stored email fetched again; None when it is gone or is not the same email and file."""
+    raw = _fetch(conn, message.uid) if message.uid else None
+    if raw is None:
+        return None
+    msg = email.message_from_bytes(raw)
+    message_id = " ".join(str(msg.get("Message-ID") or "").split())[:500]
+    files = _attachments(msg, config.attachment_name)
+    sha = hashlib.sha256(files[0][1]).hexdigest() if files else ""
+    if message_id != message.message_id or not sha or sha != message.attachment_sha256:
+        return None
+    auth = check_message(msg, config)
+    return auth.authenticated, auth.verdict
+
+
+def recheck_review_rows(*, conn=None, folder: str = "", apply: bool = False, trigger: str = "recheck") -> dict[str, Any]:
+    """Re-evaluate rows waiting for review whose cause may have gone away (faculty registered later, receiver mapped,
+    origin rule corrected) and credit the ones that now qualify through the normal path (once per Ledger ID and year).
+
+    With ``conn`` (mailbox selected read-only on ``folder``) the stored email is fetched again and its origin checked
+    with the current rules; without it only rows from verified emails are re-matched. Returns ids, codes and amounts.
+    """
+    config = SricWalletRechargeSettings.get_singleton()
+    out: dict[str, Any] = {"checked": 0, "changed": 0, "credited": 0, "rows": []}
+    origins: dict[int, tuple[bool, str] | None] = {}
+    for rec in _recheck_candidates(with_mailbox=conn is not None):
+        origin_verified = rec.origin_verified
+        reverified = None
+        if not origin_verified and conn is not None and rec.message.folder == folder:
+            if rec.message_id not in origins:
+                origins[rec.message_id] = _reverify_origin(conn, rec.message, config)
+            reverified = origins[rec.message_id]
+            if reverified is not None:
+                origin_verified = reverified[0]
+        row = ParsedRow(
+            row_number=rec.row_number,
+            project_number=rec.project_number,
+            pi_name=rec.pi_name,
+            employee_id=rec.employee_id,
+            ledger_id=rec.ledger_id,
+            receiver_code=rec.receiver_code,
+            amount_raw=rec.amount_raw,
+            amount=rec.amount,
+        )
+        plan = plan_row(row, rec.financial_year, origin_verified=origin_verified, config=config, exclude_pk=rec.pk)
+        new_status = S.AWAITING_CREDIT if plan.status == S.CREDITED else S(plan.status)
+        user_id = plan.user.pk if plan.user else None
+        changed = (
+            new_status != rec.status
+            or plan.reason != rec.review_reason
+            or origin_verified != rec.origin_verified
+            or user_id != rec.matched_user_id
+        )
+        entry: dict[str, Any] = {
+            "row_id": rec.pk,
+            "reference": rec.reference,
+            "amount": f"{rec.amount:.2f}" if rec.amount is not None else None,
+            "ledger_id": rec.ledger_id,
+            "before_reason": rec.review_reason,
+            "origin_rechecked": reverified is not None,
+            "origin_verified": origin_verified,
+            "origin_check": reverified[1] if reverified else "",
+            "matched_user_id": user_id,
+            "would_be": str(plan.status),
+            "reason": plan.reason,
+            "applied": False,
+            "credited": False,
+            "wallet_transaction_id": None,
+        }
+        out["checked"] += 1
+        out["rows"].append(entry)
+        if not (apply and changed) or plan.status == S.DUPLICATE:
+            continue
+        with transaction.atomic():
+            locked = SricWalletRecharge.objects.select_for_update().get(pk=rec.pk)
+            if locked.status != S.NEEDS_REVIEW or locked.review_reason != rec.review_reason:
+                entry["skipped"] = "changed meanwhile"
+                continue
+            locked.status = new_status
+            locked.review_reason = plan.reason
+            locked.review_message = REVIEW_MESSAGES.get(plan.reason, "")
+            locked.origin_verified = origin_verified
+            locked.matched_user = plan.user
+            locked.receiver_mapping = plan.mapping
+            locked.department = plan.mapping.department if plan.mapping else None
+            note = f"{trigger}: was {rec.review_reason}; status={new_status}" + (f" reason={plan.reason}" if plan.reason else "")
+            _history(locked, "rechecked", note=note)
+            locked.save()
+            if reverified and reverified[0] and not rec.message.authenticated:
+                SricWalletMailMessage.objects.filter(pk=rec.message_id).update(
+                    authenticated=True, auth_verdict=f"rechecked: {reverified[1]}"[:500]
+                )
+        entry["applied"] = True
+        out["changed"] += 1
+        if plan.status != S.CREDITED:
+            continue
+        try:
+            credited, now = credit_row(rec.pk, actor=None, note=f"auto-credit after recheck ({trigger})")
+        except SricRechargeError as exc:
+            _mark_failed(rec.pk, exc.message)
+            entry["credit_error"] = exc.code
+            continue
+        entry.update(credited=now, wallet_transaction_id=credited.wallet_transaction_id)
+        out["credited"] += int(now)
+    if out["changed"]:
+        logger.info("SRIC wallet recharge recheck (%s): checked=%s changed=%s credited=%s", trigger, out["checked"], out["changed"], out["credited"])
+    return out
+
+
+def recheck_with_mailbox(*, apply: bool = False, trigger: str = "recheck") -> dict[str, Any]:
+    """Recheck review rows, fetching their stored emails again (read-only) so the origin is checked with current rules."""
+    from django.conf import settings as dj_settings
+
+    from iic_booking.users.imap_fetch import connect_imap
+
+    imap = _imap_config()
+    if imap is None:
+        return {"status": "not_configured"}
+    if apply and not cache.add(LOCK_KEY, "1", LOCK_SECONDS):
+        return {"status": "already_running"}
+    folder = (getattr(dj_settings, "IMAP_MAILBOX", "") or "INBOX").strip() or "INBOX"
+    try:
+        conn = connect_imap(
+            imap["host"], imap["port"], imap["use_ssl"], imap["email_address"], imap["password"], timeout=imap["timeout"]
+        )
+        try:
+            typ, _ = conn.select(folder, readonly=True)
+            if typ != "OK":
+                return {"status": "error", "error": "Could not open the mailbox folder."}
+            return {"status": "ok", **recheck_review_rows(conn=conn, folder=folder, apply=apply, trigger=trigger)}
+        finally:
+            try:
+                conn.logout()
+            except Exception:  # noqa: BLE001
+                pass
+    finally:
+        if apply:
+            cache.delete(LOCK_KEY)
+
+
 QUIET_WINDOW_TZ = "Asia/Kolkata"
 QUIET_WINDOW_TRIGGERS = ("schedule", "refresh")
 SKIPPED_PEAK = "skipped_peak_window"
@@ -689,6 +888,13 @@ def scan_mailbox(*, trigger: str = "schedule", dry_run: bool = False, max_messag
         return {"status": "already_running"}
     try:
         result = _scan(config, imap, trigger=trigger, dry_run=dry_run, max_messages=max_messages)
+        if not dry_run and result.get("status") == "ok":
+            try:
+                recheck = recheck_review_rows(apply=True, trigger=trigger)
+                result["rechecked"] = recheck["changed"]
+                result["credited"] += recheck["credited"]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("SRIC wallet recharge recheck failed (%s)", type(exc).__name__)
     finally:
         if not dry_run:
             cache.delete(LOCK_KEY)
@@ -698,6 +904,9 @@ def scan_mailbox(*, trigger: str = "schedule", dry_run: bool = False, max_messag
         )
         if result.get("review_row_ids"):
             send_review_alert(result["review_row_ids"])
+        unreadable = [m for m in result.get("messages", []) if m.get("status") in UNREADABLE_MAIL_STATUSES]
+        if unreadable:
+            send_unreadable_mail_alert(unreadable)
     return result
 
 

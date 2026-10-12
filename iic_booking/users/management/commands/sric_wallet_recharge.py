@@ -31,6 +31,8 @@ class Command(BaseCommand):
                 "auto-credit-dry-run",
                 "auto-credit-enable",
                 "auto-credit-disable",
+                "recheck-review",
+                "recheck-review-apply",
             ],
         )
         parser.add_argument("--employee-id", default="")
@@ -139,6 +141,32 @@ class Command(BaseCommand):
             f"existing_awaiting_rows={waiting} (not credited by this switch; it applies to newly read rows only)"
         )
 
+    def _recheck(self, *, apply: bool):
+        """Rows waiting for review: fetch their emails again (read-only), re-check origin and match, credit if eligible."""
+        from iic_booking.users.models.sric_wallet_recharge import SricWalletRecharge
+        from iic_booking.users.sric_wallet_recharge import recheck_with_mailbox
+
+        try:
+            result = recheck_with_mailbox(apply=apply, trigger="recheck-command")
+        except Exception as exc:  # noqa: BLE001
+            raise CommandError(f"recheck failed ({type(exc).__name__})") from exc
+        if result.get("status") != "ok":
+            raise CommandError(f"recheck status={result.get('status')} error={result.get('error', '')}")
+        self.stdout.write(
+            f"recheck apply={apply} checked={result['checked']} changed={result['changed']} credited={result['credited']}"
+        )
+        for r in result["rows"]:
+            rec = SricWalletRecharge.objects.filter(pk=r["row_id"]).first()
+            self.stdout.write(
+                f"  row_id={r['row_id']} ref={r['reference']} amount={r['amount']} ledger={r['ledger_id']} "
+                f"before_reason={r['before_reason']} origin_rechecked={r['origin_rechecked']} origin_verified={r['origin_verified']} "
+                f"origin_check='{r['origin_check']}' matched_user_id={r['matched_user_id']} would_be={r['would_be']} "
+                f"reason='{r['reason']}' applied={r['applied']} credited={r['credited']} "
+                f"wallet_transaction_id={r['wallet_transaction_id']} skipped='{r.get('skipped', '')}' "
+                f"credit_error='{r.get('credit_error', '')}' now_status={getattr(rec, 'status', '-')} "
+                f"balance_after={getattr(rec, 'balance_after', None)} confirmation_sent={bool(getattr(rec, 'confirmation_sent_at', None))}"
+            )
+
     def handle(self, *args, **options):
         from django.db.models import Count
 
@@ -147,6 +175,9 @@ class Command(BaseCommand):
             return
         if options["action"].startswith("auto-credit-"):
             self._auto_credit(options["action"])
+            return
+        if options["action"].startswith("recheck-review"):
+            self._recheck(apply=options["action"] == "recheck-review-apply")
             return
 
         from iic_booking.users.models.sric_wallet_recharge import (
@@ -216,4 +247,8 @@ class Command(BaseCommand):
         )
         self.stdout.write(
             f"rows_by_status={dict(SricWalletRecharge.objects.values_list('status').annotate(n=Count('id')).values_list('status', 'n'))}"
+        )
+        review = SricWalletRecharge.objects.filter(status="needs_review", is_test=False)
+        self.stdout.write(
+            f"needs_review_by_reason={dict(review.values_list('review_reason').annotate(n=Count('id')).values_list('review_reason', 'n'))}"
         )

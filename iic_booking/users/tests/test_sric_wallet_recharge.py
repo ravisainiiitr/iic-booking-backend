@@ -154,8 +154,8 @@ class MailAuthTests(TestCase):
         self.config.trusted_relay_ranges = "74.125.10.0/24"
         self.assertTrue(self._check(hops=[FOREIGN_HOP, *INTERNAL_HOPS]).authenticated)
 
-    def test_missing_or_repeated_marker_fails(self):
-        self.assertFalse(self._check(marker=0).authenticated)
+    def test_internal_mail_without_marker_passes_repeated_marker_fails(self):
+        self.assertTrue(self._check(marker=0).authenticated)
         self.assertFalse(self._check(marker=2).authenticated)
 
     def test_wrong_sender_fails(self):

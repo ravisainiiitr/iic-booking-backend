@@ -6,7 +6,9 @@ email counts as genuine when either
 
 * a trusted mail server (configured authserv-id) recorded spf / dkim / dmarc = pass for the sender's domain, or
 * it never crossed the public Internet: every Received hop came from a private (campus) address or a configured
-  trusted range, and the campus gateway's marker header is present exactly once with the expected value.
+  trusted range. The campus gateway adds its marker header only to mail arriving from outside (the SRIC portal's
+  internal-only mail never carries it), so the marker may be absent; when present it must appear exactly once
+  with the expected value.
 
 Anything else is not auto-credited; its rows wait for the Main Administrator.
 """
@@ -100,6 +102,8 @@ def gateway_marker(msg: Message, header: str, expected: str) -> tuple[bool, str]
     if not header:
         return True, "no marker required"
     values = msg.get_all(header) or []
+    if not values:
+        return True, "no marker (internal-only mail)"
     if len(values) != 1:
         return False, f"marker present {len(values)} times"
     if expected and str(values[0]).strip().lower() != expected.strip().lower():
