@@ -1,0 +1,71 @@
+# Read-only: stored SRIC Wallet_Recharge.csv emails and rows as the scanner recorded them. Prints record ids, dates,
+# statuses, review reasons, origin-check verdicts, receiver codes, amounts, Ledger IDs and how the Employee ID
+# matches portal users (none / one active faculty / ...). No names, Employee IDs, addresses or email bodies.
+name: Probe SRIC Wallet Rows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          import django
+          django.setup()
+          from iic_booking.users.models import User, UserType
+          from iic_booking.users.models.sric_wallet_recharge import SricWalletMailMessage, SricWalletRecharge
+          from iic_booking.users.sric_wallet_csv import normalize_employee_id
+          from iic_booking.users.sric_wallet_recharge import match_employee
+
+          def match_detail(emp):
+              norm = normalize_employee_id(emp)
+              if not norm:
+                  return "empty"
+              users = match_employee(emp)
+              if len(users) > 1:
+                  return f"multiple({len(users)})"
+              if users:
+                  u = users[0]
+                  return f"user_id={u.pk} active={u.is_active} type={u.user_type} test={bool(getattr(u, 'is_test_account', False))}"
+              near = [
+                  (u.pk, u.user_type)
+                  for u in User.objects.filter(emp_id__icontains=norm[-4:]).only("id", "emp_id", "user_type")
+                  if norm in normalize_employee_id(u.emp_id or "") or normalize_employee_id(u.emp_id or "") in norm
+              ][:5]
+              return f"none emp_id_shape=len{len(norm)}:{'digits' if norm.isdigit() else 'alnum'} near={near}"
+
+          for m in SricWalletMailMessage.objects.order_by("pk"):
+              print(f"MSG id={m.pk} uid={m.uid} folder={m.folder} date={m.received_at} status={m.status} test={m.is_test} "
+                    f"trigger={m.trigger} attachment={m.attachment_name!r} rows={m.row_count} authenticated={m.authenticated} "
+                    f"verdict={m.auth_verdict!r} error={m.error[:120]!r} from_default={m.from_addr == 'no-reply@sric.iitr.ac.in'}")
+          for r in SricWalletRecharge.objects.order_by("pk"):
+              print(f"ROW id={r.pk} ref={r.reference} msg={r.message_id} row={r.row_number} status={r.status} reason={r.review_reason!r} "
+                    f"test={r.is_test} origin_verified={r.origin_verified} amount={r.amount} amount_raw={r.amount_raw!r} "
+                    f"receiver={r.receiver_code!r} dept_id={r.department_id} ledger={r.ledger_id!r} fy={r.financial_year} "
+                    f"project_set={bool(r.project_number)} matched_user={r.matched_user_id} txn={r.wallet_transaction_id} "
+                    f"credited_at={r.credited_at} confirmation_sent={bool(r.confirmation_sent_at)} reversed={bool(r.reversed_at)} "
+                    f"duplicate_of={r.duplicate_of_id} history={[h.get('action') for h in (r.history or [])]}")
+              print(f"    employee_match: {match_detail(r.employee_id)}")
+          print("DONE_OK")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
