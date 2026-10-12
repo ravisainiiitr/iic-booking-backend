@@ -23,7 +23,9 @@ jobs:
           APPLY: ${{ inputs.action == 'apply' && '1' || '0' }}
         run: |
           set -euo pipefail
+          SCRIPT="$GITHUB_WORKSPACE/scripts/ops/assign_tinkering_lab_staff.py"
+          ls -l "$SCRIPT" || { pwd; ls -la "$GITHUB_WORKSPACE" | head -40; git -C "$GITHUB_WORKSPACE" ls-files scripts/ops | head; exit 1; }
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
           test -n "$CID"
           docker exec -i -e APPLY="$APPLY" -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
-            python manage.py shell < scripts/ops/assign_tinkering_lab_staff.py
+            python manage.py shell < "$SCRIPT"
