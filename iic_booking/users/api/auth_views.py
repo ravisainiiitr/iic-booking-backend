@@ -1316,8 +1316,15 @@ def login(request):
     # Program end date / access-on-hold controls are for internal program-linked users.
     # External users are governed by admin approval + active/force_inactive only.
     from django.utils import timezone
+
+    from iic_booking.users import account_lifecycle
+
     if UserType.is_internal_user(getattr(user, "user_type", "")):
-        if getattr(user, "program_end_date", None) and timezone.localdate() > user.program_end_date:
+        if (
+            getattr(user, "program_end_date", None)
+            and timezone.localdate() > user.program_end_date
+            and not account_lifecycle.login_allowed_after_end(user)
+        ):
             return Response(
                 _programme_expired_payload(user, password),
                 status=status.HTTP_403_FORBIDDEN,
@@ -2391,6 +2398,13 @@ def current_user(request):
     from iic_booking.department_modules.access import availability_block
 
     data["department_modules"] = availability_block(request.user)
+    from iic_booking.users import account_lifecycle
+
+    try:
+        data["account_lifecycle"] = account_lifecycle.status_payload(request.user, full=False)
+    except Exception:
+        logger.exception("account lifecycle status failed user=%s", request.user.pk)
+        data["account_lifecycle"] = None
     return Response(data, status=status.HTTP_200_OK)
 
 

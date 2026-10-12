@@ -63,6 +63,13 @@ from .registration_approval import (
     RegistrationExtensionRequest,
     RegistrationExtensionStatus,
 )
+from .account_lifecycle import (
+    AccountLifecycle,
+    AccountLifecycleEvent,
+    DegreeCode,
+    EndDateSource,
+    LifecycleCategory,
+)
 from .wallet_student_recharge_settings import WalletStudentRechargeSettings
 from .department_faculty_credit_facility import (
     DepartmentFacultyCreditFacilitySettings,
@@ -158,6 +165,11 @@ __all__ = [
     "RegistrationApprovalToken",
     "RegistrationExtensionRequest",
     "RegistrationExtensionStatus",
+    "AccountLifecycle",
+    "AccountLifecycleEvent",
+    "DegreeCode",
+    "EndDateSource",
+    "LifecycleCategory",
     "Department",
     "DepartmentType",
     "OrganizationRequest",

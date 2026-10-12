@@ -4104,6 +4104,17 @@ def _book_equipment_impl(request, pk):
                 {"error": "Invalid user_id for booking on behalf."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+    from iic_booking.users.account_lifecycle import suspension_refusal
+
+    suspended = suspension_refusal(booking_user, on_behalf=booking_user.pk != request.user.pk)
+    if suspended is not None:
+        _create_booking_attempt_log(
+            request, equipment, BookingAttemptOutcome.FAILED,
+            failure_reason=suspended["error"],
+            number_of_samples=request.data.get("number_of_samples") or 1,
+            additional_info=_get_additional_info_from_request(request, equipment),
+        )
+        return Response(suspended, status=status.HTTP_403_FORBIDDEN)
     user_type = booking_user.user_type
     if not user_type:
         user_type = UserType.STUDENT

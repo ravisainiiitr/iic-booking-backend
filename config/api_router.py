@@ -86,6 +86,7 @@ from iic_booking.users.api.student_spending_limit_views import (
 )
 from iic_booking.users.api import supervisor_invite_views
 from iic_booking.users.api import registration_approval_views as reg_approval_views
+from iic_booking.users.api import account_lifecycle_views
 from iic_booking.users.api.wallet_views import (
     get_wallet,
     get_wallet_balance,
@@ -1170,6 +1171,14 @@ urlpatterns = router.urls + [
     path("registration-approvals/extensions/<int:ext_id>/decide/", reg_approval_views.faculty_extension_decide, name="registration-approvals-extension-decide"),
     path("registration-approvals/<int:approval_id>/", reg_approval_views.faculty_registration_approval_detail, name="registration-approvals-detail"),
     path("registration-approvals/<int:approval_id>/decide/", reg_approval_views.faculty_registration_approval_decide, name="registration-approvals-decide"),
+    path("account-lifecycle/me/", account_lifecycle_views.my_account_lifecycle, name="account-lifecycle-me"),
+    path("account-lifecycle/me/extension-request/", account_lifecycle_views.my_extension_request, name="account-lifecycle-extension-request"),
+    path("account-lifecycle/me/end-date/", account_lifecycle_views.my_end_date, name="account-lifecycle-end-date"),
+    path("account-lifecycle/supervisor/", account_lifecycle_views.supervisor_lifecycle_overview, name="account-lifecycle-supervisor"),
+    path("account-lifecycle/extension-decision/", account_lifecycle_views.extension_email_decision, name="account-lifecycle-extension-decision"),
+    path("account-lifecycle/admin/report/", account_lifecycle_views.admin_lifecycle_report, name="account-lifecycle-admin-report"),
+    path("account-lifecycle/admin/users/<int:user_id>/", account_lifecycle_views.admin_user_lifecycle, name="account-lifecycle-admin-user"),
+    path("account-lifecycle/admin/users/<int:user_id>/extend/", account_lifecycle_views.admin_user_extend, name="account-lifecycle-admin-user-extend"),
     
     # Wallet recharge request endpoints
     path("wallet/credit-facility/settings/", wallet_credit_facility_settings_view, name="wallet-credit-facility-settings"),

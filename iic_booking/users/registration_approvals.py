@@ -87,6 +87,7 @@ TPL_FACULTY_DECISION_REMINDER = "registration_faculty_decision_reminder_email"
 TPL_USER_SENT_TO_FACULTY = "registration_sent_to_faculty_email"
 TPL_USER_DECLINED = "registration_declined_reregister_email"
 TPL_USER_TIMED_OUT = "registration_timed_out_email"
+TPL_EXTENSION_DECISION = "account_extension_decision_request_email"
 
 DEFAULT_DECISION_WINDOW_HOURS = 24
 TIMED_OUT_MESSAGE = (
@@ -310,9 +311,20 @@ def extension_disclaimer(user, until: Optional[date]) -> str:
     )
 
 
+def current_validity(user) -> Optional[date]:
+    """Programme / employment end date: the account lifecycle date (covers IITR Students), else the registration date."""
+    from iic_booking.users import account_lifecycle
+
+    try:
+        return account_lifecycle.current_end_date(user)
+    except Exception:
+        logger.exception("account lifecycle end date failed user=%s", getattr(user, "pk", None))
+        return getattr(user, "program_end_date", None)
+
+
 def extension_max_until(user, today: Optional[date] = None) -> date:
     today = today or timezone.localdate()
-    end = getattr(user, "program_end_date", None)
+    end = current_validity(user)
     base = end if end and end >= today else today
     return add_calendar_months(base, EXTENSION_MAX_MONTHS)
 
@@ -957,6 +969,17 @@ def _make_operational(user) -> None:
     user.save(update_fields=fields)
 
 
+def _auto_link_wallet(user, faculty, *, channel: str) -> None:
+    """Post-docs, RAs and startups approved by their faculty member join that member's wallet at once. Never raises."""
+    from iic_booking.users import account_lifecycle
+
+    try:
+        with transaction.atomic():
+            account_lifecycle.auto_link_wallet(user, faculty, actor=faculty, channel=channel)
+    except Exception:
+        logger.exception("automatic wallet link failed user=%s faculty=%s", user.pk, getattr(faculty, "pk", None))
+
+
 def _notify_decision(user, approval, *, approved: bool, decided_by, reason: str, cc_faculty) -> None:
     context = {
         **_user_context(user),
@@ -1083,6 +1106,7 @@ def _faculty_decide(
     )
     if approved:
         _notify_decision(user, approval, approved=True, decided_by=faculty, reason=reason, cc_faculty=faculty)
+        _auto_link_wallet(user, faculty, channel=channel)
         return approval
     context = {
         **_user_context(user),
@@ -1344,30 +1368,51 @@ def pending_extension(user) -> Optional[RegistrationExtensionRequest]:
     )
 
 
+EXTENSION_REFUSALS = {
+    "not_in_scope": "Extensions are available to IITR students, post-docs, research associates and IITR Startups.",
+    "no_end_date": "No programme / employment end date is recorded for your account yet.",
+    "not_approved": "An extension can be requested only once your account is approved.",
+    "enforcement_off": "Programme end dates are not enforced yet, so no extension is needed.",
+    "too_early": "You can ask for an extension from 30 days before your end date.",
+}
+
+
 def can_request_extension(user) -> bool:
-    return claims_iitr(user) and bool(user.program_end_date) and fully_approved(user)
+    from iic_booking.users import account_lifecycle
+
+    return account_lifecycle.can_request_extension(user)[0]
 
 
 @transaction.atomic
 def request_extension(user, *, reason: str = "", channel: str = Channel.PORTAL, request=None) -> RegistrationExtensionRequest:
+    from iic_booking.users import account_lifecycle
+
     require_schema()
-    if not can_request_extension(user):
-        raise ApprovalError(
-            "An extension can be requested only by an approved IITR account that has a programme validity date.",
-            "not_eligible",
-        )
+    allowed, why = account_lifecycle.can_request_extension(user)
+    if not allowed:
+        raise ApprovalError(EXTENSION_REFUSALS.get(why, "You cannot request an extension now."), "not_eligible", extra={"reason": why})
     existing = pending_extension(user)
     if existing is not None:
         return existing
-    faculty = user.supervisor if user.supervisor_id and is_eligible_faculty(user.supervisor) else None
-    approval = get_or_create_approval(user)
+    faculty = account_lifecycle.supervisor_for(user)
+    # Channel i students have no registration request; only self-registered accounts get one.
+    approval = get_or_create_approval(user) if claims_iitr(user) else _approval_for(user)
     ext = RegistrationExtensionRequest.objects.create(
         user=user,
         faculty=faculty,
-        previous_end_date=user.program_end_date,
+        previous_end_date=current_validity(user),
         max_until=extension_max_until(user),
         user_reason=(reason or "").strip()[:MAX_REASON_LENGTH],
         requested_channel=channel,
+    )
+    account_lifecycle.event(
+        account_lifecycle.LEvent.Action.EXTENSION_REQUESTED,
+        user=user,
+        actor=user,
+        role="user",
+        channel=channel,
+        extension_id=ext.pk,
+        faculty_id=getattr(faculty, "pk", None),
     )
     audit(
         Event.Action.EXTENSION_REQUESTED,
@@ -1387,20 +1432,75 @@ def request_extension(user, *, reason: str = "", channel: str = Channel.PORTAL, 
 
 
 def _send_extension_request(ext: RegistrationExtensionRequest, *, actor=None, reminder: bool = False) -> bool:
+    from iic_booking.users import account_lifecycle
+
     _retire_tokens(extension=ext)
     raw, token = _issue_token(faculty=ext.faculty, extension=ext)
     user = ext.user
+    row = account_lifecycle.lifecycle_for(user)
     context = {
         **_user_context(user),
+        "user_type": account_lifecycle.category_label(account_lifecycle.category_for(user)) or user_type_label(user),
+        "programme_validity": _fmt_date(ext.previous_end_date),
+        "degree_name": (row.degree_name if row else "") or "",
+        "end_date_source": account_lifecycle.source_note(row) if row else "",
         "recipient_name": _name(ext.faculty),
         "current_validity": _fmt_date(ext.previous_end_date),
         "max_until": _fmt_date(ext.max_until),
         "user_reason": ext.user_reason,
         "disclaimer_text": extension_disclaimer(user, ext.max_until),
         "expires_on": _fmt_date(timezone.localtime(token.expires_at).date()),
+        "approve_link": extension_decision_link(raw, "approve"),
+        "decline_link": extension_decision_link(raw, "decline"),
         "link": review_link(raw),
     }
-    return _send(TPL_EXTENSION_REQUEST, ext.faculty, context, created_by=actor, extension=ext)
+    return _send(TPL_EXTENSION_DECISION, ext.faculty, context, created_by=actor, extension=ext)
+
+
+def extension_decision_link(raw_token: str, action: str) -> str:
+    """One-click page from the extension email; the single-use token is the credential (no sign-in)."""
+    from iic_booking.communication.utils import get_frontend_absolute_url
+
+    return get_frontend_absolute_url(f"/extension-decision?token={quote(raw_token, safe='')}&action={action}")
+
+
+def resolve_extension_email_token(raw_token: str, *, viewer=None, request=None) -> RegistrationApprovalToken:
+    """Token from the Approve / Decline buttons of an extension email. If someone is signed in it must be the
+    faculty member the email went to."""
+    digest = hash_token((raw_token or "").strip())
+    row = (
+        RegistrationApprovalToken.objects.select_related("extension__user__department", "faculty")
+        .filter(token_hash=digest, purpose=RegistrationApprovalToken.Purpose.EXTENSION)
+        .first()
+        if raw_token
+        else None
+    )
+    if row is None or row.extension_id is None:
+        raise ApprovalError("This approval link is not valid.", "token_invalid", 404)
+    if getattr(viewer, "is_authenticated", False) and viewer.pk != row.faculty_id:
+        audit(
+            Event.Action.TOKEN_REFUSED,
+            extension=row.extension,
+            actor=viewer,
+            channel=Channel.EMAIL_LINK,
+            request=request,
+            reason="wrong_faculty",
+        )
+        raise ApprovalError(
+            "You are signed in as someone else. This link was sent to a different faculty member; sign out or open "
+            "it in a private window.",
+            "wrong_faculty",
+            403,
+        )
+    if row.extension.status != ExtStatus.PENDING:
+        raise ApprovalError("This extension request has already been decided.", "already_decided", 410)
+    if row.used_at is not None:
+        raise ApprovalError("This approval link has already been used.", "token_used", 410)
+    if row.expires_at <= timezone.now():
+        raise ApprovalError(
+            "This approval link has expired. Open Pending approvals on your dashboard instead.", "token_expired", 410
+        )
+    return row
 
 
 def remind_extension(ext: RegistrationExtensionRequest, *, actor, request=None) -> bool:
@@ -1420,12 +1520,18 @@ def _parse_until(value) -> Optional[date]:
         return None
 
 
-def _apply_extension(user, until: date) -> bool:
-    """Set the new validity; undo a disable done by the expiry automation. Returns True when re-enabled."""
-    user.program_end_date = until
-    user.save(update_fields=["program_end_date"])
+def _apply_extension(user, until: date, *, actor=None, role: str = "", channel: str = "") -> bool:
+    """Set the new validity, lift a suspension and undo a disable done by the old expiry automation.
+    Returns True when the account was re-enabled or resumed."""
+    from iic_booking.users import account_lifecycle
+
+    if claims_iitr(user):
+        # Self-registered accounts keep the date on the profile; Channel i students keep their Channel i dates.
+        user.program_end_date = until
+        user.save(update_fields=["program_end_date"])
+    resumed = account_lifecycle.on_extension_granted(user, until, actor=actor, role=role, channel=channel)
     approval = _approval_for(user)
-    re_enabled = False
+    re_enabled = resumed
     if approval is not None and approval.expiry_set_force_inactive:
         user.force_inactive = False
         user.save(update_fields=["force_inactive"])
@@ -1550,7 +1656,7 @@ def _decide_extension(
         token.save(update_fields=["used_at"])
     _retire_tokens(extension=ext)
     approval = _approval_for(user)
-    re_enabled = _apply_extension(user, new_until) if granted else False
+    re_enabled = _apply_extension(user, new_until, actor=actor, role=role, channel=channel) if granted else False
     audit(
         Event.Action.EXTENSION_GRANTED if granted else Event.Action.EXTENSION_DENIED,
         approval=approval,
@@ -1579,14 +1685,17 @@ def admin_grant_extension(user, *, actor, until, reason: str, request=None) -> R
     reason = (reason or "").strip()[:MAX_REASON_LENGTH]
     if not reason:
         raise ApprovalError("Give a reason for the extension.", "reason_required")
-    if not user.program_end_date:
+    from iic_booking.users import account_lifecycle
+
+    current = current_validity(user)
+    if not current:
         raise ApprovalError("This user has no programme validity date.", "no_validity")
     ext = pending_extension(user)
     if ext is None:
         ext = RegistrationExtensionRequest.objects.create(
             user=user,
-            faculty=user.supervisor if user.supervisor_id else None,
-            previous_end_date=user.program_end_date,
+            faculty=account_lifecycle.supervisor_for(user),
+            previous_end_date=current,
             max_until=extension_max_until(user),
             requested_channel=Channel.PORTAL,
             user_reason="",
@@ -1738,8 +1847,13 @@ def _disable(user, *, now) -> None:
 
 def run_expiry(today: Optional[date] = None, *, force: bool = False) -> dict[str, Any]:
     """Send due warnings and disable expired accounts. No-op unless the automation is switched on."""
+    from iic_booking.users import account_lifecycle
+
     if not schema_ready():
         return {"ran": False, "reason": "schema_pending"}
+    if account_lifecycle.enforcement_enabled():
+        # The account lifecycle suspends (sign-in still allowed) instead of forcing the account inactive.
+        return {"ran": False, "reason": "account_lifecycle_enforcement"}
     if not force and not automation_enabled():
         return {"ran": False, "reason": "disabled"}
     today = today or timezone.localdate()

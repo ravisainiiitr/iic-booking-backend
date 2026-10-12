@@ -268,6 +268,18 @@ def registration_programme_expiry() -> dict:
     return result
 
 
+@shared_task(name="users.account_lifecycle_daily")
+@defer_during_peak("users.account_lifecycle_daily")
+def account_lifecycle_daily() -> dict:
+    """Recompute programme / employment end dates; with enforcement on, send 30/7/1-day reminders and record
+    suspensions. Safe to re-run: each reminder and suspension notice goes out once per end date."""
+    from iic_booking.users.account_lifecycle import run_daily
+
+    result = run_daily()
+    logger.info("account_lifecycle_daily: %s", result)
+    return result
+
+
 @shared_task(name="users.registration_decision_timeouts")
 def registration_decision_timeouts() -> dict:
     """Treat faculty requests past their decision deadline as declined. Requests never sent have no deadline."""

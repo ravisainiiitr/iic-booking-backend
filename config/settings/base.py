@@ -206,6 +206,7 @@ MIDDLEWARE = [
     "iic_booking.remote_analysis.middleware.RemoteAnalysisCorrelationMiddleware",
     "iic_booking.equipment.request_memo.RequestMemoMiddleware",
     "iic_booking.equipment.peak_window_middleware.PeakWindowExternalBlockMiddleware",
+    "iic_booking.users.suspension_middleware.AccountSuspensionMiddleware",
 ]
 
 # STATIC
@@ -789,6 +790,9 @@ WALLET_CREDIT_FACILITY_V2_ENABLED = env.bool("WALLET_CREDIT_FACILITY_V2_ENABLED"
 WALLET_CREDIT_ENABLED = env.bool("WALLET_CREDIT_ENABLED", default=False)
 HOD_AFFILIATION_ENABLED = env.bool("HOD_AFFILIATION_ENABLED", default=False)
 STUDENT_LIFECYCLE_ENABLED = env.bool("STUDENT_LIFECYCLE_ENABLED", default=False)
+# Suspend IITR students / post-docs / RAs / IITR Startups after their programme or employment end date
+# (sign-in kept, writes refused) and send the 30/7/1-day reminders. Off: end dates are computed and reported only.
+ACCOUNT_END_DATE_ENFORCEMENT = env.bool("ACCOUNT_END_DATE_ENFORCEMENT", default=False)
 DEPARTMENT_MAPPING_ENABLED = env.bool("DEPARTMENT_MAPPING_ENABLED", default=False)
 
 # --- My Research (private research workspaces for IITR students/faculty) ---

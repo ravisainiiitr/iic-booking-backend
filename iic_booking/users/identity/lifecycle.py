@@ -31,6 +31,11 @@ def expire_due_students(*, actor=None) -> int:
     """Idempotently disable students whose effective end date has passed. Feature-flagged."""
     if not student_lifecycle_enabled():
         return 0
+    from iic_booking.users.account_lifecycle import enforcement_enabled
+
+    if enforcement_enabled():
+        # Superseded: the account lifecycle suspends students (sign-in kept) instead of disabling them.
+        return 0
     from iic_booking.users.models import User
 
     today = timezone.localdate()

@@ -97,6 +97,10 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "registration_sent_to_faculty_email",
     "registration_declined_reregister_email",
     "registration_timed_out_email",
+    "account_extension_decision_request_email",
+    "account_end_date_reminder_email",
+    "account_suspended_email",
+    "wallet_auto_linked_email",
     "support_ticket_resolution_email",
     "admin_bulk_email",
     "oic_monthly_report",
@@ -1756,6 +1760,157 @@ def _registration_approval_templates() -> list[dict[str, Any]]:
     ]
 
 
+def _account_lifecycle_templates() -> list[dict[str, Any]]:
+    request_rows, request_text = _rows(
+        (
+            ("Name", "user_name"),
+            ("Email", "user_email"),
+            ("Category", "user_type"),
+            ("Degree", "degree_name"),
+            ("Current end date", "current_validity"),
+            ("How the date was set", "end_date_source"),
+            ("Latest date allowed", "max_until"),
+        )
+    )
+    end_rows, end_text = _rows(
+        (
+            ("Category", "user_type"),
+            ("Degree", "degree_name"),
+            ("Programme / employment end date", "programme_end_date"),
+            ("How the date was set", "end_date_source"),
+        )
+    )
+    suspended_html = paragraph_html(
+        "You can still sign in, view your past bookings and download your results. You cannot book equipment or "
+        "upload files until your supervisor{% if faculty_name %} ({{ faculty_name }}){% endif %} extends the date. "
+        "Use the button below to ask for an extension of up to six months."
+    )
+    suspended_text = (
+        "You can still sign in, view your past bookings and download your results. You cannot book equipment or "
+        "upload files until your supervisor{% if faculty_name %} ({{ faculty_name }}){% endif %} extends the date. "
+        "Use the link below to ask for an extension of up to six months.\n"
+    )
+    return [
+        _simple_email(
+            code="account_extension_decision_request_email",
+            title="End Date Extension Awaiting Your Approval",
+            subject="{{ user_name }} asks you to extend their programme / employment end date",
+            intro=(
+                "<strong>{{ user_name }}</strong> has asked you, as their IIT Roorkee supervisor, to extend their "
+                "programme / employment end date on the {product}. You can extend it by up to six months, until "
+                "{{ max_until }} at most."
+            ).replace("{product}", PRODUCT_NAME),
+            description=(
+                "Sent to the IITR faculty supervisor when a student, post-doc, research associate or IITR Startup "
+                "asks for an extension. Approve / Decline buttons open single-use pages without sign-in."
+            ),
+            name_var="recipient_name",
+            details_heading="Request details",
+            detail_rows=request_rows,
+            post_details_html=_decision_buttons_html()
+            + paragraph_html(
+                "<strong>Approve</strong> extends the date to {{ max_until }} (you can choose an earlier date) after "
+                "you confirm: <em>{{ disclaimer_text }}</em>"
+            )
+            + paragraph_html("<strong>Decline</strong> asks for a reason, which is emailed to the user.")
+            + paragraph_html(
+                "No sign-in is needed for these buttons. Each link works once and expires on {{ expires_on }}. The "
+                "request is also under Pending approvals on your dashboard: <a href=\"{{ link }}\">open in the portal</a>."
+            ),
+            post_details_text=request_text
+            + "\nApprove: {{ approve_link }}\nDecline: {{ decline_link }}\n\n"
+            "Approve asks you to confirm: \"{{ disclaimer_text }}\"\n"
+            "Decline asks for a reason, which is emailed to the user.\n"
+            "No sign-in is needed. Each link works once and expires on {{ expires_on }}. The request is also under "
+            "Pending approvals on your dashboard: {{ link }}\n",
+            note_vars=(("user_reason", "Message from the user"),),
+            cta_label="Review in the portal",
+            variable_help=(
+                "{{ recipient_name }}, {{ user_name }}, {{ user_email }}, {{ user_type }}, {{ degree_name }}, "
+                "{{ current_validity }}, {{ end_date_source }}, {{ max_until }}, {{ user_reason }}, "
+                "{{ disclaimer_text }}, {{ expires_on }}, {{ approve_link }}, {{ decline_link }}, {{ link }}"
+            ),
+        ),
+        _simple_email(
+            code="account_end_date_reminder_email",
+            title="Programme End Date Approaching",
+            subject="Your account will be suspended after {{ programme_end_date }}",
+            intro=(
+                "Your programme / employment end date on the {product} is <strong>{{ programme_end_date }}</strong> "
+                "({{ days_left }} day(s) from today). After that date your account is suspended: you can sign in "
+                "and download results, but cannot book equipment or upload files."
+            ).replace("{product}", PRODUCT_NAME),
+            description=(
+                "Sent to the user (supervisor copied) 30, 7 and 1 day(s) before the programme / employment end date, "
+                "when end-date enforcement is on."
+            ),
+            details_heading="Your account",
+            detail_rows=end_rows,
+            post_details_html=paragraph_html(
+                "If you are continuing, ask your supervisor{% if faculty_name %} ({{ faculty_name }}){% endif %} for an "
+                "extension now using the button below."
+            )
+            + _SIX_MONTHS_HTML,
+            post_details_text=end_text
+            + "\nIf you are continuing, ask your supervisor{% if faculty_name %} ({{ faculty_name }}){% endif %} for "
+            "an extension now using the link below.\n" + _SIX_MONTHS_TEXT,
+            cta_label="Request an extension",
+            variable_help=(
+                "{{ user_name }}, {{ programme_end_date }}, {{ days_left }}, {{ user_type }}, {{ degree_name }}, "
+                "{{ end_date_source }}, {{ faculty_name }}, {{ link }}"
+            ),
+        ),
+        _simple_email(
+            code="account_suspended_email",
+            title="Account Suspended: End Date Passed",
+            subject="Your account is suspended: programme / employment end date passed",
+            intro=(
+                "Your programme / employment end date, <strong>{{ programme_end_date }}</strong>, has passed, so your "
+                "account on the {product} is suspended."
+            ).replace("{product}", PRODUCT_NAME),
+            description=(
+                "Sent to the user (supervisor copied) when their account is suspended at the end date. Sign-in, past "
+                "bookings and result downloads stay available."
+            ),
+            details_heading="Your account",
+            detail_rows=end_rows,
+            post_details_html=suspended_html,
+            post_details_text=end_text + "\n" + suspended_text,
+            note_vars=(("future_bookings_note", "Upcoming bookings"),),
+            cta_label="Request an extension",
+            variable_help=(
+                "{{ user_name }}, {{ programme_end_date }}, {{ user_type }}, {{ degree_name }}, {{ end_date_source }}, "
+                "{{ faculty_name }}, {{ future_bookings }}, {{ future_bookings_note }}, {{ link }}"
+            ),
+        ),
+        _simple_email(
+            code="wallet_auto_linked_email",
+            title="Linked to Your Supervisor's Wallet",
+            subject="You are linked to {{ faculty_name }}'s wallet",
+            intro=(
+                "Because <strong>{{ faculty_name }}</strong> approved your registration, your account on the {product} "
+                "is now linked to their wallet. No separate wallet link request is needed."
+            ).replace("{product}", PRODUCT_NAME),
+            description=(
+                "Sent to an IITR post-doc, research associate or IITR Startup (faculty copied) when they are linked to "
+                "the approving faculty member's wallet automatically."
+            ),
+            details_heading="Wallet link",
+            detail_rows=[
+                optional_detail_row("Supervisor", "faculty_name"),
+                optional_detail_row("Category", "user_type"),
+            ],
+            post_details_html=paragraph_html("{{ wallet_note }}"),
+            post_details_text=(
+                "{% if faculty_name %}- Supervisor: {{ faculty_name }}\n{% endif %}"
+                "{% if user_type %}- Category: {{ user_type }}\n{% endif %}\n{{ wallet_note }}\n"
+            ),
+            cta_label="Open your wallet",
+            variable_help="{{ user_name }}, {{ user_email }}, {{ user_type }}, {{ faculty_name }}, {{ faculty_email }}, {{ wallet_note }}, {{ link }}",
+        ),
+    ]
+
+
 def _decision_buttons_html() -> str:
     def button(var: str, label: str, color: str) -> str:
         return f"""
@@ -2697,6 +2852,7 @@ def get_default_email_templates() -> list[dict]:
     templates.extend(_wallet_templates())
     templates.extend(_registration_and_support_templates())
     templates.extend(_registration_approval_templates())
+    templates.extend(_account_lifecycle_templates())
     templates.extend(_nomination_and_leave_templates())
     templates.extend(_training_templates())
     templates.extend(_fabrication_templates())

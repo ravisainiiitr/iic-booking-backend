@@ -647,15 +647,19 @@ def faculty_extension_decide(request, ext_id: int):
 
 
 def _validity_payload(user) -> dict:
+    from iic_booking.users import account_lifecycle
+
     pending = svc.pending_extension(user)
-    end = user.program_end_date
+    end = svc.current_validity(user)
     today = timezone.localdate()
+    faculty = account_lifecycle.supervisor_for(user)
     return {
+        "lifecycle": account_lifecycle.status_payload(user),
         "name": svc._name(user),
         "programme_validity": svc._iso(end),
         "expired": bool(end and today > end),
         "days_left": (end - today).days if end else None,
-        "faculty": svc._person(user.supervisor) if user.supervisor_id else None,
+        "faculty": svc._person(faculty) if faculty else None,
         "can_request_extension": svc.can_request_extension(user),
         "extension_max_until": svc._iso(svc.extension_max_until(user, today)) if end else None,
         "extension_max_months": svc.EXTENSION_MAX_MONTHS,
