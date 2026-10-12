@@ -47,6 +47,14 @@ def quantize_money(value: Any) -> Decimal:
     return safe_decimal(value).quantize(MONEY_QUANTIZE, rounding=ROUND_HALF_UP)
 
 
+def _format_minutes(minutes: int) -> str:
+    """54 → "54 min"; 90 → "1 h 30 min"; 120 → "2 h"."""
+    hours, mins = divmod(max(int(minutes), 0), 60)
+    if not hours:
+        return f"{mins} min"
+    return f"{hours} h {mins} min" if mins else f"{hours} h"
+
+
 def finalize_charge_result(
     total_charge: Decimal,
     breakdown: List[Dict[str, Any]],
@@ -781,9 +789,13 @@ class ChargeCalculationEngine:
                 charge_profile, group, group_time, selected_parameters=selected_parameters
             )
             total += Decimal(str(group_total))
+            set_minutes = int(group_time or 0)
+            label = f"Sample set {index} ({_format_minutes(set_minutes)})"
             for line in group_breakdown:
                 if isinstance(line, dict):
-                    breakdown.append({**line, "description": f"Sample set {index}: {line.get('description', '')}"})
+                    breakdown.append(
+                        {**line, "description": f"{label}: {line.get('description', '')}", "time_minutes": set_minutes}
+                    )
                 else:
                     breakdown.append(line)
         return finalize_charge_result(total, breakdown)

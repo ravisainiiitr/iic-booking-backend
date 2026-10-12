@@ -201,7 +201,7 @@ def test_edit_rejects_set_two_over_its_formula_for_owner_and_oic(egs_factory):
     eq = _apreo(egs_factory, enable_charge_recalculation=True)
     owner = egs_factory.student()
     stored = {"A": 4, "B": 1, SAMPLE_SETS_KEY: [{"A": 4, "B": 1}]}
-    booking = egs_factory.booking(owner, eq, egs_factory.future(), input_values=stored)
+    booking = egs_factory.booking(owner, eq, egs_factory.future(), input_values=stored, slot_count=4)
     oic = UserFactory(user_type=UserType.MANAGER, department=egs_factory.department, admin_approved=True)
     EquipmentManager.objects.create(equipment=eq, manager=oic)
 

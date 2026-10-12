@@ -1,7 +1,8 @@
 """
 When equipment is marked Under Maintenance (REPAIR/INACTIVE), affected same-day bookings
 enter a special policy: cancel anytime (refund), reschedule only after equipment is operational
-(with optional extra week in slots API), auto-cancel at slot-window deadline if undecided.
+(with optional extra week in slots API); undecided after DISRUPTION_DECISION_DAYS, the booking is
+marked Refunded with a full refund.
 """
 from __future__ import annotations
 
@@ -59,14 +60,13 @@ def effective_slot_status_when_freeing_disruption_booking(booking) -> str:
     return released_slot_status_after_booking_freed(booking.equipment)
 
 
-def resolve_disruption_decision_deadline(equipment, triggered_at, booking_first_start_aware):
-    """Prefer next slot-window reference time + 1h; else legacy maintenance deadline."""
-    from .api_views import get_disruption_choice_deadline_at
+DISRUPTION_DECISION_DAYS = 5
 
-    d = get_disruption_choice_deadline_at(triggered_at, equipment)
-    if d is not None:
-        return d
-    return compute_maintenance_decision_deadline(equipment, triggered_at, booking_first_start_aware)
+
+def resolve_disruption_decision_deadline(equipment, triggered_at, booking_first_start_aware):
+    """The user has DISRUPTION_DECISION_DAYS from the disruption mark (OIC / staff / system) to choose
+    refund or reschedule; undecided bookings are then refunded in full (``auto_cancel_expired_maintenance_bookings``)."""
+    return triggered_at + timedelta(days=DISRUPTION_DECISION_DAYS)
 
 
 def clear_disruption_policy_fields(booking, *, keep_quota_anchor: bool = False) -> None:
@@ -173,7 +173,7 @@ def _send_maintenance_disruption_email(booking, deadline_at) -> None:
         f"(b) Reschedule — pick a new time once the equipment is operational; we will email you when that happens. "
         f"Reschedule will then include an additional week in the booking calendar where applicable.\n\n"
         f"If you take no action before the decision deadline ({dl}), your booking will be treated as a refund request: "
-        f"it will be cancelled with a full refund and the slot(s) released per our policy.\n\n"
+        f"it will be marked Refunded, the full amount refunded to your wallet and the slot(s) released per our policy.\n\n"
         f"{_fbr_block(booking)}— {getattr(settings, 'SITE_NAME', 'IIC Booking')}"
     )
     try:
@@ -228,11 +228,12 @@ def _send_auto_cancel_email(booking) -> None:
     eq = booking.equipment
     eq_name = (getattr(eq, "name", None) or getattr(eq, "code", None) or "Equipment") if eq else "Equipment"
     bid = booking_display_id_for_email(booking)
-    subject = f"Booking {bid} cancelled — full refund ({eq_name})"
+    subject = f"Booking {bid} refunded — full refund ({eq_name})"
     body = (
         f"Dear {getattr(user, 'name', None) or 'user'},\n\n"
-        f"Your booking {bid} on {eq_name} was automatically cancelled because no choice (refund or reschedule) "
-        f"was received before the disruption decision deadline. A full refund has been issued to your wallet where applicable.\n\n"
+        f"Your booking {bid} on {eq_name} has been marked Refunded because no choice (refund or reschedule) "
+        f"was received within {DISRUPTION_DECISION_DAYS} days of the disruption. "
+        f"A full refund has been issued to your wallet where applicable.\n\n"
         f"{_fbr_block(booking)}— {getattr(settings, 'SITE_NAME', 'IIC Booking')}"
     )
     try:
@@ -269,7 +270,7 @@ def _send_operator_absent_disruption_email(booking, deadline_at) -> None:
         f"(a) Cancel booking — full refund to your wallet.\n"
         f"(b) Reschedule — pick a new time from My Bookings.\n\n"
         f"If you take no action before the decision deadline ({dl}), your booking will be treated as a refund request: "
-        f"it will be cancelled with a full refund and the slot(s) released per our policy.\n\n"
+        f"it will be marked Refunded, the full amount refunded to your wallet and the slot(s) released per our policy.\n\n"
         f"{_fbr_block(booking)}— {getattr(settings, 'SITE_NAME', 'IIC Booking')}"
     )
     try:
@@ -308,7 +309,7 @@ def _send_other_disruption_email(booking, deadline_at, reason: str) -> None:
         f"(a) Cancel booking — full refund to your wallet.\n"
         f"(b) Reschedule — pick a new time from My Bookings.\n\n"
         f"If you take no action before the decision deadline ({dl}), your booking will be treated as a refund request: "
-        f"it will be cancelled with a full refund and the slot(s) released per our policy.\n\n"
+        f"it will be marked Refunded, the full amount refunded to your wallet and the slot(s) released per our policy.\n\n"
         f"{_fbr_block(booking)}— {getattr(settings, 'SITE_NAME', 'IIC Booking')}"
     )
     try:
@@ -748,8 +749,8 @@ def _upcoming_slots(equipment):
 
 
 def auto_cancel_expired_maintenance_bookings() -> int:
-    """Auto-cancel disruption bookings past decision deadline with full refund (default to refund if no action)."""
-    from .models import Booking, BookingDisruptionKind, BookingStatus, BookingEventType, CancellationReason
+    """Undecided disruption bookings past the decision deadline are marked Refunded with a full refund."""
+    from .models import Booking, BookingStatus, BookingEventType, CancellationReason
     from .booking_events import create_booking_event
     from iic_booking.users.repositories.wallet_repository import WalletRepository
     from iic_booking.equipment.api_views import (
@@ -790,8 +791,9 @@ def auto_cancel_expired_maintenance_bookings() -> int:
                     from iic_booking.communication.utils import booking_display_id_for_email
 
                     desc = (
-                        f"Refund for auto-cancelled Booking {booking_display_id_for_email(booking)} "
-                        f"(maintenance policy deadline) — {(getattr(booking.equipment, 'name', None) or getattr(booking.equipment, 'code', None) or '')}"
+                        f"Refund for Booking {booking_display_id_for_email(booking)} "
+                        f"(no choice within {DISRUPTION_DECISION_DAYS} days of disruption) — "
+                        f"{(getattr(booking.equipment, 'name', None) or getattr(booking.equipment, 'code', None) or '')}"
                     )
                     desc += _student_booking_description_suffix(refund_target, booking.user)
                     if refund_amount > 0:
@@ -800,20 +802,11 @@ def auto_cancel_expired_maintenance_bookings() -> int:
                             description=desc,
                             related_user=booking.user,
                         )
-                    if getattr(booking, "disruption_kind", None) == BookingDisruptionKind.OPERATOR_ABSENT:
-                        booking.status = BookingStatus.ABSENT
-                        new_status = BookingStatus.ABSENT
-                        event_type = BookingEventType.ABSENT
-                    elif getattr(booking, "disruption_kind", None) == BookingDisruptionKind.OTHER_DISRUPTION:
-                        booking.status = BookingStatus.OTHER_DISRUPTION
-                        new_status = BookingStatus.OTHER_DISRUPTION
-                        event_type = BookingEventType.CANCELLED
-                    else:
-                        booking.status = BookingStatus.UNDER_MAINTENANCE
-                        new_status = BookingStatus.UNDER_MAINTENANCE
-                        event_type = BookingEventType.CANCELLED
+                    booking.status = BookingStatus.REFUNDED
+                    new_status = BookingStatus.REFUNDED
+                    event_type = BookingEventType.REFUNDED
                     _reverse_reward_points_for_booking(
-                        booking, booking.user, "Reward points reversed for maintenance auto-cancel refund"
+                        booking, booking.user, "Reward points reversed for disruption auto-refund"
                     )
                 else:
                     booking.status = BookingStatus.CANCELLED
@@ -822,7 +815,7 @@ def auto_cancel_expired_maintenance_bookings() -> int:
                 clear_disruption_policy_fields(booking)
                 booking.notes = (
                     (booking.notes or "")
-                    + "\n[Auto-cancelled: maintenance policy deadline with no user action.]"
+                    + f"\n[Auto-refunded: no refund/reschedule choice within {DISRUPTION_DECISION_DAYS} days of the disruption.]"
                 ).strip()
                 booking.save()
                 create_booking_event(
@@ -830,7 +823,10 @@ def auto_cancel_expired_maintenance_bookings() -> int:
                     event_type=event_type,
                     previous_status=previous_status,
                     new_status=new_status,
-                    comment="Auto-cancelled: maintenance disruption policy deadline.",
+                    comment=(
+                        f"Auto-refunded: no refund/reschedule choice within {DISRUPTION_DECISION_DAYS} days "
+                        "of the disruption."
+                    ),
                     created_by=None,
                     send_notification=False,
                     cancellation={

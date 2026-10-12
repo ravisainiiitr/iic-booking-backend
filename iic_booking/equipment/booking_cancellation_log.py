@@ -100,6 +100,8 @@ def classify_reason(
     text = (comment or "").lower()
     if "auto-cancelled" in text and ("deadline" in text or "maintenance" in text):
         return CancellationReason.DISRUPTION_DEADLINE
+    if "auto-refunded" in text and "disruption" in text:
+        return CancellationReason.DISRUPTION_DEADLINE
     if "hold released" in text:
         return CancellationReason.URGENT_HOLD_RELEASED
     if "lab rejected" in text or "not replaced within" in text:

@@ -1467,6 +1467,7 @@ class DailySlotSerializer(serializers.ModelSerializer):
     booking_user_type = serializers.SerializerMethodField()
     booking_is_external = serializers.SerializerMethodField()
     booking_sample_status_display = serializers.SerializerMethodField()
+    booking_sample_accepted = serializers.SerializerMethodField()
     available_for_external = serializers.SerializerMethodField()
     # Wall-clock open time (HH:mm:ss) from SlotMaster — aligns weekly grid rows with slot_master_times (start_datetime is TZ-aware ISO).
     slot_open_time = serializers.SerializerMethodField()
@@ -1502,6 +1503,7 @@ class DailySlotSerializer(serializers.ModelSerializer):
             'booking_user_type',
             'booking_is_external',
             'booking_sample_status_display',
+            'booking_sample_accepted',
             'available_for_external',
             'created_at',
             'updated_at'
@@ -1775,6 +1777,17 @@ class DailySlotSerializer(serializers.ModelSerializer):
             return display()
         status = getattr(last, "status", None)
         return str(status).replace("_", " ").title() if status else None
+
+    def get_booking_sample_accepted(self, obj):
+        """Staff weekly calendars: the lab accepted the sample (Pending colour until the booking completes)."""
+        if not self.context.get("include_booking_user_contact"):
+            return None
+        booking = getattr(obj, "booking", None)
+        if not booking:
+            return None
+        from .reschedule_lock import sample_accepted_by_lab
+
+        return sample_accepted_by_lab(booking)
 
 
 def _disruption_notice(obj):
@@ -3719,6 +3732,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     # regardless of the reschedule-hours threshold; booking details needs these to show the buttons.
     maintenance_disruption_flag = serializers.BooleanField(read_only=True)
     disruption_kind = serializers.CharField(read_only=True, allow_null=True)
+    maintenance_decision_deadline_at = serializers.DateTimeField(read_only=True, allow_null=True)
     equipment_is_operational = serializers.SerializerMethodField()
     equipment_operator_unavailable_after_booking_end_hours = serializers.IntegerField(
         source='equipment.operator_unavailable_after_booking_end_hours', read_only=True, default=24
@@ -3980,6 +3994,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'equipment_operator_unavailable_after_booking_end_hours',
             'maintenance_disruption_flag',
             'disruption_kind',
+            'maintenance_decision_deadline_at',
             'equipment_is_operational',
             'equipment_profile_type',
             'equipment_profile_type_display',

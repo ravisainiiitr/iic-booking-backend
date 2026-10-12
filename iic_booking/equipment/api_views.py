@@ -836,6 +836,7 @@ DEFAULT_CALENDAR_COLORS = {
         "NON_HOME_RESERVED": "#67e8f9",
         "NOT_AVAILABLE": "#e5e7eb",       # Light grey
         "COMPLETED": "#34d399",           # Soft emerald (completed bookings)
+        "PENDING": "#f59e0b",             # Amber (sample accepted, booking not completed yet)
         "CANCELLED": "#fca5a5",           # Muted red
         "REFUNDED": "#fca5a5",
         "ABSENT": "#9ca3af",
@@ -902,6 +903,7 @@ LAB_DASHBOARD_EDITABLE_SLOT_COLORS = (
     "AVAILABLE",
     "BOOKED_INTERNAL",
     "BOOKED_EXTERNAL",
+    "PENDING",
     "COMPLETED",
 )
 
@@ -15573,6 +15575,37 @@ def _calculate_input_values_minutes(booking, input_values) -> int:
     )
 
 
+def _sample_sets_slot_fit_error(booking, original, current) -> str | None:
+    """Sample sets added or changed after booking must still fit the booked slots (same rule as 3D print quantity)."""
+    from .booking_cancellation import _booking_slot_duration_minutes
+    from .calculators import SAMPLE_SETS_KEY
+    from .slot_allocation import slot_tolerance_minutes_for, slots_needed_for_analysis_time
+
+    if (current.get(SAMPLE_SETS_KEY) or []) == (original.get(SAMPLE_SETS_KEY) or []):
+        return None
+    if not booking.charge_profile_id or not booking.equipment_id:
+        return None
+    slot_count = booking.daily_slots.count()
+    if slot_count <= 0:
+        return None
+    try:
+        new_minutes = int(_calculate_input_values_minutes(booking, current) or 0)
+        old_minutes = int(_calculate_input_values_minutes(booking, original) or 0)
+    except Exception:
+        logger.exception("Could not compute sample-set minutes for booking %s", booking.pk)
+        return None
+    if new_minutes <= old_minutes:
+        return None
+    slot_minutes = _booking_slot_duration_minutes(booking)
+    needed = slots_needed_for_analysis_time(new_minutes, slot_minutes, slot_tolerance_minutes_for(booking.equipment))
+    if needed <= slot_count:
+        return None
+    return (
+        f"With these sample sets the analysis needs about {new_minutes} minutes ({needed} slot(s)), but the booking has "
+        f"{slot_count} slot(s) of {slot_minutes} minutes. Remove or reduce a sample set, or book more slots."
+    )
+
+
 def _input_edit_new_total_minutes(booking, original, current, *, enable_recalc: bool, values_changed: bool):
     """Stored minutes after an input edit, or None when the edit leaves them unchanged."""
     if not booking.charge_profile_id or not booking.equipment_id or not (enable_recalc or values_changed):
@@ -16087,6 +16120,9 @@ def update_booking_input_values(request, booking_id):
     new_total_time_minutes = _input_edit_new_total_minutes(
         booking, original, current, enable_recalc=enable_recalc, values_changed=values_changed
     )
+    slot_fit_error = _sample_sets_slot_fit_error(booking, original, current)
+    if slot_fit_error:
+        return Response({"error": slot_fit_error, "code": "sample_sets_exceed_slots"}, status=status.HTTP_400_BAD_REQUEST)
     if new_total_time_minutes is not None and not is_staff_editor:
         quota_decision = evaluate_booking_minutes_change(booking, new_total_time_minutes)
         if not quota_decision.allowed:

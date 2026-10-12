@@ -60,7 +60,9 @@ def test_time_and_charge_add_up_across_sample_sets(egs_factory):
 
     assert time == single_time + four_time
     assert charge == single_charge + four_charge
-    assert any(str(line.get("description", "")).startswith("Sample set 2:") for line in breakdown)
+    set_two = [line for line in breakdown if str(line.get("description", "")).startswith("Sample set 2 (")]
+    assert set_two and set_two[0]["time_minutes"] == four_time
+    assert set_two[0]["description"].startswith(f"Sample set 2 ({four_time // 60} h")
 
 
 @pytest.mark.django_db
@@ -124,7 +126,9 @@ def test_sample_set_has_its_own_elements_and_sample_table(egs_factory):
     assert estimate.status_code == 200, estimate.data
     assert int(estimate.data["total_time_minutes"]) == (30 + 10) + (30 + 20)
 
-    booking = egs_factory.booking(owner, eq, egs_factory.future(), input_values=primary, total_charge="10.00")
+    booking = egs_factory.booking(
+        owner, eq, egs_factory.future(), input_values=primary, total_charge="10.00", slot_count=2
+    )
     resp = egs_factory.client_for(_oic(egs_factory, eq)).patch(
         f"/api/bookings/{booking.pk}/input-values/",
         {"input_values": {**primary, SAMPLE_SETS_KEY: [second]}},
@@ -143,7 +147,9 @@ def test_sample_set_has_its_own_elements_and_sample_table(egs_factory):
 def test_oic_can_add_sample_set_when_editing_inputs(egs_factory):
     eq = _equipment(egs_factory, enable_charge_recalculation=True)
     owner = egs_factory.student()
-    booking = egs_factory.booking(owner, eq, egs_factory.future(), input_values={"A": 2}, total_charge="10.00")
+    booking = egs_factory.booking(
+        owner, eq, egs_factory.future(), input_values={"A": 2}, total_charge="10.00", slot_count=2
+    )
 
     resp = egs_factory.client_for(_oic(egs_factory, eq)).patch(
         f"/api/bookings/{booking.pk}/input-values/",
@@ -178,7 +184,12 @@ def test_sample_set_keeps_its_own_elements_and_table_rows(egs_factory):
     )
     owner = egs_factory.student()
     booking = egs_factory.booking(
-        owner, eq, egs_factory.future(), input_values={"A": 1, "B": 1, "B_elements": "C"}, total_charge="5.00"
+        owner,
+        eq,
+        egs_factory.future(),
+        input_values={"A": 1, "B": 1, "B_elements": "C"},
+        total_charge="5.00",
+        slot_count=2,
     )
     extra = {"A": 2, "B": 2, "B_elements": "Fe,Co", "C": [["1", "alloy-1"], ["2", "alloy-2"]]}
 
@@ -195,3 +206,46 @@ def test_sample_set_keeps_its_own_elements_and_table_rows(egs_factory):
     assert stored["B_elements"] == "Fe,Co"
     assert stored["C"] == [["1", "alloy-1"], ["2", "alloy-2"]]
     assert booking.total_time_minutes == 90
+
+
+@pytest.mark.django_db
+def test_sample_set_that_no_longer_fits_the_booked_slots_is_rejected(egs_factory):
+    eq = _equipment(egs_factory, enable_charge_recalculation=True)
+    owner = egs_factory.student()
+    booking = egs_factory.booking(owner, eq, egs_factory.future(), input_values={"A": 1}, total_charge="5.00")
+    client = egs_factory.client_for(_oic(egs_factory, eq))
+
+    too_long = client.patch(
+        f"/api/bookings/{booking.pk}/input-values/",
+        {"input_values": {"A": 1, SAMPLE_SETS_KEY: [{"A": 2}]}},
+        format="json",
+    )
+    assert too_long.status_code == 400, too_long.data
+    assert too_long.data["code"] == "sample_sets_exceed_slots"
+    assert "90 minutes" in too_long.data["error"]
+    booking.refresh_from_db()
+    assert SAMPLE_SETS_KEY not in booking.input_values
+    assert booking.total_time_minutes == 60
+
+    fits = client.patch(
+        f"/api/bookings/{booking.pk}/input-values/",
+        {"input_values": {"A": 1, SAMPLE_SETS_KEY: [{"A": 1}]}},
+        format="json",
+    )
+    assert fits.status_code == 200, fits.data
+    booking.refresh_from_db()
+    assert booking.total_time_minutes == 60
+
+
+@pytest.mark.django_db
+def test_charge_estimate_shows_each_sample_set_time(egs_factory):
+    eq = _equipment(egs_factory)
+    client = egs_factory.client_for(egs_factory.student())
+
+    resp = client.get(f"/api/equipments/{eq.pk}/calculate/", {"A": 2, "sample_sets": json.dumps([{"A": 1}])})
+
+    assert resp.status_code == 200, resp.data
+    descriptions = [line["description"] for line in resp.data["charge_breakdown"]]
+    assert any(d.startswith("Sample set 1 (1 h): ") for d in descriptions)
+    assert any(d.startswith("Sample set 2 (30 min): ") for d in descriptions)
+    assert int(resp.data["total_time_minutes"]) == 90
