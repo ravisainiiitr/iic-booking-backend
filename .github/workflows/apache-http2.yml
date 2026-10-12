@@ -41,6 +41,20 @@ jobs:
           echo "successful .php requests in current access logs (path, count):"
           sudo -n sh -c "cat /var/log/apache2/*access*.log 2>/dev/null" \
             | awk '$7 ~ /\.php/ && $9 ~ /^2/ {print $7}' | sed 's/?.*//' | sort | uniq -c | sort -rn | head -10 || true
+          echo "--- PHP"
+          php -v 2>/dev/null | head -1 || echo "php cli not installed"
+          ls /etc/apache2/mods-enabled/ | grep -i php || true
+          ls -d /etc/php/*/fpm 2>/dev/null || echo "no php-fpm installed"
+          echo "php_value/php_flag in apache config or .htaccess (break under php-fpm):"
+          sudo -n grep -RniE 'php_(admin_)?(value|flag)' /etc/apache2 2>/dev/null || true
+          sudo -n find /var/www -maxdepth 5 -name .htaccess -exec grep -HniE 'php_(admin_)?(value|flag)' {} \; 2>/dev/null || true
+          for d in /etc/php/*/apache2; do
+            v=$(basename "$(dirname "$d")")
+            echo "php.ini settings changed from production defaults ($v apache2):"
+            diff <(grep -vE '^\s*(;|$)' "/usr/lib/php/$v/php.ini-production" | sort) \
+                 <(sudo -n grep -vE '^\s*(;|$)' "$d/php.ini" | sort) | grep '^[<>]' || echo "  none"
+            echo "extensions enabled for apache2 SAPI: $(ls "$d/conf.d" | sed 's/^[0-9]*-//; s/\.ini$//' | tr '\n' ' ')"
+          done
           echo "--- public protocol"
           curl -sS -o /dev/null -m 15 --http2 -w 'equip https -> http_version=%{http_version} status=%{http_code}\n' \
             https://equip.iitr.ac.in/ || true
