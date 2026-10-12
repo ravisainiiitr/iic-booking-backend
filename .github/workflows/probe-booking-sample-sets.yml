@@ -1,0 +1,28 @@
+# Read-only: one booking's sample sets, stored and engine minutes, booked slots, charge and edit history.
+# Script: scripts/ops/probe_booking_sample_sets.py
+name: Probe Booking Sample Sets
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking:
+        description: Booking display ID (e.g. IICXPS202600038) or pk
+        required: true
+        type: string
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run
+        env:
+          BOOKING_REF: ${{ inputs.booking }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          # The runner workspace is a sparse checkout, so the script is read from git rather than the disk.
+          git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/probe_booking_sample_sets.py \
+            | docker exec -i -e BOOKING_REF="$BOOKING_REF" -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
+              python manage.py shell
