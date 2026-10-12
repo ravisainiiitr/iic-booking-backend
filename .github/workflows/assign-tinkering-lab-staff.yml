@@ -1,0 +1,29 @@
+# Tinkering Lab only: one Officer in Charge for every non-test equipment, Lab Operator by category
+# (3D printers vs everything else). dry-run prints current and planned assignments; apply writes them.
+# Other departments' equipment (IIC) is never changed. Script: scripts/ops/assign_tinkering_lab_staff.py
+name: Assign Tinkering Lab Staff
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: dry-run or apply
+        required: true
+        default: dry-run
+        type: choice
+        options: [dry-run, apply]
+
+jobs:
+  assign:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run
+        env:
+          APPLY: ${{ inputs.action == 'apply' && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -i -e APPLY="$APPLY" -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
+            python manage.py shell < scripts/ops/assign_tinkering_lab_staff.py
