@@ -175,7 +175,9 @@ class Command(BaseCommand):
                     booking.save(update_fields=["notes"])
                 except Exception:
                     pass
-                apply_operator_absent_disruption_for_booking(booking, triggered_at=now)
+                apply_operator_absent_disruption_for_booking(
+                    booking, triggered_at=now, reason="Stale booking reconciliation (sample stuck in the lab)"
+                )
                 counts["disruption"] += 1
                 self.stdout.write(
                     self.style.SUCCESS(f"booking_id={bid} -> Operator Absent disruption (latest={latest_st})")

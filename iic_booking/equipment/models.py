@@ -4402,8 +4402,28 @@ class Booking(models.Model):
                     code,
                     department_code=dept_code,
                 )
+        update_fields = kwargs.get("update_fields")
+        status_written = update_fields is None or "status" in update_fields
+        saved_status = self.__dict__.get("_saved_status")
         super().save(*args, **kwargs)
-    
+        if status_written:
+            if saved_status is not None and saved_status != self.status:
+                from .booking_audit import note_status_change
+
+                note_status_change(self, saved_status, self.status)
+            self._saved_status = self.status
+
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        instance = super().from_db(db, field_names, values)
+        instance._saved_status = instance.__dict__.get("status")
+        return instance
+
+    def refresh_from_db(self, *args, **kwargs):
+        super().refresh_from_db(*args, **kwargs)
+        if "status" in self.__dict__:
+            self._saved_status = self.status
+
     def __str__(self):
         return f"Booking #{self.booking_id} - {self.equipment.code} - {self.user.email}"
 

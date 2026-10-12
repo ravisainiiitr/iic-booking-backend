@@ -1057,11 +1057,20 @@ def perform_booking_cancellation(
     if new_status == BookingStatus.CANCELLED:
         drop_unpaid_extra(booking)
 
+    from .booking_audit import disruption_choice_audit
+
+    choice_metadata = disruption_choice_audit(
+        booking,
+        previous_status,
+        actor,
+        choice="refund" if refund_transaction or new_status != BookingStatus.CANCELLED else "cancel",
+    )
     if getattr(booking, "maintenance_disruption_flag", False) or previous_status == BookingStatus.DISRUPTION_PENDING:
         clear_disruption_policy_fields(booking)
 
     booking.save()
 
+    event_metadata = {**({"refund_amount": str(refund_amount)} if refund_transaction else {}), **choice_metadata}
     create_booking_event(
         booking=booking,
         event_type=event_type,
@@ -1071,7 +1080,7 @@ def perform_booking_cancellation(
         created_by=actor,
         send_notification=True,
         system_actor=cancelled_by_label == "system",
-        metadata={"refund_amount": str(refund_amount)} if refund_transaction else None,
+        metadata=event_metadata or None,
         cancellation={
             "actor": actor,
             "system": cancelled_by_label == "system" or actor is None,

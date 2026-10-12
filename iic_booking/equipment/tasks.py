@@ -976,7 +976,7 @@ def auto_mark_operator_absent_disruption_after_booking_end() -> int:
             )
 
         try:
-            apply_operator_absent_disruption_for_booking(booking, triggered_at=now)
+            apply_operator_absent_disruption_for_booking(booking, triggered_at=now, reason=tag.strip("[]"))
             marked += 1
         except Exception as e:
             logger.exception(
@@ -1070,7 +1070,9 @@ def daily_operator_on_leave_sweep() -> dict:
             qs = Booking.objects.filter(booking_id__in=list(ids)).select_related("equipment", "user").prefetch_related("daily_slots")
             for b in qs:
                 before = b.status
-                apply_operator_absent_disruption_for_booking(b, triggered_at=now_ts)
+                apply_operator_absent_disruption_for_booking(
+                    b, triggered_at=now_ts, reason="Lab Operator on leave"
+                )
                 # If it transitioned, count it.
                 if before != b.status and b.status == BookingStatus.DISRUPTION_PENDING:
                     bookings_marked += 1

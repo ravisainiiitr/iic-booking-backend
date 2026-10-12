@@ -205,6 +205,7 @@ MIDDLEWARE = [
     "allauth.account.middleware.AccountMiddleware",
     "iic_booking.remote_analysis.middleware.RemoteAnalysisCorrelationMiddleware",
     "iic_booking.equipment.request_memo.RequestMemoMiddleware",
+    "iic_booking.equipment.booking_audit.BookingAuditMiddleware",
     "iic_booking.equipment.peak_window_middleware.PeakWindowExternalBlockMiddleware",
     "iic_booking.users.suspension_middleware.AccountSuspensionMiddleware",
 ]

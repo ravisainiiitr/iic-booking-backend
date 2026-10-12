@@ -324,6 +324,47 @@ def _send_other_disruption_email(booking, deadline_at, reason: str) -> None:
         logger.exception("other disruption email failed for booking %s: %s", booking.booking_id, e)
 
 
+def _record_disruption_entry(booking, previous_status, deadline, *, reason: str = "") -> None:
+    """History entry for a booking that now awaits the user's refund / reschedule choice.
+
+    Staff paths run in their request (the signed-in OIC / admin / operator is the actor); jobs and scripts
+    record the System.
+    """
+    from .booking_audit import AUDIT_KEY, DISRUPTION_KIND_REASONS, REASON_LABELS, current_actor, reason_fields
+    from .booking_events import create_booking_event
+    from .models import BookingEventType
+
+    code = DISRUPTION_KIND_REASONS.get(str(booking.disruption_kind or ""), "")
+    label = REASON_LABELS.get(code, "Lab disruption")
+    reason_clean = (reason or "").strip()
+    deadline_text = timezone.localtime(deadline).strftime("%d %b %Y %H:%M") if deadline else "—"
+    comment = (
+        f"Marked {label}."
+        + (f" Reason: {reason_clean}." if reason_clean else "")
+        + f" Awaiting the user's choice (reschedule or full refund) until {deadline_text}; "
+        "after that the booking is refunded in full automatically."
+    )
+    actor = current_actor()
+    try:
+        with transaction.atomic():
+            create_booking_event(
+                booking=booking,
+                event_type=BookingEventType.STATUS_CHANGED,
+                created_by=actor,
+                system_actor=actor is None,
+                previous_status=previous_status,
+                new_status=booking.status,
+                comment=comment,
+                metadata={
+                    AUDIT_KEY: reason_fields(code, reason_clean, disruption_kind=booking.disruption_kind),
+                    "decision_deadline_at": deadline.isoformat() if deadline else None,
+                },
+                send_notification=False,
+            )
+    except Exception:
+        logger.exception("Could not record the disruption of booking %s", booking.booking_id)
+
+
 def apply_maintenance_disruption_for_booking_manually(booking, *, notes: str = "") -> None:
     """
     Admin/OIC: put a BOOKED/PENDING booking into disruption-pending (awaiting refund vs reschedule).
@@ -365,6 +406,7 @@ def apply_maintenance_disruption_for_booking_manually(booking, *, notes: str = "
         booking.notes = f"{booking.notes or ''}\n{tag}: {extra_notes}".strip()
         update_fields.append("notes")
 
+    previous_status = booking.status
     booking.status = BookingStatus.DISRUPTION_PENDING
     booking.disruption_kind = BookingDisruptionKind.MAINTENANCE
     booking.disruption_release_slot_status = SlotStatus.UNDER_MAINTENANCE
@@ -376,6 +418,7 @@ def apply_maintenance_disruption_for_booking_manually(booking, *, notes: str = "
     booking.maintenance_reschedule_extra_week = True
     booking.maintenance_operational_marked_at = None
     booking.save(update_fields=update_fields)
+    _record_disruption_entry(booking, previous_status, deadline, reason=extra_notes)
 
     _send_maintenance_disruption_email(booking, deadline)
 
@@ -389,9 +432,10 @@ def apply_maintenance_disruption_for_booking_manually(booking, *, notes: str = "
         logger.exception("Failed to schedule manual disruption operational follow-up for booking %s", booking.booking_id)
 
 
-def apply_operator_absent_disruption_for_booking(booking, *, triggered_at=None) -> None:
+def apply_operator_absent_disruption_for_booking(booking, *, triggered_at=None, reason: str = "") -> None:
     """
     Slot/admin path: booking enters disruption-pending (operator absent) with email and deadline.
+    ``reason`` says why for the booking history (e.g. which safeguard marked it).
     """
     from .models import BookingDisruptionKind, BookingStatus, SlotStatus
 
@@ -407,6 +451,7 @@ def apply_operator_absent_disruption_for_booking(booking, *, triggered_at=None) 
         first_start = timezone.make_aware(first_start)
     equipment = booking.equipment
     deadline = resolve_disruption_decision_deadline(equipment, triggered_at, first_start)
+    previous_status = booking.status
     booking.status = BookingStatus.DISRUPTION_PENDING
     booking.disruption_kind = BookingDisruptionKind.OPERATOR_ABSENT
     booking.disruption_release_slot_status = SlotStatus.OPERATOR_ABSENT
@@ -425,6 +470,7 @@ def apply_operator_absent_disruption_for_booking(booking, *, triggered_at=None) 
             "maintenance_reschedule_extra_week",
         ]
     )
+    _record_disruption_entry(booking, previous_status, deadline, reason=reason)
     _send_operator_absent_disruption_email(booking, deadline)
     try:
         from .tasks import send_manual_disruption_operational_followup
@@ -477,6 +523,7 @@ def apply_operator_disruption_pending_from_staff(booking, *, notes: str = "") ->
     else:
         update_fields.remove("notes")
 
+    previous_status = booking.status
     booking.status = BookingStatus.DISRUPTION_PENDING
     booking.disruption_kind = BookingDisruptionKind.OPERATOR_ABSENT
     booking.disruption_release_slot_status = SlotStatus.OPERATOR_ABSENT
@@ -485,6 +532,7 @@ def apply_operator_disruption_pending_from_staff(booking, *, notes: str = "") ->
     booking.maintenance_decision_deadline_at = deadline
     booking.maintenance_reschedule_extra_week = True
     booking.save(update_fields=update_fields)
+    _record_disruption_entry(booking, previous_status, deadline, reason=extra_notes)
     _send_operator_absent_disruption_email(booking, deadline)
     try:
         from .tasks import send_manual_disruption_operational_followup
@@ -525,6 +573,7 @@ def apply_other_disruption_for_booking_manually(booking, *, reason: str) -> None
     equipment = booking.equipment
     deadline = resolve_disruption_decision_deadline(equipment, triggered_at, first_start)
 
+    previous_status = booking.status
     booking.status = BookingStatus.DISRUPTION_PENDING
     booking.disruption_kind = BookingDisruptionKind.OTHER_DISRUPTION
     booking.disruption_reason = reason_clean
@@ -545,6 +594,7 @@ def apply_other_disruption_for_booking_manually(booking, *, reason: str) -> None
             "maintenance_reschedule_extra_week",
         ]
     )
+    _record_disruption_entry(booking, previous_status, deadline, reason=reason_clean)
     _send_other_disruption_email(booking, deadline, reason_clean)
     try:
         from .tasks import send_manual_disruption_operational_followup
@@ -595,6 +645,7 @@ def apply_when_equipment_marked_under_maintenance(equipment) -> int:
         if timezone.is_naive(first_start):
             first_start = timezone.make_aware(first_start)
         deadline = resolve_disruption_decision_deadline(equipment, maintenance_at, first_start)
+        previous_status = booking.status
         booking.status = BookingStatus.DISRUPTION_PENDING
         booking.disruption_kind = BookingDisruptionKind.MAINTENANCE
         booking.disruption_release_slot_status = SlotStatus.UNDER_MAINTENANCE
@@ -616,6 +667,9 @@ def apply_when_equipment_marked_under_maintenance(equipment) -> int:
                 "maintenance_reschedule_extra_week",
                 "maintenance_operational_marked_at",
             ]
+        )
+        _record_disruption_entry(
+            booking, previous_status, deadline, reason="Equipment status changed to Under Maintenance"
         )
         _send_maintenance_disruption_email(booking, deadline)
         try:
@@ -751,6 +805,7 @@ def _upcoming_slots(equipment):
 def auto_cancel_expired_maintenance_bookings() -> int:
     """Undecided disruption bookings past the decision deadline are marked Refunded with a full refund."""
     from .models import Booking, BookingStatus, BookingEventType, CancellationReason
+    from .booking_audit import AUDIT_KEY, REASON_DISRUPTION_DEADLINE, disruption_kind_label, reason_fields
     from .booking_events import create_booking_event
     from iic_booking.users.repositories.wallet_repository import WalletRepository
     from iic_booking.equipment.api_views import (
@@ -812,6 +867,7 @@ def auto_cancel_expired_maintenance_bookings() -> int:
                     booking.status = BookingStatus.CANCELLED
                     new_status = BookingStatus.CANCELLED
                     event_type = BookingEventType.CANCELLED
+                disruption_kind = booking.disruption_kind or ""
                 clear_disruption_policy_fields(booking)
                 booking.notes = (
                     (booking.notes or "")
@@ -828,7 +884,17 @@ def auto_cancel_expired_maintenance_bookings() -> int:
                         "of the disruption."
                     ),
                     created_by=None,
+                    system_actor=True,
                     send_notification=False,
+                    metadata={
+                        AUDIT_KEY: reason_fields(
+                            REASON_DISRUPTION_DEADLINE,
+                            f"No refund/reschedule choice within {DISRUPTION_DECISION_DAYS} days of "
+                            f"{disruption_kind_label(disruption_kind)}",
+                            disruption_kind=disruption_kind,
+                        ),
+                        **({"refund_amount": str(refund_amount)} if refund_amount > 0 else {}),
+                    },
                     cancellation={
                         "system": True,
                         "reason": CancellationReason.DISRUPTION_DEADLINE,

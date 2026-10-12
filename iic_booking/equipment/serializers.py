@@ -4837,6 +4837,7 @@ class BookingEventSerializer(serializers.ModelSerializer):
     created_by_name = serializers.SerializerMethodField()
     previous_status_display = serializers.CharField(source='get_previous_status_display', read_only=True) if hasattr(Booking, 'get_status_display') else serializers.SerializerMethodField()
     new_status_display = serializers.CharField(source='get_new_status_display', read_only=True) if hasattr(Booking, 'get_status_display') else serializers.SerializerMethodField()
+    audit = serializers.SerializerMethodField()
     
     class Meta:
         model = BookingEvent
@@ -4855,10 +4856,17 @@ class BookingEventSerializer(serializers.ModelSerializer):
             'created_by',
             'created_by_name',
             'metadata',
+            'audit',
             'notification_sent',
             'created_at',
         ]
         read_only_fields = ['event_id', 'created_at', 'notification_sent']
+
+    def get_audit(self, obj):
+        """Who (name, role or System), why (reason) and from where (source) — see ``booking_audit``."""
+        from .booking_audit import resolve_event_audit
+
+        return resolve_event_audit(obj, cache=self.context.setdefault("_booking_audit_cache", {}))
 
     def get_booking_id(self, obj):
         return booking_display_id_for_email(getattr(obj, "booking", None))

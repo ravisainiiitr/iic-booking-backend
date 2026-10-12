@@ -359,11 +359,13 @@ def create_booking_event(
     Args:
         booking: Booking instance
         event_type: Type of event (from BookingEventType)
-        created_by: User who created the event (defaults to booking user)
+        created_by: User who created the event (defaults to the System inside a background job, else the
+            booking user)
         comment: Optional comment/description
         previous_status: Previous booking status (if status changed)
         new_status: New booking status (if status changed)
-        metadata: Additional metadata dictionary
+        metadata: Additional metadata dictionary; ``metadata["audit"]`` adds the reason
+            (``booking_audit.reason_fields``) to the recorded actor / role / source
         send_notification: Whether to send email and push notifications
         system_actor: If True and created_by is None, store null created_by (automated/system event).
         cancellation: Hints for the cancellation log when the booking ends cancelled / refunded
@@ -372,12 +374,22 @@ def create_booking_event(
     Returns:
         BookingEvent instance
     """
+    from .booking_audit import AUDIT_KEY, audit_metadata, in_background_job
+
     if created_by is None and not system_actor:
-        created_by = booking.user
+        if in_background_job():
+            system_actor = True
+        else:
+            created_by = booking.user
 
     from .dept_admin_actions import actor_role_metadata
 
-    event_metadata = {**actor_role_metadata(created_by), **(metadata or {})}
+    given_audit = (metadata or {}).get(AUDIT_KEY)
+    audit = {
+        **audit_metadata(booking, created_by, system=created_by is None),
+        **(given_audit if isinstance(given_audit, dict) else {}),
+    }
+    event_metadata = {**actor_role_metadata(created_by), **(metadata or {}), AUDIT_KEY: audit}
 
     # Create the event
     event = BookingEvent.objects.create(

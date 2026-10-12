@@ -209,6 +209,7 @@ from .booking_cancellation import (
     partial_cancel_uses_input_reduction,
     user_may_cancel_started_slots,
 )
+from .booking_audit import disruption_choice_audit
 from .maintenance_policy import (
     clear_disruption_policy_fields,
     effective_slot_status_when_freeing_disruption_booking,
@@ -10787,7 +10788,8 @@ def _release_hold_booking(hold_booking, actor=None):
         create_booking_event(
             booking=hold_booking,
             event_type=BookingEventType.STATUS_CHANGED,
-            created_by=None,
+            created_by=actor,
+            system_actor=actor is None,
             comment="Hold released (urgent request rejected or expired).",
             previous_status=BookingStatus.HOLD,
             new_status=BookingStatus.CANCELLED,
@@ -13175,6 +13177,7 @@ def reschedule_booking(request, booking_id):
             )
             
             previous_status = booking.status
+            choice_metadata = disruption_choice_audit(booking, previous_status, request.user, choice="reschedule")
             booking.status = BookingStatus.BOOKED
             if getattr(booking, "maintenance_disruption_flag", False) or previous_status == BookingStatus.DISRUPTION_PENDING:
                 clear_disruption_policy_fields(booking, keep_quota_anchor=True)
@@ -13189,6 +13192,7 @@ def reschedule_booking(request, booking_id):
                 comment=f"Booking rescheduled to {format_local_dt(start_time)} - {format_local_end_dt(end_time)}",
                 created_by=request.user,
                 send_notification=True,
+                metadata=choice_metadata or None,
             )
             
     except Exception as e:
@@ -13990,6 +13994,7 @@ def user_reschedule_booking(request, booking_id):
             )
 
             previous_status = booking.status
+            choice_metadata = disruption_choice_audit(booking, previous_status, request.user, choice="reschedule")
             booking.status = BookingStatus.BOOKED
             if getattr(booking, "maintenance_disruption_flag", False) or previous_status == BookingStatus.DISRUPTION_PENDING:
                 clear_disruption_policy_fields(booking, keep_quota_anchor=True)
@@ -14004,6 +14009,7 @@ def user_reschedule_booking(request, booking_id):
                 comment=f"Booking rescheduled to {format_local_dt(start_time)} - {format_local_end_dt(end_time)}",
                 created_by=request.user,
                 send_notification=True,
+                metadata=choice_metadata or None,
             )
 
     except Exception as e:
