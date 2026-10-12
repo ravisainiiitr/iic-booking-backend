@@ -1,0 +1,109 @@
+# Production Apache: serve HTTP/2 with longer keep-alive so each visitor reuses one connection
+# instead of opening several (new connections to the server are slow on the network path).
+# action=check only reports the current setup; apply switches mpm_prefork -> mpm_event, enables
+# http2 and the iic-http2 conf; revert restores mpm_prefork without http2.
+# /etc/apache2 is backed up first; a failed configtest or health check restores the previous setup.
+name: Apache HTTP/2
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: check, apply or revert
+        required: true
+        type: choice
+        options: [check, apply, revert]
+
+jobs:
+  http2:
+    runs-on: [self-hosted, Linux]
+    env:
+      CONF: iic-http2
+    steps:
+      - name: Current setup
+        run: |
+          set -uo pipefail
+          sudo -n apache2ctl -v | head -1
+          echo "--- MPM / http2 / php modules"
+          sudo -n apache2ctl -M 2>/dev/null | grep -Ei 'mpm_|http2|php|proxy_wstunnel|ssl' || true
+          echo "--- keep-alive / protocols"
+          sudo -n grep -RhiE '^\s*(KeepAlive|MaxKeepAliveRequests|KeepAliveTimeout|Protocols|Timeout)\b' \
+            /etc/apache2/apache2.conf /etc/apache2/conf-enabled /etc/apache2/sites-enabled 2>/dev/null || true
+          echo "--- public protocol"
+          curl -sS -o /dev/null -m 15 --http2 -w 'equip https -> http_version=%{http_version} status=%{http_code}\n' \
+            https://equip.iitr.ac.in/ || true
+
+      - name: Apply
+        if: inputs.action == 'apply'
+        run: |
+          set -euo pipefail
+          if sudo -n apache2ctl -M 2>/dev/null | grep -qi php; then
+            echo "mod_php is loaded; it requires mpm_prefork. Aborting."
+            exit 1
+          fi
+          BACKUP="/var/backups/apache2-$(date +%Y%m%d-%H%M%S).tgz"
+          sudo -n tar -czf "$BACKUP" -C /etc apache2
+          echo "backup: $BACKUP"
+          sudo -n tee "/etc/apache2/conf-available/${CONF}.conf" > /dev/null <<'EOF'
+          # Managed by the "Apache HTTP/2" workflow (iic-booking-backend).
+          Protocols h2 http/1.1
+          KeepAlive On
+          MaxKeepAliveRequests 1000
+          KeepAliveTimeout 15
+          EOF
+
+          restore() {
+            echo "restoring previous setup from $BACKUP"
+            sudo -n rm -rf /etc/apache2
+            sudo -n tar -xzf "$BACKUP" -C /etc
+            sudo -n apache2ctl configtest && sudo -n systemctl restart apache2
+          }
+
+          sudo -n a2dismod -q mpm_prefork || true
+          sudo -n a2enmod -q mpm_event http2
+          sudo -n a2enconf -q "$CONF"
+          if ! sudo -n apache2ctl configtest; then
+            echo "configtest failed"
+            restore
+            exit 1
+          fi
+          sudo -n systemctl restart apache2
+          sleep 3
+
+          ok=1
+          for path in / /api/health/; do
+            code=$(curl -sk -o /dev/null -m 20 -w '%{http_code}' \
+              --resolve equip.iitr.ac.in:443:127.0.0.1 "https://equip.iitr.ac.in${path}" || echo 000)
+            echo "local https ${path} -> ${code}"
+            case "$code" in 2*|3*|401|403|404|405) ;; *) ok=0 ;; esac
+          done
+          if [ "$ok" != 1 ] || ! systemctl is-active --quiet apache2; then
+            echo "health check failed"
+            restore
+            exit 1
+          fi
+          echo "mpm_event + http2 active"
+
+      - name: Revert
+        if: inputs.action == 'revert'
+        run: |
+          set -euo pipefail
+          sudo -n a2disconf -q "$CONF" || true
+          sudo -n rm -f "/etc/apache2/conf-available/${CONF}.conf"
+          sudo -n a2dismod -q http2 || true
+          sudo -n a2dismod -q mpm_event || true
+          sudo -n a2enmod -q mpm_prefork
+          sudo -n apache2ctl configtest
+          sudo -n systemctl restart apache2
+          echo "reverted to mpm_prefork without http2"
+
+      - name: Verify
+        if: inputs.action != 'check'
+        run: |
+          sleep 2
+          sudo -n apache2ctl -M 2>/dev/null | grep -Ei 'mpm_|http2' || true
+          for host in equip.iitr.ac.in iicbooking.iitr.ac.in; do
+            curl -sS -o /dev/null -m 20 --http2 -w "public $host -> http_version=%{http_version} status=%{http_code}\n" \
+              "https://$host/" || true
+          done
+          curl -sS -o /dev/null -m 20 -w 'public api -> status=%{http_code}\n' https://equip.iitr.ac.in/api/health/ || true
