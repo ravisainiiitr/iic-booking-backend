@@ -1,0 +1,22 @@
+# Read-only: bookings awaiting the user's refund-vs-reschedule choice after a lab disruption, and bookings
+# on Operator Absent slots that never entered that state.
+# Script: scripts/ops/probe_operator_absent_pending.py
+name: Probe Operator Absent Pending
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          # The runner workspace is a sparse checkout, so the script is read from git rather than the disk.
+          git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/probe_operator_absent_pending.py \
+            | docker exec -i -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
+              python manage.py shell
