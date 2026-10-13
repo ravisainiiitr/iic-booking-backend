@@ -1,0 +1,29 @@
+# Check resumable "download all" on production (single-file link, storage-built ZIP via the Celery worker).
+# Script: scripts/ops/results_zip_cache_check.py
+name: Results ZIP Cache Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking_pk:
+        description: Booking id to check the single-file link for
+        required: false
+        type: string
+        default: '752'
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run
+        env:
+          BOOKING_PK: ${{ inputs.booking_pk }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          # The runner workspace is a sparse checkout, so the script is read from git rather than the disk.
+          git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/results_zip_cache_check.py \
+            | docker exec -i -e BOOKING_PK="$BOOKING_PK" -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
+              python manage.py shell
