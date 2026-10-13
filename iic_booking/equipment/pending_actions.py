@@ -318,15 +318,25 @@ def _personal_items(c: _Collector) -> None:
         )
 
     def new_results():
-        from django.db.models import Q
+        from django.db.models import F, OuterRef, Q, Subquery
 
+        from .models import BookingResultFile, BookingResultView
         from .results_sharing_views import _bookings_with_results
 
         cutoff = timezone.now() - timedelta(days=RECENT_RESULTS_DAYS)
+        last_file = (
+            BookingResultFile.objects.filter(booking_id=OuterRef("pk")).order_by("-created_at").values("created_at")[:1]
+        )
+        viewed = BookingResultView.objects.filter(booking_id=OuterRef("pk"), user=user).values("last_viewed_at")[:1]
         qs = (
             _bookings_with_results(my_bookings)
-            .filter(Q(completed_at__gte=cutoff) | Q(results_available_notified_at__gte=cutoff))
-            .exclude(result_views__user=user)
+            .annotate(last_result_file_at=Subquery(last_file), viewed_at=Subquery(viewed))
+            .filter(
+                Q(completed_at__gte=cutoff)
+                | Q(results_available_notified_at__gte=cutoff)
+                | Q(last_result_file_at__gte=cutoff)
+            )
+            .filter(Q(viewed_at__isnull=True) | Q(last_result_file_at__gt=F("viewed_at")))
             .order_by("-completed_at")
         )
         c.add(

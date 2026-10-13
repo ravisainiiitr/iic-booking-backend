@@ -12172,6 +12172,92 @@ def _append_sample_notice_html(html_message, sample_notice_ctx):
         return html_message + notice_html
     return f"<html><body>{notice_html}</body></html>"
 
+def _uploaded_result_files(request) -> list:
+    if not request.FILES:
+        return []
+    files = request.FILES.getlist("results") or request.FILES.getlist("results[]")
+    return [f for f in files if f and f.name]
+
+
+def _save_uploaded_result_files(request, booking) -> list:
+    files = _uploaded_result_files(request)
+    if not files:
+        return []
+    _ensure_booking_result_file_table()
+    saved = []
+    for f in files:
+        bf = BookingResultFile(booking=booking, file=f, original_name=f.name)
+        bf.save()
+        saved.append(bf)
+    return saved
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([MultiPartParser, FormParser])
+def add_booking_results(request, booking_id):
+    """Attach more result files to a completed booking (results sent in batches, e.g. slots split across days).
+
+    Request: multipart/form-data with "results" files, optional "note" and "notify" (default true: push + email
+    to the booking user). Returns: message, uploaded_files, notified.
+    """
+    if not check_operator_permission(request.user):
+        return Response(
+            {"error": "Only operators, managers and admins can add result files."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    booking = Booking.objects.select_related("equipment", "user").filter(booking_id=booking_id).first()
+    if booking is None:
+        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+    scope_denied = _oic_booking_scope_denied(request.user, booking)
+    if scope_denied:
+        return scope_denied
+    if booking.status != BookingStatus.COMPLETED:
+        return Response(
+            {"error": "Result files can be added only to a completed booking. Use Complete to send the first files."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not _uploaded_result_files(request):
+        return Response({"error": "Choose at least one file to add."}, status=status.HTTP_400_BAD_REQUEST)
+
+    note = str(request.data.get("note") or "").strip()[:2000]
+    notify = str(request.data.get("notify", "true")).strip().lower() not in ("0", "false", "no", "off")
+    try:
+        saved = _save_uploaded_result_files(request, booking)
+    except Exception:
+        logger.exception("Adding result files failed for booking %s", booking.booking_id)
+        return Response(
+            {"error": "The files could not be saved. Please try again."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    names = [bf.original_name or bf.file.name for bf in saved]
+    comment = f"{len(names)} more result file(s) added for portal download via Booking Details: " + ", ".join(names)
+    if note:
+        comment += f"\nNote: {note}"
+    create_booking_event(
+        booking=booking,
+        event_type=BookingEventType.COMMENT,
+        comment=comment,
+        metadata={"results_added": names, "results_added_count": len(names), "user_notified": notify},
+        created_by=request.user,
+        send_notification=False,
+    )
+    if notify:
+        try:
+            _send_results_available_push_and_email(booking, added_files=names, note=note)
+        except Exception:
+            logger.exception("Results-added notification failed for booking %s", booking.booking_id)
+    return Response(
+        {
+            "message": f"{len(names)} file(s) added to this booking"
+            + (" and the user was notified." if notify else "."),
+            "uploaded_files": names,
+            "notified": notify,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 @parser_classes([MultiPartParser, FormParser, JSONParser])
@@ -12242,18 +12328,7 @@ def complete_booking(request, booking_id):
         # Collect uploaded result files (multiple); do not fail the request if this fails
         result_file_list = []
         try:
-            if request.FILES:
-                _ensure_booking_result_file_table()
-                files_list = request.FILES.getlist("results") or request.FILES.getlist("results[]")
-                for f in files_list:
-                    if f and f.name:
-                        bf = BookingResultFile(
-                            booking=booking,
-                            file=f,
-                            original_name=f.name,
-                        )
-                        bf.save()
-                        result_file_list.append(bf)
+            result_file_list = _save_uploaded_result_files(request, booking)
         except Exception as e:
             logger.exception("Saving result files failed; booking already marked completed")
 
@@ -14213,8 +14288,12 @@ def _apply_results_available_event_and_completed_status(booking):
         send_notification=False,
     )
 
-def _send_results_available_push_and_email(booking):
-    """Push + branded results-available email (same layout family as booking confirmation)."""
+def _send_results_available_push_and_email(booking, added_files=None, note=""):
+    """Push + branded results-available email (same layout family as booking confirmation).
+
+    ``added_files``: names of a later batch added to a completed booking; the notice then lists them and leaves out
+    the sample-collection block already sent with the first results.
+    """
     from iic_booking.communication.email_branding import (
         format_duration_minutes,
         format_email_datetime,
@@ -14231,11 +14310,31 @@ def _send_results_available_push_and_email(booking):
     virtual_id = booking_display_id_for_email(booking) or f"#{booking.booking_id}"
     my_bookings_link = get_frontend_absolute_url(f"/my-bookings?booking={virtual_id}")
 
+    how_to = (
+        "Open My Bookings from the button below, find this booking, and click the green "
+        "Results button to download the folder as a ZIP or open individual files."
+    )
+    if added_files:
+        push_title = "More results added to your booking"
+        push_message = (
+            f"{len(added_files)} more result file(s) were added to Booking ID- {virtual_id}. "
+            "Open My Bookings to download."
+        )
+        comment = f"{len(added_files)} more result file(s) were added to this booking: {', '.join(added_files)}."
+        if note:
+            comment += f" Note from the lab: {note}"
+        comment += " " + how_to
+        sample_notice_ctx = {}
+    else:
+        push_title = "Results available for your booking"
+        push_message = f"Result files are available for Booking ID- {virtual_id}. Open My Bookings to download."
+        comment = how_to
+
     try:
         CommunicationService.send_push_notification(
             recipient=user,
-            title="Results available for your booking",
-            message=f"Result files are available for Booking ID- {virtual_id}. Open My Bookings to download.",
+            title=push_title,
+            message=push_message,
             metadata={
                 "notification_type": "info",
                 "link": my_bookings_link,
@@ -14277,10 +14376,7 @@ def _send_results_available_push_and_email(booking):
         "duration_display": duration_display,
         "new_status": "Completed",
         "link": my_bookings_link or "",
-        "comment": (
-            "Open My Bookings from the button below, find this booking, and click the green "
-            "Results button to download the folder as a ZIP or open individual files."
-        ),
+        "comment": comment,
         "sample_collection_notice": sample_notice_ctx.get("sample_collection_notice") or "",
         "sample_collection_deadline_hours": sample_notice_ctx.get("sample_collection_deadline_hours") or "",
         "sample_collection_deadline_display": sample_notice_ctx.get("sample_collection_deadline_display") or "",

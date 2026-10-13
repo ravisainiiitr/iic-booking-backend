@@ -78,6 +78,15 @@ def _results_available_at(booking):
     return max(candidates) if candidates else (booking.completed_at or booking.updated_at)
 
 
+def _results_new_for_viewer(booking) -> bool:
+    """Never downloaded, or files were added after the last download."""
+    viewed = getattr(booking, "viewed_at", None)
+    if viewed is None:
+        return True
+    added = [getattr(booking, "last_result_file_at", None), getattr(booking, "last_dsa_result_at", None)]
+    return any(t is not None and t > viewed for t in added)
+
+
 def _annotate_results_timing(queryset, user):
     from iic_booking.equipment.models import BookingResultFile
     from iic_booking.sync.models import EquipmentResult
@@ -131,7 +140,7 @@ def results_inbox(request):
             {
                 "results_available_at": _results_available_at(booking),
                 "viewed_at": booking.viewed_at,
-                "is_new": booking.viewed_at is None,
+                "is_new": _results_new_for_viewer(booking),
                 "locked_code": code,
                 "locked_reason": message,
                 "active_share_count": share_counts.get(booking.booking_id, 0),
@@ -335,7 +344,7 @@ def shared_with_me(request):
                 "results_available_at": _results_available_at(booking),
                 "results_accessible": code is None,
                 "viewed_at": booking.viewed_at,
-                "is_new": booking.viewed_at is None,
+                "is_new": _results_new_for_viewer(booking),
             }
         )
         items.append(card)
