@@ -1,0 +1,45 @@
+# Read-only: matching lines from the Apache access/error logs and the Django container log (query strings
+# stripped, client IPs truncated). For incident diagnosis.
+name: Prod Log Grep
+
+on:
+  workflow_dispatch:
+    inputs:
+      access_pattern:
+        description: Extended regex for the Apache access log
+        required: true
+        type: string
+      app_pattern:
+        description: Extended regex for the Django container log and Apache error log
+        required: false
+        type: string
+        default: 'Traceback|ERROR|Exception'
+      since:
+        description: Django log window (docker logs --since)
+        required: false
+        type: string
+        default: '6h'
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Logs
+        shell: bash
+        env:
+          ACCESS: ${{ inputs.access_pattern }}
+          APP: ${{ inputs.app_pattern }}
+          SINCE: ${{ inputs.since }}
+        run: |
+          set +e +o pipefail
+          strip() { sed -E 's/\?[^ "]*//g; s/^([0-9]+\.[0-9]+\.[0-9]+)\.[0-9]+/\1.x/; s/(Token|token=|t=)[A-Za-z0-9:_-]+/\1***/g'; }
+          echo "=== apache access ($ACCESS)"
+          sudo -n grep -hE "$ACCESS" /var/log/apache2/equip_access.log | strip | tail -n 60
+          echo "=== apache error ($APP)"
+          sudo -n ls /var/log/apache2/ | grep -i error
+          sudo -n sh -c 'tail -n 3000 /var/log/apache2/*error*.log' | grep -E "$APP|$ACCESS" | strip | tail -n 40
+          echo "=== apache limits"
+          sudo -n grep -rhiE '^\s*(LimitRequestBody|ProxyTimeout|Timeout|RequestReadTimeout|ProxyPass )' /etc/apache2/sites-enabled /etc/apache2/apache2.conf /etc/apache2/mods-enabled/reqtimeout.conf 2>/dev/null | sed 's/^\s*//' | sort -u
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "=== django ($CID, since $SINCE)"
+          docker logs --since "$SINCE" "$CID" 2>&1 | grep -E -A 25 "$APP" | strip | tail -n 150
