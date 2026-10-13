@@ -34,8 +34,11 @@ jobs:
       - name: Recent results downloads (proxy access log)
         shell: bash
         run: |
-          set -u
+          set +e +o pipefail
           sudo -n true 2>/dev/null && S="sudo -n" || S=""
+          ps -eo comm,args | grep -E '^(nginx|caddy|traefik|haproxy|apache2|httpd) ' | head -n 3
+          $S ss -ltnp 2>/dev/null | grep -E ':443\s' | head -n 2
+          ls -la /var/log/nginx 2>&1 | head -n 12
           $S grep -hE 'log_format|access_log' -r /etc/nginx 2>/dev/null | sed 's/^\s*//' | sort -u | head -n 12
           for f in /var/log/nginx/*access*.log /var/log/nginx/*access*.log.1; do
             [ -r "$f" ] || $S test -r "$f" || continue
