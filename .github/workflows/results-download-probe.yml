@@ -38,9 +38,10 @@ jobs:
           sudo -n true 2>/dev/null && S="sudo -n" || S=""
           ps -eo comm,args | grep -E '^(nginx|caddy|traefik|haproxy|apache2|httpd) ' | head -n 3
           $S ss -ltnp 2>/dev/null | grep -E ':443\s' | head -n 2
-          ls -la /var/log/nginx 2>&1 | head -n 12
-          $S grep -hE 'log_format|access_log' -r /etc/nginx 2>/dev/null | sed 's/^\s*//' | sort -u | head -n 12
-          for f in /var/log/nginx/*access*.log /var/log/nginx/*access*.log.1; do
+          ls /etc/apache2/mods-enabled 2>/dev/null | grep -E 'ratelimit|bw|deflate|http2|proxy|reqtimeout|evasive|qos|security|brotli' | tr '\n' ' '; echo
+          $S grep -rhiE '^\s*(Protocols|LogFormat|CustomLog|ProxyPass |ProxyPassReverse|ProxyIOBufferSize|ProxyReceiveBufferSize|SetOutputFilter|AddOutputFilter|RATE_LIMIT|SetEnv|KeepAlive|Timeout|RequestReadTimeout|H2)' /etc/apache2/sites-enabled /etc/apache2/apache2.conf /etc/apache2/mods-enabled/*.conf 2>/dev/null | sed 's/^\s*//' | sort -u | head -n 40
+          $S ls -la /var/log/apache2 2>&1 | head -n 15
+          for f in /var/log/apache2/*access*.log /var/log/apache2/*access*.log.1; do
             [ -r "$f" ] || $S test -r "$f" || continue
             echo "== $f"
             $S grep -hE 'results/(download|files|attachments)|download-link' "$f" \
