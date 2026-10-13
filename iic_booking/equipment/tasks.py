@@ -49,6 +49,29 @@ def send_manual_disruption_operational_followup(booking_id: int) -> bool:
     return True
 
 
+@shared_task(name="equipment.build_results_zip", acks_late=True)
+def build_results_zip(booking_id: int, fingerprint: str) -> str:
+    """Build a booking's results ZIP into object storage so it can be downloaded (and resumed) from there."""
+    from django.core.cache import cache
+
+    from .api_views import _booking_result_sources
+    from .results_download import ZIP_BUILD_STATE_SECONDS, _build_state_key, build_zip_into_storage, zip_fingerprint
+
+    state_key = _build_state_key(booking_id, fingerprint)
+    try:
+        booking = Booking.objects.get(pk=booking_id)
+        sources = _booking_result_sources(booking)
+        if zip_fingerprint(sources) != fingerprint:
+            cache.delete(state_key)
+            return "changed"
+        build_zip_into_storage(booking, sources, fingerprint)
+        return "built"
+    except Exception:
+        logger.exception("Results ZIP build failed for booking %s", booking_id)
+        cache.set(state_key, {"state": "failed", "done": 0, "total": 0}, ZIP_BUILD_STATE_SECONDS)
+        return "failed"
+
+
 @shared_task(name="equipment.clear_waitlist_before_reference")
 def clear_waitlist_before_reference() -> int:
     """

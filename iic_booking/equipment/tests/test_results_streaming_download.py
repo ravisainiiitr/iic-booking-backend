@@ -236,6 +236,143 @@ def test_s3_direct_url_asks_storage_to_download_under_original_name():
     assert "13.010.2026.zip" in calls["parameters"]["ResponseContentDisposition"]
 
 
+def _sources(*items, in_storage=True):
+    from iic_booking.equipment.results_download import ResultSource
+
+    return [
+        ResultSource(
+            arcname=f"IICX/uploaded/{name}",
+            size=len(data),
+            ident=f"file:{name}",
+            open=lambda data=data: io.BytesIO(data),
+            direct_url=(lambda filename, name=name: f"https://s3.example/{name}?as={filename}") if in_storage else None,
+            in_object_storage=in_storage,
+        )
+        for name, data in items
+    ]
+
+
+def _link(user, booking, **data):
+    client = APIClient()
+    client.force_authenticate(user=user)
+    return client.post(f"/api/bookings/{booking.pk}/results/download-link/", data, format="json")
+
+
+@pytest.mark.django_db
+def test_single_stored_file_downloads_directly_from_storage(media, monkeypatch):
+    from iic_booking.equipment import api_views
+
+    user = _user()
+    booking = _booking(user)
+    monkeypatch.setattr(api_views, "_booking_result_sources", lambda b: _sources(("13.010.2026.zip", b"x" * 10)))
+
+    body = _link(user, booking).json()
+
+    assert body["mode"] == "direct" and body["status"] == "ready"
+    assert body["url"] == "https://s3.example/13.010.2026.zip?as=13.010.2026.zip"
+    assert body["filename"] == "13.010.2026.zip" and body["total_bytes"] == 10
+
+
+@pytest.mark.django_db
+def test_large_zip_is_built_once_then_downloaded_from_storage(media, monkeypatch):
+    from iic_booking.equipment import api_views, tasks
+
+    user = _user()
+    booking = _booking(user)
+    monkeypatch.setattr(results_download, "ZIP_CACHE_MIN_BYTES", 10)
+    monkeypatch.setattr(api_views, "_booking_result_sources", lambda b: _sources(("a.bin", b"a" * 8), ("b.bin", b"b" * 8)))
+    queued = []
+    monkeypatch.setattr(tasks.build_results_zip, "delay", lambda *args: queued.append(args))
+    built = {}
+    monkeypatch.setattr(results_download, "cached_zip_url", lambda bid, fp, name: built.get((bid, fp)))
+
+    first = _link(user, booking).json()
+    second = _link(user, booking).json()
+
+    assert first["status"] == second["status"] == "preparing"
+    assert len(queued) == 1
+    booking_id, fingerprint = queued[0]
+    built[(booking_id, fingerprint)] = "https://s3.example/built.zip"
+    ready = _link(user, booking).json()
+    assert ready == {
+        "mode": "direct", "status": "ready", "url": "https://s3.example/built.zip",
+        "filename": f"Results_{booking.virtual_booking_id}.zip", "total_bytes": 16,
+    }
+
+    streamed = _link(user, booking, stream=True).json()
+    assert streamed["mode"] == "stream" and "/results/download/?t=" in streamed["url"]
+
+
+@pytest.mark.django_db
+def test_small_or_local_results_keep_the_streamed_zip(media, monkeypatch):
+    from iic_booking.equipment import api_views
+
+    user = _user()
+    booking = _booking(user)
+    monkeypatch.setattr(results_download, "ZIP_CACHE_MIN_BYTES", 10)
+    monkeypatch.setattr(
+        api_views, "_booking_result_sources",
+        lambda b: _sources(("a.bin", b"a" * 8), ("b.bin", b"b" * 8), in_storage=False),
+    )
+
+    body = _link(user, booking).json()
+
+    assert body["mode"] == "stream" and body["status"] == "ready"
+
+
+@pytest.mark.django_db
+def test_build_writes_a_valid_zip_and_prunes_older_copies(monkeypatch):
+    from datetime import datetime, timezone as dt_timezone
+
+    from django.core.cache import cache
+
+    from iic_booking.sync.services import results_s3
+
+    uploaded, deleted = {}, []
+
+    class FakeClient:
+        def upload_fileobj(self, fileobj, bucket, key, ExtraArgs, Config, Callback):  # noqa: N803
+            data = b""
+            while chunk := fileobj.read(5):
+                data += chunk
+                Callback(len(chunk))
+            uploaded[key] = data
+
+        def get_paginator(self, name):
+            class Pages:
+                def paginate(self, **kwargs):
+                    yield {"Contents": [
+                        {"Key": "results-zip-cache/7/old.zip", "LastModified": datetime.now(dt_timezone.utc)},
+                        {"Key": "results-zip-cache/7/new.zip", "LastModified": datetime.now(dt_timezone.utc)},
+                        {"Key": "results-zip-cache/9/kept.zip", "LastModified": datetime.now(dt_timezone.utc)},
+                        {"Key": "results-zip-cache/9/ancient.zip", "LastModified": datetime(2020, 1, 1, tzinfo=dt_timezone.utc)},
+                    ]}
+            return Pages()
+
+        def delete_objects(self, Bucket, Delete):  # noqa: N803
+            deleted.extend(o["Key"] for o in Delete["Objects"])
+
+    monkeypatch.setattr(results_s3, "_s3_client", lambda: (FakeClient(), "bucket"))
+
+    class FakeBooking:
+        pk = 7
+
+    sources = _sources(("a.csv", b"1,2\n" * 100), ("b.zip", b"PK" * 50))
+    key = results_download.build_zip_into_storage(FakeBooking(), sources, "new")
+
+    assert key == "results-zip-cache/7/new.zip"
+    with zipfile.ZipFile(io.BytesIO(uploaded[key])) as zf:
+        assert zf.read("IICX/uploaded/a.csv") == b"1,2\n" * 100
+        assert zf.read("IICX/uploaded/b.zip") == b"PK" * 50
+    assert sorted(deleted) == ["results-zip-cache/7/old.zip", "results-zip-cache/9/ancient.zip"]
+    assert cache.get(results_download._build_state_key(7, "new"))["state"] == "ready"
+
+
+def test_strict_zip_stream_fails_on_a_missing_member():
+    with pytest.raises(FileNotFoundError):
+        list(iter_zip_stream([("IICX/a.bin", lambda: None)], strict=True))
+
+
 def test_presigned_results_url_carries_filename(monkeypatch):
     from iic_booking.sync.services import results_s3
 

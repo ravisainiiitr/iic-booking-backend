@@ -14531,15 +14531,20 @@ def _results_download_booking(request, booking_id):
     return booking, user, _booking_results_access_denied(user, booking)
 
 
-def _booking_results_zip_plan(booking):
-    from iic_booking.equipment.results_download import booking_zip_members
+def _booking_result_sources(booking):
+    from iic_booking.equipment.results_download import booking_result_sources
 
     client, bucket, s3_objects = (None, None, [])
     if (booking.virtual_booking_id or "").strip():
         client, bucket, s3_objects = _get_s3_client_and_results_keys(
             booking.virtual_booking_id.strip(), not_before=booking.created_at
         )
-    return booking_zip_members(booking, client, bucket, s3_objects)
+    return booking_result_sources(booking, client, bucket, s3_objects)
+
+
+def _booking_results_zip_plan(booking):
+    sources = _booking_result_sources(booking)
+    return [(s.arcname, s.open) for s in sources], sum(s.size for s in sources)
 
 
 def _booking_results_zip_name(booking) -> str:
@@ -14582,19 +14587,69 @@ def booking_results_download(request, booking_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def booking_results_download_link(request, booking_id):
-    """Short-lived link the browser can open directly to download the results ZIP."""
-    from iic_booking.equipment.results_download import tokenized_url
+    """Short-lived link the browser can open directly to download all results.
+
+    ``mode`` is ``direct`` for an object-storage URL the browser can resume (the only file, or the ZIP built
+    into storage), else ``stream`` for the ZIP streamed by the API. ``status: preparing`` (with ``progress``
+    0..1) means a large ZIP is being built; ask again shortly. ``{"stream": true}`` skips the build.
+    """
+    from iic_booking.equipment.results_download import (
+        cached_zip_url,
+        request_zip_build,
+        tokenized_url,
+        zip_build_state,
+        zip_cacheable,
+        zip_fingerprint,
+    )
 
     booking, user, denied = _results_download_booking(request, booking_id)
     if denied is not None:
         return denied
-    members, total_bytes = _booking_results_zip_plan(booking)
-    if not members:
+    sources = _booking_result_sources(booking)
+    if not sources:
         return Response(_NO_RESULT_FILES, status=status.HTTP_404_NOT_FOUND)
+    total_bytes = sum(s.size for s in sources)
+    zip_name = _booking_results_zip_name(booking)
+
+    def direct(url, filename, size):
+        mark_results_viewed(user, booking)
+        return Response(
+            {"mode": "direct", "status": "ready", "url": url, "filename": filename, "total_bytes": size}
+        )
+
+    if len(sources) == 1 and sources[0].direct_url is not None:
+        url = sources[0].direct_url(sources[0].filename)
+        if url:
+            return direct(url, sources[0].filename, sources[0].size)
+
+    if zip_cacheable(sources) and not request.data.get("stream"):
+        fingerprint = zip_fingerprint(sources)
+        url = cached_zip_url(booking.pk, fingerprint, zip_name)
+        if url:
+            return direct(url, zip_name, total_bytes)
+        state = zip_build_state(booking.pk, fingerprint)
+        if not state or state.get("state") == "ready":
+            state = request_zip_build(booking.pk, fingerprint, total_bytes)
+        elif state.get("state") == "failed":
+            logger.warning("Results ZIP build failed for booking %s; streaming instead", booking.pk)
+        if state.get("state") != "failed":
+            done = int(state.get("done") or 0)
+            return Response(
+                {
+                    "mode": "direct",
+                    "status": "preparing",
+                    "progress": min(done / total_bytes, 0.99) if total_bytes else 0,
+                    "filename": zip_name,
+                    "total_bytes": total_bytes,
+                }
+            )
+
     return Response(
         {
+            "mode": "stream",
+            "status": "ready",
             "url": tokenized_url(request, f"/api/bookings/{booking.pk}/results/download/", user, booking.pk),
-            "filename": _booking_results_zip_name(booking),
+            "filename": zip_name,
             "total_bytes": total_bytes,
         }
     )
