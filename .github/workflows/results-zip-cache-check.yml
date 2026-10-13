@@ -10,6 +10,11 @@ on:
         required: false
         type: string
         default: '752'
+      any_size:
+        description: When no booking qualifies, build (then remove) a small multi-file ZIP to test the worker path
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   run:
@@ -19,11 +24,12 @@ jobs:
       - name: Run
         env:
           BOOKING_PK: ${{ inputs.booking_pk }}
+          ANY_SIZE: ${{ inputs.any_size && '1' || '0' }}
         run: |
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
           test -n "$CID"
           # The runner workspace is a sparse checkout, so the script is read from git rather than the disk.
           git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/results_zip_cache_check.py \
-            | docker exec -i -e BOOKING_PK="$BOOKING_PK" -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
+            | docker exec -i -e BOOKING_PK="$BOOKING_PK" -e ANY_SIZE="$ANY_SIZE" -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
               python manage.py shell

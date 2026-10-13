@@ -36,6 +36,13 @@ for b in candidates:
     if zip_cacheable(s):
         target, target_sources = b, s
         break
+remove_after = False
+if target is None and os.environ.get("ANY_SIZE") == "1":
+    for b in candidates:
+        s = _booking_result_sources(b)
+        if len(s) > 1 and all(x.in_object_storage for x in s):
+            target, target_sources, remove_after = b, s, True
+            break
 if target is None:
     print("no booking currently qualifies for a storage-built ZIP")
 else:
@@ -55,3 +62,13 @@ else:
             break
         time.sleep(2)
     print("built link available:", bool(cached_zip_url(target.pk, fp, "check.zip")))
+    if remove_after:
+        from django.core.cache import cache
+
+        from iic_booking.equipment.results_download import _build_state_key, zip_cache_key
+        from iic_booking.sync.services.results_s3 import _s3_client
+
+        client, bucket = _s3_client()
+        client.delete_object(Bucket=bucket, Key=zip_cache_key(target.pk, fp))
+        cache.delete(_build_state_key(target.pk, fp))
+        print("test ZIP removed")
