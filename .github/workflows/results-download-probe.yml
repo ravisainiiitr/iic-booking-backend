@@ -1,0 +1,70 @@
+# Read-only: time each hop of a large results download on the server (S3, ZIP build, app, proxy, public URL).
+# Script: scripts/ops/results_download_probe.py
+name: Results Download Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking_ref:
+        description: Booking reference (blank = largest result file uploaded in the last 2 days)
+        required: false
+        type: string
+        default: ''
+      probe_mb:
+        description: Megabytes read per test
+        required: false
+        type: string
+        default: '100'
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Server
+        run: |
+          set +e
+          TOKEN="$(curl -s -m 3 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')"
+          for k in instance-type placement/availability-zone; do
+            echo "$k: $(curl -s -m 3 -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/$k)"
+          done
+          nproc; free -m | head -2; uptime
+          docker ps --format '{{.Names}}\t{{.Ports}}'
+          ss -ltnp 2>/dev/null | grep -E ':(80|443|8000)\s' || true
+      - name: In-app timings
+        env:
+          BOOKING_REF: ${{ inputs.booking_ref }}
+          PROBE_MB: ${{ inputs.probe_mb }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          echo "CID=$CID" >> "$GITHUB_ENV"
+          git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/results_download_probe.py \
+            | docker exec -i -e BOOKING_REF="$BOOKING_REF" -e PROBE_MB="$PROBE_MB" -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
+              python manage.py shell
+      - name: HTTP timings from the host
+        env:
+          PROBE_MB: ${{ inputs.probe_mb }}
+        run: |
+          set -uo pipefail
+          ZIP_PATH="$(docker exec "$CID" sed -n 1p /tmp/results_probe_urls)"
+          S3_URL="$(docker exec "$CID" sed -n 2p /tmp/results_probe_urls)"
+          docker exec "$CID" rm -f /tmp/results_probe_urls
+          echo "::add-mask::$ZIP_PATH"
+          echo "::add-mask::$S3_URL"
+          LIMIT=$(( ${PROBE_MB:-100} * 1024 * 1024 ))
+          probe() {
+            local name="$1"; shift
+            local start end bytes
+            start=$(date +%s.%N)
+            bytes=$(curl -s "$@" | head -c "$LIMIT" | wc -c)
+            end=$(date +%s.%N)
+            awk -v n="$name" -v b="$bytes" -v s="$start" -v e="$end" \
+              'BEGIN { t = e - s; printf "{\"test\": \"%s\", \"mb\": %.1f, \"s\": %.2f, \"MB_per_s\": %.1f}\n", n, b/1048576, t, (t > 0 ? b/1048576/t : 0) }'
+          }
+          probe app_direct_port_8000 -H "Host: equip.iitr.ac.in" "http://127.0.0.1:8000${ZIP_PATH}"
+          probe via_proxy_local --resolve equip.iitr.ac.in:443:127.0.0.1 "https://equip.iitr.ac.in${ZIP_PATH}"
+          probe via_public_ip "https://equip.iitr.ac.in${ZIP_PATH}"
+          [ -n "$S3_URL" ] && probe s3_presigned_direct "$S3_URL"
+          curl -s -o /dev/null -D - -H "Host: equip.iitr.ac.in" "http://127.0.0.1:8000${ZIP_PATH}" --max-time 3 | grep -iE '^(HTTP|content-|x-|transfer)' || true
