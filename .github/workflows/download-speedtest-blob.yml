@@ -1,0 +1,50 @@
+# Temporary 100 MB random-data blob for download speed tests from client networks (no user data):
+# setup  -> https://equip.iitr.ac.in/_speedtest.bin (frontend container) and a 2-hour S3 link printed in the log
+# cleanup -> removes both
+name: Download Speedtest Blob
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: setup or cleanup
+        required: true
+        type: choice
+        options: [setup, cleanup]
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Blob
+        shell: bash
+        env:
+          ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          FE="$(docker ps --format '{{.Names}}\t{{.Ports}}' | awk -F'\t' '$2 ~ /:8000->80/ {print $1; exit}')"
+          DJ="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          test -n "$FE" && test -n "$DJ"
+          ROOT="$(docker exec "$FE" sh -c 'for d in /usr/share/nginx/html /app/dist /srv; do [ -f "$d/index.html" ] && echo "$d" && break; done')"
+          test -n "$ROOT"
+          PY='import os
+          from django.conf import settings
+          from django.core.files.storage import default_storage as s
+          c = s.connection.meta.client
+          key = "_speedtest/blob.bin"
+          if os.environ["ACTION"] == "setup":
+              c.put_object(Bucket=s.bucket_name, Key=key, Body=os.urandom(100 * 1024 * 1024))
+              print("S3_URL", c.generate_presigned_url("get_object", Params={"Bucket": s.bucket_name, "Key": key}, ExpiresIn=7200))
+          else:
+              c.delete_object(Bucket=s.bucket_name, Key=key)
+              print("S3 blob deleted")'
+          if [ "$ACTION" = "setup" ]; then
+            head -c 104857600 /dev/urandom > /tmp/_speedtest.bin
+            docker cp /tmp/_speedtest.bin "$FE:$ROOT/_speedtest.bin"
+            rm -f /tmp/_speedtest.bin
+            curl -sI -H "Host: equip.iitr.ac.in" "http://127.0.0.1:8000/_speedtest.bin" | grep -iE '^(HTTP|content-length|accept-ranges)'
+          else
+            docker exec "$FE" rm -f "$ROOT/_speedtest.bin"
+            echo "server blob removed"
+          fi
+          echo "$PY" | sed 's/^          //' | docker exec -i -e ACTION="$ACTION" -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$DJ" python manage.py shell
