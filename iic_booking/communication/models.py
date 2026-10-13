@@ -625,3 +625,23 @@ class Notice(models.Model):
 
     def __str__(self) -> str:
         return self.title
+
+
+class NotificationPreference(models.Model):
+    """A user's channel choice for one notification category (no row = everything on)."""
+
+    user = ForeignKey(User, on_delete=models.CASCADE, related_name="notification_settings")
+    category = CharField(_("Category"), max_length=40)
+    email_enabled = BooleanField(_("Email"), default=True)
+    in_app_enabled = BooleanField(_("In-app"), default=True)
+    updated_at = DateTimeField(_("Updated at"), auto_now=True)
+
+    class Meta:
+        verbose_name = _("Notification preference")
+        verbose_name_plural = _("Notification preferences")
+        constraints = [
+            models.UniqueConstraint(fields=["user", "category"], name="uniq_notification_preference_user_category"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.user_id} {self.category}: email={self.email_enabled} in_app={self.in_app_enabled}"

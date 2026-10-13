@@ -19,25 +19,102 @@ def get_notifications(request):
     
     Returns a list of push notifications (CommunicationLog entries with type PUSH_NOTIFICATION).
     """
-    notifications = CommunicationLog.objects.filter(
-        recipient=request.user,
-        communication_type=CommunicationLog.CommunicationType.PUSH_NOTIFICATION,
-    ).order_by("-created_at")
-    
-    # Transform to API format
-    notification_list = []
-    for notification in notifications:
-        notification_list.append({
-            "id": notification.id,
-            "title": notification.subject or "Notification",
-            "message": notification.message or "",
-            "type": notification.metadata.get("notification_type", "info") if notification.metadata else "info",
-            "read": notification.status == CommunicationLog.CommunicationStatus.READ,
-            "created_at": notification.created_at.isoformat() if notification.created_at else None,
-            "link": notification.metadata.get("link") if notification.metadata else None,
-        })
-    
-    return Response(notification_list, status=status.HTTP_200_OK)
+    notifications = (
+        CommunicationLog.objects.filter(
+            recipient=request.user,
+            communication_type=CommunicationLog.CommunicationType.PUSH_NOTIFICATION,
+        )
+        .select_related("template")
+        .order_by("-created_at")
+    )
+    return Response([_notification_row(n) for n in notifications], status=status.HTTP_200_OK)
+
+
+def _notification_row(notification) -> dict:
+    from .notification_preferences import category_for
+
+    meta = notification.metadata or {}
+    template_code = notification.template.code if notification.template_id else None
+    return {
+        "id": notification.id,
+        "title": notification.subject or "Notification",
+        "message": notification.message or "",
+        "type": meta.get("notification_type", "info"),
+        "read": notification.status == CommunicationLog.CommunicationStatus.READ,
+        "created_at": notification.created_at.isoformat() if notification.created_at else None,
+        "link": meta.get("link"),
+        "category": category_for(template_code, meta, notification.subject or ""),
+    }
+
+
+INBOX_SCAN_LIMIT = 2000
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def notification_inbox(request):
+    """Paged notification centre: ?category=&unread=1&q=&page=&page_size=."""
+    qs = (
+        CommunicationLog.objects.filter(
+            recipient=request.user,
+            communication_type=CommunicationLog.CommunicationType.PUSH_NOTIFICATION,
+        )
+        .select_related("template")
+        .order_by("-created_at")
+    )
+    q = (request.query_params.get("q") or "").strip()[:100]
+    if q:
+        qs = qs.filter(Q(subject__icontains=q) | Q(message__icontains=q))
+    if request.query_params.get("unread") in ("1", "true", "yes"):
+        qs = qs.exclude(status=CommunicationLog.CommunicationStatus.READ)
+
+    rows = [_notification_row(n) for n in qs[:INBOX_SCAN_LIMIT]]
+    category_counts: dict[str, int] = {}
+    for row in rows:
+        category_counts[row["category"]] = category_counts.get(row["category"], 0) + 1
+    category = (request.query_params.get("category") or "").strip()
+    if category and category != "all":
+        rows = [r for r in rows if r["category"] == category]
+
+    try:
+        page = max(1, int(request.query_params.get("page") or 1))
+        page_size = min(100, max(5, int(request.query_params.get("page_size") or 20)))
+    except ValueError:
+        return Response({"error": "page and page_size must be numbers"}, status=status.HTTP_400_BAD_REQUEST)
+    start = (page - 1) * page_size
+    unread_count = (
+        CommunicationLog.objects.filter(
+            recipient=request.user,
+            communication_type=CommunicationLog.CommunicationType.PUSH_NOTIFICATION,
+        )
+        .exclude(status=CommunicationLog.CommunicationStatus.READ)
+        .count()
+    )
+    return Response(
+        {
+            "results": rows[start : start + page_size],
+            "count": len(rows),
+            "page": page,
+            "page_size": page_size,
+            "unread_count": unread_count,
+            "category_counts": category_counts,
+        }
+    )
+
+
+@api_view(["GET", "PUT"])
+@permission_classes([IsAuthenticated])
+def notification_preferences_view(request):
+    """GET the category x channel matrix; PUT {"categories": [{key, email, in_app}]}."""
+    from .notification_preferences import preferences_payload, save_preferences
+
+    if request.method == "PUT":
+        rows = request.data.get("categories") if isinstance(request.data, dict) else None
+        try:
+            save_preferences(request.user, rows)
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(preferences_payload(request.user))
 
 
 @api_view(["POST"])

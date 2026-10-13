@@ -6331,6 +6331,46 @@ def export_bookings(request):
         return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+def bookings_visible_to(user, queryset=None):
+    """Role scope of the bookings list: the bookings ``user`` may see."""
+    if queryset is None:
+        queryset = Booking.objects.all()
+    if _user_is_accounts_finance_user(user):
+        return queryset.filter(
+            user_type_snapshot__in=list(UserType.get_external_user_codes()),
+            status__in=[BookingStatus.BOOKED, BookingStatus.COMPLETED],
+        )
+    if user.user_type == UserType.DEPT_ADMIN:
+        # Department Administrator: bookings on equipment in their assigned department only.
+        dept_id = getattr(user, "department_id", None)
+        return queryset.filter(equipment__internal_department_id=dept_id) if dept_id else queryset.none()
+    if not check_operator_permission(user):
+        # Regular users see their own bookings.
+        # Wallet owners (Faculty/Supervisor) also see bookings made by internal students who use their wallet.
+        from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
+        student_ids_using_my_wallet = list(
+            WalletJoinRequest.objects.filter(
+                faculty=user,
+                status=WalletJoinRequestStatus.APPROVED,
+            ).values_list("student_id", flat=True)
+        )
+        if student_ids_using_my_wallet:
+            return queryset.filter(Q(user=user) | Q(user_id__in=student_ids_using_my_wallet)).distinct()
+        return queryset.filter(user=user)
+    # Operator/manager/admin scope:
+    # - manager (OIC): managed equipment only
+    # - operator (Lab Operator): mapped equipment only
+    if user.user_type == UserType.MANAGER:
+        oic_equipment_ids = get_equipment_ids_managed_by_oic(user.id)
+        return queryset.filter(equipment_id__in=oic_equipment_ids) if oic_equipment_ids else queryset.none()
+    if user.user_type == UserType.OPERATOR:
+        operator_equipment_ids = _get_equipment_ids_for_log_access(user) or []
+        return (
+            queryset.filter(equipment_id__in=operator_equipment_ids) if operator_equipment_ids else queryset.none()
+        )
+    return queryset
+
+
 def _booking_list_queryset(request, *, min_search_chars: int = 0):
     """Bookings ``list_bookings`` would list for this request: role scope, filters, search and ordering.
 
@@ -6367,50 +6407,8 @@ def _booking_list_queryset(request, *, min_search_chars: int = 0):
                 {"error": "Invalid user_id parameter."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-    elif _user_is_accounts_finance_user(request.user):
-        queryset = queryset.filter(
-            user_type_snapshot__in=list(UserType.get_external_user_codes()),
-            status__in=[BookingStatus.BOOKED, BookingStatus.COMPLETED],
-        )
-    elif request.user.user_type == UserType.DEPT_ADMIN:
-        # Department Administrator: bookings on equipment in their assigned department only.
-        dept_id = getattr(request.user, "department_id", None)
-        if not dept_id:
-            queryset = queryset.none()
-        else:
-            queryset = queryset.filter(equipment__internal_department_id=dept_id)
-    elif not is_operator_or_manager:
-        # Regular users see their own bookings.
-        # Wallet owners (Faculty/Supervisor) also see bookings made by internal students who use their wallet.
-        from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
-        student_ids_using_my_wallet = list(
-            WalletJoinRequest.objects.filter(
-                faculty=request.user,
-                status=WalletJoinRequestStatus.APPROVED,
-            ).values_list("student_id", flat=True)
-        )
-        if student_ids_using_my_wallet:
-            queryset = queryset.filter(
-                Q(user=request.user) | Q(user_id__in=student_ids_using_my_wallet)
-            ).distinct()
-        else:
-            queryset = queryset.filter(user=request.user)
     else:
-        # Operator/manager/admin scope:
-        # - manager (OIC): managed equipment only
-        # - operator (Lab Operator): mapped equipment only
-        if request.user.user_type == UserType.MANAGER:
-            oic_equipment_ids = get_equipment_ids_managed_by_oic(request.user.id)
-            if not oic_equipment_ids:
-                queryset = queryset.none()
-            else:
-                queryset = queryset.filter(equipment_id__in=oic_equipment_ids)
-        elif request.user.user_type == UserType.OPERATOR:
-            operator_equipment_ids = _get_equipment_ids_for_log_access(request.user) or []
-            if not operator_equipment_ids:
-                queryset = queryset.none()
-            else:
-                queryset = queryset.filter(equipment_id__in=operator_equipment_ids)
+        queryset = bookings_visible_to(request.user, queryset)
 
     # Filter by equipment_id if provided
     equipment_id = request.query_params.get('equipment_id')
@@ -6510,7 +6508,6 @@ def _booking_list_queryset(request, *, min_search_chars: int = 0):
             ).values_list('pk', flat=True)
         )
         if supervisor_owner_ids:
-            from iic_booking.users.models.wallet import WalletJoinRequest
             queryset = queryset.filter(
                 Q(user_id__in=supervisor_owner_ids)
                 | Q(

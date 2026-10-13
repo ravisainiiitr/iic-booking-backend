@@ -511,6 +511,7 @@ from iic_booking.equipment.equipment_addition_requests import (
 from iic_booking.equipment.completion_reminders import bookings_awaiting_completion_view
 from iic_booking.equipment.results_deadline import results_overdue_view
 from iic_booking.equipment.admin_dashboard_summary import admin_dashboard_summary
+from iic_booking.equipment.global_search import global_search
 from iic_booking.equipment.admin_insights.views import (
     admin_insights_cancellations,
     admin_insights_equipment,
@@ -546,6 +547,8 @@ from iic_booking.communication.api_views import (
     mark_notification_as_read,
     mark_all_notifications_as_read,
     delete_notification,
+    notification_inbox,
+    notification_preferences_view,
     notice_list,
     notice_detail,
     notice_requests_mine,
@@ -1884,6 +1887,9 @@ urlpatterns = router.urls + [
     path("notifications/<int:notification_id>/mark-read/", mark_notification_as_read, name="notification-mark-read"),
     path("notifications/mark-all-read/", mark_all_notifications_as_read, name="notifications-mark-all-read"),
     path("notifications/pending-actions/", pending_actions, name="notifications-pending-actions"),
+    path("notifications/inbox/", notification_inbox, name="notifications-inbox"),
+    path("notifications/preferences/", notification_preferences_view, name="notifications-preferences"),
+    path("search/", global_search, name="global-search"),
     path("admin/dashboard-summary/", admin_dashboard_summary, name="admin-dashboard-summary"),
     path("admin/insights/equipment/", admin_insights_equipment, name="admin-insights-equipment"),
     path("admin/insights/users/", admin_insights_users, name="admin-insights-users"),

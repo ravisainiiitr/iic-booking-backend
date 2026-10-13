@@ -923,8 +923,11 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 cc_emails=[creator.email] if cc_creator else None,
             )
             from iic_booking.communication.models import CommunicationLog
+            from iic_booking.communication.notification_preferences import EMAIL, allows, category_for
 
-            if log is None or getattr(log, "status", None) != CommunicationLog.CommunicationStatus.SENT:
+            if log is None and not allows(user, EMAIL, category_for(email_template_code, metadata)):
+                logger.info("Booking event email to user %s skipped: switched off in their settings", user.pk)
+            elif log is None or getattr(log, "status", None) != CommunicationLog.CommunicationStatus.SENT:
                 err = getattr(log, "error_message", None) or "Email send returned without SENT status"
                 raise RuntimeError(
                     f"Booking confirmation email not delivered to {user.email}: {err}"

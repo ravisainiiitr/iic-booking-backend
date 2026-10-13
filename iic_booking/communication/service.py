@@ -202,6 +202,28 @@ class CommunicationService:
         return result
 
     @staticmethod
+    def _channel_allowed(user, channel: str, template_code, meta: dict, title: str) -> bool:
+        """Apply the recipient's notification settings; records the category on ``meta``."""
+        from . import notification_preferences as prefs
+
+        try:
+            category = prefs.category_for(template_code, meta, title)
+            meta.setdefault("notification_category", category)
+            if prefs.allows(user, channel, category):
+                return True
+        except Exception:
+            logger.exception("Notification preference check failed; sending anyway")
+            return True
+        logger.info(
+            "Skipped %s to user %s: category %s switched off (%s)",
+            channel,
+            getattr(user, "pk", None),
+            category,
+            template_code or title[:60],
+        )
+        return False
+
+    @staticmethod
     def send_email(
         recipient,
         template: Optional[Union[CommunicationTemplate, int, str]] = None,
@@ -278,6 +300,8 @@ class CommunicationService:
             )
         
         meta = dict(metadata or {})
+        if not CommunicationService._channel_allowed(user, "email", template_obj.code, meta, subject):
+            return None
         if cc_emails:
             meta["cc_emails"] = cc_emails
         meta.setdefault("email_backend", getattr(settings, "EMAIL_BACKEND", ""))
@@ -399,6 +423,8 @@ class CommunicationService:
         if not subject or not message:
             raise ValueError(f"Template '{template_obj.code}' missing subject or message.")
         meta = dict(metadata or {})
+        if not CommunicationService._channel_allowed(user, "email", template_obj.code, meta, subject):
+            return None
         meta.setdefault("email_backend", getattr(settings, "EMAIL_BACKEND", ""))
         meta.setdefault(
             "email_provider",
@@ -588,6 +614,12 @@ class CommunicationService:
                 "Either template (template) or both title and message must be provided"
             )
         
+        metadata = dict(metadata or {})
+        if not CommunicationService._channel_allowed(
+            recipient, "in_app", getattr(template_obj, "code", None), metadata, title or ""
+        ):
+            return None
+
         # Create communication log entry
         communication_log = CommunicationLog.objects.create(
             communication_type=CommunicationLog.CommunicationType.PUSH_NOTIFICATION,
@@ -597,7 +629,7 @@ class CommunicationService:
             subject=title,
             message=message,
             status=CommunicationLog.CommunicationStatus.PENDING,
-            metadata=metadata or {},
+            metadata=metadata,
             created_by=created_by or get_current_user(),
         )
         

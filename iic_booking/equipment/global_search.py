@@ -1,0 +1,179 @@
+"""Site-wide search behind the header search bar: equipment, bookings and people, each limited to the viewer's role."""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from django.db.models import Case, IntegerField, Q, Value, When
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+
+MIN_CHARS = 2
+MAX_CHARS = 80
+EQUIPMENT_LIMIT = 6
+BOOKING_LIMIT = 8
+PEOPLE_LIMIT = 6
+_DISPLAY_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]*-(\d+)$")
+
+
+def _search_equipment(user, q: str) -> list[dict[str, Any]]:
+    from .api_views import get_visible_equipment_queryset
+
+    scope = "all" if getattr(user, "is_authenticated", False) else None
+    qs = (
+        get_visible_equipment_queryset(user, catalog_scope=scope)
+        .filter(
+            Q(name__icontains=q)
+            | Q(code__icontains=q)
+            | Q(make__icontains=q)
+            | Q(category__name__icontains=q)
+            | Q(location__icontains=q)
+        )
+        .annotate(
+            rank=Case(
+                When(code__iexact=q, then=Value(0)),
+                When(name__istartswith=q, then=Value(1)),
+                When(code__istartswith=q, then=Value(1)),
+                When(name__icontains=q, then=Value(2)),
+                default=Value(3),
+                output_field=IntegerField(),
+            )
+        )
+        .select_related("category", "internal_department")
+        .order_by("rank", "name")
+        .distinct()
+    )
+    return [
+        {
+            "id": e.equipment_id,
+            "name": e.name,
+            "code": e.code,
+            "category": e.category.name if e.category_id else "",
+            "department": e.internal_department.name if e.internal_department_id else "",
+            "status": e.status or "",
+        }
+        for e in qs[:EQUIPMENT_LIMIT]
+    ]
+
+
+def _status_codes_matching(q: str) -> list[str]:
+    from .models import BookingStatus
+
+    needle = q.lower()
+    return [code for code, label in BookingStatus.choices if len(needle) >= 4 and str(label).lower().startswith(needle)]
+
+
+def _search_bookings(user, q: str, *, staff_view: bool) -> list[dict[str, Any]]:
+    from .admin_insights.user_card import _slot_annotations
+    from .api_views import bookings_visible_to
+
+    match = Q(virtual_booking_id__icontains=q) | Q(equipment__name__icontains=q) | Q(equipment__code__iexact=q)
+    if staff_view:
+        match |= Q(user__name__icontains=q) | Q(user__email__icontains=q) | Q(user__phone_number__icontains=q)
+    if q.isdigit():
+        match |= Q(booking_id=int(q))
+    display = _DISPLAY_ID.match(q)
+    if display:
+        match |= Q(booking_id=int(display.group(1)))
+    statuses = _status_codes_matching(q)
+    if statuses:
+        match |= Q(status__in=statuses)
+
+    qs = (
+        bookings_visible_to(user)
+        .filter(match)
+        .select_related("equipment", "user")
+        .annotate(**_slot_annotations())
+        .order_by("-created_at", "-pk")
+    )
+    rows = []
+    for b in qs[:BOOKING_LIMIT]:
+        rows.append(
+            {
+                "id": b.booking_id,
+                "virtual_booking_id": b.virtual_booking_id or f"{b.equipment.code}-{b.booking_id}",
+                "status": b.status,
+                "status_label": b.get_status_display(),
+                "equipment": b.equipment.name,
+                "equipment_code": b.equipment.code,
+                "user_name": (b.user.name or b.user.email) if b.user_id and b.user_id != user.pk else "",
+                "slot_start": b.slot_start.isoformat() if b.slot_start else None,
+                "created_at": b.created_at.isoformat() if b.created_at else None,
+                "own": b.user_id == user.pk,
+            }
+        )
+    return rows
+
+
+def _people_scope(user):
+    """Users the viewer may look up, or None when people search is not offered to this role."""
+    from iic_booking.users.models import User
+    from iic_booking.users.models.user_type import UserType
+
+    from .api_views import check_operator_permission
+
+    if getattr(user, "is_superuser", False) or user.user_type == UserType.ADMIN:
+        return User.objects.all()
+    if not (check_operator_permission(user) or user.user_type in (UserType.DEPT_ADMIN, UserType.FINANCE)):
+        return None
+    from .admin_insights.user_card import _scoped_bookings
+
+    return User.objects.filter(pk__in=_scoped_bookings(user).values("user_id"))
+
+
+def _search_people(user, q: str) -> list[dict[str, Any]] | None:
+    from iic_booking.users.models.user_type import UserType
+
+    scope = _people_scope(user)
+    if scope is None:
+        return None
+    qs = (
+        scope.filter(is_active=True)
+        .filter(Q(name__icontains=q) | Q(email__icontains=q) | Q(phone_number__icontains=q))
+        .select_related("department")
+        .annotate(
+            rank=Case(
+                When(name__istartswith=q, then=Value(0)),
+                When(email__istartswith=q, then=Value(1)),
+                default=Value(2),
+                output_field=IntegerField(),
+            )
+        )
+        .order_by("rank", "name")
+    )
+    labels = {code: str(label) for code, label in UserType.get_choices()}
+    return [
+        {
+            "id": u.pk,
+            "name": u.name or u.email,
+            "email": u.email,
+            "user_type": labels.get(u.user_type, u.user_type or ""),
+            "department": u.department.name if u.department_id else "",
+        }
+        for u in qs[:PEOPLE_LIMIT]
+    ]
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def global_search(request):
+    """GET ?q= : grouped matches. Anonymous visitors get public equipment only."""
+    q = " ".join((request.query_params.get("q") or "").split())[:MAX_CHARS]
+    result: dict[str, Any] = {"query": q, "equipment": [], "bookings": [], "people": [], "people_enabled": False}
+    if len(q) < MIN_CHARS:
+        return Response(result)
+    user = request.user
+    result["equipment"] = _search_equipment(user, q)
+    if getattr(user, "is_authenticated", False):
+        from .api_views import check_operator_permission
+        from iic_booking.users.models.user_type import UserType
+
+        staff_view = check_operator_permission(user) or user.user_type in (UserType.DEPT_ADMIN, UserType.FINANCE)
+        result["bookings"] = _search_bookings(user, q, staff_view=staff_view)
+        people = _search_people(user, q)
+        result["people_enabled"] = people is not None
+        result["people"] = people or []
+        result["staff_view"] = staff_view
+    return Response(result)
