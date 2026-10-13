@@ -1,0 +1,29 @@
+# SRIC recharges already waiting on a faculty sign-in: send the Channel i sign-in email once.
+# Script: scripts/ops/sric_signin_notice_existing.py
+name: SRIC Sign-in Notice (existing rows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Send the emails (otherwise dry run)
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run
+        env:
+          APPLY: ${{ inputs.apply && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          # The runner workspace is a sparse checkout, so the script is read from git rather than the disk.
+          git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/sric_signin_notice_existing.py \
+            | docker exec -i -e APPLY="$APPLY" -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
+              python manage.py shell
