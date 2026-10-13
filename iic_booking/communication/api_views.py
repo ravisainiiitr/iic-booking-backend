@@ -3,7 +3,7 @@
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
@@ -105,16 +105,121 @@ def notification_inbox(request):
 @api_view(["GET", "PUT"])
 @permission_classes([IsAuthenticated])
 def notification_preferences_view(request):
-    """GET the category x channel matrix; PUT {"categories": [{key, email, in_app}]}."""
+    """GET the category x channel matrix; PUT {"categories": [{key, email, in_app, digest}], "delivery": {...}}."""
+    from django.db import transaction
+
     from .notification_preferences import preferences_payload, save_preferences
 
     if request.method == "PUT":
-        rows = request.data.get("categories") if isinstance(request.data, dict) else None
+        data = request.data if isinstance(request.data, dict) else {}
         try:
-            save_preferences(request.user, rows)
+            with transaction.atomic():
+                save_preferences(request.user, data.get("categories"), data.get("delivery"))
         except ValueError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     return Response(preferences_payload(request.user))
+
+
+@api_view(["GET", "POST", "DELETE"])
+@permission_classes([IsAuthenticated])
+def web_push_subscriptions(request):
+    """Browser push: GET the server key; POST a PushSubscription JSON; DELETE {"endpoint"} to stop."""
+    from .models import WebPushSubscription
+    from .web_push import vapid_public_key
+
+    data = request.data if isinstance(request.data, dict) else {}
+    if request.method == "POST":
+        endpoint = str(data.get("endpoint") or "").strip()
+        keys = data.get("keys") if isinstance(data.get("keys"), dict) else {}
+        p256dh, auth = str(keys.get("p256dh") or "").strip(), str(keys.get("auth") or "").strip()
+        if not endpoint.startswith("https://") or len(endpoint) > 1000 or not p256dh or not auth:
+            return Response({"error": "Invalid push subscription."}, status=status.HTTP_400_BAD_REQUEST)
+        WebPushSubscription.objects.update_or_create(
+            endpoint=endpoint,
+            defaults={
+                "user": request.user,
+                "p256dh": p256dh[:200],
+                "auth": auth[:100],
+                "user_agent": (request.META.get("HTTP_USER_AGENT") or "")[:255],
+                "failure_count": 0,
+            },
+        )
+    elif request.method == "DELETE":
+        endpoint = str(data.get("endpoint") or "").strip()
+        if endpoint:
+            WebPushSubscription.objects.filter(user=request.user, endpoint=endpoint).delete()
+    return Response(
+        {
+            "public_key": vapid_public_key(),
+            "subscriptions": WebPushSubscription.objects.filter(user=request.user).count(),
+        }
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def web_push_test(request):
+    """Send a test push to the caller's browsers."""
+    from .models import WebPushSubscription
+    from .web_push import send_to_subscription
+    import json
+
+    payload = json.dumps(
+        {
+            "title": "Browser notifications are on",
+            "body": "You will see portal updates here even when the IIC booking portal is closed.",
+            "link": "/notifications?tab=settings",
+            "tag": "push-test",
+        }
+    ).encode("utf-8")
+    sent = sum(
+        int(send_to_subscription(sub, payload)) for sub in WebPushSubscription.objects.filter(user=request.user)
+    )
+    if not sent:
+        return Response(
+            {"error": "No browser accepted the test. Turn browser notifications off and on again."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return Response({"sent": sent})
+
+
+@api_view(["GET", "POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def notification_unsubscribe(request, token):
+    """One-click unsubscribe from the List-Unsubscribe email header (RFC 8058).
+
+    POST switches the category's emails off. GET never changes anything (link scanners follow GETs): it sends
+    people to the portal's confirmation page, or with ``?info=1`` describes the token for that page.
+    """
+    from django.conf import settings as django_settings
+    from django.http import HttpResponseRedirect
+
+    from .notification_preferences import read_unsubscribe_token, unsubscribe
+
+    found = read_unsubscribe_token(token)
+    if request.method == "GET" and request.query_params.get("info") != "1":
+        base = (getattr(django_settings, "FRONTEND_URL", "") or "").rstrip("/")
+        return HttpResponseRedirect(f"{base}/unsubscribe?t={token}")
+    if found is None:
+        return Response(
+            {"error": "This unsubscribe link is not valid. Manage your emails from Notification settings."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    user, cat = found
+    if request.method == "POST":
+        unsubscribe(user, cat.key)
+    from .models import NotificationPreference
+
+    pref = NotificationPreference.objects.filter(user=user, category=cat.key).first()
+    return Response(
+        {
+            "category": cat.key,
+            "label": cat.label,
+            "description": cat.description,
+            "email_enabled": pref.email_enabled if pref else True,
+        }
+    )
 
 
 @api_view(["POST"])

@@ -16573,6 +16573,7 @@ def rate_booking(request, booking_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    previous_rating = None if booking.rating_removed else booking.rating
     # New multi-criteria yes/no rating (preferred)
     criteria_payload = {
         "rating_on_time_operator_availability": _parse_bool(request.data.get("on_time_operator_availability")),
@@ -16656,6 +16657,9 @@ def rate_booking(request, booking_id):
             "rating_removed_reason",
         ]
     )
+    from .rating_alerts import notify_low_rating
+
+    notify_low_rating(booking, previous_rating=previous_rating)
 
     return Response(
         {

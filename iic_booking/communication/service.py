@@ -224,6 +224,79 @@ class CommunicationService:
         return False
 
     @staticmethod
+    def _queue_web_push(log) -> None:
+        """Hand the notice to browsers the recipient subscribed, after the surrounding transaction commits."""
+        from django.db import transaction
+
+        from .models import WebPushSubscription
+
+        try:
+            if not WebPushSubscription.objects.filter(user_id=log.recipient_id).exists():
+                return
+            from .tasks import deliver_web_push
+
+            transaction.on_commit(lambda: deliver_web_push.delay(log.pk))
+        except Exception:
+            logger.exception("Could not queue web push for notification %s", log.pk)
+
+    @staticmethod
+    def _email_timing(user, meta: dict):
+        """Whether an allowed email goes now or waits for the digest / end of quiet hours."""
+        from . import notification_preferences as prefs
+
+        try:
+            return prefs.email_decision(user, meta.get("notification_category") or prefs.OTHER)
+        except Exception:
+            logger.exception("Email timing check failed; sending now")
+            return prefs.EmailDecision(prefs.SEND)
+
+    @staticmethod
+    def _unsubscribe_headers(user, meta: dict) -> dict:
+        from . import notification_preferences as prefs
+
+        try:
+            return prefs.unsubscribe_headers(user, meta.get("notification_category") or prefs.OTHER)
+        except Exception:
+            logger.exception("Could not build unsubscribe headers")
+            return {}
+
+    @staticmethod
+    def _hold_email(user, template_obj, subject, message, meta: dict, decision, created_by, template_context=None):
+        """Log the email as QUEUED and park it for the digest task; returns the log."""
+        from .models import NotificationDigestItem
+
+        ctx = template_context or {}
+        link = next(
+            (str(v) for v in (meta.get("link"), ctx.get("link"), ctx.get("booking_url"), ctx.get("action_url")) if v),
+            "",
+        )
+        meta["held_for"] = decision.reason
+        meta["deliver_after"] = decision.deliver_after.isoformat()
+        log = CommunicationLog.objects.create(
+            communication_type=CommunicationLog.CommunicationType.EMAIL,
+            recipient=user,
+            recipient_email=getattr(user, "email", "") or "",
+            template=template_obj,
+            subject=subject,
+            message=message,
+            status=CommunicationLog.CommunicationStatus.QUEUED,
+            metadata=meta,
+            created_by=created_by or get_current_user(),
+        )
+        NotificationDigestItem.objects.create(
+            user=user,
+            log=log,
+            category=meta.get("notification_category") or "",
+            reason=decision.reason,
+            link=link[:500],
+            deliver_after=decision.deliver_after,
+        )
+        logger.info(
+            "Held email to user %s for %s until %s: %s", user.pk, decision.reason, decision.deliver_after, subject
+        )
+        return log
+
+    @staticmethod
     def send_email(
         recipient,
         template: Optional[Union[CommunicationTemplate, int, str]] = None,
@@ -302,6 +375,12 @@ class CommunicationService:
         meta = dict(metadata or {})
         if not CommunicationService._channel_allowed(user, "email", template_obj.code, meta, subject):
             return None
+        decision = CommunicationService._email_timing(user, meta)
+        if decision.deferred and not cc_emails:
+            return CommunicationService._hold_email(
+                user, template_obj, subject, message, meta, decision, created_by, template_context
+            )
+        headers = CommunicationService._unsubscribe_headers(user, meta)
         if cc_emails:
             meta["cc_emails"] = cc_emails
         meta.setdefault("email_backend", getattr(settings, "EMAIL_BACKEND", ""))
@@ -337,13 +416,14 @@ class CommunicationService:
         
         # Send email
         try:
-            if cc_emails:
+            if cc_emails or headers:
                 msg = EmailMultiAlternatives(
                     subject=subject,
                     body=message,
                     from_email=settings.DEFAULT_FROM_EMAIL,
                     to=delivery_emails,
-                    cc=[e for e in cc_emails if e and str(e).strip()],
+                    cc=[e for e in (cc_emails or []) if e and str(e).strip()],
+                    headers=headers or None,
                 )
                 if html_message:
                     msg.attach_alternative(html_message, "text/html")
@@ -458,6 +538,7 @@ class CommunicationService:
                 body=message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 to=delivery_emails,
+                headers=CommunicationService._unsubscribe_headers(user, meta) or None,
             )
             if html_message:
                 email.content_subtype = 'html'
@@ -658,6 +739,7 @@ class CommunicationService:
             except Exception as ws_error:
                 # Don't fail the push notification if WebSocket fails
                 logger.warning(f"Failed to send WebSocket notification: {str(ws_error)}")
+            CommunicationService._queue_web_push(communication_log)
             
             logger.info(f"Push notification logged for {recipient.email}: {title}")
             return communication_log

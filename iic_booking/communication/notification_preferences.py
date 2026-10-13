@@ -9,6 +9,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, time, timedelta
+
+from django.conf import settings as django_settings
+from django.core import signing
+from django.utils import timezone
 
 EMAIL = "email"
 IN_APP = "in_app"
@@ -128,8 +133,148 @@ def _stored(user) -> dict[str, dict[str, bool]]:
     from .models import NotificationPreference
 
     return {
-        p.category: {EMAIL: p.email_enabled, IN_APP: p.in_app_enabled}
+        p.category: {EMAIL: p.email_enabled, IN_APP: p.in_app_enabled, DIGEST: p.email_digest}
         for p in NotificationPreference.objects.filter(user=user)
+    }
+
+
+DIGEST = "digest"
+SEND = "send"
+SKIP = "skip"
+
+
+@dataclass(frozen=True)
+class EmailDecision:
+    action: str  # SEND, SKIP or "defer"
+    deliver_after: datetime | None = None
+    reason: str = ""
+
+    @property
+    def deferred(self) -> bool:
+        return self.action == "defer"
+
+
+def delivery_settings(user):
+    """The user's quiet hours and digest hour, or None when they never changed them."""
+    from .models import NotificationDeliverySettings
+
+    if user is None or not getattr(user, "pk", None):
+        return None
+    return NotificationDeliverySettings.objects.filter(user=user).first()
+
+
+def _local(now: datetime) -> datetime:
+    return timezone.localtime(now)
+
+
+def in_quiet_hours(settings_row, now: datetime | None = None) -> bool:
+    if settings_row is None or not settings_row.quiet_hours_enabled:
+        return False
+    t = _local(now or timezone.now()).time()
+    start, end = settings_row.quiet_start, settings_row.quiet_end
+    if start == end:
+        return False
+    if start < end:
+        return start <= t < end
+    return t >= start or t < end
+
+
+def quiet_hours_end(settings_row, now: datetime | None = None) -> datetime:
+    """The next moment quiet hours finish (local time)."""
+    local_now = _local(now or timezone.now())
+    end = local_now.replace(
+        hour=settings_row.quiet_end.hour, minute=settings_row.quiet_end.minute, second=0, microsecond=0
+    )
+    if end <= local_now:
+        end += timedelta(days=1)
+    return end
+
+
+def next_digest_time(settings_row, now: datetime | None = None) -> datetime:
+    hour = settings_row.digest_hour if settings_row is not None else DEFAULT_DIGEST_HOUR
+    local_now = _local(now or timezone.now())
+    at = local_now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if at <= local_now:
+        at += timedelta(days=1)
+    return at
+
+
+DEFAULT_DIGEST_HOUR = 8
+
+
+def email_decision(user, category: str, now: datetime | None = None) -> EmailDecision:
+    """Send now, skip (switched off), or hold an optional email for the digest or until quiet hours end.
+
+    Locked categories and ``other`` always go out immediately.
+    """
+    cat = BY_KEY.get(category)
+    if cat is None or cat.locked or user is None or not getattr(user, "pk", None):
+        return EmailDecision(SEND)
+    from .models import NotificationPreference
+
+    pref = NotificationPreference.objects.filter(user=user, category=category).only(
+        "email_enabled", "email_digest"
+    ).first()
+    if pref is not None and not pref.email_enabled:
+        return EmailDecision(SKIP)
+    settings_row = delivery_settings(user)
+    if pref is not None and pref.email_digest:
+        return EmailDecision("defer", next_digest_time(settings_row, now), "digest")
+    if in_quiet_hours(settings_row, now):
+        return EmailDecision("defer", quiet_hours_end(settings_row, now), "quiet")
+    return EmailDecision(SEND)
+
+
+def push_allowed_now(user, category: str, now: datetime | None = None) -> bool:
+    """Browser push for optional categories waits out quiet hours (the inbox still gets the notice)."""
+    cat = BY_KEY.get(category)
+    if cat is None or cat.locked:
+        return True
+    return not in_quiet_hours(delivery_settings(user), now)
+
+
+_UNSUBSCRIBE_SALT = "notification-unsubscribe"
+
+
+def unsubscribe_token(user, category: str) -> str:
+    return signing.dumps({"u": user.pk, "c": category}, salt=_UNSUBSCRIBE_SALT, compress=True)
+
+
+def read_unsubscribe_token(token: str):
+    """(user, Category) from a token, or None when it is invalid or the category cannot be switched off."""
+    from iic_booking.users.models import User
+
+    try:
+        data = signing.loads(token, salt=_UNSUBSCRIBE_SALT)
+    except signing.BadSignature:
+        return None
+    cat = BY_KEY.get(str(data.get("c") or ""))
+    if cat is None or cat.locked:
+        return None
+    user = User.objects.filter(pk=data.get("u"), is_active=True).first()
+    if user is None:
+        return None
+    return user, cat
+
+
+def unsubscribe(user, category: str) -> None:
+    from .models import NotificationPreference
+
+    NotificationPreference.objects.update_or_create(
+        user=user, category=category, defaults={"email_enabled": False}
+    )
+
+
+def unsubscribe_headers(user, category: str) -> dict[str, str]:
+    """RFC 8058 one-click unsubscribe headers for optional categories (none for service messages)."""
+    cat = BY_KEY.get(category)
+    base = (getattr(django_settings, "FRONTEND_URL", "") or "").rstrip("/")
+    if cat is None or cat.locked or not base or user is None or not getattr(user, "pk", None):
+        return {}
+    url = f"{base}/api/notifications/unsubscribe/{unsubscribe_token(user, category)}/"
+    return {
+        "List-Unsubscribe": f"<{url}>",
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
     }
 
 
@@ -175,17 +320,65 @@ def preferences_payload(user) -> dict:
                 "locked": cat.locked,
                 EMAIL: True if cat.locked else values.get(EMAIL, True),
                 IN_APP: True if cat.locked else values.get(IN_APP, True),
+                DIGEST: False if cat.locked else values.get(DIGEST, False),
             }
         )
-    return {"categories": rows, "channels": list(CHANNELS)}
+    delivery = delivery_settings(user)
+    return {
+        "categories": rows,
+        "channels": list(CHANNELS),
+        "delivery": {
+            "quiet_hours_enabled": bool(delivery and delivery.quiet_hours_enabled),
+            "quiet_start": (delivery.quiet_start if delivery else time(22, 0)).strftime("%H:%M"),
+            "quiet_end": (delivery.quiet_end if delivery else time(7, 0)).strftime("%H:%M"),
+            "digest_hour": delivery.digest_hour if delivery else DEFAULT_DIGEST_HOUR,
+        },
+    }
 
 
-def save_preferences(user, rows) -> dict:
-    """Apply ``[{key, email, in_app}]``; locked and unknown categories are ignored."""
+def _parse_hhmm(value, field: str) -> time:
+    try:
+        hours, minutes = str(value).strip().split(":")[:2]
+        return time(int(hours), int(minutes))
+    except (ValueError, TypeError):
+        raise ValueError(f"{field} must be a time like 22:00.") from None
+
+
+def _save_delivery(user, delivery) -> None:
+    from .models import NotificationDeliverySettings
+
+    if not isinstance(delivery, dict):
+        raise ValueError("delivery must be an object.")
+    defaults = {}
+    if "quiet_hours_enabled" in delivery:
+        defaults["quiet_hours_enabled"] = bool(delivery["quiet_hours_enabled"])
+    if "quiet_start" in delivery:
+        defaults["quiet_start"] = _parse_hhmm(delivery["quiet_start"], "quiet_start")
+    if "quiet_end" in delivery:
+        defaults["quiet_end"] = _parse_hhmm(delivery["quiet_end"], "quiet_end")
+    if "digest_hour" in delivery:
+        try:
+            hour = int(delivery["digest_hour"])
+        except (TypeError, ValueError):
+            raise ValueError("digest_hour must be a whole hour from 0 to 23.") from None
+        if not 0 <= hour <= 23:
+            raise ValueError("digest_hour must be a whole hour from 0 to 23.")
+        defaults["digest_hour"] = hour
+    if defaults:
+        NotificationDeliverySettings.objects.update_or_create(user=user, defaults=defaults)
+
+
+def save_preferences(user, rows, delivery=None) -> dict:
+    """Apply ``[{key, email, in_app, digest}]`` and optional quiet hours / digest hour.
+
+    Locked and unknown categories are ignored.
+    """
     from .models import NotificationPreference
 
     if not isinstance(rows, list):
         raise ValueError("categories must be a list.")
+    if delivery is not None:
+        _save_delivery(user, delivery)
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError("Each category must be an object.")
@@ -193,7 +386,7 @@ def save_preferences(user, rows) -> dict:
         if cat is None or cat.locked:
             continue
         defaults = {}
-        for channel, field in ((EMAIL, "email_enabled"), (IN_APP, "in_app_enabled")):
+        for channel, field in ((EMAIL, "email_enabled"), (IN_APP, "in_app_enabled"), (DIGEST, "email_digest")):
             if channel in row:
                 defaults[field] = bool(row[channel])
         if defaults:

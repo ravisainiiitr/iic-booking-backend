@@ -1,5 +1,7 @@
 """Communication models for managing templates, logs, and webhook events."""
 
+from datetime import time as datetime_time
+
 from django.db import models
 from django.db.models import (
     BooleanField,
@@ -634,6 +636,7 @@ class NotificationPreference(models.Model):
     category = CharField(_("Category"), max_length=40)
     email_enabled = BooleanField(_("Email"), default=True)
     in_app_enabled = BooleanField(_("In-app"), default=True)
+    email_digest = BooleanField(_("Daily digest"), default=False, help_text=_("Collect these emails into one daily email."))
     updated_at = DateTimeField(_("Updated at"), auto_now=True)
 
     class Meta:
@@ -645,3 +648,68 @@ class NotificationPreference(models.Model):
 
     def __str__(self) -> str:
         return f"{self.user_id} {self.category}: email={self.email_enabled} in_app={self.in_app_enabled}"
+
+
+class NotificationDeliverySettings(models.Model):
+    """When a user's optional emails go out: quiet hours and the daily digest time (portal local time)."""
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="notification_delivery")
+    quiet_hours_enabled = BooleanField(_("Quiet hours"), default=False)
+    quiet_start = models.TimeField(_("Quiet from"), default=datetime_time(22, 0))
+    quiet_end = models.TimeField(_("Quiet until"), default=datetime_time(7, 0))
+    digest_hour = models.PositiveSmallIntegerField(_("Digest hour"), default=8)
+    updated_at = DateTimeField(_("Updated at"), auto_now=True)
+
+    class Meta:
+        verbose_name = _("Notification delivery settings")
+        verbose_name_plural = _("Notification delivery settings")
+
+    def __str__(self) -> str:
+        return f"{self.user_id}: quiet={self.quiet_hours_enabled} digest@{self.digest_hour}"
+
+
+class NotificationDigestItem(models.Model):
+    """An optional email held back for the daily digest or until quiet hours end (its log stays QUEUED)."""
+
+    class Reason(models.TextChoices):
+        DIGEST = "digest", _("Daily digest")
+        QUIET = "quiet", _("Quiet hours")
+
+    user = ForeignKey(User, on_delete=models.CASCADE, related_name="notification_digest_items")
+    log = models.OneToOneField(CommunicationLog, on_delete=models.CASCADE, related_name="digest_item")
+    category = CharField(_("Category"), max_length=40)
+    reason = CharField(_("Reason"), max_length=10, choices=Reason.choices)
+    link = CharField(_("Link"), max_length=500, blank=True)
+    deliver_after = DateTimeField(_("Deliver after"))
+    sent_at = DateTimeField(_("Sent at"), null=True, blank=True)
+    created_at = DateTimeField(_("Created at"), auto_now_add=True)
+
+    class Meta:
+        verbose_name = _("Notification digest item")
+        verbose_name_plural = _("Notification digest items")
+        indexes = [
+            models.Index(fields=["sent_at", "deliver_after"], name="comm_digest_due_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.user_id} {self.category} ({self.reason}) after {self.deliver_after:%Y-%m-%d %H:%M}"
+
+
+class WebPushSubscription(models.Model):
+    """A browser that agreed to receive portal notifications while the portal is closed."""
+
+    user = ForeignKey(User, on_delete=models.CASCADE, related_name="web_push_subscriptions")
+    endpoint = models.URLField(_("Endpoint"), max_length=1000, unique=True)
+    p256dh = CharField(_("Public key"), max_length=200)
+    auth = CharField(_("Auth secret"), max_length=100)
+    user_agent = CharField(_("Browser"), max_length=255, blank=True)
+    created_at = DateTimeField(_("Created at"), auto_now_add=True)
+    last_success_at = DateTimeField(_("Last delivered"), null=True, blank=True)
+    failure_count = models.PositiveSmallIntegerField(_("Failures in a row"), default=0)
+
+    class Meta:
+        verbose_name = _("Web push subscription")
+        verbose_name_plural = _("Web push subscriptions")
+
+    def __str__(self) -> str:
+        return f"{self.user_id} {self.endpoint[:60]}"

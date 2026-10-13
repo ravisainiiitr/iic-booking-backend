@@ -512,6 +512,7 @@ from iic_booking.equipment.completion_reminders import bookings_awaiting_complet
 from iic_booking.equipment.results_deadline import results_overdue_view
 from iic_booking.equipment.admin_dashboard_summary import admin_dashboard_summary
 from iic_booking.equipment.global_search import global_search
+from iic_booking.equipment.similar_availability import similar_availability
 from iic_booking.equipment.admin_insights.views import (
     admin_insights_cancellations,
     admin_insights_equipment,
@@ -549,6 +550,9 @@ from iic_booking.communication.api_views import (
     delete_notification,
     notification_inbox,
     notification_preferences_view,
+    notification_unsubscribe,
+    web_push_subscriptions,
+    web_push_test,
     notice_list,
     notice_detail,
     notice_requests_mine,
@@ -1889,6 +1893,14 @@ urlpatterns = router.urls + [
     path("notifications/pending-actions/", pending_actions, name="notifications-pending-actions"),
     path("notifications/inbox/", notification_inbox, name="notifications-inbox"),
     path("notifications/preferences/", notification_preferences_view, name="notifications-preferences"),
+    path("notifications/unsubscribe/<str:token>/", notification_unsubscribe, name="notifications-unsubscribe"),
+    path("notifications/push/", web_push_subscriptions, name="notifications-push"),
+    path("notifications/push/test/", web_push_test, name="notifications-push-test"),
+    path(
+        "equipments/<int:equipment_id>/similar-availability/",
+        similar_availability,
+        name="equipment-similar-availability",
+    ),
     path("search/", global_search, name="global-search"),
     path("admin/dashboard-summary/", admin_dashboard_summary, name="admin-dashboard-summary"),
     path("admin/insights/equipment/", admin_insights_equipment, name="admin-insights-equipment"),
