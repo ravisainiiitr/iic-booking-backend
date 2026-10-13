@@ -184,6 +184,23 @@ def create_or_reuse_equipment_unavailable_draft(*, equipment, actor) -> Notice:
     )
 
 
+EQUIPMENT_NOTICE_AUTO_PUBLISH_COMMENT = (
+    "Published automatically: equipment unavailability notices from the Officer in Charge do not need approval."
+)
+
+
+def publish_equipment_notice(notice: Notice, *, actor=None) -> Notice:
+    """Put an equipment-unavailability notice on the board (no Main Admin approval)."""
+    notice.approval_status = Notice.ApprovalStatus.APPROVED
+    notice.is_active = True
+    notice.needs_oic_expiry = False
+    notice.reviewed_at = timezone.now()
+    notice.reviewed_by = actor if getattr(actor, "is_authenticated", False) else None
+    notice.review_comment = EQUIPMENT_NOTICE_AUTO_PUBLISH_COMMENT
+    notice.save()
+    return notice
+
+
 def expire_equipment_linked_notices(*, equipment, actor=None) -> int:
     """
     When equipment returns to Operational: close its open EQUIPMENT_UNAVAILABLE notices

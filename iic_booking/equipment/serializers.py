@@ -2883,6 +2883,13 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
                     )
                 }
             )
+        new_status = attrs.get("status")
+        if instance is not None and parent is not None and new_status and new_status != instance.status:
+            from .maintenance_policy import base_blocks_mode_operational
+
+            blocked = base_blocks_mode_operational(instance, new_status, base=parent)
+            if blocked:
+                raise serializers.ValidationError({"status": blocked})
         if instance is not None and instance.parent_equipment_id and "parent_equipment" in attrs:
             new_parent = attrs.get("parent_equipment")
             if (new_parent.pk if new_parent else None) != instance.parent_equipment_id:

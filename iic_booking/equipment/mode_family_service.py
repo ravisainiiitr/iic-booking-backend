@@ -154,6 +154,7 @@ def sync_family_flags(equipment_ids: Iterable[int], actor=None, *, reason: str =
     ids = {int(i) for i in equipment_ids if i}
     if not ids:
         return
+    transaction.on_commit(lambda: _follow_base_maintenance(ids))
     for eq in Equipment.objects.filter(equipment_id__in=ids):
         if eq.parent_equipment_id:
             wanted = False
@@ -168,6 +169,17 @@ def sync_family_flags(equipment_ids: Iterable[int], actor=None, *, reason: str =
                  "reason": reason},
                 actor,
             )
+
+
+def _follow_base_maintenance(ids) -> None:
+    import logging
+
+    from .maintenance_policy import follow_base_maintenance
+
+    try:
+        follow_base_maintenance(ids)
+    except Exception:
+        logging.getLogger(__name__).exception("Applying base maintenance to new modes failed for %s", sorted(ids))
 
 
 @dataclass

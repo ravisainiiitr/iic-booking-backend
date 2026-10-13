@@ -16,4 +16,9 @@ urlpatterns = [
     path("admin/sric-wallet-recharges/<int:row_id>/credit/", views.admin_credit, name="admin-sric-wallet-recharges-credit"),
     path("admin/sric-wallet-recharges/<int:row_id>/reject/", views.admin_reject, name="admin-sric-wallet-recharges-reject"),
     path("admin/sric-wallet-recharges/<int:row_id>/verify/", views.admin_verify, name="admin-sric-wallet-recharges-verify"),
+    path(
+        "admin/sric-wallet-recharges/<int:row_id>/signin-notice/",
+        views.admin_signin_notice,
+        name="admin-sric-wallet-recharges-signin-notice",
+    ),
 ]

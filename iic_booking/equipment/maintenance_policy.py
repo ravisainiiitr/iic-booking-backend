@@ -781,6 +781,87 @@ def on_equipment_status_changed(equipment, old_status: str | None, new_status: s
         equipment._disruption_result = record_equipment_operational(equipment, data)
 
 
+def _set_mode_status(mode, status: str, *, follows_parent: bool, data) -> None:
+    mode.status = status
+    mode.status_follows_parent = follows_parent
+    mode._disruption_input = data
+    mode._status_from_parent = True
+    mode.save(update_fields=["status", "status_follows_parent", "updated_at"])
+
+
+def _mode_disruption_input(base, data):
+    from dataclasses import replace
+
+    note = f"Base instrument {base.code} is Under Maintenance"
+    return replace(data, reason=f"{note}: {data.reason}" if data.reason else note)
+
+
+def cascade_status_to_modes(base, old_status: str | None, new_status: str | None) -> list[int]:
+    """
+    A base instrument Under Maintenance takes its Operational modes with it, and they come back with it.
+    Each mode is saved through the normal status path, so its own bookings and slots get the full
+    maintenance rules. Modes already Under Maintenance on their own are left alone.
+    """
+    from django.db.models import Q
+
+    from .models import Equipment, EquipmentStatus
+
+    if base.parent_equipment_id or old_status == new_status:
+        return []
+    modes = Equipment.objects.filter(parent_equipment_id=base.pk)
+    changed: list[int] = []
+    if is_equipment_under_maintenance_status(new_status):
+        data = _mode_disruption_input(base, _equipment_disruption_input(base))
+        for mode in modes.filter(Q(status=EquipmentStatus.ACTIVE) | Q(status_follows_parent=True)):
+            if mode.status == new_status:
+                continue
+            _set_mode_status(mode, new_status, follows_parent=True, data=data)
+            changed.append(mode.pk)
+    elif is_equipment_operational_status(new_status) and is_equipment_under_maintenance_status(old_status):
+        data = _equipment_disruption_input(base)
+        for mode in modes.filter(status_follows_parent=True):
+            _set_mode_status(mode, EquipmentStatus.ACTIVE, follows_parent=False, data=data)
+            changed.append(mode.pk)
+    if changed:
+        logger.info(
+            "maintenance_policy: equipment %s status %s -> %s applied to modes %s",
+            base.equipment_id, old_status, new_status, changed,
+        )
+    return changed
+
+
+def follow_base_maintenance(mode_ids) -> list[int]:
+    """Operational equipment just linked as a mode of a base Under Maintenance goes Under Maintenance too."""
+    from .disruption_service import DisruptionInput
+    from .models import Equipment, EquipmentStatus
+
+    changed: list[int] = []
+    for mode in Equipment.objects.filter(
+        pk__in=list(mode_ids), parent_equipment__isnull=False, status=EquipmentStatus.ACTIVE
+    ).select_related("parent_equipment"):
+        base = mode.parent_equipment
+        if not is_equipment_under_maintenance_status(base.status):
+            continue
+        data = _mode_disruption_input(base, DisruptionInput(source="EQUIPMENT_STATUS"))
+        _set_mode_status(mode, base.status, follows_parent=True, data=data)
+        changed.append(mode.pk)
+    return changed
+
+
+def base_blocks_mode_operational(equipment, new_status: str | None, base=None) -> str:
+    """Why a mode cannot be made Operational right now (its base is Under Maintenance), else ""."""
+    if base is None and equipment.parent_equipment_id:
+        base = equipment.parent_equipment
+    if not is_equipment_operational_status(new_status) or base is None:
+        return ""
+    if not is_equipment_under_maintenance_status(base.status):
+        return ""
+    return (
+        f"{equipment.code} is a mode of {base.code}, which is Under Maintenance. "
+        f"It becomes Operational automatically when {base.code} is made Operational."
+    )
+
+
 def record_freed_booking_slots(equipment, slot_ids, *, user=None, source: str = "OTHER") -> None:
     """Freed slots that went back to Under Maintenance / Operator Absent join (or open) a disruption event."""
     from .disruption_service import DisruptionInput, record_unrecorded_slots

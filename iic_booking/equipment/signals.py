@@ -17,6 +17,12 @@ def _equipment_cache_old_status(sender, instance, **kwargs):
         )
     except Exception:
         instance._old_equipment_status = None
+    if (
+        instance.status_follows_parent
+        and instance._old_equipment_status != instance.status
+        and not getattr(instance, "_status_from_parent", False)
+    ):
+        instance.status_follows_parent = False
 
 
 @receiver(pre_save, sender=Equipment)
@@ -53,9 +59,15 @@ def _equipment_status_maintenance_hook(sender, instance, created, **kwargs):
     if created:
         return
     old = getattr(instance, "_old_equipment_status", None)
-    from .maintenance_policy import on_equipment_status_changed
+    from .maintenance_policy import cascade_status_to_modes, on_equipment_status_changed
 
     on_equipment_status_changed(instance, old, instance.status)
+    try:
+        instance._modes_status_changed = cascade_status_to_modes(instance, old, instance.status)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("Applying status to modes failed for equipment %s", instance.pk)
 
 
 @receiver(post_save, sender=Equipment)

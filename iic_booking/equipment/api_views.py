@@ -2826,6 +2826,14 @@ def equipment_detail(request, pk):
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            from .maintenance_policy import base_blocks_mode_operational
+
+            blocked = base_blocks_mode_operational(equipment, new_status)
+            if blocked and (equipment.status or "").strip() != new_status:
+                return Response(
+                    {"error": blocked, "code": "BASE_UNDER_MAINTENANCE"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         previous_status = (equipment.status or "").strip()
         allowed = {"name", "description", "status", "location"}
         for key in allowed:
@@ -2885,6 +2893,12 @@ def equipment_detail(request, pk):
         disruption_result = getattr(equipment, "_disruption_result", None)
         if disruption_result is not None:
             payload["disruption_events"] = disruption_result.as_dict()
+        modes_changed = getattr(equipment, "_modes_status_changed", None)
+        if modes_changed:
+            payload["modes_status_changed"] = [
+                {"equipment_id": e.equipment_id, "code": e.code, "name": e.name, "status": e.status}
+                for e in Equipment.objects.filter(pk__in=modes_changed).order_by("code")
+            ]
         return Response(payload, status=status.HTTP_200_OK)
 
     serializer = EquipmentDetailSerializer(equipment, context={'request': request})

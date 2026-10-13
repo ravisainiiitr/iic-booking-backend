@@ -23,6 +23,7 @@ from iic_booking.users.models.sric_wallet_recharge import (
     SricWalletRechargeSettings,
     SricWalletRechargeStatus,
 )
+from iic_booking.users.sric_signin_notice import needs_signin_notice, send_row_notice
 from iic_booking.users.test_accounts import filter_by_test_param
 
 S = SricWalletRechargeStatus
@@ -114,6 +115,9 @@ def serialize_row(rec: SricWalletRecharge, *, admin: bool) -> dict:
             "can_credit": rec.status in CREDITABLE_STATUSES and not svc._missing_ledger(rec.ledger_id),
             "can_reject": rec.status in CREDITABLE_STATUSES,
             "can_verify": rec.status == S.CREDITED and not rec.reversed_at,
+            "can_send_signin_notice": needs_signin_notice(rec),
+            "signin_notice_sent_at": _iso(rec.signin_notice_sent_at),
+            "signin_notice_email": rec.signin_notice_email,
             "history": rec.history or [],
         }
     )
@@ -391,6 +395,24 @@ def admin_verify(request, row_id: int):
 
 @api_view(["POST"])
 @permission_classes([IsMainAdministrator])
+def admin_signin_notice(request, row_id: int):
+    """Email the faculty member of a row waiting on their first Channel i sign-in (optional ``email`` override)."""
+    if _row_or_404(row_id) is None:
+        return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        rec = send_row_notice(row_id, actor=request.user, email=str(request.data.get("email") or "").strip())
+    except svc.SricRechargeError as exc:
+        return _error(exc)
+    return Response(
+        {
+            "message": f"Sign-in email sent to {rec.signin_notice_email}.",
+            "row": serialize_row(_row_or_404(rec.pk), admin=True),
+        }
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsMainAdministrator])
 def admin_refresh(request):
     return _refresh_response(request, admin=True, per_user_seconds=15)
 
@@ -436,12 +458,19 @@ SETTINGS_FIELDS = (
     "gateway_marker_value",
     "confirmation_cc_emails",
     "review_alert_emails",
+    "signin_notice_enabled",
     "quiet_window_enabled",
     "quiet_window_weekday",
     "quiet_window_start",
     "quiet_window_end",
 )
-BOOL_SETTINGS = ("scan_enabled", "auto_credit_enabled", "require_internal_relay", "quiet_window_enabled")
+BOOL_SETTINGS = (
+    "scan_enabled",
+    "auto_credit_enabled",
+    "require_internal_relay",
+    "signin_notice_enabled",
+    "quiet_window_enabled",
+)
 
 
 def _hhmm(value) -> str:

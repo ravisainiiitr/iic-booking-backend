@@ -98,6 +98,14 @@ class SricWalletRechargeSettings(models.Model):
     quiet_window_weekday = models.PositiveSmallIntegerField(
         _("Pause on"), choices=WEEKDAY_CHOICES, default=2, help_text=_("Day of the week (IST).")
     )
+    signin_notice_enabled = models.BooleanField(
+        _("Email faculty who have not signed in yet"),
+        default=True,
+        help_text=_(
+            "When a recharge arrives for an Employee ID with no portal account (the faculty member has not yet signed "
+            "in with Channel i), email them once asking them to sign in to the new portal, with a link to it."
+        ),
+    )
     quiet_window_start = models.TimeField(_("Pause from (IST)"), default=datetime.time(20, 55))
     quiet_window_end = models.TimeField(_("Resume at (IST)"), default=datetime.time(21, 15))
     last_scan_at = models.DateTimeField(_("Last scan at"), null=True, blank=True)
@@ -264,6 +272,8 @@ class SricWalletRecharge(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
     )
     confirmation_sent_at = models.DateTimeField(_("Confirmation email sent at"), null=True, blank=True)
+    signin_notice_sent_at = models.DateTimeField(_("Sign-in reminder sent at"), null=True, blank=True)
+    signin_notice_email = models.CharField(_("Sign-in reminder sent to"), max_length=255, blank=True)
     fund_receipt_verified = models.BooleanField(_("Fund receipt verified"), default=False, db_index=True)
     fund_receipt_verified_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"

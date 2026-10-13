@@ -870,6 +870,14 @@ class Equipment(models.Model):
             'Leave empty for standalone equipment or for the base/parent mode itself.'
         ),
     )
+    status_follows_parent = models.BooleanField(
+        default=False,
+        verbose_name=_('Status set by base instrument'),
+        help_text=_(
+            'Set automatically when this mode was put Under Maintenance because its base instrument was; '
+            'the mode returns to Operational with the base. Cleared when its status is changed directly.'
+        ),
+    )
     mode_availability = models.CharField(
         max_length=20,
         choices=ModeAvailability.choices,

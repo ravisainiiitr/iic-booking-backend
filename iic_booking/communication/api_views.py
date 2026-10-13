@@ -386,7 +386,10 @@ def notice_requests_mine(request):
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated])
 def notice_request_complete_expiry(request, notice_id):
-    """OIC sets expiry (or unlimited) on an equipment DRAFT and submits for approval."""
+    """OIC sets expiry (or unlimited) on an equipment DRAFT; the equipment-unavailability notice is published at once.
+
+    Main Admin approval applies to generic notice requests only.
+    """
     from .notice_board_service import is_oic, user_can_manage_notice_request
 
     if not is_oic(request.user):
@@ -431,17 +434,57 @@ def notice_request_complete_expiry(request, notice_id):
             )
         if timezone.is_naive(expiry_date):
             expiry_date = timezone.make_aware(expiry_date, timezone.get_current_timezone())
+        if expiry_date <= timezone.now():
+            return Response(
+                {"error": "Choose an expiry in the future, or Unlimited."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
     notice.expiry_unlimited = unlimited
     notice.expiry_date = None if unlimited else expiry_date
     notice.needs_oic_expiry = False
-    notice.approval_status = Notice.ApprovalStatus.PENDING
-    notice.is_active = False
     if not notice.requested_by_id:
         notice.requested_by = request.user
-    notice.save()
-    _notify_notice_submitted(notice, request.user)
+    if notice.source == Notice.Source.EQUIPMENT_UNAVAILABLE:
+        from .notice_board_service import publish_equipment_notice
+
+        publish_equipment_notice(notice, actor=request.user)
+        _notify_equipment_notice_published(notice, request.user)
+    else:
+        notice.approval_status = Notice.ApprovalStatus.PENDING
+        notice.is_active = False
+        notice.save()
+        _notify_notice_submitted(notice, request.user)
     return Response(NoticeSerializer(notice).data, status=status.HTTP_200_OK)
+
+
+def _notify_equipment_notice_published(notice, actor) -> None:
+    from iic_booking.users.models import User
+    from iic_booking.users.models.user_type import UserType
+
+    from .in_app import notify_in_app, person_label
+
+    title = (getattr(notice, "title", "") or "").strip() or f"Notice #{notice.notice_id}"
+    extra = {"notice_id": notice.notice_id}
+    notify_in_app(
+        [actor],
+        title="Notice published",
+        message=f"“{title}” is now on the notice board.",
+        link="/notice-board-requests",
+        event="notice.published",
+        created_by=actor,
+        extra=extra,
+    )
+    admins = User.objects.filter(user_type=UserType.ADMIN, is_active=True).exclude(pk=actor.pk)[:50]
+    notify_in_app(
+        admins,
+        title="Equipment notice published",
+        message=f"{person_label(actor)} published “{title}” on the notice board. No approval is needed.",
+        link="/admin-settings/communication?tab=notices",
+        event="notice.published",
+        created_by=actor,
+        extra=extra,
+    )
 
 
 def _notify_notice_submitted(notice, actor) -> None:

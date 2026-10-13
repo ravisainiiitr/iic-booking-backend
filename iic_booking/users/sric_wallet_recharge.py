@@ -904,6 +904,12 @@ def scan_mailbox(*, trigger: str = "schedule", dry_run: bool = False, max_messag
         )
         if result.get("review_row_ids"):
             send_review_alert(result["review_row_ids"])
+            try:
+                from iic_booking.users.sric_signin_notice import send_new_row_notices
+
+                send_new_row_notices(result["review_row_ids"])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("SRIC sign-in reminders failed (%s)", type(exc).__name__)
         unreadable = [m for m in result.get("messages", []) if m.get("status") in UNREADABLE_MAIL_STATUSES]
         if unreadable:
             send_unreadable_mail_alert(unreadable)
