@@ -7891,3 +7891,4 @@ from iic_booking.equipment.cancellation_models import (  # noqa: E402
     CancellationReason,
 )
 from iic_booking.equipment.testdata_models import TestDataFlag, TestDataKind  # noqa: E402
+from iic_booking.equipment.search_synonym_models import SearchSynonym  # noqa: E402

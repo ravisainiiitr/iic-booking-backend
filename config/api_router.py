@@ -512,6 +512,7 @@ from iic_booking.equipment.completion_reminders import bookings_awaiting_complet
 from iic_booking.equipment.results_deadline import results_overdue_view
 from iic_booking.equipment.admin_dashboard_summary import admin_dashboard_summary
 from iic_booking.equipment.global_search import global_search
+from iic_booking.equipment.search_synonym_views import search_synonym_detail, search_synonym_list
 from iic_booking.equipment.similar_availability import similar_availability
 from iic_booking.equipment.admin_insights.views import (
     admin_insights_cancellations,
@@ -1902,6 +1903,8 @@ urlpatterns = router.urls + [
         name="equipment-similar-availability",
     ),
     path("search/", global_search, name="global-search"),
+    path("admin/search-synonyms/", search_synonym_list, name="admin-search-synonyms"),
+    path("admin/search-synonyms/<int:pk>/", search_synonym_detail, name="admin-search-synonym-detail"),
     path("admin/dashboard-summary/", admin_dashboard_summary, name="admin-dashboard-summary"),
     path("admin/insights/equipment/", admin_insights_equipment, name="admin-insights-equipment"),
     path("admin/insights/users/", admin_insights_users, name="admin-insights-users"),

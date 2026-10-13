@@ -13,5 +13,7 @@ class EquipmentConfig(AppConfig):
         import iic_booking.equipment.peak_window_signals  # noqa: F401
         import iic_booking.equipment.pi_pricing_signals  # noqa: F401
         from iic_booking.equipment.booking_audit import connect_celery_signals
+        from iic_booking.equipment.search_index import connect_signals as connect_search_index_signals
 
         connect_celery_signals()
+        connect_search_index_signals()

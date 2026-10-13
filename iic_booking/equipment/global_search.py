@@ -1,4 +1,8 @@
-"""Site-wide search behind the header search bar: equipment, bookings and people, each limited to the viewer's role."""
+"""Site-wide search behind the header search bar: equipment, bookings and people, each limited to the viewer's role.
+
+Equipment matching tolerates spelling mistakes and understands techniques (``search_index``); bookings and people
+match exact or contained text only, so a near-miss never reveals someone else's record.
+"""
 
 from __future__ import annotations
 
@@ -18,44 +22,43 @@ PEOPLE_LIMIT = 6
 _DISPLAY_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]*-(\d+)$")
 
 
-def _search_equipment(user, q: str) -> list[dict[str, Any]]:
+def _searchable_equipment_ids(user) -> set[int]:
+    """Equipment the viewer may see in the catalogue, without test equipment (kept for test accounts)."""
     from .api_views import get_visible_equipment_queryset
+    from .testdata import exclude_test_equipment, is_test_user
 
     scope = "all" if getattr(user, "is_authenticated", False) else None
-    qs = (
-        get_visible_equipment_queryset(user, catalog_scope=scope)
-        .filter(
-            Q(name__icontains=q)
-            | Q(code__icontains=q)
-            | Q(make__icontains=q)
-            | Q(category__name__icontains=q)
-            | Q(location__icontains=q)
+    qs = get_visible_equipment_queryset(user, catalog_scope=scope)
+    if not is_test_user(user):
+        qs = exclude_test_equipment(qs)
+    return set(qs.values_list("equipment_id", flat=True))
+
+
+def _search_equipment(user, q: str) -> tuple[list[dict[str, Any]], str]:
+    """Ranked equipment hits (each with ``match`` kind and hint) and a "did you mean" query or ``""``."""
+    from .models import Equipment
+    from .search_index import rank
+
+    ranked, suggestion = rank(q, _searchable_equipment_ids(user), EQUIPMENT_LIMIT)
+    rows = Equipment.objects.select_related("category", "internal_department").in_bulk([r["id"] for r in ranked])
+    out = []
+    for r in ranked:
+        e = rows.get(r["id"])
+        if e is None:
+            continue
+        out.append(
+            {
+                "id": e.equipment_id,
+                "name": e.name,
+                "code": e.code,
+                "category": e.category.name if e.category_id else "",
+                "department": e.internal_department.name if e.internal_department_id else "",
+                "status": e.status or "",
+                "match": r["kind"],
+                "hint": r["hint"],
+            }
         )
-        .annotate(
-            rank=Case(
-                When(code__iexact=q, then=Value(0)),
-                When(name__istartswith=q, then=Value(1)),
-                When(code__istartswith=q, then=Value(1)),
-                When(name__icontains=q, then=Value(2)),
-                default=Value(3),
-                output_field=IntegerField(),
-            )
-        )
-        .select_related("category", "internal_department")
-        .order_by("rank", "name")
-        .distinct()
-    )
-    return [
-        {
-            "id": e.equipment_id,
-            "name": e.name,
-            "code": e.code,
-            "category": e.category.name if e.category_id else "",
-            "department": e.internal_department.name if e.internal_department_id else "",
-            "status": e.status or "",
-        }
-        for e in qs[:EQUIPMENT_LIMIT]
-    ]
+    return out, suggestion
 
 
 def _status_codes_matching(q: str) -> list[str]:
@@ -161,11 +164,18 @@ def _search_people(user, q: str) -> list[dict[str, Any]] | None:
 def global_search(request):
     """GET ?q= : grouped matches. Anonymous visitors get public equipment only."""
     q = " ".join((request.query_params.get("q") or "").split())[:MAX_CHARS]
-    result: dict[str, Any] = {"query": q, "equipment": [], "bookings": [], "people": [], "people_enabled": False}
+    result: dict[str, Any] = {
+        "query": q,
+        "equipment": [],
+        "bookings": [],
+        "people": [],
+        "people_enabled": False,
+        "suggestion": "",
+    }
     if len(q) < MIN_CHARS:
         return Response(result)
     user = request.user
-    result["equipment"] = _search_equipment(user, q)
+    result["equipment"], result["suggestion"] = _search_equipment(user, q)
     if getattr(user, "is_authenticated", False):
         from .api_views import check_operator_permission
         from iic_booking.users.models.user_type import UserType
