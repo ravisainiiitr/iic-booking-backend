@@ -207,7 +207,7 @@ def test_completed_booking_keeps_dsa_results_visible(tmp_path, settings):
     zipped = client.get(f"/api/bookings/{booking.pk}/results/download/")
     assert zipped.status_code == 200
     assert zipped["Content-Type"] == "application/zip"
-    with zipfile.ZipFile(io.BytesIO(zipped.content)) as zf:
+    with zipfile.ZipFile(io.BytesIO(b"".join(zipped))) as zf:
         members = zf.namelist()
         assert any(m.endswith("final.txt") for m in members)
 

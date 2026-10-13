@@ -14147,7 +14147,7 @@ def _list_booking_result_files_from_s3(virtual_booking_id, expires_in=3600, *, n
         return None, []
 
 def _get_s3_client_and_results_keys(virtual_booking_id, *, not_before=None):
-    """Return (client, bucket, list of (key, relative_name)) for streaming; (None, None, []) on error.
+    """Return (client, bucket, list of (key, relative_name, size)) for streaming; (None, None, []) on error.
 
     Objects uploaded before ``not_before`` (the booking's created_at) are skipped.
     """
@@ -14180,7 +14180,7 @@ def _get_s3_client_and_results_keys(virtual_booking_id, *, not_before=None):
                 if uploaded_before(obj.get("LastModified"), not_before):
                     continue
                 name = key.split(folder_segment, 1)[-1]
-                keys_with_names.append((key, name))
+                keys_with_names.append((key, name, obj.get("Size") or 0))
         return client, bucket, keys_with_names
     except Exception as e:
         logger.warning("S3 list keys for %s failed: %s", virtual_booking_id, e)
@@ -14500,111 +14500,90 @@ def review_booking_istem_fbr(request, booking_id):
         status=status.HTTP_400_BAD_REQUEST,
     )
 
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def booking_results_download(request, booking_id):
-    """Download all result files for a booking as a single ZIP.
-
-    Includes S3 Results/{virtual_booking_id}/ objects, DSA ResultAttachment files,
-    and operator BookingResultFile uploads.
-    """
-    from iic_booking.equipment.booking_results_service import (
-        iter_booking_result_zip_members,
-        iter_dsa_zip_members,
-    )
+def _results_download_booking(request, booking_id):
+    """``(booking, user, None)`` for a results download by a signed-in user or a ``t`` link token, else ``(.., error)``."""
+    from iic_booking.equipment.results_download import download_user
 
     try:
         booking = Booking.objects.select_related("equipment", "charge_profile").get(booking_id=booking_id)
     except Booking.DoesNotExist:
-        return Response(
-            {"error": "Booking not found."},
-            status=status.HTTP_404_NOT_FOUND,
+        return None, None, Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+    user = download_user(request, booking.pk)
+    if user is None:
+        return booking, None, Response(
+            {"error": "This download link has expired. Please start the download again."},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
+    return booking, user, _booking_results_access_denied(user, booking)
 
-    if not _user_may_access_booking_results(request.user, booking):
-        return Response(
-            {"error": "You don't have permission to download this booking's results."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-    
-    # Enforce rating before results download for booking user (operators/admin can bypass).
-    if _booking_results_gates_apply(request.user, booking):
-        if booking.status != BookingStatus.COMPLETED:
-            return Response(
-                {"error": "Results can be downloaded only after the booking is completed."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if getattr(booking.equipment, "user_rating_enabled", True) and (booking.rating is None or booking.rating_removed):
-            return Response(
-                {"error": "Rating required. Please submit your rating first, then download results."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        if _booking_requires_istem_fbr_results_block(booking):
-            return Response(
-                {
-                    "error": (
-                        "Your I-STEM Facility Booking Record (FBR) is not verified yet. "
-                        "Complete your booking on https://www.istem.gov.in/, enter the FBR number here, "
-                        "and wait for the Officer in Charge to verify it before downloading results."
-                    ),
-                    "code": "istem_fbr_not_executed",
-                    "istem_portal_url": _booking_istem_portal_url(booking),
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
 
-    virtual_booking_id = (booking.virtual_booking_id or f"booking-{booking.pk}").strip()
+def _booking_results_zip_plan(booking):
+    from iic_booking.equipment.results_download import booking_zip_members
 
-    client, bucket, keys_with_names = (None, None, [])
+    client, bucket, s3_objects = (None, None, [])
     if (booking.virtual_booking_id or "").strip():
-        client, bucket, keys_with_names = _get_s3_client_and_results_keys(
-            virtual_booking_id, not_before=booking.created_at
+        client, bucket, s3_objects = _get_s3_client_and_results_keys(
+            booking.virtual_booking_id.strip(), not_before=booking.created_at
         )
+    return booking_zip_members(booking, client, bucket, s3_objects)
 
-    dsa_members = list(iter_dsa_zip_members(booking))
-    brf_members = list(iter_booking_result_zip_members(booking))
 
-    if not keys_with_names and not dsa_members and not brf_members:
-        return Response(
-            {"error": "No result files found for this booking."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+def _booking_results_zip_name(booking) -> str:
+    return f"Results_{(booking.virtual_booking_id or f'booking-{booking.pk}').strip()}.zip"
 
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for key, relative_name in keys_with_names:
-            arcname = f"{virtual_booking_id}/{relative_name}"
-            try:
-                resp = client.get_object(Bucket=bucket, Key=key)
-                body = resp.get("Body")
-                if body:
-                    zf.writestr(arcname, body.read())
-            except Exception as e:
-                logger.warning("S3 get_object %s failed: %s", key, e)
-                continue
-        for arcname, path_or_bytes in dsa_members:
-            try:
-                if isinstance(path_or_bytes, (bytes, bytearray)):
-                    zf.writestr(arcname, path_or_bytes)
-                else:
-                    zf.write(path_or_bytes, arcname=arcname)
-            except Exception as e:
-                logger.warning("DSA zip member %s failed: %s", arcname, e)
-                continue
-        for arcname, file_field in brf_members:
-            try:
-                with file_field.open("rb") as fh:
-                    zf.writestr(arcname, fh.read())
-            except Exception as e:
-                logger.warning("BookingResultFile zip member %s failed: %s", arcname, e)
-                continue
 
-    zip_buffer.seek(0)
-    filename = f"Results_{virtual_booking_id}.zip"
-    response = HttpResponse(zip_buffer.getvalue(), content_type="application/zip")
-    response["Content-Disposition"] = f'attachment; filename="{filename}"'
-    mark_results_viewed(request.user, booking)
+_NO_RESULT_FILES = {"error": "No result files found for this booking."}
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def booking_results_download(request, booking_id):
+    """Stream all result files for a booking as a single ZIP.
+
+    Includes S3 Results/{virtual_booking_id}/ objects, DSA ResultAttachment files, and operator BookingResultFile
+    uploads. Accepts a signed ``t`` token (from ``results/download-link/``) so the browser can download natively.
+    ``X-Results-Total-Bytes`` is the sum of the member sizes, for client-side progress.
+    """
+    from iic_booking.equipment.results_download import iter_zip_stream, streaming_download
+
+    booking, user, denied = _results_download_booking(request, booking_id)
+    if denied is not None:
+        return denied
+
+    members, total_bytes = _booking_results_zip_plan(booking)
+    if not members:
+        return Response(_NO_RESULT_FILES, status=status.HTTP_404_NOT_FOUND)
+
+    response = streaming_download(
+        request,
+        iter_zip_stream(members),
+        filename=_booking_results_zip_name(booking),
+        content_type="application/zip",
+    )
+    response["X-Results-Total-Bytes"] = str(total_bytes)
+    mark_results_viewed(user, booking)
     return response
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def booking_results_download_link(request, booking_id):
+    """Short-lived link the browser can open directly to download the results ZIP."""
+    from iic_booking.equipment.results_download import tokenized_url
+
+    booking, user, denied = _results_download_booking(request, booking_id)
+    if denied is not None:
+        return denied
+    members, total_bytes = _booking_results_zip_plan(booking)
+    if not members:
+        return Response(_NO_RESULT_FILES, status=status.HTTP_404_NOT_FOUND)
+    return Response(
+        {
+            "url": tokenized_url(request, f"/api/bookings/{booking.pk}/results/download/", user, booking.pk),
+            "filename": _booking_results_zip_name(booking),
+            "total_bytes": total_bytes,
+        }
+    )
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -14688,14 +14667,14 @@ def _booking_results_gates_apply(user, booking) -> bool:
     """Completion/rating/FBR gates apply to the owner and share recipients; booking staff bypass them."""
     return booking.user_id == getattr(user, "pk", None) or not check_operator_permission(user)
 
-def _booking_results_access_denied(request, booking):
-    """Shared auth/gate checks for single-file result downloads. Returns Response or None."""
-    if not _user_may_access_booking_results(request.user, booking):
+def _booking_results_access_denied(user, booking):
+    """Shared auth/gate checks for result downloads. Returns Response or None."""
+    if not _user_may_access_booking_results(user, booking):
         return Response(
             {"error": "You don't have permission to download this booking's results."},
             status=status.HTTP_403_FORBIDDEN,
         )
-    if _booking_results_gates_apply(request.user, booking):
+    if _booking_results_gates_apply(user, booking):
         if booking.status != BookingStatus.COMPLETED:
             return Response(
                 {"error": "Results can be downloaded only after the booking is completed."},
@@ -14721,24 +14700,31 @@ def _booking_results_access_denied(request, booking):
             )
     return None
 
+def _wants_download_link(request) -> bool:
+    return str(request.GET.get("link") or "").strip().lower() in {"1", "true", "yes"}
+
+
+_RESULT_FILE_MISSING = {"error": "Result file is missing on the server."}
+
+
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def booking_result_attachment_download(request, booking_id, attachment_id):
-    """Download a single DSA ResultAttachment for a booking (S3 preferred, local fallback)."""
-    from iic_booking.equipment.booking_results_service import resolve_dsa_attachment_path
+    """Download a single DSA ResultAttachment for a booking (S3 preferred, local fallback).
+
+    ``?link=1`` returns ``{url, filename, size_bytes}`` for a native browser download instead of the file.
+    """
+    from iic_booking.equipment.booking_results_service import (
+        booking_result_attachments_qs,
+        resolve_dsa_attachment_path,
+    )
+    from iic_booking.equipment.results_download import iter_file_chunks, streaming_download, tokenized_url
     from iic_booking.sync.models import ResultAttachment
-    from iic_booking.sync.services.results_s3 import download_results_s3_bytes, presign_results_s3_get
+    from iic_booking.sync.services.results_s3 import open_results_s3_stream, presign_results_s3_get
 
-    try:
-        booking = Booking.objects.select_related("equipment", "charge_profile").get(booking_id=booking_id)
-    except Booking.DoesNotExist:
-        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
-
-    denied = _booking_results_access_denied(request, booking)
+    booking, user, denied = _results_download_booking(request, booking_id)
     if denied is not None:
         return denied
-
-    from iic_booking.equipment.booking_results_service import booking_result_attachments_qs
 
     try:
         attachment = booking_result_attachments_qs(booking).select_related("upload_session", "result").get(
@@ -14747,47 +14733,55 @@ def booking_result_attachment_download(request, booking_id, attachment_id):
     except ResultAttachment.DoesNotExist:
         return Response({"error": "Result file not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    safe_name = (attachment.file_name or "result.bin").replace('"', "")
+    safe_name = attachment.file_name or "result.bin"
     content_type = attachment.content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
-
     s3_key = (attachment.s3_key or "").strip()
-    if s3_key:
-        # Prefer redirect to short-lived presigned URL when possible.
-        url = presign_results_s3_get(s3_key)
-        if url:
-            mark_results_viewed(request.user, booking)
-            return HttpResponseRedirect(url)
-        data = download_results_s3_bytes(s3_key)
-        if data is not None:
-            response = HttpResponse(data, content_type=content_type)
-            response["Content-Disposition"] = f'attachment; filename="{safe_name}"'
-            mark_results_viewed(request.user, booking)
-            return response
+    presigned = presign_results_s3_get(s3_key, filename=safe_name) if s3_key else None
 
-    path = resolve_dsa_attachment_path(attachment)
-    if path is None:
-        return Response({"error": "Result file is missing on the server."}, status=status.HTTP_404_NOT_FOUND)
+    if _wants_download_link(request):
+        url = presigned or tokenized_url(
+            request, f"/api/bookings/{booking.pk}/results/attachments/{attachment.pk}/", user, booking.pk
+        )
+        mark_results_viewed(user, booking)
+        return Response({"url": url, "filename": safe_name, "size_bytes": int(attachment.size_bytes or 0)})
 
-    content_type = attachment.content_type or mimetypes.guess_type(str(path))[0] or "application/octet-stream"
-    response = FileResponse(path.open("rb"), content_type=content_type)
-    response["Content-Disposition"] = f'attachment; filename="{safe_name}"'
-    mark_results_viewed(request.user, booking)
-    return response
+    if presigned:
+        mark_results_viewed(user, booking)
+        return HttpResponseRedirect(presigned)
+
+    body = open_results_s3_stream(s3_key) if s3_key else None
+    length = None
+    if body is None:
+        path = resolve_dsa_attachment_path(attachment)
+        if path is None:
+            return Response(_RESULT_FILE_MISSING, status=status.HTTP_404_NOT_FOUND)
+        body = path.open("rb")
+        length = path.stat().st_size
+
+    mark_results_viewed(user, booking)
+    return streaming_download(
+        request, iter_file_chunks(body), filename=safe_name, content_type=content_type, length=length
+    )
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def booking_result_file_download(request, booking_id, file_id):
-    """Download a single operator-uploaded BookingResultFile."""
-    try:
-        booking = Booking.objects.select_related("equipment", "charge_profile").get(booking_id=booking_id)
-    except Booking.DoesNotExist:
-        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+    """Download a single operator-uploaded BookingResultFile.
 
-    denied = _booking_results_access_denied(request, booking)
+    ``?link=1`` returns ``{url, filename, size_bytes}`` for a native browser download instead of the file.
+    """
+    from iic_booking.equipment.booking_results_service import booking_result_files_qs
+    from iic_booking.equipment.results_download import (
+        iter_file_chunks,
+        open_storage_file_stream,
+        storage_file_direct_url,
+        streaming_download,
+        tokenized_url,
+    )
+
+    booking, user, denied = _results_download_booking(request, booking_id)
     if denied is not None:
         return denied
-
-    from iic_booking.equipment.booking_results_service import booking_result_files_qs
 
     try:
         brf = booking_result_files_qs(booking).get(pk=file_id)
@@ -14795,14 +14789,35 @@ def booking_result_file_download(request, booking_id, file_id):
         return Response({"error": "Result file not found."}, status=status.HTTP_404_NOT_FOUND)
 
     if not brf.file:
-        return Response({"error": "Result file is missing on the server."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(_RESULT_FILE_MISSING, status=status.HTTP_404_NOT_FOUND)
 
-    name = (brf.original_name or os.path.basename(brf.file.name)).replace('"', "")
-    content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
-    response = FileResponse(brf.file.open("rb"), content_type=content_type)
-    response["Content-Disposition"] = f'attachment; filename="{name}"'
-    mark_results_viewed(request.user, booking)
-    return response
+    name = brf.original_name or os.path.basename(brf.file.name)
+    try:
+        size = int(brf.file.size)
+    except Exception:  # noqa: BLE001
+        size = None
+
+    if _wants_download_link(request):
+        url = storage_file_direct_url(brf.file, name) or tokenized_url(
+            request, f"/api/bookings/{booking.pk}/results/files/{brf.pk}/", user, booking.pk
+        )
+        mark_results_viewed(user, booking)
+        return Response({"url": url, "filename": name, "size_bytes": size or 0})
+
+    try:
+        body = open_storage_file_stream(brf.file)
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not open result file %s", brf.file.name, exc_info=True)
+        return Response(_RESULT_FILE_MISSING, status=status.HTTP_404_NOT_FOUND)
+
+    mark_results_viewed(user, booking)
+    return streaming_download(
+        request,
+        iter_file_chunks(body),
+        filename=name,
+        content_type=mimetypes.guess_type(name)[0] or "application/octet-stream",
+        length=size,
+    )
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])

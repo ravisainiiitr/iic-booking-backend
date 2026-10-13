@@ -98,7 +98,7 @@ def list_dsa_result_files(booking: Booking, request: HttpRequest | None = None) 
         path = resolve_dsa_attachment_path(att)
 
         if s3_key:
-            download_url = presign_results_s3_get(s3_key) or ""
+            download_url = presign_results_s3_get(s3_key, filename=att.file_name or "") or ""
             if not download_url:
                 # Fall back to authenticated portal download endpoint
                 download_path = f"/api/bookings/{booking.pk}/results/attachments/{att.id}/"

@@ -190,7 +190,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # https://docs.djangoproject.com/en/dev/ref/settings/#middleware
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "django.middleware.gzip.GZipMiddleware",
+    "config.middleware.GZipMiddleware",
     "config.middleware.AdminUnloadPermissionsPolicyMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
@@ -652,6 +652,7 @@ CORS_EXPOSE_HEADERS = [
     "x-booking-perf",
     "Content-Disposition",
     "X-Export-Row-Count",
+    "X-Results-Total-Bytes",
 ]
 
 # By Default swagger ui is available only to admin user(s). You can change permission classes to change that

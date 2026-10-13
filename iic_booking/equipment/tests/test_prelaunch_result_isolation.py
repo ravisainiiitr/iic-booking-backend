@@ -118,7 +118,7 @@ def test_reused_display_id_does_not_show_older_s3_results(fake_s3, tmp_path, set
 
     zipped = client.get(f"/api/bookings/{booking.pk}/results/download/")
     assert zipped.status_code == 200
-    with zipfile.ZipFile(io.BytesIO(zipped.content)) as zf:
+    with zipfile.ZipFile(io.BytesIO(b"".join(zipped))) as zf:
         assert [m.rsplit("/", 1)[-1] for m in zf.namelist()] == ["genuine.csv"]
 
 

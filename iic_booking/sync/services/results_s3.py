@@ -98,14 +98,20 @@ def upload_local_file_to_results_s3(
         return None
 
 
-def presign_results_s3_get(key: str, *, expires_in: int = 3600) -> str | None:
+def presign_results_s3_get(key: str, *, expires_in: int = 3600, filename: str = "") -> str | None:
+    """Short-lived GET URL; with ``filename`` the browser saves it as an attachment under that name."""
     client, bucket = _s3_client()
     if client is None or bucket is None or not key:
         return None
+    params = {"Bucket": bucket, "Key": key}
+    if filename:
+        from django.utils.http import content_disposition_header
+
+        params["ResponseContentDisposition"] = content_disposition_header(True, filename)
     try:
         return client.generate_presigned_url(
             "get_object",
-            Params={"Bucket": bucket, "Key": key},
+            Params=params,
             ExpiresIn=expires_in,
         )
     except Exception:

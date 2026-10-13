@@ -1,5 +1,17 @@
 """Custom middleware for the IIC booking project."""
 
+from django.middleware.gzip import GZipMiddleware as DjangoGZipMiddleware
+
+
+class GZipMiddleware(DjangoGZipMiddleware):
+    """Django's gzip, except responses marked ``skip_gzip`` (large file downloads): compressing those again
+    costs CPU per byte and drops Content-Length, so the browser cannot show download progress."""
+
+    def process_response(self, request, response):
+        if getattr(response, "skip_gzip", False):
+            return response
+        return super().process_response(request, response)
+
 
 class AdminUnloadPermissionsPolicyMiddleware:
     """

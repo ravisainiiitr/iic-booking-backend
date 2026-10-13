@@ -363,6 +363,7 @@ from iic_booking.equipment.api_views import (
     team_calendar_department_leaves,
     booking_results,
     booking_results_download,
+    booking_results_download_link,
     booking_result_attachment_download,
     booking_result_file_download,
     update_booking_istem_fbr,
@@ -1589,6 +1590,11 @@ urlpatterns = router.urls + [
     path("team-calendar/department/", team_calendar_department_leaves, name="team-calendar-department"),
     path("bookings/<int:booking_id>/results/", booking_results, name="booking-results"),
     path("bookings/<int:booking_id>/results/download/", booking_results_download, name="booking-results-download"),
+    path(
+        "bookings/<int:booking_id>/results/download-link/",
+        booking_results_download_link,
+        name="booking-results-download-link",
+    ),
     path(
         "bookings/<int:booking_id>/results/attachments/<uuid:attachment_id>/",
         booking_result_attachment_download,
