@@ -43,6 +43,7 @@ jobs:
             $S grep -hE 'results/(download|files|attachments)|download-link' "$f" \
               | sed -E 's/\?[^ "]*//; s/^([0-9]+\.[0-9]+\.[0-9]+)\.[0-9]+/\1.x/' | tail -n 40
           done
+      - name: In-app timings
         env:
           BOOKING_REF: ${{ inputs.booking_ref }}
           PROBE_MB: ${{ inputs.probe_mb }}
