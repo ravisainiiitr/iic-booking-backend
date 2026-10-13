@@ -1,0 +1,26 @@
+# Read-only: a booking's status, result files and recent events. Script: scripts/ops/booking_results_inspect.py
+name: Booking Results Inspect
+
+on:
+  workflow_dispatch:
+    inputs:
+      virtual_id:
+        description: Booking ID shown in the portal (e.g. IICDSATEST202600021)
+        required: true
+        type: string
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run
+        env:
+          VIRTUAL_ID: ${{ inputs.virtual_id }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/booking_results_inspect.py \
+            | docker exec -i -e VIRTUAL_ID="$VIRTUAL_ID" -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
+              python manage.py shell
