@@ -53,15 +53,10 @@ jobs:
           docker exec "$CID" rm -f /tmp/results_probe_urls
           echo "::add-mask::$ZIP_PATH"
           echo "::add-mask::$S3_URL"
-          LIMIT=$(( ${PROBE_MB:-100} * 1024 * 1024 ))
           probe() {
             local name="$1"; shift
-            local start end bytes
-            start=$(date +%s.%N)
-            bytes=$(curl -s "$@" | head -c "$LIMIT" | wc -c)
-            end=$(date +%s.%N)
-            awk -v n="$name" -v b="$bytes" -v s="$start" -v e="$end" \
-              'BEGIN { t = e - s; printf "{\"test\": \"%s\", \"mb\": %.1f, \"s\": %.2f, \"MB_per_s\": %.1f}\n", n, b/1048576, t, (t > 0 ? b/1048576/t : 0) }'
+            curl -s -o /dev/null --max-time 30 "$@" \
+              -w "{\"test\": \"$name\", \"http\": %{http_code}, \"mb\": %{size_download}, \"s\": %{time_total}, \"ttfb\": %{time_starttransfer}, \"B_per_s\": %{speed_download}}\n" || true
           }
           probe app_direct_port_8000 -H "Host: equip.iitr.ac.in" "http://127.0.0.1:8000${ZIP_PATH}"
           probe via_proxy_local --resolve equip.iitr.ac.in:443:127.0.0.1 "https://equip.iitr.ac.in${ZIP_PATH}"
