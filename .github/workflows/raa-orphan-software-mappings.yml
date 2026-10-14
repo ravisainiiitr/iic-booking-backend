@@ -145,6 +145,12 @@ jobs:
                   print("  REFUSED: target is not test-only equipment"); sys.exit(1)
               with transaction.atomic():
                   n, _ = EquipmentAnalysisSoftware.objects.filter(equipment=eq).filter(unusable_q()).delete()
+                  remaining = EquipmentAnalysisSoftware.objects.filter(equipment=eq).order_by("catalog__name")
+                  if remaining.exists() and not remaining.filter(is_default=True).exists():
+                      first = remaining.first()
+                      first.is_default = True
+                      first.save(update_fields=["is_default", "updated_at"])
+                      print(f"  default_now={first.catalog.name!r}")
               print(f"  deleted_mapping_rows={n}")
               print("== Verify ==")
               left = show()
