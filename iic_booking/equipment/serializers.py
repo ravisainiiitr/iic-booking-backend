@@ -3769,6 +3769,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     editable_input_fields = serializers.SerializerMethodField()
     all_input_fields = serializers.SerializerMethodField()
     viewer_can_change_sample_sets = serializers.SerializerMethodField()
+    viewer_can_edit_locked_inputs = serializers.SerializerMethodField()
     user_type_snapshot_display = serializers.SerializerMethodField()
     wallet_owner_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
@@ -4020,6 +4021,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'editable_input_fields',
             'all_input_fields',
             'viewer_can_change_sample_sets',
+            'viewer_can_edit_locked_inputs',
             'selected_parameters',
             'charge_breakdown',
             'status',
@@ -4450,8 +4452,8 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
         """Return editable input fields for Edit User Inputs popup.
 
         Sample set 1 offers the same fields as the additional sample sets: every equipment input
-        field (plus comments). When editing is allowed is enforced by the update endpoint;
-        ``editing_required`` marks the fields the user is asked to complete.
+        field (plus comments). When editing is allowed is enforced by the update endpoint; fields
+        without ``editing_required`` are read-only unless ``viewer_can_edit_locked_inputs``.
         """
         if not obj.equipment_id:
             return [_comments_input_field_schema()]
@@ -4475,6 +4477,22 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
 
             self.context["_viewer_oic_equipment_ids"] = set(get_equipment_ids_managed_by_oic(user.id))
         return obj.equipment_id in self.context["_viewer_oic_equipment_ids"]
+
+    def get_viewer_can_edit_locked_inputs(self, obj):
+        """Whether the requesting user may change inputs whose field has 'Editing required' unchecked (the
+        equipment's OIC incl. an active temporary OIC, a Department Administrator of its department, or a
+        main administrator). None when serialized without a request."""
+        request = self.context.get("request")
+        if request is None:
+            return None
+        user = getattr(request, "user", None)
+        if not user or not getattr(user, "is_authenticated", False):
+            return False
+        if getattr(user, "user_type", None) == UserType.MANAGER and not getattr(user, "is_superuser", False):
+            return bool(self.get_viewer_can_change_sample_sets(obj))
+        from .input_edit_lock import can_edit_locked_inputs
+
+        return can_edit_locked_inputs(user, getattr(obj, "equipment", None))
 
     def get_start_time(self, obj):
         """Earliest daily slot start; after the slots were released, the stored original start."""

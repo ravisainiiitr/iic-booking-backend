@@ -165,6 +165,7 @@ def test_laser_quantity_defaults_to_1_and_rejects_invalid_values(egs_factory, no
 def test_editing_quantity_after_booking_reprices_the_laser_job(egs_factory, no_portal_lock):
     eq = laser_equipment(egs_factory)
     ensure_fabrication_quantity_inputs(eq)
+    DynamicInputField.objects.filter(equipment=eq, field_key="A").update(editing_required=True)
     student, _sub = funded_student(egs_factory)
     client = egs_factory.client_for(student)
     batch_id = _laser_batch(client, eq, quantity=5)

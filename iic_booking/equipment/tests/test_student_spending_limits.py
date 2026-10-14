@@ -322,7 +322,7 @@ def _edit_setup(egs_factory, **limits):
         field_label="No. of Samples",
         field_type=DynamicInputFieldType.NUMERIC,
         options={"min": 1, "max": 10},
-        editing_required=False,
+        editing_required=True,
     )
     student, _faculty, _link, sub = _supervised(egs_factory, **limits)
     booking = egs_factory.booking(student, eq, egs_factory.future(), input_values={"A": 2}, total_charge="20.00")

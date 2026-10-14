@@ -16060,7 +16060,10 @@ def update_booking_input_values(request, booking_id):
     """Update input_values for a booking (users until Complete; OIC/admin at any stage).
 
     Every equipment input field can be edited (plus universal 'comments'), the same set of fields the
-    additional sample sets offer. Charges are recalculated when the equipment has
+    additional sample sets offer, except that fields with 'Editing required' unchecked may only be
+    changed by the equipment's OIC (incl. an active temporary OIC), a Department Administrator of the
+    equipment's department or the Main Administrator (403 for anyone else, in any sample set).
+    Charges are recalculated when the equipment has
     'enable_charge_recalculation' or when the edit changes the calculated charge. A higher charge is an
     extra amount to pay; for the booking user's own edit it must be paid within the payment window,
     otherwise the edit is reverted. A lower charge from the booking user's own edit saved before the
@@ -16291,6 +16294,30 @@ def update_booking_input_values(request, booking_id):
             return Response(
                 {"error": numeric_limit_error},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    from .input_edit_lock import (
+        LOCKED_INPUT_CODE,
+        LOCKED_INPUT_MESSAGE,
+        can_edit_locked_inputs,
+        locked_input_changes,
+    )
+
+    if not can_edit_locked_inputs(request.user, equipment):
+        locked_changed = locked_input_changes(booking, original, current, raw, raw_sample_sets)
+        if locked_changed:
+            from .input_display import booking_input_fields, clean_label, humanize_key
+
+            key_labels = {f["field_key"]: clean_label(f.get("field_label")) for f in booking_input_fields(booking)}
+            labels = [key_labels.get(k) or humanize_key(k) for k in locked_changed]
+            return Response(
+                {
+                    "error": f"{LOCKED_INPUT_MESSAGE}: {', '.join(labels)}.",
+                    "code": LOCKED_INPUT_CODE,
+                    "locked_fields": locked_changed,
+                    "locked_field_labels": labels,
+                },
+                status=status.HTTP_403_FORBIDDEN,
             )
 
     # Price-changing edits are always re-priced so the stored charge matches the edited inputs.

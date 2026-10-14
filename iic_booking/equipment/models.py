@@ -337,10 +337,11 @@ class Equipment(models.Model):
     enable_charge_recalculation = models.BooleanField(
         default=False,
         help_text=_(
-            'When checked, the user can edit any input field on a confirmed (BOOKED) booking before completion, '
-            'regardless of "editing required" status. On save, charges are recalculated; if the new charge is higher '
-            'than the amount already deducted, the difference is debited from the wallet; if lower, the difference '
-            'is credited. An email notification is sent to the user.'
+            'When checked, charges are recalculated whenever the inputs of a confirmed (BOOKED) booking are edited '
+            'before completion. Users can still edit only the fields marked "Editing required"; other fields can be '
+            'changed only by the Officer in Charge, Department Administrator or Main Administrator. If the new '
+            'charge is higher than the amount already deducted, the difference is debited from the wallet; if '
+            'lower, the difference is credited. An email notification is sent to the user.'
         ),
         verbose_name=_('Enable charge recalculation'),
     )
@@ -2436,7 +2437,10 @@ class DynamicInputField(models.Model):
     )
     editing_required = models.BooleanField(
         default=False,
-        help_text=_('If checked, this field can be edited by the user after booking until status is Complete.')
+        help_text=_(
+            'If checked, this field can be edited by the user after booking until status is Complete. If '
+            'unchecked, only the Officer in Charge, Department Administrator or Main Administrator can change it.'
+        )
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

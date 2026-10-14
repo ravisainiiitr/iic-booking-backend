@@ -30,7 +30,7 @@ def _setup(egs_factory, *, recalc_flag=False, wallet_balance="1000.00", start=No
         field_label="No. of Samples",
         field_type=DynamicInputFieldType.NUMERIC,
         options={"min": 1, "max": 10},
-        editing_required=False,
+        editing_required=True,
     )
     owner = egs_factory.student()
     booking = egs_factory.booking(
@@ -225,8 +225,8 @@ def test_oic_edit_raising_charge_has_no_pay_window(egs_factory):
 
 
 @pytest.mark.django_db
-def test_user_may_edit_fields_not_marked_editing_required(egs_factory):
-    eq, owner, _oic, booking, _sub = _setup(egs_factory)
+def test_user_cannot_edit_fields_not_marked_editing_required(egs_factory):
+    eq, owner, oic, booking, _sub = _setup(egs_factory)
     DynamicInputField.objects.create(
         equipment=eq,
         field_key="B",
@@ -236,9 +236,15 @@ def test_user_may_edit_fields_not_marked_editing_required(egs_factory):
     )
 
     resp = _patch(egs_factory, owner, booking, {"A": 2, "B": 2, "B_elements": "Fe,Co"})
+    assert resp.status_code == 403, resp.data
+    assert resp.data["locked_fields"] == ["B"]
+    booking.refresh_from_db()
+    assert "B_elements" not in booking.input_values
+    keys = [f["field_key"] for f in BookingSerializer(booking).data["editable_input_fields"]]
+    assert {"A", "B", "comments"} <= set(keys)
+
+    resp = _patch(egs_factory, oic, booking, {"A": 2, "B": 2, "B_elements": "Fe,Co"})
     assert resp.status_code == 200, resp.data
     booking.refresh_from_db()
     assert booking.input_values["B_elements"] == "Fe,Co"
     assert booking.input_values["B"] == 2
-    keys = [f["field_key"] for f in BookingSerializer(booking).data["editable_input_fields"]]
-    assert {"A", "B", "comments"} <= set(keys)

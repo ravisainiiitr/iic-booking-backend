@@ -1,0 +1,57 @@
+name: Probe Input Edit Lock (read-only)
+
+# Who is affected by locking inputs without 'Editing required' to the OIC / Department Administrator /
+# Main Administrator: equipment with 'Enable charge recalculation' and their BOOKED bookings, plus how many
+# input fields are locked. Runs inside a READ ONLY transaction that is rolled back; prints counts only
+# (no equipment names, booking ids, users or contact data).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Charge-recalculation equipment and BOOKED bookings (SELECT only, counts only)
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import os
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+          from django.utils import timezone
+
+          from iic_booking.equipment.models import Booking, BookingStatus, DynamicInputField, Equipment, EquipmentStatus
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+              now = timezone.now()
+
+              recalc = Equipment.objects.filter(enable_charge_recalculation=True)
+              recalc_ids = list(recalc.values_list("equipment_id", flat=True))
+              print(f"equipment with enable_charge_recalculation on: total={len(recalc_ids)} "
+                    f"active={recalc.filter(status=EquipmentStatus.ACTIVE).count()}")
+
+              booked = Booking.objects.filter(status=BookingStatus.BOOKED, source_booking_id__isnull=True)
+              on_recalc = booked.filter(equipment_id__in=recalc_ids)
+              upcoming = on_recalc.filter(daily_slots__end_datetime__gte=now).distinct()
+              print(f"BOOKED bookings on those equipment: total={on_recalc.count()} with_a_slot_not_yet_ended={upcoming.count()}")
+
+              locked_eq = set(DynamicInputField.objects.filter(editing_required=False).values_list("equipment_id", flat=True))
+              print(f"input field rows: editing_required=True {DynamicInputField.objects.filter(editing_required=True).count()} "
+                    f"editing_required=False {DynamicInputField.objects.filter(editing_required=False).count()}")
+              print(f"equipment with at least one locked field: {len(locked_eq)} (of which charge-recalc: {len(locked_eq & set(recalc_ids))})")
+              print(f"BOOKED bookings on equipment with a locked field: total={booked.filter(equipment_id__in=locked_eq).count()} "
+                    f"on charge-recalc equipment={on_recalc.filter(equipment_id__in=locked_eq).count()}")
+
+              transaction.set_rollback(True)
+          print("\nDONE (read-only, rolled back)")
+          PY

@@ -38,7 +38,7 @@ def _setup(egs_factory, *, start=None, recalc_flag=False, **equipment_fields):
         field_label="No. of Samples",
         field_type=DynamicInputFieldType.NUMERIC,
         options={"min": 1, "max": 10},
-        editing_required=False,
+        editing_required=True,
     )
     owner = egs_factory.student()
     booking = egs_factory.booking(
