@@ -544,6 +544,11 @@ from iic_booking.equipment.results_sharing_views import (
     results_inbox,
     shared_with_me,
 )
+from iic_booking.communication.monthly_report_views import (
+    MonthlyReportPreviewView,
+    MonthlyReportRecipientsView,
+    MonthlyReportSettingsView,
+)
 from iic_booking.communication.api_views import (
     get_notifications,
     mark_notification_as_read,
@@ -1995,6 +2000,13 @@ urlpatterns = router.urls + [
     ),
     path("peak-window/status/", peak_window_status, name="peak-window-status"),
     path("admin/peak-window-settings/", PeakWindowSettingView.as_view(), name="admin-peak-window-settings"),
+    path("admin/monthly-reports/settings/", MonthlyReportSettingsView.as_view(), name="admin-monthly-reports-settings"),
+    path("admin/monthly-reports/preview/", MonthlyReportPreviewView.as_view(), name="admin-monthly-reports-preview"),
+    path(
+        "admin/monthly-reports/recipients/",
+        MonthlyReportRecipientsView.as_view(),
+        name="admin-monthly-reports-recipients",
+    ),
     path(
         "admin/equipment/<int:equipment_id>/slot-block-rules/",
         include("iic_booking.equipment.slot_block_rules_urls"),

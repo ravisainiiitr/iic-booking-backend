@@ -1,0 +1,70 @@
+# Monthly usage reports on production. dry-run (default) prints counts only (no names / emails); apply-test sends
+# [TEST] reports to existing test accounts only. Neither changes the "Send monthly usage reports" master switch.
+name: Monthly Usage Reports
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "dry-run | apply-test"
+        required: true
+        default: "dry-run"
+        type: choice
+        options: [dry-run, apply-test]
+      months:
+        description: "Months, space separated (YYYY-MM); empty = last month"
+        required: false
+        default: ""
+      test_user_ids:
+        description: "apply-test: test account ids, space separated (empty = test faculty / test OIC accounts)"
+        required: false
+        default: ""
+      confirm:
+        description: "Type SEND-TEST to run apply-test"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run
+        env:
+          MR_ACTION: ${{ github.event.inputs.action }}
+          MR_MONTHS: ${{ github.event.inputs.months }}
+          MR_USERS: ${{ github.event.inputs.test_user_ids }}
+          MR_CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          set -euo pipefail
+          args=()
+          for m in $MR_MONTHS; do
+            [[ "$m" =~ ^[0-9]{4}-[0-9]{2}$ ]] || { echo "bad month"; exit 1; }
+            args+=(--month "$m")
+          done
+          case "$MR_ACTION" in
+            dry-run) ;;
+            apply-test)
+              if [[ "$MR_CONFIRM" != "SEND-TEST" ]]; then echo "confirm=SEND-TEST is required for apply-test"; exit 1; fi
+              args+=(--apply-test)
+              for u in $MR_USERS; do
+                [[ "$u" =~ ^[0-9]+$ ]] || { echo "bad user id"; exit 1; }
+                args+=(--user "$u")
+              done ;;
+            *) echo "unknown action"; exit 1 ;;
+          esac
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -w /app "$CID" python manage.py monthly_usage_reports "${args[@]}"
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1

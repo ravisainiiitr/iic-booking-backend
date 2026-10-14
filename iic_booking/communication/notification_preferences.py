@@ -28,7 +28,12 @@ class Category:
     description: str
     locked: bool = False
     staff_only: bool = False
+    # Sent by email only (no inbox notice, no daily digest).
+    email_only: bool = False
+    report_recipients_only: bool = False
 
+
+MONTHLY_REPORTS = "monthly_reports"
 
 CATEGORIES: tuple[Category, ...] = (
     Category(
@@ -66,11 +71,20 @@ CATEGORIES: tuple[Category, ...] = (
         staff_only=True,
     ),
     Category("announcements", "Announcements", "New equipment, notices and portal news."),
+    Category(
+        MONTHLY_REPORTS,
+        "Monthly reports",
+        "A summary email on the 1st of each month: last month's bookings, hours and spend for you and your "
+        "equipment or department.",
+        email_only=True,
+        report_recipients_only=True,
+    ),
 )
 BY_KEY = {c.key: c for c in CATEGORIES}
 
 # First match wins; template codes are matched in full against these patterns.
 _TEMPLATE_RULES: tuple[tuple[str, str], ...] = (
+    (r"monthly_usage_report_.*", MONTHLY_REPORTS),
     (r"(registration|account|supervisor_invite|password|otp|login|verification|programme_extension)_.*", "account"),
     (r"wallet_low_balance_email", "reminders"),
     (r"(booking_reminder|sample_submission_deadline_reminder)_.*", "reminders"),
@@ -218,7 +232,7 @@ def email_decision(user, category: str, now: datetime | None = None) -> EmailDec
     if pref is not None and not pref.email_enabled:
         return EmailDecision(SKIP)
     settings_row = delivery_settings(user)
-    if pref is not None and pref.email_digest:
+    if pref is not None and pref.email_digest and not cat.email_only:
         return EmailDecision("defer", next_digest_time(settings_row, now), "digest")
     if in_quiet_hours(settings_row, now):
         return EmailDecision("defer", quiet_hours_end(settings_row, now), "quiet")
@@ -304,12 +318,28 @@ def is_staff_viewer(user) -> bool:
     )
 
 
+def is_report_recipient(user) -> bool:
+    """Faculty, Officers in Charge, Heads of Department (and the Main Administrator, who previews them)."""
+    from iic_booking.users.models.user_type import UserType
+
+    if user is None or not getattr(user, "pk", None):
+        return False
+    if getattr(user, "user_type", None) in (UserType.FACULTY, UserType.MANAGER, UserType.HOD, UserType.ADMIN):
+        return True
+    from iic_booking.communication.monthly_reports import active_hod_user_ids
+    from iic_booking.equipment.models import EquipmentManager
+
+    return user.pk in active_hod_user_ids() or EquipmentManager.objects.filter(manager_id=user.pk).exists()
+
+
 def preferences_payload(user) -> dict:
     stored = _stored(user)
     staff = is_staff_viewer(user)
     rows = []
     for cat in CATEGORIES:
         if cat.staff_only and not staff:
+            continue
+        if cat.report_recipients_only and not is_report_recipient(user):
             continue
         values = stored.get(cat.key, {})
         rows.append(
@@ -318,9 +348,10 @@ def preferences_payload(user) -> dict:
                 "label": cat.label,
                 "description": cat.description,
                 "locked": cat.locked,
+                "email_only": cat.email_only,
                 EMAIL: True if cat.locked else values.get(EMAIL, True),
-                IN_APP: True if cat.locked else values.get(IN_APP, True),
-                DIGEST: False if cat.locked else values.get(DIGEST, False),
+                IN_APP: True if cat.locked else (False if cat.email_only else values.get(IN_APP, True)),
+                DIGEST: False if (cat.locked or cat.email_only) else values.get(DIGEST, False),
             }
         )
     delivery = delivery_settings(user)
@@ -387,6 +418,8 @@ def save_preferences(user, rows, delivery=None) -> dict:
             continue
         defaults = {}
         for channel, field in ((EMAIL, "email_enabled"), (IN_APP, "in_app_enabled"), (DIGEST, "email_digest")):
+            if cat.email_only and channel != EMAIL:
+                continue
             if channel in row:
                 defaults[field] = bool(row[channel])
         if defaults:

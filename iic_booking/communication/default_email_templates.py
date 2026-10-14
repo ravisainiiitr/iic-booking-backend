@@ -146,6 +146,7 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "oic_substitute_bulk_ended_email",
     "oic_substitute_bulk_lab_staff_email",
     "oic_substitute_bulk_oic_copy_email",
+    "monthly_usage_report_email",
 ]
 
 
@@ -2829,6 +2830,55 @@ def _oic_substitute_bulk_templates() -> list[dict[str, Any]]:
     ]
 
 
+_MONTHLY_REPORT_HELP = (
+    "{{ user_name }}, {{ month_label }}, {{ previous_month_label }}, {{ report_html }} (prebuilt sections), "
+    "{{ report_text }}, {{ settings_url }}, {{ unsubscribe_url }}"
+)
+
+
+def _monthly_report_templates() -> list[dict[str, Any]]:
+    """Monthly usage report: the sections (faculty / OIC / HoD) are built in code and dropped in as one block."""
+    muted = "font-size:12px;line-height:1.6;color:#64748b;margin:22px 0 0 0;"
+    link = "color:#1d72af;text-decoration:none;font-weight:600;"
+    body = "\n".join(
+        [
+            greeting_html(),
+            paragraph_html(
+                "Here is your summary for <strong>{{ month_label }}</strong>, compared with {{ previous_month_label }}. "
+                "Each section links to the matching page on the portal for the full detail."
+            ),
+            "{{ report_html }}",
+            f'<p style="{muted}">You receive this monthly summary because you have activity on the portal. '
+            f'<a href="{{{{ settings_url }}}}" style="{link}">Notification settings</a> &middot; '
+            f'<a href="{{{{ unsubscribe_url }}}}" style="{link}">Stop monthly reports</a></p>',
+        ]
+    )
+    text = (
+        "Hello {{ user_name }},\n\n"
+        "Here is your summary for {{ month_label }}, compared with {{ previous_month_label }}.\n\n"
+        "{{ report_text }}\n\n"
+        "Notification settings: {{ settings_url }}\n"
+        "Stop monthly reports: {{ unsubscribe_url }}\n"
+    )
+    return [
+        _custom_branded_email(
+            code="monthly_usage_report_email",
+            name="Monthly Usage Report Email",
+            title="Monthly Usage Report",
+            subtitle="{{ month_label }}",
+            subject="Your {{ month_label }} usage report – Equipment Booking Portal",
+            body_inner_html=body,
+            body_text=text,
+            description=(
+                "Monthly summary on the 1st (previous month, IST) to faculty wallet owners, Officers in Charge and "
+                "Heads of Department. Optional category 'Monthly reports'; sent only when there is something to report."
+            ),
+            variable_help=_MONTHLY_REPORT_HELP,
+            preheader="Your monthly usage summary",
+        )
+    ]
+
+
 def get_default_email_template(code: str) -> Optional[dict[str, Any]]:
     """Catalog spec for one code without building (and validating) the whole catalog."""
     for spec in _training_templates():
@@ -2857,6 +2907,7 @@ def get_default_email_templates() -> list[dict]:
     templates.extend(_training_templates())
     templates.extend(_fabrication_templates())
     templates.extend(_oic_substitute_templates())
+    templates.extend(_monthly_report_templates())
 
     by_code = {t["code"]: t for t in templates}
     missing = [c for c in DEFAULT_EMAIL_TEMPLATE_CODES if c not in by_code]

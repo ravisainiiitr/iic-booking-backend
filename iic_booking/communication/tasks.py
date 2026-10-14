@@ -155,6 +155,28 @@ def send_due_notification_digests() -> int:
     return delivered
 
 
+@shared_task(name="communication.send_monthly_usage_reports", ignore_result=True)
+def send_monthly_usage_reports(month: str | None = None) -> dict:
+    """Scheduled monthly usage reports, in short batches that re-queue themselves (and wait out the peak window)."""
+    from datetime import timedelta
+
+    from .monthly_report_data import ReportMonth
+    from .monthly_reports import REQUEUE_SECONDS, run_monthly_reports
+
+    result = run_monthly_reports(ReportMonth.parse(month) if month else None)
+    kwargs = {"month": result["month"]}
+    if result.get("more"):
+        send_monthly_usage_reports.apply_async(kwargs=kwargs, countdown=REQUEUE_SECONDS)
+    elif result.get("retry_at"):
+        send_monthly_usage_reports.apply_async(kwargs=kwargs, eta=result["retry_at"] + timedelta(seconds=30))
+    logger.info(
+        "Monthly usage reports %s: status=%s sent=%s failed=%s empty=%s opted_out=%s quiet=%s more=%s",
+        result["month"], result.get("status"), result["sent"], result["failed"], result["skipped_empty"],
+        result["skipped_opted_out"], result["quiet"], result["more"],
+    )
+    return {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in result.items()}
+
+
 @shared_task(name="communication.deliver_web_push", ignore_result=True)
 def deliver_web_push(log_id: int) -> int:
     from .web_push import deliver_for_log

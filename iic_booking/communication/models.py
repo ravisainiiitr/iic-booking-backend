@@ -713,3 +713,68 @@ class WebPushSubscription(models.Model):
 
     def __str__(self) -> str:
         return f"{self.user_id} {self.endpoint[:60]}"
+
+
+class MonthlyReportSettings(models.Model):
+    """Single row (pk=1): whether the monthly usage report emails go out, and to whom."""
+
+    enabled = BooleanField(
+        _("Send monthly usage reports"),
+        default=False,
+        help_text=_("Master switch. When off, the monthly run sends nothing."),
+    )
+    faculty_enabled = BooleanField(_("Faculty (wallet owners)"), default=True)
+    oic_enabled = BooleanField(_("Officers in Charge"), default=True)
+    hod_enabled = BooleanField(_("Heads of Department"), default=True)
+    attach_excel = BooleanField(
+        _("Attach Excel to OIC / HoD reports"), default=True, help_text=_("Per-equipment table as a styled .xlsx.")
+    )
+    updated_at = DateTimeField(_("Updated at"), auto_now=True)
+    updated_by = ForeignKey(User, on_delete=SET_NULL, null=True, blank=True, related_name="+")
+
+    class Meta:
+        verbose_name = _("Monthly report settings")
+        verbose_name_plural = _("Monthly report settings")
+
+    def __str__(self) -> str:
+        return f"Monthly reports {'on' if self.enabled else 'off'}"
+
+    @classmethod
+    def get_singleton(cls) -> "MonthlyReportSettings":
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+
+class MonthlyReportSendLog(models.Model):
+    """One row per person and report month: a re-run never emails the same person twice for a month."""
+
+    class Status(models.TextChoices):
+        SENDING = "sending", _("Sending")
+        SENT = "sent", _("Sent")
+        FAILED = "failed", _("Failed")
+        SKIPPED_EMPTY = "skipped_empty", _("Nothing to report")
+        SKIPPED_OPTED_OUT = "skipped_opted_out", _("Switched off by the user")
+
+    user = ForeignKey(User, on_delete=models.CASCADE, related_name="monthly_report_logs")
+    month = models.DateField(_("Report month"), help_text=_("First day of the reported month."))
+    audiences = CharField(_("Sections"), max_length=60, blank=True)
+    status = CharField(_("Status"), max_length=20, choices=Status.choices, default=Status.SENDING)
+    attempts = models.PositiveSmallIntegerField(_("Attempts"), default=0)
+    communication_log = ForeignKey(
+        CommunicationLog, on_delete=SET_NULL, null=True, blank=True, related_name="+"
+    )
+    error = TextField(_("Error"), blank=True)
+    created_at = DateTimeField(_("Created at"), auto_now_add=True)
+    updated_at = DateTimeField(_("Updated at"), auto_now=True)
+    sent_at = DateTimeField(_("Sent at"), null=True, blank=True)
+
+    class Meta:
+        verbose_name = _("Monthly report send log")
+        verbose_name_plural = _("Monthly report send logs")
+        constraints = [
+            models.UniqueConstraint(fields=["user", "month"], name="uniq_monthly_report_user_month"),
+        ]
+        indexes = [models.Index(fields=["month", "status"], name="comm_monthly_report_idx")]
+
+    def __str__(self) -> str:
+        return f"{self.user_id} {self.month:%Y-%m} {self.status}"

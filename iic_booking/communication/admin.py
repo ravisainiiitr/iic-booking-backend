@@ -9,6 +9,8 @@ from .models import (
     CommunicationLog,
     CommunicationTemplate,
     CommunicationWebhookEventLog,
+    MonthlyReportSendLog,
+    MonthlyReportSettings,
     Notice,
 )
 from .utils import set_current_user, clear_current_user
@@ -496,3 +498,17 @@ class NoticeAdmin(admin.ModelAdmin):
         super().save_model(request, obj, form, change)
 
 
+
+
+@admin.register(MonthlyReportSettings)
+class MonthlyReportSettingsAdmin(admin.ModelAdmin):
+    list_display = ("enabled", "faculty_enabled", "oic_enabled", "hod_enabled", "attach_excel", "updated_at")
+    readonly_fields = ("updated_at", "updated_by")
+
+
+@admin.register(MonthlyReportSendLog)
+class MonthlyReportSendLogAdmin(admin.ModelAdmin):
+    list_display = ("month", "user", "status", "audiences", "attempts", "sent_at")
+    list_filter = ("status", "month")
+    raw_id_fields = ("user", "communication_log")
+    readonly_fields = ("created_at", "updated_at")
