@@ -1,0 +1,98 @@
+# Who may flag one booking as Analysis Not Possible (read-only, rolled back): booking status, sample lifecycle,
+# and for each operator / OIC on the equipment whether they are assigned and whether the server rule allows them.
+# Prints user IDs and counts only. No names, emails or other personal data.
+
+name: Probe Analysis Not Possible Access (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      virtual_booking_id:
+        description: "Booking ID shown to users (e.g. IICPPMS202600004)"
+        required: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Access check (SELECT only, IDs and counts only)
+        env:
+          VBID: ${{ inputs.virtual_booking_id }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e VBID="$VBID" -w /app "$CID" python - <<'PY'
+          import os
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+
+          from iic_booking.equipment.api_views import _get_equipment_ids_for_log_access
+          from iic_booking.equipment.models import (
+              Booking, BookingSampleTrace, BookingStatus, EquipmentManager, EquipmentOperator, SampleTraceStatus,
+          )
+          from iic_booking.equipment.reports import get_equipment_ids_managed_by_oic
+          from iic_booking.equipment.serializers import BookingSerializer
+          from iic_booking.users.models.user_type import UserType
+
+          try:
+              from iic_booking.equipment.maintenance_policy import can_flag_analysis_not_possible
+              helper = True
+          except ImportError:
+              helper = False
+
+              def can_flag_analysis_not_possible(user, booking):
+                  if booking.status not in (BookingStatus.BOOKED, BookingStatus.PENDING) or booking.maintenance_disruption_flag:
+                      return False
+                  if user.user_type == UserType.MANAGER:
+                      return booking.equipment_id in set(get_equipment_ids_managed_by_oic(user.id))
+                  if user.user_type == UserType.OPERATOR:
+                      return booking.equipment_id in set(_get_equipment_ids_for_log_access(user) or [])
+                  return user.user_type == UserType.ADMIN
+
+          labels = dict(SampleTraceStatus.choices)
+          vbid = os.environ["VBID"].strip()
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+
+              print(f"server helper deployed={'yes' if helper else 'no (fallback rule)'}")
+              b = Booking.objects.select_related("equipment", "charge_profile").filter(virtual_booking_id=vbid).first()
+              if b is None:
+                  print("booking not found")
+              else:
+                  eq = b.equipment
+                  events = list(BookingSampleTrace.objects.filter(booking_id=b.pk).order_by("created_at", "id")
+                                .values_list("status", flat=True))
+                  profile = str(BookingSerializer(context={}).get_equipment_profile_type(b) or "")
+                  fabrication = profile.upper() in ("PRINT_3D", "LASER_CUT_2D")
+                  print(f"booking pk={b.pk} status={b.status} maintenance_disruption_flag={bool(b.maintenance_disruption_flag)}")
+                  print(f"equipment id={eq.equipment_id} code={eq.equipment_code} profile={profile or '-'} fabrication={fabrication}")
+                  print("lifecycle states (oldest first)=" + (" > ".join(str(labels.get(s, s)) for s in events) or "none"))
+                  status_ok = b.status in (BookingStatus.BOOKED, BookingStatus.PENDING) and not b.maintenance_disruption_flag
+                  print(f"status allows Analysis Not Possible={status_ok}")
+                  print(f"button rule on Booking details (status ok and not fabrication)={status_ok and not fabrication}")
+
+                  ops = list(EquipmentOperator.objects.filter(equipment=eq).select_related("operator").order_by("pk"))
+                  print(f"operators assigned to equipment={len(ops)}")
+                  for row in ops:
+                      u = row.operator
+                      in_scope = eq.equipment_id in set(_get_equipment_ids_for_log_access(u) or [])
+                      print(
+                          f"  operator user_id={u.pk} role={row.role} user_type={u.user_type} active={u.is_active} "
+                          f"in_operator_scope={in_scope} server_allows={can_flag_analysis_not_possible(u, b)}"
+                      )
+                  mgrs = list(EquipmentManager.objects.filter(equipment=eq).select_related("manager").order_by("pk"))
+                  print(f"OICs on equipment={len(mgrs)}")
+                  for row in mgrs:
+                      u = row.manager
+                      print(f"  oic user_id={u.pk} user_type={u.user_type} server_allows={can_flag_analysis_not_possible(u, b)}")
+              transaction.set_rollback(True)
+          print("DONE (read-only, rolled back)")
+          PY

@@ -545,6 +545,54 @@ def apply_operator_disruption_pending_from_staff(booking, *, notes: str = "") ->
         )
 
 
+ANALYSIS_NOT_POSSIBLE_ROLE_ERROR = (
+    "Only Admin, Department Administrator, Officer in Charge, or Lab Operator "
+    "can flag a booking as Analysis Not Possible."
+)
+
+
+def analysis_not_possible_scope_error(user, booking) -> str | None:
+    """
+    Who may flag a booking as Analysis Not Possible: Main Admin (any), Department Administrator (their
+    department), Officer in Charge incl. temporary OIC (equipment they manage), and Lab Operator (equipment
+    they are assigned to, incl. acting cover). The same rule applies whatever the sample lifecycle stage.
+    """
+    from iic_booking.users.models.user_type import UserType
+
+    from .api_views import _get_equipment_ids_for_log_access
+    from .reports import get_equipment_ids_managed_by_oic
+
+    ut = getattr(user, "user_type", None)
+    if ut == UserType.ADMIN:
+        return None
+    if ut == UserType.MANAGER:
+        allowed, error = get_equipment_ids_managed_by_oic(user.id), "You do not manage this equipment."
+    elif ut == UserType.DEPT_ADMIN:
+        allowed, error = _get_equipment_ids_for_log_access(user), "This booking is outside your department."
+    elif ut == UserType.OPERATOR:
+        allowed, error = _get_equipment_ids_for_log_access(user), "You are not assigned to this equipment."
+    else:
+        return ANALYSIS_NOT_POSSIBLE_ROLE_ERROR
+    return None if booking.equipment_id in set(allowed or []) else error
+
+
+def analysis_not_possible_state_error(booking) -> str | None:
+    from .models import BookingStatus
+
+    if booking.status not in (BookingStatus.BOOKED, BookingStatus.PENDING):
+        return (
+            f"Cannot flag booking as Analysis Not Possible with status '{booking.status}'. "
+            "Only BOOKED or PENDING bookings are allowed."
+        )
+    if booking.status == BookingStatus.DISRUPTION_PENDING or booking.maintenance_disruption_flag:
+        return "This booking is already in the disruption (awaiting choice) workflow."
+    return None
+
+
+def can_flag_analysis_not_possible(user, booking) -> bool:
+    return analysis_not_possible_scope_error(user, booking) is None and analysis_not_possible_state_error(booking) is None
+
+
 def apply_other_disruption_for_booking_manually(booking, *, reason: str) -> None:
     """
     Staff action "Analysis Not Possible": put a BOOKED/PENDING booking into disruption-pending
@@ -556,13 +604,9 @@ def apply_other_disruption_for_booking_manually(booking, *, reason: str) -> None
     if not reason_clean:
         raise ValueError("Reason is required for Analysis Not Possible.")
 
-    if booking.status not in (BookingStatus.BOOKED, BookingStatus.PENDING):
-        raise ValueError(
-            f"Cannot flag booking as Analysis Not Possible with status '{booking.status}'. "
-            "Only BOOKED or PENDING bookings are allowed."
-        )
-    if booking.status == BookingStatus.DISRUPTION_PENDING or booking.maintenance_disruption_flag:
-        raise ValueError("This booking is already in the disruption (awaiting choice) workflow.")
+    state_error = analysis_not_possible_state_error(booking)
+    if state_error:
+        raise ValueError(state_error)
 
     triggered_at = timezone.now()
     first_start = _booking_first_slot_start(booking)
