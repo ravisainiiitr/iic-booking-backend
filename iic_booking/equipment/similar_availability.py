@@ -29,6 +29,12 @@ def earliest_open_slot(equipment, user, *, now=None) -> dict[str, Any] | None:
     from iic_booking.users.models.user_type import UserType
 
     from .equipment_group_service import slot_window_bounds
+    from .mode_utils import (
+        _family_schedules,
+        bypasses_multimode_restrictions,
+        multimode_enabled_for_equipment,
+        slot_mode_overlay,
+    )
     from .models import DailySlot, SlotStatus
     from .slot_department_access import filter_queryset_for_home_department
 
@@ -54,11 +60,16 @@ def earliest_open_slot(equipment, user, *, now=None) -> dict[str, Any] | None:
         )
     time_from = getattr(equipment, "weekly_view_time_from", None)
     time_to = getattr(equipment, "weekly_view_time_to", None)
+    mode_schedules = None
+    if not bypasses_multimode_restrictions(user) and multimode_enabled_for_equipment(equipment):
+        mode_schedules = _family_schedules(equipment)
     for slot in qs[:40]:
         start, end = timezone.localtime(slot.start_datetime), timezone.localtime(slot.end_datetime)
         if time_from is not None and start.time() < time_from:
             continue
         if time_to is not None and end.time() > time_to and end.date() == start.date():
+            continue
+        if mode_schedules is not None and slot_mode_overlay(equipment, slot, mode_schedules) is not None:
             continue
         return {
             "slot_id": slot.pk,

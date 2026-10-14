@@ -1510,9 +1510,11 @@ def _ensure_booking_result_file_table():
             );
         """)
 
-def user_can_see_equipment(user, equipment):
+def user_can_see_equipment(user, equipment, *, mode_rules: bool = True):
     """
     Return True if the user is allowed to see this equipment.
+    ``mode_rules=False`` is for read-only views (equipment page, ratings, charges): a base whose other mode runs
+    exclusively today is still shown there. Slots and booking keep the default and stay refused.
     - Department.equipment_visibility_enabled must allow the user (main admin / dept admin / OIC exempt when off).
     - Equipment without visibility_group is public (everyone can see).
     - Equipment with visibility_group is visible only to group members.
@@ -1538,7 +1540,7 @@ def user_can_see_equipment(user, equipment):
         dept_id = getattr(user, "department_id", None)
         if dept_id and getattr(equipment, "internal_department_id", None) == dept_id:
             from .mode_utils import is_equipment_visible_on_date, is_staff_bypass_user
-            if is_staff_bypass_user(user):
+            if is_staff_bypass_user(user) or not mode_rules:
                 return True
             return is_equipment_visible_on_date(equipment, timezone.localdate())
         return False
@@ -1566,7 +1568,7 @@ def user_can_see_equipment(user, equipment):
     if not visible:
         return False
     from .mode_utils import is_equipment_visible_on_date, is_staff_bypass_user
-    if is_staff_bypass_user(user):
+    if is_staff_bypass_user(user) or not mode_rules:
         return True
     return is_equipment_visible_on_date(equipment, timezone.localdate())
 
@@ -2047,7 +2049,7 @@ def temporary_oic_update(request, delegation_id):
     }, status=status.HTTP_200_OK)
 
 def _catalog_equipment_queryset(user):
-    return get_visible_equipment_queryset(user).exclude(status=EquipmentStatus.DISPOSED)
+    return get_visible_equipment_queryset(user, mode_catalog_filter=False).exclude(status=EquipmentStatus.DISPOSED)
 
 
 def catalog_department_rows(user=None) -> list[dict]:
@@ -2342,8 +2344,9 @@ def equipment_list(request):
     from django.db.models import Avg, Count
 
     catalog_scope = (request.query_params.get("catalog_scope") or "").strip().lower() or None
+    # Bases whose other mode runs exclusively today stay listed, marked ``mode_inactive`` (not bookable).
     queryset = get_visible_equipment_queryset(
-        request.user, catalog_scope=catalog_scope
+        request.user, catalog_scope=catalog_scope, mode_catalog_filter=False
     ).select_related(
         "category", "internal_department"
     )
@@ -2433,7 +2436,9 @@ def equipment_list(request):
     # Parents whose child modes are listed for this user, ignoring the search, so the catalog
     # opens a family view only when there is a child mode to show.
     visible_child_modes = list(
-        apply_catalog_filters(get_visible_equipment_queryset(request.user, catalog_scope=catalog_scope))
+        apply_catalog_filters(
+            get_visible_equipment_queryset(request.user, catalog_scope=catalog_scope, mode_catalog_filter=False)
+        )
         .filter(parent_equipment__isnull=False)
         .order_by()
         .values_list("equipment_id", "parent_equipment_id")
@@ -2454,8 +2459,10 @@ def equipment_list(request):
         row["from_price"] = price["from_price"] if price else None
         row["from_price_unit"] = price["from_price_unit"] if price else None
     from .mode_availability import attach_card_availability
+    from .mode_utils import attach_mode_inactive
 
     attach_card_availability(rows, request.user, {child_id for child_id, _ in visible_child_modes})
+    attach_mode_inactive(rows, request.user)
     return Response(
         {
             "equipments": rows,
@@ -2481,7 +2488,7 @@ def equipment_ratings(request, equipment_id: int):
     except Equipment.DoesNotExist:
         return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    if not user_can_see_equipment(request.user, equipment) and not user_can_view_equipment_in_catalog(
+    if not user_can_see_equipment(request.user, equipment, mode_rules=False) and not user_can_view_equipment_in_catalog(
         request.user, equipment
     ):
         return equipment_visibility_denied_response(request.user)
@@ -2782,7 +2789,7 @@ def equipment_detail(request, pk):
         )
 
     catalog_only = False
-    if not user_can_see_equipment(request.user, equipment):
+    if not user_can_see_equipment(request.user, equipment, mode_rules=request.method != "GET"):
         if request.method != "GET" or not user_can_view_equipment_in_catalog(request.user, equipment):
             return equipment_visibility_denied_response(request.user)
         catalog_only = True
@@ -2901,9 +2908,16 @@ def equipment_detail(request, pk):
             ]
         return Response(payload, status=status.HTTP_200_OK)
 
+    from .mode_utils import inactive_exclusive_bases
+
     serializer = EquipmentDetailSerializer(equipment, context={'request': request})
     payload = dict(serializer.data)
     payload["viewer_catalog_only"] = catalog_only
+    payload["mode_inactive"] = (
+        inactive_exclusive_bases([equipment.pk], request.user).get(equipment.pk)
+        if equipment.enable_multi_mode and not equipment.parent_equipment_id
+        else None
+    )
     return Response(payload, status=status.HTTP_200_OK)
 
 @api_view(["GET"])
@@ -3040,7 +3054,7 @@ def equipment_calculate(request, pk):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    if not user_can_see_equipment(request.user, equipment) and not user_can_view_equipment_in_catalog(
+    if not user_can_see_equipment(request.user, equipment, mode_rules=False) and not user_can_view_equipment_in_catalog(
         request.user, equipment
     ):
         return equipment_visibility_denied_response(request.user)

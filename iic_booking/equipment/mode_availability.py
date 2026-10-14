@@ -544,7 +544,7 @@ def equipment_mode_availability(request, pk):
     if equipment is None:
         return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
     user = request.user
-    if not user_can_see_equipment(user, equipment) and not user_can_view_equipment_in_catalog(user, equipment):
+    if not user_can_see_equipment(user, equipment, mode_rules=False) and not user_can_view_equipment_in_catalog(user, equipment):
         return equipment_visibility_denied_response(user)
     parent_id = family_parent_id(equipment)
     summary = family_summaries(

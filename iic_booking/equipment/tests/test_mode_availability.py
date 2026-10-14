@@ -277,7 +277,8 @@ def test_catalog_on_an_exclusive_mode_day_keeps_the_mode_card(family, egs_factor
     frozen_now["now"] = _at(2030, 1, 11, 19, 30)
     res = egs_factory.client_for(egs_factory.student()).get("/api/equipments/")
     rows = {r["equipment_id"]: r for r in res.data["equipments"]}
-    assert base.pk not in rows
+    assert rows[base.pk]["mode_inactive"]["active_mode"]["equipment_id"] == ups.pk
+    assert rows[ups.pk]["mode_inactive"] is None
     assert [m["equipment_id"] for m in rows[ups.pk]["mode_availability"]["modes"]] == [ups.pk]
     assert rows[ups.pk]["mode_availability"]["modes"][0]["weekdays"] == [0, 1, 2, 3, 4]
     summary = egs_factory.client_for(egs_factory.student()).get(f"/api/equipments/{ups.pk}/mode-availability/").data

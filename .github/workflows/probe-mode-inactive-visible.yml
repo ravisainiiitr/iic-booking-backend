@@ -1,0 +1,77 @@
+# Read-only, codes / ids / counts only (no names, no people): multi-mode families with mutually exclusive
+# ("run on its own") schedules, which bases are not active today, and which of those an anonymous visitor
+# and a student would now see in the catalogue (they used to be hidden).
+name: Probe Mode Inactive Visible
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.contrib.auth.models import AnonymousUser
+          from django.utils import timezone
+          from iic_booking.equipment import mode_utils
+          from iic_booking.equipment.api_views import get_visible_equipment_queryset
+          from iic_booking.equipment.models import Equipment, EquipmentModeSchedule, ModeScheduleBehavior
+
+          today = timezone.localdate()
+          print(f"today={today.isoformat()}")
+          excl = EquipmentModeSchedule.objects.filter(behavior=ModeScheduleBehavior.EXCLUSIVE)
+          parent_ids = sorted(set(excl.values_list("parent_equipment_id", flat=True)))
+          print(f"exclusive_schedules={excl.count()} families_with_exclusive={len(parent_ids)}")
+          for base in Equipment.objects.filter(pk__in=parent_ids).order_by("pk"):
+              modes = list(Equipment.objects.filter(parent_equipment_id=base.pk).order_by("pk").values_list("pk", "code"))
+              scheds = [s for s in excl.filter(parent_equipment_id=base.pk).order_by("id")]
+              covering = [s for s in scheds if s.covers_date(today)]
+              print(
+                  f"family base_id={base.pk} base_code={base.code} multi_mode={base.enable_multi_mode} status={base.status} "
+                  f"modes={[f'{i}:{c}' for i, c in modes]} exclusive_schedules={len(scheds)} "
+                  f"running_today={[s.mode_equipment_id for s in covering]}"
+              )
+          inactive = mode_utils.inactive_exclusive_bases(parent_ids, None)
+          anon_all = set(get_visible_equipment_queryset(AnonymousUser(), mode_catalog_filter=False).values_list("pk", flat=True))
+          anon_old = set(get_visible_equipment_queryset(AnonymousUser()).values_list("pk", flat=True))
+          print(f"inactive_today={len(inactive)}")
+          for pid, info in sorted(inactive.items()):
+              eq = Equipment.objects.get(pk=pid)
+              print(
+                  f"inactive base_id={pid} base_code={eq.code} running_mode_id={info['active_mode']['equipment_id']} "
+                  f"running_mode_code={info['active_mode']['code']} next_active={info['next_active_dates']} "
+                  f"visibility_group={bool(eq.visibility_group_id)} test_only={bool(getattr(eq, 'visible_to_test_accounts_only', False))} "
+                  f"anon_listed_before={pid in anon_old} anon_listed_now={pid in anon_all}"
+              )
+          print(f"anonymous_catalogue_before={len(anon_old)} anonymous_catalogue_now={len(anon_all)}")
+          from django.db.models import Q
+          raman = Equipment.objects.filter(Q(name__icontains="raman") | Q(code__icontains="raman")).order_by("pk")
+          print(f"raman_matches={raman.count()}")
+          for eq in raman:
+              print(
+                  f"raman id={eq.pk} code={eq.code} parent_id={eq.parent_equipment_id} multi_mode={eq.enable_multi_mode} "
+                  f"status={eq.status} visibility_group={bool(eq.visibility_group_id)} test_only={eq.visible_to_test_accounts_only} "
+                  f"inactive_today={eq.pk in inactive} anon_listed_before={eq.pk in anon_old} anon_listed_now={eq.pk in anon_all}"
+              )
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1

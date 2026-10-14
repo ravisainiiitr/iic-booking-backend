@@ -3,7 +3,7 @@ Multi-mode equipment helpers: catalog visibility, slot overlays, conflicts.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Any, Iterable, Optional, Sequence
 
 from django.db.models import QuerySet
@@ -273,6 +273,74 @@ def filter_queryset_for_mode_catalog(queryset: QuerySet, user, *, on_date: Optio
     if hide_parent_ids:
         queryset = queryset.exclude(equipment_id__in=hide_parent_ids)
     return queryset
+
+
+MODE_INACTIVE_LABEL = "Mode not active"
+NEXT_ACTIVE_LOOKAHEAD_DAYS = 42
+NEXT_ACTIVE_MAX_DATES = 3
+
+
+def inactive_exclusive_bases(
+    equipment_ids: Iterable[int], user=None, *, on_date: Optional[date] = None
+) -> dict[int, dict[str, Any]]:
+    """
+    Bases among ``equipment_ids`` that ``filter_queryset_for_mode_catalog`` leaves out on ``on_date`` because
+    another mode of the instrument runs exclusively. Lists and search still show them, marked not bookable;
+    ``user_can_see_equipment`` keeps refusing their slots and bookings. Empty for staff who bypass mode rules.
+    Each value: label, message, the running mode and up to three upcoming working days without an exclusive mode.
+    """
+    from .models import Holiday
+
+    if user is not None and (is_staff_bypass_user(user) or bypasses_multimode_restrictions(user)):
+        return {}
+    ids = {int(i) for i in equipment_ids if i}
+    if not ids:
+        return {}
+    on_date = on_date or timezone.localdate()
+    by_parent: dict[int, list[EquipmentModeSchedule]] = {}
+    for sched in (
+        EquipmentModeSchedule.objects.filter(parent_equipment_id__in=ids, behavior=ModeScheduleBehavior.EXCLUSIVE)
+        .select_related("mode_equipment", "parent_equipment")
+        .order_by("id")
+    ):
+        by_parent.setdefault(sched.parent_equipment_id, []).append(sched)
+    out: dict[int, dict[str, Any]] = {}
+    holidays = None
+    for parent_id, schedules in by_parent.items():
+        parent = schedules[0].parent_equipment
+        if parent.parent_equipment_id or not parent.enable_multi_mode:
+            continue
+        running = next((s for s in schedules if schedule_covers_date(s, on_date)), None)
+        if running is None:
+            continue
+        if holidays is None:
+            holidays = Holiday.get_holidays_in_range(
+                on_date, on_date + timedelta(days=NEXT_ACTIVE_LOOKAHEAD_DAYS)
+            )
+        next_dates: list[str] = []
+        for offset in range(1, NEXT_ACTIVE_LOOKAHEAD_DAYS + 1):
+            day = on_date + timedelta(days=offset)
+            if day in holidays or any(schedule_covers_date(s, day) for s in schedules):
+                continue
+            next_dates.append(day.isoformat())
+            if len(next_dates) >= NEXT_ACTIVE_MAX_DATES:
+                break
+        mode = running.mode_equipment
+        out[parent_id] = {
+            "label": MODE_INACTIVE_LABEL,
+            "message": f"Currently running as {mode.name}; booking opens when this mode is active.",
+            "active_mode": {"equipment_id": mode.equipment_id, "code": mode.code, "name": mode.name},
+            "next_active_dates": next_dates,
+        }
+    return out
+
+
+def attach_mode_inactive(rows: list[dict], user, *, id_key: str = "equipment_id") -> set[int]:
+    """Set ``mode_inactive`` on serialized rows (None when bookable as usual); returns the inactive ids."""
+    inactive = inactive_exclusive_bases([row.get(id_key) for row in rows], user)
+    for row in rows:
+        row["mode_inactive"] = inactive.get(row.get(id_key))
+    return set(inactive)
 
 
 def _family_schedules(equipment: Equipment) -> list[EquipmentModeSchedule]:

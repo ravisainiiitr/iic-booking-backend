@@ -28,7 +28,7 @@ def _searchable_equipment_ids(user) -> set[int]:
     from .testdata import exclude_test_equipment, is_test_user
 
     scope = "all" if getattr(user, "is_authenticated", False) else None
-    qs = get_visible_equipment_queryset(user, catalog_scope=scope)
+    qs = get_visible_equipment_queryset(user, catalog_scope=scope, mode_catalog_filter=False)
     if not is_test_user(user):
         qs = exclude_test_equipment(qs)
     return set(qs.values_list("equipment_id", flat=True))
@@ -58,6 +58,9 @@ def _search_equipment(user, q: str) -> tuple[list[dict[str, Any]], str]:
                 "hint": r["hint"],
             }
         )
+    from .mode_utils import attach_mode_inactive
+
+    attach_mode_inactive(out, user, id_key="id")
     return out, suggestion
 
 
