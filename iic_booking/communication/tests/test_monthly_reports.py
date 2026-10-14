@@ -333,6 +333,38 @@ def test_dry_run_command_prints_counts_only(f):
     assert not mail.outbox
 
 
+def test_switch_command_status_is_read_only_and_apply_turns_on_without_sending(f):
+    import json
+
+    from django_celery_beat.models import CrontabSchedule, PeriodicTask
+
+    crontab = CrontabSchedule.objects.create(minute="10", hour="9", day_of_month="1", month_of_year="*", day_of_week="*")
+    PeriodicTask.objects.create(name="monthly", task="communication.send_monthly_usage_reports", crontab=crontab)
+    row = MonthlyReportSettings.get_singleton()
+    row.attach_excel, row.hod_enabled = False, False
+    row.save()
+    faculty, _ = _faculty(f)
+    _book(f, faculty, f.equipment(), _ist(2026, 10, 5))
+
+    out = StringIO()
+    call_command("monthly_reports_switch", stdout=out)
+    status = json.loads(out.getvalue())
+    assert status["settings_before"]["enabled"] is False and "settings_after" not in status
+    assert MonthlyReportSettings.get_singleton().enabled is False
+    (beat,) = status["beat"]
+    assert beat["enabled"] is True and beat["crontab"] == "10 9 1 * *" and beat["next_run_at"]
+
+    out = StringIO()
+    call_command("monthly_reports_switch", "--apply", stdout=out)
+    applied = json.loads(out.getvalue())
+    assert applied["verified"] is True and applied["send_log_rows_total_after"] == 0
+    row = MonthlyReportSettings.get_singleton()
+    assert (row.enabled, row.faculty_enabled, row.oic_enabled, row.hod_enabled, row.attach_excel) == (
+        True, True, True, True, False
+    )
+    assert not mail.outbox and faculty.email not in out.getvalue()
+
+
 # Preferences -------------------------------------------------------------------------------------------------------
 
 

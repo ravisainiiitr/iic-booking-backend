@@ -245,12 +245,34 @@ def _generate_week_slots_for_operational_equipment(week_starts, *, allow_holiday
     return created
 
 
+def oic_monthly_pdf_recipients(*, include_oics: bool = False) -> dict[int, list]:
+    """Equipment id -> people who get its monthly performance PDF: Lab operators (plus OICs if ``include_oics``)."""
+    from iic_booking.equipment.models import EquipmentManager, EquipmentOperator
+
+    out: dict[int, list] = {}
+    operators = [(o.equipment_id, o.operator) for o in EquipmentOperator.objects.select_related("operator").order_by("pk")]
+    managers = (
+        [(m.equipment_id, m.manager) for m in EquipmentManager.objects.select_related("manager").order_by("pk")]
+        if include_oics
+        else []
+    )
+    for eid, user in managers + operators:
+        if user is None or not getattr(user, "email", None):
+            continue
+        users = out.setdefault(eid, [])
+        if all(u.pk != user.pk for u in users):
+            users.append(user)
+    return out
+
+
 @shared_task(name="equipment.send_oic_monthly_reports")
 @defer_during_peak("equipment.send_oic_monthly_reports")
 def send_oic_monthly_reports(target_month: Optional[str] = None) -> int:
     """
     After month-end (or when invoked with target_month), generate one performance PDF per equipment
-    and email each linked Officer in charge and Lab operator (deduplicated per equipment).
+    and email each of its Lab operators (deduplicated per equipment). Officers in charge get the monthly
+    usage report email instead; ``OIC_MONTHLY_PDF_INCLUDE_OICS = True`` sends them the PDF again.
+    Someone who is OIC of one equipment and operator of another gets the PDF for the latter only.
     When run by beat on the 1st at 00:05, target_month is None and the report is for the previous month.
 
     Args:
@@ -261,9 +283,10 @@ def send_oic_monthly_reports(target_month: Optional[str] = None) -> int:
     """
     from iic_booking.equipment.charge_visibility import viewer_may_see_report_revenue
     from iic_booking.equipment.report_exports import build_report_pdf
-    from iic_booking.equipment.models import Equipment, EquipmentManager, EquipmentOperator
+    from iic_booking.equipment.models import Equipment
     from iic_booking.communication.service import CommunicationService
     from iic_booking.communication.models import CommunicationTemplate
+    from django.conf import settings
     import tempfile
     import os
 
@@ -294,10 +317,6 @@ def send_oic_monthly_reports(target_month: Optional[str] = None) -> int:
     date_from = start.isoformat()
     date_to = end.isoformat()
 
-    equipment_ids_with_staff = set(
-        EquipmentManager.objects.values_list("equipment_id", flat=True)
-    ) | set(EquipmentOperator.objects.values_list("equipment_id", flat=True))
-
     template = None
     try:
         template = CommunicationTemplate.objects.get(
@@ -309,27 +328,8 @@ def send_oic_monthly_reports(target_month: Optional[str] = None) -> int:
         logger.warning("Template 'oic_monthly_report' not found; sending report with default subject/body")
 
     sent = 0
-    for eid in sorted(equipment_ids_with_staff):
-        managers = list(
-            EquipmentManager.objects.filter(equipment_id=eid).select_related("manager")
-        )
-        operators = list(
-            EquipmentOperator.objects.filter(equipment_id=eid).select_related("operator")
-        )
-        recipient_users = []
-        seen_uid = set()
-        for em in managers:
-            u = em.manager
-            if u and u.id not in seen_uid and getattr(u, "email", None):
-                seen_uid.add(u.id)
-                recipient_users.append(u)
-        for eo in operators:
-            u = eo.operator
-            if u and u.id not in seen_uid and getattr(u, "email", None):
-                seen_uid.add(u.id)
-                recipient_users.append(u)
-        if not recipient_users:
-            continue
+    include_oics = bool(getattr(settings, "OIC_MONTHLY_PDF_INCLUDE_OICS", False))
+    for eid, recipient_users in sorted(oic_monthly_pdf_recipients(include_oics=include_oics).items()):
 
         eq = Equipment.objects.filter(equipment_id=eid).only("code", "name").first()
         eq_code = (eq.code if eq else str(eid)) or str(eid)
@@ -370,7 +370,6 @@ def send_oic_monthly_reports(target_month: Optional[str] = None) -> int:
                         )
                     else:
                         from django.core.mail import EmailMessage
-                        from django.conf import settings
 
                         email = EmailMessage(
                             subject=f"Equipment performance report — {eq_code} ({date_from} to {date_to})",

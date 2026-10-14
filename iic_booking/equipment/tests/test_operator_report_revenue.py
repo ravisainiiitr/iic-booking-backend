@@ -144,7 +144,7 @@ def test_legacy_report_downloads_and_monthly_email_drop_revenue_for_operator(wor
 
 
 @pytest.mark.django_db
-def test_monthly_report_email_attachment_per_recipient(world, mailoutbox, monkeypatch):
+def test_monthly_report_email_attachment_per_recipient(world, mailoutbox, monkeypatch, settings):
     from iic_booking.equipment import report_exports
     from iic_booking.equipment.tasks import send_oic_monthly_reports
 
@@ -157,9 +157,33 @@ def test_monthly_report_email_attachment_per_recipient(world, mailoutbox, monkey
 
     monkeypatch.setattr(report_exports, "build_report_pdf", spy)
     month = world.f.future(days=3).strftime("%Y-%m")
+    settings.OIC_MONTHLY_PDF_INCLUDE_OICS = True
     sent = send_oic_monthly_reports(target_month=month)
     assert sent >= 2
     assert sorted(calls) == [False, True]
     by_recipient = {m.to[0]: m.attachments[0][1] for m in mailoutbox if m.attachments}
     assert "revenue" not in _pdf_text(by_recipient[world.operator.email])
     assert "revenue" in _pdf_text(by_recipient[world.oic.email])
+
+
+@pytest.mark.django_db
+def test_monthly_pdf_goes_to_lab_operators_only(world, mailoutbox):
+    from iic_booking.equipment.tasks import send_oic_monthly_reports
+
+    oic_only_eq = world.f.equipment(name="Delta XRD")
+    EquipmentManager.objects.create(equipment=oic_only_eq, manager=world.oic)
+    both = UserFactory(user_type=UserType.MANAGER, admin_approved=True, department=world.f.department)
+    EquipmentManager.objects.create(equipment=world.eq, manager=both)
+    operated_eq = world.f.equipment(name="Epsilon AFM")
+    EquipmentOperator.objects.create(equipment=operated_eq, operator=both)
+
+    sent = send_oic_monthly_reports(target_month=world.f.future(days=3).strftime("%Y-%m"))
+
+    by_recipient = {}
+    for m in mailoutbox:
+        by_recipient.setdefault(m.to[0], []).append(m.attachments[0][0])
+    assert sent == 2 and world.oic.email not in by_recipient
+    (operator_pdf,) = by_recipient[world.operator.email]
+    assert world.eq.code in operator_pdf
+    (both_pdf,) = by_recipient[both.email]
+    assert operated_eq.code in both_pdf

@@ -6,11 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "dry-run | apply-test"
+        description: "dry-run | apply-test | switch-status | switch-on"
         required: true
         default: "dry-run"
         type: choice
-        options: [dry-run, apply-test]
+        options: [dry-run, apply-test, switch-status, switch-on]
       months:
         description: "Months, space separated (YYYY-MM); empty = last month"
         required: false
@@ -20,7 +20,7 @@ on:
         required: false
         default: ""
       confirm:
-        description: "Type SEND-TEST to run apply-test"
+        description: "Type SEND-TEST to run apply-test, TURN-ON to run switch-on"
         required: false
         default: ""
 
@@ -37,6 +37,7 @@ jobs:
         run: |
           set -euo pipefail
           args=()
+          cmd=monthly_usage_reports
           for m in $MR_MONTHS; do
             [[ "$m" =~ ^[0-9]{4}-[0-9]{2}$ ]] || { echo "bad month"; exit 1; }
             args+=(--month "$m")
@@ -50,6 +51,10 @@ jobs:
                 [[ "$u" =~ ^[0-9]+$ ]] || { echo "bad user id"; exit 1; }
                 args+=(--user "$u")
               done ;;
+            switch-status) cmd=monthly_reports_switch; args=() ;;
+            switch-on)
+              if [[ "$MR_CONFIRM" != "TURN-ON" ]]; then echo "confirm=TURN-ON is required for switch-on"; exit 1; fi
+              cmd=monthly_reports_switch; args=(--apply) ;;
             *) echo "unknown action"; exit 1 ;;
           esac
           for d in \
@@ -62,7 +67,7 @@ jobs:
               echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
               CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
               test -n "$CID"
-              docker exec -w /app "$CID" python manage.py monthly_usage_reports "${args[@]}"
+              docker exec -w /app "$CID" python manage.py "$cmd" "${args[@]}"
               exit 0
             fi
           done
