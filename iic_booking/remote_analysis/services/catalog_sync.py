@@ -120,19 +120,27 @@ def backfill_catalog_from_installed(*, limit: int = 50_000) -> dict[str, Any]:
     }
 
 
+def _archive_noise(cat) -> int:
+    """Archive a noise catalog row and drop its equipment mappings (allocation never uses noise titles,
+    and a mapping to an archived row is invisible in the mapping UI). Returns mappings removed."""
+    removed, _ = cat.equipment_mappings.all().delete()
+    cat.is_active = False
+    cat.is_archived = True
+    cat.save(update_fields=["is_active", "is_archived", "updated_at"])
+    return removed
+
+
 def archive_infrastructure_catalog_entries() -> dict[str, int]:
     """Archive auto-created catalog rows for Windows/.NET infrastructure noise."""
     from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
     from iic_booking.remote_analysis.services.inventory import is_catalog_auto_noise
 
-    archived = 0
+    archived = mappings_removed = 0
     for cat in AnalysisSoftwareCatalog.objects.filter(is_active=True, is_archived=False):
         if is_catalog_auto_noise(name=cat.name, publisher=cat.vendor or ""):
-            cat.is_active = False
-            cat.is_archived = True
-            cat.save(update_fields=["is_active", "is_archived", "updated_at"])
+            mappings_removed += _archive_noise(cat)
             archived += 1
-    return {"infrastructure_archived": archived}
+    return {"infrastructure_archived": archived, "infrastructure_mappings_removed": mappings_removed}
 
 
 def archive_unmanaged_auto_catalog_entries() -> dict[str, int]:
@@ -143,6 +151,8 @@ def archive_unmanaged_auto_catalog_entries() -> dict[str, int]:
       - admin-created entries that are not desktop/infrastructure noise
       - auto-discovered entries linked to a present analysis-category install
         (and not desktop noise like Notepad)
+      - auto-discovered entries that equipment still requires (mapped); archiving them would
+        leave a mapping the admin can neither see nor remove
     """
     from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
     from iic_booking.remote_analysis.models import InstalledSoftware
@@ -153,12 +163,10 @@ def archive_unmanaged_auto_catalog_entries() -> dict[str, int]:
         | Q(category__iexact="scientific")
         | Q(category__iexact="catalog")
     )
-    archived = 0
+    archived = mappings_removed = mapped_kept = 0
     for cat in AnalysisSoftwareCatalog.objects.filter(is_active=True, is_archived=False):
         if is_catalog_auto_noise(name=cat.name, publisher=cat.vendor or ""):
-            cat.is_active = False
-            cat.is_archived = True
-            cat.save(update_fields=["is_active", "is_archived", "updated_at"])
+            mappings_removed += _archive_noise(cat)
             archived += 1
             continue
 
@@ -174,13 +182,20 @@ def archive_unmanaged_auto_catalog_entries() -> dict[str, int]:
             continue
         if keep:
             continue
+        if cat.equipment_mappings.exists():
+            mapped_kept += 1
+            continue
 
         cat.is_active = False
         cat.is_archived = True
         cat.save(update_fields=["is_active", "is_archived", "updated_at"])
         archived += 1
 
-    return {"unmanaged_auto_archived": archived}
+    return {
+        "unmanaged_auto_archived": archived,
+        "unmanaged_noise_mappings_removed": mappings_removed,
+        "unmanaged_auto_kept_mapped": mapped_kept,
+    }
 
 
 def inventory_discovery_summary() -> dict[str, Any]:

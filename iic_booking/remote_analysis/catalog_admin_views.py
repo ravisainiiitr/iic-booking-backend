@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from django.db import transaction
 from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
@@ -26,6 +28,16 @@ def _license_type_choices() -> list[tuple[str, str]]:
 def _equipment_pk(equipment) -> int:
     """Equipment uses equipment_id as PK (not Django's default .id)."""
     return int(getattr(equipment, "pk", None) or getattr(equipment, "equipment_id"))
+
+
+def _normalize_catalog_id(value) -> str | None:
+    """Canonical UUID string, or None for blanks and malformed ids (they would 500 a pk lookup)."""
+    if not value:
+        return None
+    try:
+        return str(uuid.UUID(str(value).strip()))
+    except (ValueError, AttributeError, TypeError):
+        return None
 
 
 def _serialize_catalog(cat: AnalysisSoftwareCatalog, *, usage: dict | None = None) -> dict:
@@ -608,8 +620,15 @@ def mapping_matrix(request):
         if not isinstance(catalog_ids, list):
             return Response({"detail": "catalog_ids must be a list"}, status=status.HTTP_400_BAD_REQUEST)
         equipment = get_object_or_404(Equipment, pk=equipment_id)
-        default_id = body.get("default_catalog_id")
-        wanted = {str(x) for x in catalog_ids if x}
+        wanted: set[str] = set()
+        ignored: list[str] = []
+        for raw in catalog_ids:
+            cid = _normalize_catalog_id(raw)
+            if cid:
+                wanted.add(cid)
+            elif raw:
+                ignored.append(str(raw)[:64])
+        default_id = _normalize_catalog_id(body.get("default_catalog_id"))
         existing = {
             str(m.catalog_id): m
             for m in EquipmentAnalysisSoftware.objects.filter(equipment=equipment).select_related("catalog")
@@ -625,17 +644,27 @@ def mapping_matrix(request):
                 continue
             cat = AnalysisSoftwareCatalog.objects.filter(pk=cid, is_archived=False).first()
             if not cat:
+                ignored.append(cid)
                 continue
             existing[cid] = EquipmentAnalysisSoftware.objects.create(
                 equipment=equipment,
                 catalog=cat,
-                is_default=bool(default_id and str(default_id) == cid),
+                is_default=False,
             )
-        if default_id and str(default_id) in existing:
-            EquipmentAnalysisSoftware.objects.filter(equipment=equipment).update(is_default=False)
-            row = existing[str(default_id)]
-            row.is_default = True
-            row.save(update_fields=["is_default", "updated_at"])
+        usable = [
+            cid for cid, row in existing.items() if row.catalog.is_active and not row.catalog.is_archived
+        ]
+        if default_id not in usable:
+            current = next((cid for cid in usable if existing[cid].is_default), None)
+            default_id = current or (sorted(usable, key=lambda c: existing[c].catalog.name.lower())[0] if usable else None)
+        if default_id:
+            EquipmentAnalysisSoftware.objects.filter(equipment=equipment).exclude(catalog_id=default_id).update(
+                is_default=False
+            )
+            row = existing[default_id]
+            if not row.is_default:
+                row.is_default = True
+                row.save(update_fields=["is_default", "updated_at"])
         from iic_booking.remote_analysis.constants import AuditCategory
         from iic_booking.remote_analysis.services.audit import record_event
 
@@ -648,6 +677,7 @@ def mapping_matrix(request):
         return Response(
             {
                 "equipment_id": _equipment_pk(equipment),
+                "ignored_catalog_ids": ignored,
                 "mappings": [
                     _serialize_mapping(m)
                     for m in EquipmentAnalysisSoftware.objects.filter(equipment=equipment)
@@ -680,12 +710,26 @@ def mapping_matrix(request):
         availability_by_name = {}
 
     mappings = EquipmentAnalysisSoftware.objects.filter(equipment__in=eq_qs).select_related("catalog")
+    column_ids = {str(c.id) for c in catalogs}
     by_eq: dict[int, set[str]] = {}
     defaults: dict[int, str] = {}
+    unavailable: dict[int, list[dict]] = {}
     for m in mappings:
-        by_eq.setdefault(m.equipment_id, set()).add(str(m.catalog_id))
+        cid = str(m.catalog_id)
+        by_eq.setdefault(m.equipment_id, set()).add(cid)
         if m.is_default:
-            defaults[m.equipment_id] = str(m.catalog_id)
+            defaults[m.equipment_id] = cid
+        if cid not in column_ids:
+            # Mapped but hidden from the columns (disabled/archived in the catalog): the UI must still
+            # show it so it can be removed.
+            cat = m.catalog
+            unavailable.setdefault(m.equipment_id, []).append(
+                {
+                    "id": cid,
+                    "name": cat.name,
+                    "state": "archived" if cat.is_archived else "disabled",
+                }
+            )
 
     equipment_rows = []
     for eq in eq_qs[:500]:
@@ -699,6 +743,7 @@ def mapping_matrix(request):
                 "department_name": getattr(getattr(eq, "internal_department", None), "name", None),
                 "catalog_ids": sorted(by_eq.get(eq_pk, set())),
                 "default_catalog_id": defaults.get(eq_pk),
+                "unavailable_catalogs": sorted(unavailable.get(eq_pk, []), key=lambda u: u["name"].lower()),
             }
         )
 
