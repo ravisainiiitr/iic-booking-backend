@@ -18,7 +18,7 @@ on:
       code:
         description: "Target equipment code"
         required: false
-        default: TEST
+        default: DSATEST
       catalog_id:
         description: "Catalog id to describe"
         required: false
@@ -93,6 +93,16 @@ jobs:
               print(f"  other_rows_same_name={[(str(c.id)[:8], state(c)) for c in same_name]}")
               print(f"  present_installs_linked={InstalledSoftware.objects.filter(is_present=True, catalog_id=cat.pk).count()}"
                     f" present_installs_same_name={InstalledSoftware.objects.filter(is_present=True, software_name__iexact=cat.name).count()}")
+              from iic_booking.remote_analysis.services.inventory import is_catalog_auto_noise
+              print(f"  auto_noise={is_catalog_auto_noise(name=cat.name, publisher=cat.vendor or '')}"
+                    f" present_install_categories={sorted(set(InstalledSoftware.objects.filter(is_present=True).filter(Q(catalog_id=cat.pk) | Q(software_name__iexact=cat.name)).values_list('category', flat=True)))}")
+              from datetime import timedelta
+              from iic_booking.remote_analysis.models import WorkstationEvent
+              for ev in WorkstationEvent.objects.filter(
+                  created_at__gte=cat.updated_at - timedelta(hours=2), created_at__lte=cat.updated_at + timedelta(minutes=30),
+                  action__in=["CatalogSyncFromInventory", "CatalogBulkDelete", "EquipmentSoftwareMappingReplaced", "InventorySync", "InventorySynchronized"],
+              ).order_by("created_at")[:20]:
+                  print(f"    event {ev.created_at:%Y-%m-%d %H:%M:%S} action={ev.action} actor_type={getattr(ev.actor, 'user_type', None)}")
           print(f"  equipment_mappings={EquipmentAnalysisSoftware.objects.filter(catalog_id=cat_id).count() if cat is not None else 'n/a'}")
 
           print("== B. Equipment with unusable software mappings (all equipment, report only) ==")
@@ -124,6 +134,7 @@ jobs:
               for m in rows:
                   c = AnalysisSoftwareCatalog.objects.filter(pk=m.catalog_id).first()
                   print(f"    mapping={str(m.pk)[:8]} catalog={str(m.catalog_id)} state={state(c)} default={m.is_default}"
+                        f" mapped_at={m.created_at:%Y-%m-%d %H:%M}"
                         f" name={(c.name if c else None)!r}")
               return EquipmentAnalysisSoftware.objects.filter(equipment=eq).filter(unusable_q()).count()
           left = show()
