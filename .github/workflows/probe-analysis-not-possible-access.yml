@@ -34,10 +34,11 @@ jobs:
 
           from iic_booking.equipment.api_views import _get_equipment_ids_for_log_access
           from iic_booking.equipment.models import (
-              Booking, BookingSampleTrace, BookingStatus, EquipmentManager, EquipmentOperator, SampleTraceStatus,
+              Booking, BookingEvent, BookingSampleTrace, BookingStatus, EquipmentManager, EquipmentOperator,
+              SampleTraceStatus,
           )
           from iic_booking.equipment.reports import get_equipment_ids_managed_by_oic
-          from iic_booking.equipment.serializers import BookingSerializer
+          from iic_booking.equipment.serializers import BookingEventSerializer, BookingSerializer
           from iic_booking.users.models.user_type import UserType
 
           try:
@@ -73,8 +74,16 @@ jobs:
                   profile = str(BookingSerializer(context={}).get_equipment_profile_type(b) or "")
                   fabrication = profile.upper() in ("PRINT_3D", "LASER_CUT_2D")
                   print(f"booking pk={b.pk} status={b.status} maintenance_disruption_flag={bool(b.maintenance_disruption_flag)}")
-                  print(f"equipment id={eq.equipment_id} code={eq.equipment_code} profile={profile or '-'} fabrication={fabrication}")
+                  print(f"disruption_kind={b.disruption_kind or '-'} decision_deadline_at={b.maintenance_decision_deadline_at}")
+                  print(f"equipment id={eq.equipment_id} code={eq.code} profile={profile or '-'} fabrication={fabrication}")
                   print("lifecycle states (oldest first)=" + (" > ".join(str(labels.get(s, s)) for s in events) or "none"))
+                  status_events = (BookingEvent.objects.filter(booking_id=b.pk).exclude(new_status__isnull=True)
+                                   .order_by("created_at", "pk"))
+                  print(f"status changes={status_events.count()} (time, from > to, actor role, reason code)")
+                  for ev in status_events:
+                      audit = BookingEventSerializer(ev).data.get("audit") or {}
+                      print(f"  {ev.created_at:%Y-%m-%d %H:%M}Z {ev.previous_status or '-'} > {ev.new_status} "
+                            f"role={audit.get('actor_role') or '-'} reason_code={audit.get('reason_code') or '-'}")
                   status_ok = b.status in (BookingStatus.BOOKED, BookingStatus.PENDING) and not b.maintenance_disruption_flag
                   print(f"status allows Analysis Not Possible={status_ok}")
                   print(f"button rule on Booking details (status ok and not fabrication)={status_ok and not fabrication}")
