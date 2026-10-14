@@ -7,6 +7,7 @@ before input_values are stored on the booking.
 Input A is "Quantity Required": how many times the whole job (every file / part with its own count) is
 made. It multiplies the 3D print weight and time and the laser sheet share. Bookings saved before it carry
 no ``QUANTITY_MARKER_KEY`` and count as quantity 1 (3D print bookings stored the total weight in A).
+The system creates it editable after booking (``editing_required=True``).
 """
 
 from __future__ import annotations
@@ -168,7 +169,19 @@ QUANTITY_FIELD_SPEC = {
     "default_value": "1",
     # NUMERIC help_text: minimum / maximum / step.
     "help_text": f"1\n{MAX_JOB_QUANTITY}\n1",
+    # Users may change the quantity after booking (re-priced like any other input edit).
+    "editing_required": True,
 }
+
+
+def system_quantity_fields():
+    """The Quantity Required inputs (key A, NUMERIC, that label) of 3D print / laser cutting equipment."""
+    from .models import DynamicInputField
+
+    rows = DynamicInputField.objects.filter(
+        equipment__profile_type__in=FABRICATION_PROFILE_TYPES, field_key=QUANTITY_KEY, field_type="NUMERIC"
+    )
+    return [row for row in rows.order_by("equipment_id", "user_type") if _is_quantity_label(row.field_label)]
 
 
 def _is_quantity_label(label) -> bool:

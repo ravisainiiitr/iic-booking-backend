@@ -16226,10 +16226,11 @@ def update_booking_input_values(request, booking_id):
             profile_type == EquipmentProfileType.PRINT_3D
             and new_job_quantity != job_quantity_from_values(profile_type, booking.input_values)
         ):
-            from .fabrication import active_print_analyses_for_booking
+            from .fabrication import active_print_analyses_for_booking, inject_print_parts
             from .fabrication_reupload import print_time_exceeds_slots
 
-            too_long = print_time_exceeds_slots(booking, active_print_analyses_for_booking(booking), new_job_quantity)
+            print_analyses = active_print_analyses_for_booking(booking)
+            too_long = print_time_exceeds_slots(booking, print_analyses, new_job_quantity)
             if too_long is not None:
                 return Response(
                     {
@@ -16239,6 +16240,8 @@ def update_booking_input_values(request, booking_id):
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            if print_analyses:
+                current["C"] = inject_print_parts({}, print_analyses, new_job_quantity)["C"]
 
     from .calculators import normalize_periodic_table_billable_counts
     current = normalize_periodic_table_billable_counts(equipment, current)

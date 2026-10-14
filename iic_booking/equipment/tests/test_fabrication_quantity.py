@@ -164,8 +164,7 @@ def test_laser_quantity_defaults_to_1_and_rejects_invalid_values(egs_factory, no
 @pytest.mark.django_db
 def test_editing_quantity_after_booking_reprices_the_laser_job(egs_factory, no_portal_lock):
     eq = laser_equipment(egs_factory)
-    ensure_fabrication_quantity_inputs(eq)
-    DynamicInputField.objects.filter(equipment=eq, field_key="A").update(editing_required=True)
+    ensure_fabrication_quantity_inputs(eq)  # created editable after booking
     student, _sub = funded_student(egs_factory)
     client = egs_factory.client_for(student)
     batch_id = _laser_batch(client, eq, quantity=5)
@@ -185,6 +184,31 @@ def test_editing_quantity_after_booking_reprices_the_laser_job(egs_factory, no_p
     assert booking.input_values["A"] == 2
     assert booking.total_charge == Decimal("405")  # 202.43 x 2 = 404.86
     assert booking.charge_recalculation_pending_amount == Decimal("203.00")
+
+
+@pytest.mark.django_db
+def test_other_locked_inputs_stay_locked_when_quantity_is_editable(egs_factory, no_portal_lock):
+    eq = laser_equipment(egs_factory)
+    ensure_fabrication_quantity_inputs(eq)
+    DynamicInputField.objects.create(equipment=eq, field_key="D", field_label="Project", field_type="TEXT")
+    student, _sub = funded_student(egs_factory)
+    client = egs_factory.client_for(student)
+    batch_id = _laser_batch(client, eq, quantity=5)
+    slot = egs_factory.slot(eq, egs_factory.future(days=2))
+    resp = client.post(
+        f"/api/equipments/{eq.pk}/book/",
+        _book_body(slot, laser_cut_batch_id=batch_id, input_values={"A": 1, "D": "old"}),
+        format="json",
+    )
+    assert resp.status_code in (200, 201), resp.data
+    booking = Booking.objects.get(user=student, equipment=eq)
+
+    resp = client.patch(f"/api/bookings/{booking.pk}/input-values/", {"input_values": {"D": "new"}}, format="json")
+    assert resp.status_code == 403
+    resp = client.patch(f"/api/bookings/{booking.pk}/input-values/", {"input_values": {"A": 2}}, format="json")
+    assert resp.status_code == 200, resp.data
+    booking.refresh_from_db()
+    assert (booking.input_values["A"], booking.input_values["D"]) == (2, "old")
 
 
 # --------------------------------------------------------------------------- 3D print
@@ -267,6 +291,26 @@ def test_print_quantity_edit_must_fit_the_booked_slots(egs_factory):
 
 
 @pytest.mark.django_db
+def test_user_changing_print_quantity_within_the_booked_slots_is_repriced(egs_factory):
+    _eq, owner, booking, _part = _booked_print(egs_factory, quantity=1, slot_count=2)
+    client = egs_factory.client_for(owner)
+
+    resp = client.patch(f"/api/bookings/{booking.pk}/input-values/", {"input_values": {"A": 2}}, format="json")
+    assert resp.status_code == 200, resp.data
+    booking.refresh_from_db()
+    assert (booking.input_values["A"], booking.input_values["C"]) == (2, 60)
+    # 22 g x 1.44 = 31.68 + 60 min at 60/h -> 91.68 -> 92
+    assert booking.total_charge == Decimal("92")
+    assert booking.charge_recalculation_pending_amount == Decimal("92.00")
+
+    resp = client.patch(f"/api/bookings/{booking.pk}/input-values/", {"input_values": {"A": 1}}, format="json")
+    assert resp.status_code == 200, resp.data
+    booking.refresh_from_db()
+    assert (booking.input_values["A"], booking.input_values["C"]) == (1, 30)
+    assert booking.total_charge == Decimal("46")
+
+
+@pytest.mark.django_db
 def test_print_actuals_are_the_total_of_all_copies(egs_factory):
     from iic_booking.equipment.models import EquipmentManager
     from iic_booking.users.models.user_type import UserType
@@ -337,7 +381,13 @@ def test_command_adds_quantity_once_for_every_user_type_and_reports_conflicts(eg
     assert list(rows.filter(equipment=laser).values_list("user_type", flat=True)) == [""]
     assert not rows.filter(equipment__in=[conflict, other]).exists()
     row = rows.filter(equipment=printer, user_type="student").get()
-    assert (row.field_type, row.is_required, row.default_value, row.help_text) == ("NUMERIC", True, "1", "1\n1000\n1")
+    assert (row.field_type, row.is_required, row.default_value, row.help_text, row.editing_required) == (
+        "NUMERIC",
+        True,
+        "1",
+        "1\n1000\n1",
+        True,
+    )
     assert DynamicInputField.objects.get(equipment=conflict, field_key="A").field_label == "No. of Parts"
     assert "conflicts=shared:NUMERIC" in out.getvalue()
     assert "conflicts=1" in out.getvalue()
@@ -354,8 +404,70 @@ def test_switching_equipment_to_a_fabrication_profile_adds_quantity_once(egs_fac
 
     eq = laser_equipment(egs_factory)
     _add_fabrication_quantity_input(eq, EquipmentProfileType.HOUR)
-    assert DynamicInputField.objects.filter(equipment=eq, field_key="A", field_label=QUANTITY_LABEL).count() == 1
+    row = DynamicInputField.objects.get(equipment=eq, field_key="A", field_label=QUANTITY_LABEL)
+    assert row.editing_required is True
 
     DynamicInputField.objects.filter(equipment=eq).delete()
     _add_fabrication_quantity_input(eq, LASER)  # saved again on the same profile: removal is respected
     assert not DynamicInputField.objects.filter(equipment=eq).exists()
+
+
+@pytest.mark.django_db
+def test_make_quantity_editable_touches_only_fabrication_quantity_inputs(egs_factory):
+    from django.core.management.base import CommandError
+
+    def field(equipment, key, label, *, field_type="NUMERIC", user_type="", editing_required=False):
+        return DynamicInputField.objects.create(
+            equipment=equipment,
+            user_type=user_type,
+            field_key=key,
+            field_label=label,
+            field_type=field_type,
+            editing_required=editing_required,
+        )
+
+    printer, laser, conflict, other = (
+        print_equipment(egs_factory),
+        laser_equipment(egs_factory),
+        laser_equipment(egs_factory),
+        egs_factory.equipment(),
+    )
+    targets = [
+        field(printer, "A", QUANTITY_LABEL),
+        field(printer, "A", "Quantity Required:", user_type="student"),
+        field(laser, "A", QUANTITY_LABEL),
+    ]
+    untouched = [
+        field(printer, "D", "Project"),
+        field(laser, "B", "Quantity Required", field_type="TEXT"),
+        field(conflict, "A", "No. of Parts"),
+        field(other, "A", QUANTITY_LABEL),
+    ]
+    field(conflict, "B", QUANTITY_LABEL, editing_required=True)
+
+    def run(*args):
+        out = StringIO()
+        call_command("make_fabrication_quantity_editable", *args, stdout=out)
+        return out.getvalue()
+
+    def locked(rows):
+        return [row.pk for row in rows if not DynamicInputField.objects.get(pk=row.pk).editing_required]
+
+    out = run()
+    assert "MODE=dry-run" in out and "locked=3" in out
+    assert f"LOCKED_INPUT_IDS {','.join(str(row.pk) for row in targets)}" in out
+    assert len(locked(targets)) == 3
+    with pytest.raises(CommandError):
+        run("--verify")
+    with pytest.raises(CommandError):
+        run("--apply")
+    with pytest.raises(CommandError):
+        run("--apply", "--confirm", "yes")
+    assert len(locked(targets)) == 3
+
+    assert "UPDATED 3" in run("--apply", "--confirm", "MAKE_QUANTITY_EDITABLE")
+    assert locked(targets) == []
+    assert locked(untouched) == [row.pk for row in untouched]
+    out = run("--verify")
+    assert "locked=0" in out and "VERIFY OK" in out
+    assert "UPDATED 0" in run("--apply", "--confirm", "MAKE_QUANTITY_EDITABLE")
