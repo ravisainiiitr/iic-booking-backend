@@ -102,6 +102,16 @@ jobs:
                   for row in mgrs:
                       u = row.manager
                       print(f"  oic user_id={u.pk} user_type={u.user_type} server_allows={can_flag_analysis_not_possible(u, b)}")
+
+                  if not status_ok:
+                      # Unsaved in-memory copy with the pre-disruption state; the database row is not touched.
+                      before = Booking.objects.select_related("equipment").get(pk=b.pk)
+                      before.status, before.maintenance_disruption_flag = BookingStatus.BOOKED, False
+                      print("as before the disruption (in-memory copy: BOOKED, same sample lifecycle, not saved):")
+                      for row in ops:
+                          print(f"  operator user_id={row.operator.pk} server_allows={can_flag_analysis_not_possible(row.operator, before)}")
+                      for row in mgrs:
+                          print(f"  oic user_id={row.manager.pk} server_allows={can_flag_analysis_not_possible(row.manager, before)}")
               transaction.set_rollback(True)
           print("DONE (read-only, rolled back)")
           PY
