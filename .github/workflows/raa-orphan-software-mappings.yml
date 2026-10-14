@@ -1,0 +1,143 @@
+# Remote Analysis equipment -> software mappings whose catalog entry is gone, disabled or archived.
+#   status : read-only. Details of one catalog id, every equipment with such mappings (codes and counts only),
+#            and the mappings of the target equipment.
+#   apply  : deletes those mapping rows for the target equipment only, and only when that equipment is
+#            visible_to_test_accounts_only. Followed by a re-check that must report 0 left. Catalog rows,
+#            other equipment, bookings and sessions are never changed.
+name: RAA Orphan Software Mappings
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "status | apply"
+        required: true
+        default: status
+        type: choice
+        options: [status, apply]
+      code:
+        description: "Target equipment code"
+        required: false
+        default: TEST
+      catalog_id:
+        description: "Catalog id to describe"
+        required: false
+        default: 8cc15df9-4d80-4630-b82f-ef066897eb23
+      confirm:
+        description: "Type REMOVE_TEST_ORPHANS to apply (not needed for status)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 10
+    steps:
+      - name: Run
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          CODE: ${{ github.event.inputs.code }}
+          CATALOG_ID: ${{ github.event.inputs.catalog_id }}
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = "apply" ] && [ "$CONFIRM" != "REMOVE_TEST_ORPHANS" ]; then
+            echo "apply needs confirm=REMOVE_TEST_ORPHANS"; exit 1
+          fi
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          test -n "$CID"
+          docker exec -i -e MODE="$MODE" -e CODE="$CODE" -e CATALOG_ID="$CATALOG_ID" -w /app "$CID" python - <<'PY'
+          import os, sys, uuid, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import defaultdict
+          from django.db import transaction
+          from django.db.models import Q
+          from iic_booking.equipment.models import Equipment
+          from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog, EquipmentAnalysisSoftware
+          from iic_booking.remote_analysis.models import InstalledSoftware
+
+          mode = os.environ["MODE"]
+          code = (os.environ.get("CODE") or "").strip()
+          cat_id = (os.environ.get("CATALOG_ID") or "").strip()
+
+          def unusable_q():
+              live = AnalysisSoftwareCatalog.objects.values("id")
+              return ~Q(catalog_id__in=live) | Q(catalog__is_active=False) | Q(catalog__is_archived=True)
+
+          def state(cat):
+              if cat is None:
+                  return "missing"
+              if cat.is_archived:
+                  return "archived"
+              return "active" if cat.is_active else "disabled"
+
+          print("== A. Catalog id ==")
+          try:
+              uuid.UUID(cat_id)
+              cat = AnalysisSoftwareCatalog.objects.filter(pk=cat_id).first()
+          except ValueError:
+              cat = None
+          print(f"  id={cat_id} state={state(cat)}")
+          if cat is not None:
+              desc = (cat.description or "").strip()
+              print(
+                  f"  name={cat.name!r} slug={cat.slug} category={cat.category!r}"
+                  f" auto_discovered={desc.startswith('Auto-discovered from RAA')}"
+                  f" created={cat.created_at:%Y-%m-%d %H:%M} updated={cat.updated_at:%Y-%m-%d %H:%M}"
+              )
+              same_name = AnalysisSoftwareCatalog.objects.filter(name__iexact=cat.name).exclude(pk=cat.pk)
+              print(f"  other_rows_same_name={[(str(c.id)[:8], state(c)) for c in same_name]}")
+              print(f"  present_installs_linked={InstalledSoftware.objects.filter(is_present=True, catalog_id=cat.pk).count()}"
+                    f" present_installs_same_name={InstalledSoftware.objects.filter(is_present=True, software_name__iexact=cat.name).count()}")
+          print(f"  equipment_mappings={EquipmentAnalysisSoftware.objects.filter(catalog_id=cat_id).count() if cat is not None else 'n/a'}")
+
+          print("== B. Equipment with unusable software mappings (all equipment, report only) ==")
+          per_eq = defaultdict(lambda: defaultdict(int))
+          for eq_code, c_state_active, c_state_arch, c_exists in (
+              EquipmentAnalysisSoftware.objects.filter(unusable_q())
+              .values_list("equipment__code", "catalog__is_active", "catalog__is_archived", "catalog__id")
+          ):
+              st = "missing" if c_exists is None else ("archived" if c_state_arch else "disabled")
+              per_eq[eq_code][st] += 1
+          print(f"  equipment_count={len(per_eq)} mapping_rows={sum(sum(v.values()) for v in per_eq.values())}")
+          for eq_code in sorted(per_eq, key=lambda x: x or ""):
+              print(f"    code={eq_code} {dict(per_eq[eq_code])}")
+
+          print(f"== C. Target equipment code={code!r} ==")
+          eqs = list(Equipment.objects.filter(code=code))
+          if len(eqs) != 1:
+              print(f"  matches={len(eqs)} (need exactly 1)")
+              for e in Equipment.objects.filter(visible_to_test_accounts_only=True, enable_remote_analysis=True):
+                  print(f"    test_only_ra_equipment code={e.code} id={e.pk}")
+              sys.exit(1 if mode == "apply" else 0)
+          eq = eqs[0]
+          print(
+              f"  equipment_id={eq.pk} test_only={eq.visible_to_test_accounts_only}"
+              f" remote_analysis={eq.enable_remote_analysis}"
+          )
+          def show():
+              rows = list(EquipmentAnalysisSoftware.objects.filter(equipment=eq).select_related("catalog"))
+              for m in rows:
+                  c = AnalysisSoftwareCatalog.objects.filter(pk=m.catalog_id).first()
+                  print(f"    mapping={str(m.pk)[:8]} catalog={str(m.catalog_id)} state={state(c)} default={m.is_default}"
+                        f" name={(c.name if c else None)!r}")
+              return EquipmentAnalysisSoftware.objects.filter(equipment=eq).filter(unusable_q()).count()
+          left = show()
+          print(f"  unusable_mappings={left}")
+
+          if mode == "apply":
+              if not eq.visible_to_test_accounts_only:
+                  print("  REFUSED: target is not test-only equipment"); sys.exit(1)
+              with transaction.atomic():
+                  n, _ = EquipmentAnalysisSoftware.objects.filter(equipment=eq).filter(unusable_q()).delete()
+              print(f"  deleted_mapping_rows={n}")
+              print("== Verify ==")
+              left = show()
+              print(f"  unusable_mappings={left}")
+              if left:
+                  sys.exit(1)
+          PY
