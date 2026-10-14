@@ -338,7 +338,9 @@ def test_switch_command_status_is_read_only_and_apply_turns_on_without_sending(f
 
     from django_celery_beat.models import CrontabSchedule, PeriodicTask
 
-    crontab = CrontabSchedule.objects.create(minute="10", hour="9", day_of_month="1", month_of_year="*", day_of_week="*")
+    crontab = CrontabSchedule.objects.create(
+        minute="10", hour="9", day_of_month="1", month_of_year="*", day_of_week="*", timezone="Asia/Kolkata"
+    )
     PeriodicTask.objects.create(name="monthly", task="communication.send_monthly_usage_reports", crontab=crontab)
     row = MonthlyReportSettings.get_singleton()
     row.attach_excel, row.hod_enabled = False, False
@@ -352,7 +354,8 @@ def test_switch_command_status_is_read_only_and_apply_turns_on_without_sending(f
     assert status["settings_before"]["enabled"] is False and "settings_after" not in status
     assert MonthlyReportSettings.get_singleton().enabled is False
     (beat,) = status["beat"]
-    assert beat["enabled"] is True and beat["crontab"] == "10 9 1 * *" and beat["next_run_at"]
+    assert beat["enabled"] is True and beat["crontab"] == "10 9 1 * *"
+    assert beat["next_run_at"].endswith("-01 09:10:00+05:30")
 
     out = StringIO()
     call_command("monthly_reports_switch", "--apply", stdout=out)

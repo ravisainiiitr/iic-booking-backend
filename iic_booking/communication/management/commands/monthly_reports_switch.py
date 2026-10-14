@@ -10,6 +10,7 @@ real send is the scheduled beat run.
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 
 from django.core.management.base import BaseCommand
 from django.utils import timezone
@@ -38,7 +39,11 @@ def _beat() -> list[dict]:
             c = task.crontab
             info["crontab"] = f"{c.minute} {c.hour} {c.day_of_month} {c.month_of_year} {c.day_of_week}"
             info["crontab_timezone"] = str(getattr(c, "timezone", ""))
-            info["next_run_at"] = (now + c.schedule.remaining_estimate(task.last_run_at or now)).astimezone(IST)
+            sched = c.schedule
+            # remaining_estimate reads wall-clock fields off last_run_at, so it must be in the crontab's timezone.
+            last = (task.last_run_at or now).astimezone(getattr(sched, "tz", None) or IST)
+            nxt = now + sched.remaining_estimate(last) + timedelta(seconds=30)
+            info["next_run_at"] = nxt.replace(second=0, microsecond=0).astimezone(IST)
         out.append(info)
     return out
 
