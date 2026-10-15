@@ -107,6 +107,20 @@ class CertificationAwardAdmin(admin.ModelAdmin):
     exclude = ("verify_token",)
 
 
+@admin.register(models.EquipmentAuthorisationSetting)
+class EquipmentAuthorisationSettingAdmin(admin.ModelAdmin):
+    list_display = ("id", "equipment", "required", "applies_to", "min_level_code", "validity_months", "updated_at")
+    list_filter = ("required", "applies_to")
+    raw_id_fields = ("equipment", "updated_by")
+
+
+@admin.register(models.AuthorisationRequest)
+class AuthorisationRequestAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "equipment", "status", "scheduled_start", "decided_at", "created_at")
+    list_filter = ("status",)
+    raw_id_fields = ("user", "equipment", "decided_by", "award")
+
+
 @admin.register(models.CompetencyChecklist)
 class CompetencyChecklistAdmin(admin.ModelAdmin):
     list_display = ("id", "equipment", "theory_pass_pct", "practical_pass_pct", "updated_at")
