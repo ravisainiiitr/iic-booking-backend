@@ -142,6 +142,10 @@ def test_test_accounts_audience_only_gates_test_accounts(world):
     tester = make_user(user_type=UserType.STUDENT, department=world.dept, is_test_account=True)
     assert code(book(world.student, world.equipment)) != GATE
     assert code(book(tester, world.equipment)) == GATE
+    # Badges only for people the gate applies to (and staff).
+    assert client_for(world.student).get(f"{AUTH}/gated-equipment/").data["equipment_ids"] == []
+    assert client_for(tester).get(f"{AUTH}/gated-equipment/").data["equipment_ids"] == [world.equipment.pk]
+    assert client_for(world.oic).get(f"{AUTH}/gated-equipment/").data["equipment_ids"] == [world.equipment.pk]
 
 
 def test_applies_to_internal_by_default_and_all_when_chosen(world):

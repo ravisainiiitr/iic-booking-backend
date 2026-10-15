@@ -25,7 +25,13 @@ def _ids(raw) -> list[int]:
 
 @training_api(["GET"], allow_disabled=True)
 def gated_equipment(request):
-    """Equipment where booking needs authorisation (for "Training required" badges). Empty while the module is off."""
+    """Equipment where booking needs authorisation (for "Training required" badges).
+
+    Empty while the module is off, and for users outside the Training audience (they are not gated).
+    """
+    user = request.user
+    if not (authorisation.is_staff(user) or access.in_audience(user)):
+        return Response({"equipment_ids": []})
     return Response({"equipment_ids": sorted(authorisation.gated_equipment_ids())})
 
 
