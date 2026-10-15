@@ -52,12 +52,17 @@ def week_key(monday: date) -> str:
 def _hours_by_equipment(start: date, end: date) -> dict[int, float]:
     from iic_booking.equipment.models import Booking
 
-    rows = (
+    in_range = (
         Booking.objects.filter(status__in=ACTIVE_STATUSES)
         .annotate(first_day=Min("daily_slots__date"))
         .filter(first_day__gte=start, first_day__lte=end)
+        .values("pk")
+    )
+    rows = (
+        Booking.objects.filter(pk__in=in_range)
         .values("equipment_id")
         .annotate(minutes=Sum("total_time_minutes"))
+        .order_by()
     )
     return {int(r["equipment_id"]): float(r["minutes"] or 0) / 60.0 for r in rows}
 
