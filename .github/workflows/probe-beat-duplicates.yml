@@ -1,0 +1,61 @@
+name: Probe scheduled job duplicates (read-only)
+
+# Lists Celery beat PeriodicTask rows whose task is registered more than once, with ids, names, schedule,
+# arguments, enabled flag and run counters. No user data. Runs inside a READ ONLY transaction that is rolled back.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Beat duplicates (SELECT only)
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import os
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from collections import Counter
+
+          from django.db import connection, transaction
+          from django_celery_beat.models import PeriodicTask
+
+          def sched(p):
+              if p.crontab_id:
+                  c = p.crontab
+                  return f"crontab id={c.pk} '{c.minute} {c.hour} {c.day_of_month} {c.month_of_year} {c.day_of_week}' tz={c.timezone}"
+              if p.interval_id:
+                  return f"interval id={p.interval_id} every {p.interval.every} {p.interval.period}"
+              return "other"
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+              rows = list(PeriodicTask.objects.select_related("crontab", "interval").order_by("task", "pk"))
+              counts = Counter(p.task for p in rows)
+              print(f"periodic tasks={len(rows)} distinct task names={len(counts)}")
+              dupes = [t for t, n in counts.items() if n > 1]
+              print(f"tasks registered more than once={dupes}")
+              for t in dupes + ["equipment.check_booking_not_utilized"]:
+                  print(f"\n== {t} ==")
+                  for p in rows:
+                      if p.task != t:
+                          continue
+                      print(f"  id={p.pk} name='{p.name}' enabled={p.enabled} {sched(p)} args={p.args} kwargs={p.kwargs} "
+                            f"queue={p.queue} one_off={p.one_off} total_run_count={p.total_run_count} "
+                            f"last_run_at={p.last_run_at} date_changed={p.date_changed}")
+              from django.db.migrations.recorder import MigrationRecorder
+              applied = set(MigrationRecorder.Migration.objects.filter(app="equipment").values_list("name", flat=True))
+              for m in ("0062_booking_not_utilized_schedule", "0142_booking_not_utilized_celery_schedule"):
+                  print(f"migration equipment.{m} applied={m in applied}")
+              transaction.set_rollback(True)
+          print("\nDONE (read-only, rolled back)")
+          PY

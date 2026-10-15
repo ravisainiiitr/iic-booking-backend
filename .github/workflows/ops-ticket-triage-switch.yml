@@ -1,0 +1,141 @@
+name: Ops - ticket triage suggestions switch
+
+# Turns ONLY "Ticket triage suggestions" (AutomationSettings.ticket_triage_enabled) on or off. Auto-assign, weekly
+# OIC alerts, no-show prompts and the instrument finder AI fallback are never changed here; the apply step refuses
+# to run if any of them is on. The change is written to the automation activity log.
+#   mode=dry-run : read-only; prints the switches and what triage would suggest for the latest tickets.
+#   mode=apply   : needs confirm=TRIAGE-ON (or TRIAGE-OFF with enable=false); then re-reads and verifies.
+# Prints switch states, counts and ticket ids only: no names, emails or ticket text.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: dry-run or apply
+        required: true
+        default: dry-run
+      enable:
+        description: true to switch triage on, false to switch it off
+        required: true
+        default: 'true'
+      confirm:
+        description: TRIAGE-ON (enable=true) or TRIAGE-OFF (enable=false); required for apply
+        required: false
+        default: ''
+
+jobs:
+  triage-switch:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Triage switch
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          ENABLE: ${{ github.event.inputs.enable }}
+          CONFIRM: ${{ github.event.inputs.confirm }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e MODE="$MODE" -e ENABLE="$ENABLE" -e CONFIRM="$CONFIRM" -e RUN_ID="$RUN_ID" -w /app "$CID" python - <<'PY'
+          import os
+          import sys
+          from collections import Counter
+          from datetime import timedelta
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+          from django.db.models.signals import post_save
+          from django.utils import timezone
+
+          from iic_booking.automation.audit import log_action
+          from iic_booking.automation.models import AutomationActionLog, AutomationSettings, TicketTriage
+          from iic_booking.automation.ticket_triage import AUTO_ASSIGN_MIN_CONFIDENCE, triage
+          from iic_booking.communication.models import CommunicationLog
+          from iic_booking.support.models import Ticket
+
+          MODE = (os.environ.get("MODE") or "dry-run").strip()
+          ENABLE = (os.environ.get("ENABLE") or "true").strip().lower() == "true"
+          CONFIRM = (os.environ.get("CONFIRM") or "").strip()
+          OTHER = ("ticket_auto_assign_enabled", "oic_alerts_enabled", "no_show_prompts_enabled", "instrument_finder_llm_enabled")
+          START = timezone.now()
+
+          def read_only():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+
+          def report(title):
+              print(f"\n== {title} ==")
+              row = AutomationSettings.objects.filter(pk=1).first()
+              cfg = row or AutomationSettings(pk=1)
+              print(f"  settings row saved={row is not None}")
+              for f in ("ticket_triage_enabled",) + OTHER:
+                  print(f"  {f} = {getattr(cfg, f)}")
+              hooked = any(key[0][0] == "automation_ticket_triage" for key in [r[:1] for r in post_save.receivers])
+              print(f"  ticket post_save triage hook connected={hooked}")
+              tickets = list(Ticket.objects.select_related("related_equipment", "user").order_by("-created_at")[:20])
+              res = [(t, triage(t)) for t in tickets]
+              print(f"  triage preview on latest {len(res)} tickets: topics={dict(Counter(r.topic for _, r in res))} "
+                    f"routes={dict(Counter(r.route_role for _, r in res))}")
+              print(f"  with a named handler={sum(1 for _, r in res if r.assignee)} "
+                    f"confident>={AUTO_ASSIGN_MIN_CONFIDENCE}={sum(1 for _, r in res if r.confidence >= AUTO_ASSIGN_MIN_CONFIDENCE)} "
+                    f"with reply draft={sum(1 for _, r in res if r.reply_draft)}")
+              print(f"  sample (ticket id: topic/route/confidence): "
+                    + ", ".join(f"{t.ticket_id}:{r.topic}/{r.route_role}/{r.confidence:.2f}" for t, r in res[:8]))
+              print(f"  saved triage rows={TicketTriage.objects.count()}")
+              acts = Counter(AutomationActionLog.objects.values_list("kind", "action"))
+              print(f"  automation log (kind, action) counts={dict(acts)}")
+              auto = CommunicationLog.objects.filter(template__code__startswith="automation_").count()
+              print(f"  emails ever logged with automation templates={auto}")
+
+          if MODE not in ("dry-run", "apply"):
+              sys.exit(f"unknown mode {MODE!r}")
+
+          with transaction.atomic():
+              read_only()
+              report("before (read-only)")
+              transaction.set_rollback(True)
+
+          if MODE == "dry-run":
+              cfg = AutomationSettings.objects.filter(pk=1).first() or AutomationSettings(pk=1)
+              print(f"\nDRY RUN: would set ticket_triage_enabled {cfg.ticket_triage_enabled} -> {ENABLE}; nothing else changes.")
+              sys.exit(0)
+
+          expected = "TRIAGE-ON" if ENABLE else "TRIAGE-OFF"
+          if CONFIRM != expected:
+              sys.exit(f"refusing to apply: confirm must be {expected}")
+
+          with transaction.atomic():
+              cfg = AutomationSettings.objects.select_for_update().filter(pk=1).first()
+              if cfg is None:
+                  cfg = AutomationSettings(pk=1)
+              on = [f for f in OTHER if getattr(cfg, f)]
+              if on:
+                  sys.exit(f"refusing to apply: other automation switches are on: {on}")
+              before = cfg.ticket_triage_enabled
+              if before == ENABLE:
+                  print(f"\nAPPLY: ticket_triage_enabled already {ENABLE}; nothing changed.")
+              else:
+                  cfg.ticket_triage_enabled = ENABLE
+                  cfg.save()
+                  log_action("settings", "changed", target_type="settings", target_id="1",
+                             summary="ticket_triage_enabled",
+                             detail={"ticket_triage_enabled": [str(before), str(ENABLE)], "via": "ops workflow",
+                                     "run_id": os.environ.get("RUN_ID", "")})
+                  print(f"\nAPPLY: ticket_triage_enabled {before} -> {ENABLE} (logged)")
+
+          with transaction.atomic():
+              read_only()
+              report("after (read-only verification)")
+              cfg = AutomationSettings.objects.get(pk=1)
+              ok = cfg.ticket_triage_enabled == ENABLE and not any(getattr(cfg, f) for f in OTHER)
+              sent = AutomationActionLog.objects.filter(created_at__gte=START, action__in=["sent", "assigned"]).count()
+              print(f"\n  actions 'sent' or 'assigned' since this run started={sent}")
+              transaction.set_rollback(True)
+          print("VERIFIED" if ok and sent == 0 else "VERIFICATION FAILED")
+          sys.exit(0 if ok and sent == 0 else 1)
+          PY
