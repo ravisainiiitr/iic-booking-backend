@@ -461,6 +461,25 @@ class TestAdminApi:
         send.assert_not_called()
         assert not TicketTriage.objects.exists()
 
+    def test_dry_run_command(self, lab):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        self_baseline = TestOicAlerts()
+        self_baseline.MONDAY = oic_alerts.last_full_week()
+        self_baseline._baseline(lab)
+        _ticket(lab.student, "XRD-B1 not working", "vacuum fault")
+        out = StringIO()
+        with patch(SEND) as send:
+            call_command("automation_dry_run", "--weeks", "1", "--days", "2", stdout=out)
+        text = out.getvalue()
+        send.assert_not_called()
+        assert "equipment flagged=1" in text and "XRD-B1" in text and "DONE" in text
+        assert "tickets=1" in text
+        assert not AutomationSettings.objects.exists() and not TicketTriage.objects.exists()
+        assert lab.oic.email not in text and lab.student.email not in text
+
     def test_log_and_features(self, lab):
         _cfg(ticket_triage_enabled=True)
         _client(lab.admin).patch(f"{API}/settings/", {"oic_alerts_enabled": True}, format="json")

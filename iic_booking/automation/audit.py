@@ -37,7 +37,8 @@ def settings_row():
     from .models import AutomationSettings
 
     try:
-        return AutomationSettings.get_singleton()
+        # Read-only: the row is created when the admin first saves the settings, so reads never write.
+        return AutomationSettings.objects.filter(pk=1).first() or AutomationSettings(pk=1)
     except Exception:  # noqa: BLE001
         logger.warning("automation settings unavailable; using defaults", exc_info=True)
         return AutomationSettings()
