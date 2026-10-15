@@ -486,6 +486,54 @@ def test_dashboard_menu_priority_order_saved_for_admin():
     assert _client(admin).put(url, {"groups": [], "order": "nope"}, format="json").status_code == 400
 
 
+# --- Lab dashboard equipment priority ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("user_type", [UserType.MANAGER, UserType.OPERATOR])
+def test_dashboard_equipment_order_saved_per_user(user_type):
+    staff = _user(user_type=user_type)
+    url = "/api/profiles/me/dashboard-equipment-order/"
+    assert _client(staff).get(url).data == {"equipment_ids": []}
+
+    res = _client(staff).put(url, {"equipment_ids": [12, "7", 12, -3, "x", True, 5]}, format="json")
+    assert res.status_code == 200, res.data
+    assert res.data == {"equipment_ids": [12, 7, 5]}
+    assert _client(staff).get(url).data == {"equipment_ids": [12, 7, 5]}
+    assert _client(_user(user_type=user_type)).get(url).data == {"equipment_ids": []}
+
+    assert _client(staff).put(url, {"equipment_ids": "nope"}, format="json").status_code == 400
+    assert _client(staff).put(url, {"equipment_ids": []}, format="json").data == {"equipment_ids": []}
+    staff.refresh_from_db()
+    assert "equipment_order" not in staff.dashboard_menu_layout
+
+
+@pytest.mark.parametrize("user_type", [UserType.STUDENT, UserType.ADMIN, UserType.FACULTY])
+def test_dashboard_equipment_order_only_for_lab_staff(user_type):
+    url = "/api/profiles/me/dashboard-equipment-order/"
+    user = _user(user_type=user_type)
+    assert _client(user).put(url, {"equipment_ids": [1]}, format="json").status_code == 403
+    assert _client(user).get(url).data == {"equipment_ids": []}
+    assert _client().get(url).status_code in (401, 403)
+
+
+def test_menu_layout_save_keeps_equipment_order():
+    oic = _user(user_type=UserType.MANAGER)
+    order_url = "/api/profiles/me/dashboard-equipment-order/"
+    menu_url = "/api/profiles/me/dashboard-menu-layout/"
+    assert _client(oic).put(order_url, {"equipment_ids": [3, 1]}, format="json").status_code == 200
+
+    res = _client(oic).put(menu_url, {"groups": [{"id": "g1", "name": "Daily", "items": ["accessories"]}]}, format="json")
+    assert res.status_code == 200
+    assert "equipment_order" not in res.data
+    assert _client(oic).get(menu_url).data == {"groups": [{"id": "g1", "name": "Daily", "items": ["accessories"]}], "order": []}
+    assert _client(oic).get(order_url).data == {"equipment_ids": [3, 1]}
+
+    assert _client(oic).put(order_url, {"equipment_ids": [1]}, format="json").status_code == 200
+    oic.refresh_from_db()
+    assert oic.dashboard_menu_layout["groups"][0]["id"] == "g1"
+    assert oic.dashboard_menu_layout["equipment_order"] == [1]
+
+
 # --- OIC slot status / reserve ----------------------------------------------------------------
 
 

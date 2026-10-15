@@ -2549,9 +2549,71 @@ def profile_me_dashboard_menu_layout(request):
     layout, err = _clean_dashboard_menu_layout(request.data)
     if err:
         return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
-    user.dashboard_menu_layout = layout
+    stored = dict(layout)
+    equipment_order = (getattr(user, "dashboard_menu_layout", None) or {}).get(DASHBOARD_EQUIPMENT_ORDER_KEY)
+    if equipment_order:
+        stored[DASHBOARD_EQUIPMENT_ORDER_KEY] = equipment_order
+    user.dashboard_menu_layout = stored
     user.save(update_fields=["dashboard_menu_layout"])
     return Response(layout, status=status.HTTP_200_OK)
+
+
+DASHBOARD_EQUIPMENT_ORDER_KEY = "equipment_order"
+DASHBOARD_EQUIPMENT_ORDER_MAX = 500
+
+
+def _clean_dashboard_equipment_order(raw):
+    """Positive equipment ids in priority order (duplicates dropped); returns (ids, error)."""
+    if raw in (None, ""):
+        return [], None
+    if not isinstance(raw, list):
+        return None, "Equipment order must be a list of equipment ids."
+    ids, seen = [], set()
+    for value in raw:
+        if isinstance(value, bool):
+            continue
+        try:
+            eid = int(value)
+        except (TypeError, ValueError):
+            continue
+        if eid <= 0 or eid in seen:
+            continue
+        seen.add(eid)
+        ids.append(eid)
+    if len(ids) > DASHBOARD_EQUIPMENT_ORDER_MAX:
+        return None, "Too many equipment in the order."
+    return ids, None
+
+
+@api_view(["GET", "PUT"])
+@permission_classes([IsAuthenticated])
+def profile_me_dashboard_equipment_order(request):
+    """
+    GET: the current user's Lab dashboard equipment priority ({"equipment_ids": [...]}; empty = default order).
+    PUT: save it (Lab Operator and OIC only). Body: {"equipment_ids": [...]}, top priority first.
+    """
+    user = request.user
+    stored = getattr(user, "dashboard_menu_layout", None) or {}
+    if request.method == "GET":
+        ids, _err = _clean_dashboard_equipment_order(stored.get(DASHBOARD_EQUIPMENT_ORDER_KEY))
+        return Response({"equipment_ids": ids or []}, status=status.HTTP_200_OK)
+    if getattr(user, "user_type", None) not in (UserType.OPERATOR, UserType.MANAGER):
+        return Response(
+            {"error": "Only a Lab Operator or an Officer In Charge can set the dashboard equipment order."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    payload = request.data if isinstance(request.data, dict) else {}
+    ids, err = _clean_dashboard_equipment_order(payload.get("equipment_ids"))
+    if err:
+        return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+    updated = dict(stored)
+    if ids:
+        updated[DASHBOARD_EQUIPMENT_ORDER_KEY] = ids
+    else:
+        updated.pop(DASHBOARD_EQUIPMENT_ORDER_KEY, None)
+    user.dashboard_menu_layout = updated
+    user.save(update_fields=["dashboard_menu_layout"])
+    return Response({"equipment_ids": ids}, status=status.HTTP_200_OK)
 
 
 @api_view(["GET", "POST"])
