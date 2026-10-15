@@ -1,0 +1,51 @@
+name: Probe AI automation dry run (read-only)
+
+# Runs `manage.py automation_dry_run`: what each AI / automation switch would do if it were on (OIC alerts per week,
+# no-show prompts per day, ticket triage on recent tickets, instrument finder coverage). Prints switch states,
+# counts and equipment codes only: no names, emails, ticket or message text. Nothing is sent: the command never
+# calls the email service, and it runs inside a READ ONLY transaction that is rolled back.
+
+on:
+  workflow_dispatch:
+    inputs:
+      weeks:
+        description: Full weeks of OIC alerts to evaluate
+        required: false
+        default: '4'
+      days:
+        description: Days of no-show prompts to evaluate
+        required: false
+        default: '14'
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Automation dry run (SELECT only)
+        env:
+          WEEKS: ${{ github.event.inputs.weeks }}
+          DAYS: ${{ github.event.inputs.days }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e WEEKS="${WEEKS:-4}" -e DAYS="${DAYS:-14}" -w /app "$CID" python - <<'PY'
+          import os
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.core.management import call_command
+          from django.db import connection, transaction
+
+          weeks = str(int((os.environ.get("WEEKS") or "4").strip() or 4))
+          days = str(int((os.environ.get("DAYS") or "14").strip() or 14))
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+              call_command("automation_dry_run", "--weeks", weeks, "--days", days, "--tickets", "60")
+              transaction.set_rollback(True)
+          print("\n(read-only transaction rolled back)")
+          PY
