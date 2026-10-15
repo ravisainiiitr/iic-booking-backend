@@ -49,6 +49,10 @@ _CAPABILITY_RE = re.compile(
     r"\b(equipment|instruments?|facility)\s+(for|to)\s+\w+|\bwho\s+(offers|provides|does)\b|"
     r"\b(can|could)\s+(measure|analy[sz]e|detect|characteri[sz]e|determine)\b"
 )
+_GOAL_RE = re.compile(
+    r"\b(i\s+(want|need|would\s+like|wish)\s+to\s+(know|determine|measure|find\s+out|check|study|identify|analy[sz]e|"
+    r"characteri[sz]e|see|confirm)|how\s+(can|do|should)\s+i\s+(measure|determine|find\s+out|check|identify|characteri[sz]e))\b"
+)
 _INFO_TOPICS: tuple[tuple[str, re.Pattern], ...] = (
     ("location", re.compile(r"\b(where\s+is|where's|location|located|address|which\s+(room|building|lab)|how\s+to\s+reach|directions?)\b")),
     ("contacts", re.compile(r"\b(operators?|oic|officer\s+in\s+charge|in-?charge|contacts?|who\s+(runs|handles|manages|operates|is\s+responsible)|phone|e-?mail)\b")),
@@ -268,6 +272,10 @@ def _classify(user, conversation, text: str, ctx: dict[str, Any], intel_busy: bo
 
     if _CAPABILITY_RE.search(lower) and not when.explicit:
         out = info.capability_reply(user, text)
+        if out is not None:
+            return out
+    if _GOAL_RE.search(lower) and not when.explicit and not (m and m.status == "unique"):
+        out = info.finder_reply(user, text)
         if out is not None:
             return out
 

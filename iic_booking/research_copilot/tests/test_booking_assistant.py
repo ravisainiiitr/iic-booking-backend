@@ -484,6 +484,14 @@ class TestAssistantTurns:
         ids = [o["equipment_id"] for o in card["items"]]
         assert lab.xrd.pk in ids and lab.fesem.pk not in ids
 
+    def test_plain_language_goal_uses_instrument_finder(self, lab):
+        resp = _post(lab, _new_conv(lab), "I want to know the crystal structure of my thin film")
+        card, body = _card(resp, "ba_equipment_options")
+        assert card["items"][0]["equipment_id"] == lab.xrd.pk
+        assert body["message"]["metadata"].get("instrument_finder") is True
+        assert body["message"]["metadata"].get("llm_used") is False
+        assert any(a.get("href") == "/find-instrument" for a in _actions(body))
+
     def test_upcoming_and_status_are_own_bookings_only(self, lab):
         mine, _ = lab.booking(lab.student, lab.xrd, lab.future(days=6))
         theirs, _ = lab.booking(lab.other, lab.xrd, lab.future(days=7))

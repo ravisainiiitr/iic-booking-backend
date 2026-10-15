@@ -254,17 +254,48 @@ def equipment_info_reply(user, eq, topic: str = "overview") -> dict[str, Any]:
     )
 
 
+_FINDER_LINK = ("Instrument finder", "/find-instrument")
+
+
 def capability_reply(user, text: str) -> dict[str, Any] | None:
     cands, labels = matching.capability_search(user, text)
     if not cands:
-        return None
+        return finder_reply(user, text)
     rows = [matching.option_row(c) for c in cands]
     what = labels[0] if labels else "this"
     return C.reply(
         f"These instruments on the portal can help with {what}. Pick one to see details, charges or free slots.",
         cards=[C.equipment_options_card(rows, title="Matching equipment", intent="info", query=text)],
+        actions=[C.link(*_FINDER_LINK)],
         intent="capability",
         title_hint=f"Equipment for {labels[0].split(' (')[0]}" if labels else "Find equipment",
+    )
+
+
+def finder_reply(user, text: str) -> dict[str, Any] | None:
+    """Plain-language goal ("crystal structure of my thin film") -> ranked instruments, rules only (no AI model)."""
+    try:
+        from iic_booking.automation.audit import settings_row
+        from iic_booking.automation.instrument_finder import find_instruments
+
+        if not settings_row().instrument_finder_enabled:
+            return None
+        found = find_instruments(user, text, use_llm=False, limit=6)
+    except Exception:  # noqa: BLE001
+        return None
+    results = found.get("results") or []
+    if not results:
+        return None
+    lines = [f"- **{r['name']}**: {r['reasons'][0]}" for r in results[:3] if r.get("reasons")]
+    sample = f" for a {found['sample']}" if found.get("sample") else ""
+    return C.reply(
+        f"Based on what you described{sample}, these instruments fit best:\n" + "\n".join(lines)
+        + "\n\nPick one to see details, charges or free slots.",
+        cards=[C.equipment_options_card(results, title="Suggested instruments", intent="info", query=text)],
+        actions=[C.link(*_FINDER_LINK)],
+        intent="capability",
+        title_hint="Find an instrument",
+        extra={"instrument_finder": True},
     )
 
 
