@@ -1,0 +1,250 @@
+name: Probe AI and Automation Audit (read-only)
+
+# Switch states, scheduled jobs and usage counts for the Booking Assistant / Research Copilot, My Research,
+# waitlist auto-booking, automatic refunds and status changes, reminders and the AI/automation switches.
+# Prints booleans, counts, schedule strings and model names only: no user, email, booking or message text,
+# no secrets (keys are reported as present/absent). Runs inside a READ ONLY transaction that is rolled back.
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Look-back window in days
+        required: false
+        default: '30'
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: AI and automation audit (SELECT only)
+        env:
+          DAYS: ${{ github.event.inputs.days }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e DAYS="${DAYS:-30}" -w /app "$CID" python - <<'PY'
+          import os
+          from collections import Counter
+          from datetime import timedelta
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.conf import settings
+          from django.db import connection, transaction
+          from django.db.models import Count, Q
+          from django.utils import timezone
+
+          DAYS = int((os.environ.get("DAYS") or "30").strip() or 30)
+          NOW = timezone.now()
+          SINCE = NOW - timedelta(days=DAYS)
+          print(f"window: last {DAYS} days")
+
+          def section(title):
+              print(f"\n== {title} ==")
+
+          def safe(label, fn):
+              try:
+                  with transaction.atomic():
+                      fn()
+              except Exception as exc:  # noqa: BLE001
+                  print(f"  {label}: unavailable ({type(exc).__name__})")
+
+          def switches():
+              section("Switches (settings / environment)")
+              for name in (
+                  "BOOKING_ASSISTANT_ENABLED", "BOOKING_ASSISTANT_LLM_PLANNER", "RESEARCH_COPILOT_ENABLED",
+                  "RESEARCH_COPILOT_PUBLIC_ENABLED", "RESEARCH_COPILOT_INTELLIGENCE_ENABLED",
+                  "RESEARCH_COPILOT_KNOWLEDGE_ENABLED", "RESEARCH_COPILOT_ACTIONS_ENABLED",
+                  "RESEARCH_COPILOT_CONVERSATIONAL_ACTIONS_ENABLED", "COPILOT_V2_ENABLED", "COPILOT_RAG",
+                  "COPILOT_BOOKING_CREATE", "COPILOT_BOOKING_CANCEL", "COPILOT_BOOKING_RESCHEDULE",
+                  "COPILOT_BOOKING_MODIFY", "COPILOT_BOOKING_E2E_TEST_MODE", "COPILOT_FINANCIAL_PROPOSALS",
+                  "COPILOT_WALLET_RECHARGE", "COPILOT_WALLET_CREDIT", "COPILOT_PROVIDER", "OLLAMA_MODEL",
+                  "OPENAI_CHAT_MODEL", "RESEARCH_COPILOT_MAX_TOKENS", "RESEARCH_COPILOT_MAX_CONCURRENT",
+                  "RESEARCH_COPILOT_MAX_USER_MESSAGES", "RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS",
+                  "RESEARCH_COPILOT_EMBEDDING_PROVIDER", "MY_RESEARCH_ENABLED", "MY_RESEARCH_GROUPS_ENABLED",
+                  "TRAINING_MODULE_ENABLED", "ACCOUNT_END_DATE_ENFORCEMENT",
+                  "EQUIPMENT_GROUP_ALTERNATIVE_BOOKING_ENABLED", "SKIP_BOOKING_QUOTA_CHECK",
+              ):
+                  print(f"  {name} = {getattr(settings, name, '<unset>')!r}")
+              for name in ("RESEARCH_COPILOT_PILOT_EMAILS", "MY_RESEARCH_PILOT_EMAILS", "MY_RESEARCH_GROUPS_PILOT_EMAILS",
+                           "COPILOT_BOOKING_TEST_USER_IDS"):
+                  raw = str(getattr(settings, name, "") or "")
+                  print(f"  {name}: entries={len([e for e in raw.split(',') if e.strip()])}")
+              print(f"  OPENAI_API_KEY present={bool(str(getattr(settings, 'OPENAI_API_KEY', '') or '').strip())}")
+              rates = getattr(settings, "REST_FRAMEWORK", {}).get("DEFAULT_THROTTLE_RATES", {})
+              print(f"  throttle rates={ {k: v for k, v in rates.items() if 'copilot' in k or 'assistant' in k} }")
+              try:
+                  from iic_booking.research_copilot.services.assistant.planner import planner_enabled
+                  print(f"  booking assistant LLM planner active={planner_enabled()}")
+              except Exception as exc:  # noqa: BLE001
+                  print(f"  planner: {type(exc).__name__}")
+              try:
+                  from iic_booking.research_copilot.services.llm_gateway import configured_provider_name
+                  print(f"  configured LLM provider={configured_provider_name()}")
+              except Exception as exc:  # noqa: BLE001
+                  print(f"  provider: {type(exc).__name__}")
+              try:
+                  from iic_booking.communication.models import MonthlyReportSettings
+                  r = MonthlyReportSettings.objects.filter(pk=1).first()
+                  print(f"  monthly reports enabled={bool(r and r.enabled)}")
+              except Exception as exc:  # noqa: BLE001
+                  print(f"  monthly reports: {type(exc).__name__}")
+              try:
+                  from iic_booking.equipment.peak_window import get_peak_settings
+                  print(f"  peak window settings={get_peak_settings().as_dict()}")
+              except Exception as exc:  # noqa: BLE001
+                  print(f"  peak window: {type(exc).__name__}")
+
+          def beat():
+              section("Scheduled jobs (django_celery_beat)")
+              from django_celery_beat.models import PeriodicTask
+              rows = PeriodicTask.objects.select_related("crontab", "interval").order_by("task", "name")
+              for t in rows:
+                  if t.crontab_id:
+                      c = t.crontab
+                      sched = f"cron '{c.minute} {c.hour} {c.day_of_month} {c.month_of_year} {c.day_of_week}' {c.timezone}"
+                  elif t.interval_id:
+                      sched = f"every {t.interval.every} {t.interval.period}"
+                  else:
+                      sched = "other"
+                  last = timezone.localtime(t.last_run_at).strftime("%Y-%m-%d %H:%M") if t.last_run_at else "-"
+                  print(f"  [{'ON ' if t.enabled else 'off'}] {t.task:62s} {sched:44s} last={last} runs={t.total_run_count}")
+              print(f"  total={rows.count()} enabled={rows.filter(enabled=True).count()}")
+
+          def assistant():
+              section("Booking Assistant / Copilot usage")
+              from iic_booking.research_copilot.models import (
+                  Conversation, CopilotAuditEvent, CopilotEscalation, CopilotKnowledgeArticle, KnowledgeDocument,
+                  KnowledgeGap, Message, MessageFeedback,
+              )
+              conv = Conversation.objects.filter(created_at__gte=SINCE)
+              print(f"  conversations={conv.count()} by access_mode={dict(Counter(conv.values_list('access_mode', flat=True)))}")
+              print(f"  distinct users={conv.values('user_id').distinct().count()}")
+              msgs = Message.objects.filter(created_at__gte=SINCE)
+              print(f"  messages by role={dict(Counter(msgs.values_list('role', flat=True)))}")
+              llm_used = fallback = quota = 0
+              intents = Counter()
+              providers = Counter()
+              errors = Counter()
+              for md in msgs.filter(role="assistant").values_list("metadata", flat=True).iterator():
+                  md = md if isinstance(md, dict) else {}
+                  if md.get("llm_used"):
+                      llm_used += 1
+                  if md.get("llm_fallback") == "canned" or str(md.get("intent") or "") in ("assistant:fallback", "assistant:not_found"):
+                      fallback += 1
+                  if md.get("llm_quota_blocked"):
+                      quota += 1
+                  intents[str(md.get("intent") or "-")[:40]] += 1
+                  if md.get("provider"):
+                      providers[str(md.get("provider"))[:20]] += 1
+                  if md.get("llm_error_category"):
+                      errors[str(md.get("llm_error_category"))[:30]] += 1
+              total_a = max(1, msgs.filter(role="assistant").count())
+              print(f"  assistant replies using LLM={llm_used} ({100 * llm_used / total_a:.1f}%) fallback/no-answer={fallback} "
+                    f"({100 * fallback / total_a:.1f}%) llm quota blocked={quota}")
+              print(f"  providers={dict(providers)} llm error categories={dict(errors)}")
+              print(f"  top intents={dict(intents.most_common(20))}")
+              fb = MessageFeedback.objects.filter(created_at__gte=SINCE)
+              print(f"  feedback by rating={dict(Counter(fb.values_list('rating', flat=True)))} reasons={dict(Counter(fb.values_list('reason', flat=True)))}")
+              gaps = KnowledgeGap.objects.filter(created_at__gte=SINCE)
+              print(f"  knowledge gaps={gaps.count()} by status={dict(Counter(gaps.values_list('status', flat=True)))}")
+              print(f"  knowledge gaps open (all time)={KnowledgeGap.objects.filter(status='open').count()}")
+              print(f"  escalations to tickets={CopilotEscalation.objects.filter(created_at__gte=SINCE).count()}")
+              print(f"  knowledge articles by status={dict(Counter(CopilotKnowledgeArticle.objects.values_list('status', flat=True)))}")
+              print(f"  knowledge documents by status={dict(Counter(KnowledgeDocument.objects.values_list('status', flat=True)))}")
+              ev = CopilotAuditEvent.objects.filter(created_at__gte=SINCE)
+              print(f"  audit events by action={dict(Counter(ev.values_list('action', flat=True)))}")
+
+          def my_research():
+              section("My Research")
+              from django.apps import apps
+              for label in ("ResearchWorkspace", "Workspace", "ResearchGroup"):
+                  try:
+                      m = apps.get_model("my_research", label)
+                  except LookupError:
+                      continue
+                  print(f"  {label} rows={m.objects.count()}")
+
+          def waitlist():
+              section("Waitlist auto-booking")
+              from iic_booking.equipment.models import Booking, BookingEvent, WaitlistEntry
+              auto = Booking.objects.filter(created_at__gte=SINCE, notes__startswith="Auto-booked from waitlist")
+              manual = Booking.objects.filter(created_at__gte=SINCE, notes__startswith="Confirmed manually from waitlist")
+              print(f"  auto-booked from waitlist={auto.count()} manual OIC confirmations={manual.count()}")
+              print(f"  auto-booked status now={dict(Counter(auto.values_list('status', flat=True)))}")
+              wl = WaitlistEntry.objects.all()
+              print(f"  waitlist entries by status (all)={dict(Counter(wl.values_list('status', flat=True)))}")
+              print(f"  waitlist entries created in window={wl.filter(created_at__gte=SINCE).count()}")
+              print(f"  waitlist emails in window: see communication section")
+
+          def automatic_changes():
+              section("Automatic (system) booking status changes - created_by empty")
+              from iic_booking.equipment.models import BookingEvent
+              ev = BookingEvent.objects.filter(created_at__gte=SINCE, created_by__isnull=True).exclude(new_status__isnull=True)
+              print(f"  by new_status={dict(Counter(ev.values_list('new_status', flat=True)))}")
+              ev_all = BookingEvent.objects.filter(created_at__gte=SINCE)
+              print(f"  all events by type={dict(Counter(ev_all.values_list('event_type', flat=True)))}")
+              refunds = ev_all.filter(Q(event_type="REFUNDED") | Q(new_status__in=["REFUNDED", "ABSENT", "OTHER_DISRUPTION", "UNDER_MAINTENANCE"]))
+              print(f"  refund-type events={refunds.count()} system={refunds.filter(created_by__isnull=True).count()} "
+                    f"staff/user={refunds.filter(created_by__isnull=False).count()}")
+
+          def wallet_refunds():
+              section("Wallet refund credits")
+              from iic_booking.users.models.wallet import SubWalletTransaction
+              tx = SubWalletTransaction.objects.filter(created_at__gte=SINCE)
+              print(f"  transactions by type={dict(Counter(tx.values_list('transaction_type', flat=True)))}")
+              ref = tx.filter(description__icontains="refund")
+              print(f"  credit rows mentioning refund={ref.count()}")
+
+          def comms():
+              section("Communication (emails / notices) by template code, last window")
+              from iic_booking.communication.models import CommunicationLog
+              fields = {f.name for f in CommunicationLog._meta.get_fields()}
+              qs = CommunicationLog.objects.filter(created_at__gte=SINCE)
+              key = "template__code" if "template" in fields else None
+              if key:
+                  rows = qs.values(key, "status").annotate(n=Count("pk")).order_by("-n")[:60]
+                  agg = {}
+                  for r in rows:
+                      agg.setdefault(r[key] or "-", Counter())[r["status"]] += r["n"]
+                  for code, c in sorted(agg.items(), key=lambda kv: -sum(kv[1].values())):
+                      print(f"  {code:60s} {dict(c)}")
+              print(f"  total={qs.count()} by status={dict(Counter(qs.values_list('status', flat=True)))}")
+
+          def tickets():
+              section("Support tickets")
+              from iic_booking.support.models import Ticket, TicketEvent
+              t = Ticket.objects.filter(created_at__gte=SINCE)
+              print(f"  tickets={t.count()} by type={dict(Counter(t.values_list('ticket_type', flat=True)))}")
+              print(f"  by status={dict(Counter(t.values_list('status', flat=True)))} assigned={t.filter(assigned_to__isnull=False).count()}")
+              print(f"  public (signed-out)={t.filter(user__isnull=True).count()} with equipment={t.filter(related_equipment__isnull=False).count()} with booking={t.filter(related_booking__isnull=False).count()}")
+              resolved = [(x.resolved_at - x.created_at).total_seconds() / 3600 for x in t.filter(resolved_at__isnull=False).only("created_at", "resolved_at")]
+              if resolved:
+                  resolved.sort()
+                  print(f"  resolved={len(resolved)} median hours to resolve={resolved[len(resolved) // 2]:.1f}")
+              print(f"  ticket events by type={dict(Counter(TicketEvent.objects.filter(created_at__gte=SINCE).values_list('event_type', flat=True)))}")
+
+          def bookings_base():
+              section("Booking volume baseline")
+              from iic_booking.equipment.models import Booking, Equipment
+              b = Booking.objects.filter(created_at__gte=SINCE)
+              print(f"  bookings created={b.count()} by status={dict(Counter(b.values_list('status', flat=True)))}")
+              print(f"  equipment active={Equipment.objects.filter(status='ACTIVE').count()} total={Equipment.objects.count()}")
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+              for label, fn in (
+                  ("switches", switches), ("beat", beat), ("assistant", assistant), ("my_research", my_research),
+                  ("waitlist", waitlist), ("automatic", automatic_changes), ("wallet", wallet_refunds),
+                  ("comms", comms), ("tickets", tickets), ("bookings", bookings_base),
+              ):
+                  safe(label, fn)
+              transaction.set_rollback(True)
+          print("\nDONE (read-only, rolled back)")
+          PY
