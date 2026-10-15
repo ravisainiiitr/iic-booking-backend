@@ -18,7 +18,7 @@ def create_buffer_check_schedule(apps, schema_editor):
         month_of_year="*",
     )
 
-    if not PeriodicTask.objects.filter(name="Daily booking not utilized check 20:00").exists():
+    if not PeriodicTask.objects.filter(task="equipment.check_booking_not_utilized").exists():
         PeriodicTask.objects.create(
             name="Daily booking not utilized check 20:00",
             task="equipment.check_booking_not_utilized",

@@ -2,9 +2,15 @@ name: Probe scheduled job duplicates (read-only)
 
 # Lists Celery beat PeriodicTask rows whose task is registered more than once, with ids, names, schedule,
 # arguments, enabled flag and run counters. No user data. Runs inside a READ ONLY transaction that is rolled back.
+# With simulate_dedupe, also runs the dedupe migration's function in a separate transaction that is rolled back.
 
 on:
   workflow_dispatch:
+    inputs:
+      simulate_dedupe:
+        description: "Also run equipment migration 0251's dedupe in a transaction that is rolled back (dry run)"
+        type: boolean
+        default: false
 
 jobs:
   probe:
@@ -15,7 +21,7 @@ jobs:
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
           CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
-          docker exec -i -w /app "$CID" python - <<'PY'
+          docker exec -i -w /app -e SIMULATE="${{ inputs.simulate_dedupe }}" "$CID" python - <<'PY'
           import os
 
           import django
@@ -56,6 +62,24 @@ jobs:
               applied = set(MigrationRecorder.Migration.objects.filter(app="equipment").values_list("name", flat=True))
               for m in ("0062_booking_not_utilized_schedule", "0142_booking_not_utilized_celery_schedule"):
                   print(f"migration equipment.{m} applied={m in applied}")
+              print(f"migration equipment.0251_dedupe_booking_not_utilized_schedule applied="
+                    f"{'0251_dedupe_booking_not_utilized_schedule' in applied}")
               transaction.set_rollback(True)
-          print("\nDONE (read-only, rolled back)")
+
+          if os.environ.get("SIMULATE") == "true":
+              import importlib
+
+              from django.apps import apps
+
+              mod = importlib.import_module("iic_booking.equipment.migrations.0251_dedupe_booking_not_utilized_schedule")
+              with transaction.atomic():
+                  mod.dedupe_booking_not_utilized_schedule(apps, None)
+                  left = PeriodicTask.objects.select_related("crontab").filter(task="equipment.check_booking_not_utilized").order_by("pk")
+                  print("\n== DRY RUN of 0251 dedupe (rolled back) ==")
+                  for p in left:
+                      print(f"  would keep id={p.pk} name='{p.name}' enabled={p.enabled} {sched(p)}")
+                  print(f"  rows remaining={left.count()}")
+                  transaction.set_rollback(True)
+              print(f"  after rollback rows={PeriodicTask.objects.filter(task='equipment.check_booking_not_utilized').count()}")
+          print("\nDONE (rolled back)")
           PY

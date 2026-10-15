@@ -14,7 +14,7 @@ def create_booking_not_utilized_schedule(apps, schema_editor):
     )
 
     name = "Auto booking not utilized 20:00 IST (weekdays per task logic)"
-    if not PeriodicTask.objects.filter(name=name).exists():
+    if not PeriodicTask.objects.filter(task="equipment.check_booking_not_utilized").exists():
         PeriodicTask.objects.create(
             name=name,
             task="equipment.check_booking_not_utilized",
