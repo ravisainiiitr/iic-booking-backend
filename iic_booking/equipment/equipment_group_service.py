@@ -263,12 +263,15 @@ def resolve_charge_profile(booking_user, equipment, *, user_type: Optional[str] 
         return None
 
 
-def equipment_eligibility_error(booking_user, equipment, *, user_type: Optional[str] = None) -> Optional[str]:
+def equipment_eligibility_error(
+    booking_user, equipment, *, user_type: Optional[str] = None, actor=None
+) -> Optional[str]:
     """
     Return None when ``booking_user`` may book ``equipment`` under the existing rules, else a reason.
     Mirrors the gates at the top of ``_book_equipment_impl`` (visibility, department lock, status,
-    external slot share, charge profile).
+    authorisation to book, external slot share, charge profile).
     """
+    from iic_booking.training.authorisation import gate_error_text
     from iic_booking.users.legacy_ledger.booking_lock import department_equipment_booking_blocked
     from iic_booking.users.models import UserType
 
@@ -286,6 +289,9 @@ def equipment_eligibility_error(booking_user, equipment, *, user_type: Optional[
     blocked, message = department_equipment_booking_blocked(equipment, booking_user)
     if blocked:
         return message or "Booking is disabled for this department."
+    gate = gate_error_text(booking_user, equipment, actor=actor or booking_user, record=False)
+    if gate:
+        return gate
     ut = user_type or _booking_user_type(booking_user)
     if UserType.is_external_user(ut) and int(getattr(equipment, "external_slot_quota_percent", 0) or 0) <= 0:
         return "External bookings are not open on this equipment."
@@ -1044,7 +1050,7 @@ def reschedule_target_info(booking, target, *, actor) -> dict:
             "DEPARTMENT_MISMATCH",
             "The target equipment belongs to a different department and cannot be used for this booking.",
         )
-    reason = equipment_eligibility_error(booking.user, target, user_type=user_type)
+    reason = equipment_eligibility_error(booking.user, target, user_type=user_type, actor=actor)
     if reason:
         return _fail("TARGET_NOT_ELIGIBLE", reason)
     cp = resolve_charge_profile(booking.user, target, user_type=user_type)
@@ -1178,6 +1184,11 @@ def perform_cross_equipment_reschedule(request, booking, start_time, end_time, *
         _log_event("cross_reschedule_rejected", booking=booking.pk, source=source.pk, target=target.pk,
                    code=info["code"])
         return _error(info["reason"], info["code"])
+    from iic_booking.training.authorisation import check_booking as authorisation_gate
+
+    gate = authorisation_gate(booking.user, target, actor=request.user, context="cross-equipment reschedule")
+    if gate is not None:
+        return Response(gate, status=status.HTTP_403_FORBIDDEN)
 
     required_slots = int(info["required_slots"])
     owner = booking.user

@@ -86,7 +86,9 @@ def template_booking_block(user, equipment):
     blocked, message = department_equipment_booking_blocked(equipment, user)
     if blocked:
         return message
-    return None
+    from iic_booking.training.authorisation import gate_error_text
+
+    return gate_error_text(user, equipment, actor=user, record=False)
 
 
 def _field_labels(user, equipment_ids):

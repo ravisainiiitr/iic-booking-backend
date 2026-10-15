@@ -1073,6 +1073,87 @@ class DutyShift(models.Model):
         return max(0, int((self.end_at - self.start_at).total_seconds() // 60))
 
 
+# ---------------------------------------------------------------------------
+# Authorisation to book (booking gate) and training requests
+# ---------------------------------------------------------------------------
+class AuthorisationAppliesTo(models.TextChoices):
+    INTERNAL = "INTERNAL", _("Internal users (self-operated bookings) only")
+    ALL = "ALL", _("All users, including external")
+
+
+class EquipmentAuthorisationSetting(models.Model):
+    """Per-equipment "Authorisation required to book". Off until the OIC or Main Admin turns it on.
+
+    The gate bites only while the Training module is on, the equipment is in Training scope and the booking user is
+    in the Training audience, so a user is never blocked without a way to request training.
+    """
+
+    equipment = models.OneToOneField(
+        "equipment.Equipment", on_delete=models.CASCADE, related_name="authorisation_setting"
+    )
+    required = models.BooleanField(default=False)
+    applies_to = models.CharField(max_length=10, choices=AuthorisationAppliesTo.choices, default=AuthorisationAppliesTo.INTERNAL)
+    min_level_code = models.CharField(max_length=30, default="TRAINED")
+    validity_months = models.PositiveSmallIntegerField(default=24)
+    grace_completed_bookings = models.PositiveSmallIntegerField(
+        default=0, help_text=_("Users with this many completed bookings in the grace window may book (0 = no grace).")
+    )
+    grace_months = models.PositiveSmallIntegerField(default=12)
+    note = models.TextField(blank=True, default="")
+    updated_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["required"])]
+
+    def __str__(self) -> str:
+        return f"Authorisation {'required' if self.required else 'off'}: {self.equipment_id}"
+
+
+class AuthorisationRequestStatus(models.TextChoices):
+    PENDING = "PENDING", _("Requested")
+    SCHEDULED = "SCHEDULED", _("Training scheduled")
+    APPROVED = "APPROVED", _("Trained and authorised")
+    REJECTED = "REJECTED", _("Rejected")
+    WITHDRAWN = "WITHDRAWN", _("Withdrawn")
+
+
+OPEN_REQUEST_STATUSES = (AuthorisationRequestStatus.PENDING, AuthorisationRequestStatus.SCHEDULED)
+
+
+class AuthorisationRequest(models.Model):
+    user = models.ForeignKey(USER, on_delete=models.CASCADE, related_name="authorisation_requests")
+    equipment = models.ForeignKey("equipment.Equipment", on_delete=models.CASCADE, related_name="authorisation_requests")
+    status = models.CharField(max_length=12, choices=AuthorisationRequestStatus.choices, default=AuthorisationRequestStatus.PENDING)
+    message = models.TextField(blank=True, default="")
+    scheduled_start = models.DateTimeField(null=True, blank=True)
+    scheduled_end = models.DateTimeField(null=True, blank=True)
+    location = models.CharField(max_length=255, blank=True, default="")
+    staff_note = models.TextField(blank=True, default="")
+    decision_reason = models.TextField(blank=True, default="")
+    decided_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    decided_at = models.DateTimeField(null=True, blank=True)
+    award = models.ForeignKey(CertificationAward, on_delete=models.SET_NULL, null=True, blank=True, related_name="authorisation_requests")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["equipment", "status"]), models.Index(fields=["user", "status"])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "equipment"],
+                condition=models.Q(status__in=["PENDING", "SCHEDULED"]),
+                name="training_one_open_authorisation_request",
+            )
+        ]
+
+    @property
+    def reference(self) -> str:
+        return f"AR-{self.pk:04d}" if self.pk else "AR-new"
+
+
 class TrainingAuditLog(models.Model):
     actor = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     action = models.CharField(max_length=60)

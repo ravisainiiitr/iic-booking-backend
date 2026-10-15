@@ -277,6 +277,16 @@ def create_booking_for_waitlist_user(
     dept_blocked, dept_message = department_equipment_booking_blocked(equipment, booking_user)
     if dept_blocked:
         return None, dept_message
+    from iic_booking.training.authorisation import gate_error_text
+
+    gate_error = gate_error_text(
+        booking_user,
+        equipment,
+        actor=created_by if staff_override else booking_user,
+        context="waitlist confirmation" if staff_override else "waitlist auto-booking",
+    )
+    if gate_error:
+        return None, gate_error
     if created_by is None:
         created_by = booking_user
 

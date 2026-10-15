@@ -4146,6 +4146,17 @@ def _book_equipment_impl(request, pk):
             additional_info=_get_additional_info_from_request(request, equipment),
         )
         return Response(suspended, status=status.HTTP_403_FORBIDDEN)
+    from iic_booking.training.authorisation import check_booking as authorisation_gate
+
+    gate = authorisation_gate(booking_user, equipment, actor=request.user, context="booking")
+    if gate is not None:
+        _create_booking_attempt_log(
+            request, equipment, BookingAttemptOutcome.FAILED,
+            failure_reason=gate["error"],
+            number_of_samples=request.data.get("number_of_samples") or 1,
+            additional_info=_get_additional_info_from_request(request, equipment),
+        )
+        return Response(gate, status=status.HTTP_403_FORBIDDEN)
     user_type = booking_user.user_type
     if not user_type:
         user_type = UserType.STUDENT
@@ -9171,6 +9182,11 @@ def create_urgent_booking_request(request):
             {"error": "Invalid equipment_id."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    from iic_booking.training.authorisation import check_booking as authorisation_gate
+
+    gate = authorisation_gate(request.user, equip, actor=request.user, context="urgent request")
+    if gate is not None:
+        return Response(gate, status=status.HTTP_403_FORBIDDEN)
     # Block repeated urgent requests: same user + same equipment until previous is EXPIRED
     has_active = UrgentBookingRequest.objects.filter(
         user=request.user,
@@ -13184,6 +13200,11 @@ def reschedule_booking(request, booking_id):
     
     # Get equipment
     equipment = booking.equipment
+    from iic_booking.training.authorisation import check_booking as authorisation_gate
+
+    gate = authorisation_gate(booking.user, equipment, actor=request.user, context="staff reschedule")
+    if gate is not None:
+        return Response(gate, status=status.HTTP_403_FORBIDDEN)
 
     # Slots in the requested time range that are not already booked
     slots_in_range = DailySlot.objects.filter(
@@ -13945,6 +13966,11 @@ def user_reschedule_booking(request, booking_id):
 
     if wants_cross_equipment_reschedule(request, booking):
         return perform_cross_equipment_reschedule(request, booking, start_time, end_time, staff_endpoint=False)
+    from iic_booking.training.authorisation import check_booking as authorisation_gate
+
+    gate = authorisation_gate(booking.user, equipment, actor=request.user, context="reschedule")
+    if gate is not None:
+        return Response(gate, status=status.HTTP_403_FORBIDDEN)
     
     # Find available slots for the new time range
     # Exclude slots that are currently booked by this booking
@@ -17311,6 +17337,11 @@ def create_repeat_booking(request, booking_id):
             {"error": dept_message, "code": "DEPARTMENT_BOOKING_DISABLED"},
             status=status.HTTP_403_FORBIDDEN,
         )
+    from iic_booking.training.authorisation import check_booking as authorisation_gate
+
+    gate = authorisation_gate(orig_booking.user, equipment, actor=request.user, context="repeat sample booking")
+    if gate is not None:
+        return Response(gate, status=status.HTTP_403_FORBIDDEN)
     raw_inputs = request.data.get("input_values") if (staff_path and request.data) else None
     repeat_input_values, input_changes, total_time_minutes, edit_error = _resolve_repeat_sample_inputs(
         orig_booking, raw_inputs

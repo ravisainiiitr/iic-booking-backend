@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import views, views_ops
+from . import views, views_auth, views_ops
 
 app_name = "training"
 
@@ -80,4 +80,17 @@ urlpatterns = [
     path("duty/live/", views_ops.duty_live, name="duty-live"),
     path("operator-policy/", views_ops.operator_policy_view, name="operator-policy"),
     path("operator-policy/history/", views_ops.operator_policy_history, name="operator-policy-history"),
+    # Authorisation to book
+    path("authorisation/gated-equipment/", views_auth.gated_equipment, name="authorisation-gated"),
+    path("authorisation/status/", views_auth.status_view, name="authorisation-status"),
+    path("authorisation/me/", views_auth.my_authorisations, name="authorisation-me"),
+    path("authorisation/requests/", views_auth.requests_view, name="authorisation-requests"),
+    path("authorisation/requests/<int:pk>/<str:action>/", views_auth.request_action, name="authorisation-request-action"),
+    path("authorisation/equipment/", views_auth.managed_equipment, name="authorisation-equipment"),
+    path("authorisation/equipment/<int:equipment_id>/", views_auth.equipment_setting, name="authorisation-setting"),
+    path("authorisation/equipment/<int:equipment_id>/users/", views_auth.equipment_users, name="authorisation-users"),
+    path("authorisation/equipment/<int:equipment_id>/users/export/", views_auth.equipment_users_export, name="authorisation-export"),
+    path("authorisation/equipment/<int:equipment_id>/people/", views_auth.equipment_people, name="authorisation-people"),
+    path("authorisation/equipment/<int:equipment_id>/grandfather/", views_auth.equipment_grandfather, name="authorisation-grandfather"),
+    path("authorisation/awards/<int:pk>/<str:action>/", views_auth.award_action, name="authorisation-award-action"),
 ]

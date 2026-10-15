@@ -434,6 +434,11 @@ def allocate_urgent_request(urg_id: int, actor, slot_ids, *, admin_notes=None, e
         except UrgentBookingRequest.DoesNotExist:
             raise UrgentAllocationError("Urgent request not found.", http_status=404)
         _assert_allocatable(urg)
+        from iic_booking.training.authorisation import check_booking as authorisation_gate
+
+        gate = authorisation_gate(urg.user, urg.equipment, actor=actor, context="urgent allocation")
+        if gate is not None:
+            raise UrgentAllocationError(gate["error"], http_status=403, code=gate["code"])
         cap_error = api_views._urgent_weekly_cap_error(urg.equipment, urg.request_type, include_pending=False)
         if cap_error:
             raise UrgentAllocationError(cap_error, code="URGENT_WEEKLY_CAP_REACHED")

@@ -195,6 +195,11 @@ def account_problems(user, eq) -> list[str]:
         out.append(dept_message or "Booking is disabled for this department.")
     if (eq.status or "").strip() != EquipmentStatus.ACTIVE:
         out.append(f"Booking is not allowed while equipment is {eq.get_status_display()}.")
+    from iic_booking.training.authorisation import gate_error_text
+
+    gate = gate_error_text(user, eq, actor=user, record=False)
+    if gate:
+        out.append(gate)
     istem = istem_ack_error(user)
     if istem:
         out.append(istem)

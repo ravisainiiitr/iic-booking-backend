@@ -324,6 +324,8 @@ def availability(user) -> dict:
         "training_policy_settings": roles["admin"],
         "operator_duty": enabled and (roles["admin"] or roles["oic"] or roles["dept_admin"]),
         "my_duty": roles["duty_operator"],
+        "my_authorisations": enabled and not any(roles[k] for k in ("admin", "oic", "operator", "dept_admin")),
+        "training_authorisations": enabled and (roles["admin"] or roles["oic"] or roles["operator"]),
     }
     return {
         "enabled": enabled,

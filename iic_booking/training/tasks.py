@@ -16,7 +16,7 @@ def housekeeping() -> dict:
     expire/remind certifications, remind and release unconfirmed duty, and close finished duty shifts."""
     if not access.module_enabled():
         return {"skipped": "disabled"}
-    from . import certification, demo, duty, selection
+    from . import authorisation, certification, demo, duty, selection
 
     out = {}
     for name, fn in (
@@ -24,6 +24,7 @@ def housekeeping() -> dict:
         ("seats_expired", selection.expire_unconfirmed),
         ("demo_escalated", demo.escalate_overdue),
         ("certifications", certification.housekeeping),
+        ("authorisation_reminders", authorisation.send_expiry_reminders),
         ("duty", duty.housekeeping),
     ):
         try:

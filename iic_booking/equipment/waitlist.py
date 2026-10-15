@@ -267,6 +267,10 @@ def add_user_to_waitlist(equipment: Equipment, user) -> Tuple[bool, Optional[int
     depth = getattr(equipment, "waitlist_queue_depth", None) or 0
     if depth <= 0:
         return False, None
+    from iic_booking.training.authorisation import gate_error_text
+
+    if gate_error_text(user, equipment, actor=user, context="waitlist join"):
+        return False, None
 
     with transaction.atomic():
         existing = WaitlistEntry.objects.filter(equipment=equipment, user=user).first()
