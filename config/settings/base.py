@@ -139,6 +139,7 @@ LOCAL_APPS = [
     "iic_booking.procurement_management.apps.ProcurementManagementConfig",
     "iic_booking.department_modules.apps.DepartmentModulesConfig",
     "iic_booking.facility_groups.apps.FacilityGroupsConfig",
+    "iic_booking.automation.apps.AutomationConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps

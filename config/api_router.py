@@ -685,6 +685,8 @@ urlpatterns = router.urls + [
     path("v1/research-copilot/", include("iic_booking.research_copilot.urls")),
     path("v1/my-research/", include("iic_booking.my_research.urls")),
     path("v1/training/", include("iic_booking.training.urls")),
+    # AI and automation (instrument finder, best slots, ticket triage, admin switches / dry runs)
+    path("v1/automation/", include("iic_booking.automation.urls")),
     # Procurement & Assets (per-department switch; default OFF)
     path("v1/procurement/", include("iic_booking.procurement_management.urls")),
     # Per-department module switches (Main Admin matrix + per-user availability)
