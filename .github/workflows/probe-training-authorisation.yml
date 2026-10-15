@@ -1,0 +1,200 @@
+# Training & authorisation audit (read-only): module switches, training/certification counts, equipment by
+# operation profile, and a dry run of the booking gate + grandfathering under the given defaults.
+# SELECT only. Prints flags, counts, equipment IDs and equipment codes. No names, emails or other personal data.
+
+name: Probe Training Authorisation (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      min_bookings:
+        description: "Grandfathering: completed bookings needed on the equipment"
+        required: true
+        default: "2"
+      months:
+        description: "Grandfathering: look-back window in months"
+        required: true
+        default: "12"
+      equipment_codes:
+        description: "Optional comma-separated pilot equipment codes to dry-run (blank = candidate list only)"
+        required: false
+        default: ""
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Audit and dry run (SELECT only, IDs and counts only)
+        env:
+          MIN_BOOKINGS: ${{ inputs.min_bookings }}
+          MONTHS: ${{ inputs.months }}
+          CODES: ${{ inputs.equipment_codes }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e MIN_BOOKINGS="$MIN_BOOKINGS" -e MONTHS="$MONTHS" -e CODES="$CODES" -w /app "$CID" python - <<'PY'
+          import os
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from collections import Counter, defaultdict
+
+          from dateutil.relativedelta import relativedelta
+          from django.conf import settings
+          from django.db import connection, transaction
+          from django.db.models import Count, F, Q
+          from django.db.models.functions import Coalesce
+          from django.utils import timezone
+
+          from iic_booking.equipment import models as em
+          from iic_booking.users.models.user_type import UserType
+
+          min_n = max(1, int(os.environ.get("MIN_BOOKINGS") or 2))
+          months = max(1, int(os.environ.get("MONTHS") or 12))
+          codes = [c.strip().upper() for c in (os.environ.get("CODES") or "").split(",") if c.strip()]
+          now = timezone.now()
+          since = now - relativedelta(months=months)
+          internal = sorted(UserType.get_internal_user_codes())
+
+          def section(title):
+              print(f"\n== {title}")
+
+          def safe(label, fn):
+              try:
+                  with transaction.atomic():
+                      return fn()
+              except Exception as exc:
+                  print(f"{label}: unavailable ({type(exc).__name__})")
+                  return None
+
+          section("switches")
+          print(f"env.TRAINING_MODULE_ENABLED={bool(getattr(settings, 'TRAINING_MODULE_ENABLED', False))}")
+          print(f"env.TRAINING_PILOT_EQUIPMENT_CODES count={len([c for c in (getattr(settings, 'TRAINING_PILOT_EQUIPMENT_CODES', '') or '').split(',') if c.strip()])}")
+          print(f"env.TRAINING_PILOT_OIC_EMAILS count={len([c for c in (getattr(settings, 'TRAINING_PILOT_OIC_EMAILS', '') or '').split(',') if c.strip()])}")
+
+          def switches():
+              from iic_booking.training import access
+              from iic_booking.training.models import TrainingEquipmentSetting, TrainingModuleSettings
+              row = TrainingModuleSettings.objects.filter(pk=1).first()
+              print(f"db.TrainingModuleSettings row_exists={row is not None} module_enabled={bool(row and row.module_enabled)} "
+                    f"audience={(row.audience if row else 'TEST_ACCOUNTS(default)')}")
+              print(f"effective module_enabled={access.module_enabled()}")
+              on = list(TrainingEquipmentSetting.objects.filter(enabled=True).values_list("equipment_id", flat=True))
+              print(f"db.TrainingEquipmentSetting enabled={len(on)} rows_total={TrainingEquipmentSetting.objects.count()} enabled_equipment_ids={sorted(on)}")
+              scope = access.pilot_equipment_ids()
+              print(f"effective training equipment scope={'ALL' if scope is None else len(scope)}")
+          safe("switches", switches)
+
+          def dept_switch():
+              from iic_booking.department_modules.access import blocked_department_ids
+              from iic_booking.department_modules.constants import ModuleKey
+              print(f"department_modules TRAINING blocked_departments={len(blocked_department_ids(ModuleKey.TRAINING))}")
+          safe("department_modules", dept_switch)
+
+          def gate_settings():
+              from iic_booking.training.models import EquipmentAuthorisationSetting
+              qs = EquipmentAuthorisationSetting.objects.all()
+              print(f"authorisation gate rows={qs.count()} required_on={qs.filter(required=True).count()}")
+          safe("authorisation gate (new)", gate_settings)
+
+          section("migrations (training)")
+          def migs():
+              from django.db.migrations.loader import MigrationLoader
+              loader = MigrationLoader(connection, ignore_no_migrations=True)
+              applied = sorted(n for a, n in loader.applied_migrations if a == "training")
+              print(f"applied_count={len(applied)} latest={applied[-1] if applied else '-'}")
+          safe("migrations", migs)
+
+          section("training module data counts")
+          def counts():
+              from iic_booking.training import models as tm
+              for name in ("TrainingProgram", "TrainingEvent", "TrainingSession", "Registration", "Attendance",
+                           "CertificationAward", "Assessment", "DemoRequest", "NominationCall", "TrainingNomination",
+                           "OperatorRosterEntry", "DutyAllocation", "DutyShift", "UserBadge", "TrainingAuditLog",
+                           "CertificationLevel", "TrainingPolicy", "CompetencyChecklist"):
+                  model = getattr(tm, name)
+                  print(f"{name}={model.objects.count()}")
+              for name, field in (("TrainingEvent", "status"), ("TrainingSession", "status"), ("Registration", "status"),
+                                  ("CertificationAward", "status"), ("DemoRequest", "status")):
+                  model = getattr(tm, name)
+                  by = dict(model.objects.values_list(field).annotate(n=Count("pk")))
+                  print(f"{name} by {field}: {by}")
+              by_level = dict(tm.CertificationAward.objects.values_list("level__code").annotate(n=Count("pk")))
+              print(f"CertificationAward by level: {by_level}")
+              print(f"CertificationAward distinct users={tm.CertificationAward.objects.values('user_id').distinct().count()} "
+                    f"distinct equipment={tm.CertificationAward.objects.values('equipment_id').distinct().count()}")
+          safe("training counts", counts)
+
+          def legacy():
+              print(f"legacy StudentEquipmentNomination total={em.StudentEquipmentNomination.objects.count()} "
+                    f"approved={em.StudentEquipmentNomination.objects.filter(status='APPROVED').count()}")
+          safe("legacy TA nominations", legacy)
+
+          section("housekeeping")
+          def beat():
+              from django_celery_beat.models import PeriodicTask
+              t = PeriodicTask.objects.filter(name="training-housekeeping").first()
+              print(f"periodic training-housekeeping exists={t is not None} enabled={bool(t and t.enabled)}")
+          safe("beat", beat)
+
+          section("equipment profile (self-operated vs operator-run proxies)")
+          eqs = em.Equipment.objects.all()
+          print(f"equipment total={eqs.count()} by_status={dict(eqs.values_list('status').annotate(n=Count('pk')))}")
+          active = eqs.filter(status="ACTIVE")
+          print(f"ACTIVE by profile_type={dict(active.values_list('profile_type').annotate(n=Count('pk')))}")
+          print(f"ACTIVE visible_to_test_accounts_only={active.filter(visible_to_test_accounts_only=True).count()}")
+          with_ops = set(em.EquipmentOperator.objects.values_list("equipment_id", flat=True))
+          print(f"ACTIVE with >=1 Lab Operator={active.filter(equipment_id__in=with_ops).count()} without={active.exclude(equipment_id__in=with_ops).count()}")
+          print(f"ACTIVE HOUR-based without operator={active.filter(profile_type='HOUR').exclude(equipment_id__in=with_ops).count()} "
+                f"HOUR-based with operator={active.filter(profile_type='HOUR', equipment_id__in=with_ops).count()}")
+          print(f"ACTIVE sample_preparation_by_user={active.filter(sample_preparation_by_user=True).count()}")
+          print(f"ACTIVE remote analysis enabled={active.filter(enable_remote_analysis=True).count()}")
+
+          section(f"grandfathering dry run: >= {min_n} COMPLETED bookings in {months} months, internal users")
+          done = (em.Booking.objects.filter(status="COMPLETED", user__user_type__in=internal, user__is_active=True)
+                  .annotate(t=Coalesce("completed_at", "created_at")).filter(t__gte=since))
+          pairs = done.values("equipment_id", "user_id").annotate(n=Count("pk"))
+          per_eq_qualified = defaultdict(set)
+          per_eq_users = defaultdict(set)
+          for p in pairs:
+              per_eq_users[p["equipment_id"]].add(p["user_id"])
+              if p["n"] >= min_n:
+                  per_eq_qualified[p["equipment_id"]].add(p["user_id"])
+          code_of = dict(eqs.values_list("equipment_id", "code"))
+          prof_of = dict(eqs.values_list("equipment_id", "profile_type"))
+          status_of = dict(eqs.values_list("equipment_id", "status"))
+
+          def report(ids, label):
+              ids = sorted(ids)
+              users_any = set().union(*[per_eq_users[i] for i in ids]) if ids else set()
+              users_q = set().union(*[per_eq_qualified[i] for i in ids]) if ids else set()
+              grants = sum(len(per_eq_qualified[i]) for i in ids)
+              print(f"[{label}] equipment_gated={len(ids)} recent_internal_bookers={len(users_any)} "
+                    f"distinct_users_grandfathered={len(users_q)} authorisations_granted={grants} "
+                    f"users_needing_training={len(users_any - users_q)}")
+
+          report([i for i in code_of if status_of.get(i) == "ACTIVE"], "all ACTIVE equipment")
+          hour_noop = [i for i in code_of if status_of.get(i) == "ACTIVE" and prof_of.get(i) == "HOUR" and i not in with_ops]
+          report(hour_noop, "ACTIVE HOUR-based, no Lab Operator")
+          hour_all = [i for i in code_of if status_of.get(i) == "ACTIVE" and prof_of.get(i) == "HOUR"]
+          report(hour_all, "ACTIVE HOUR-based")
+
+          print("\ncandidate list (ACTIVE HOUR-based): equipment_id | code | has_operator | recent_internal_bookers | grandfathered | need_training")
+          rows = sorted(hour_all, key=lambda i: -len(per_eq_users[i]))
+          for i in rows[:40]:
+              q, u = len(per_eq_qualified[i]), len(per_eq_users[i])
+              print(f"{i} | {code_of[i]} | {i in with_ops} | {u} | {q} | {u - q}")
+
+          if codes:
+              ids = [i for i, c in code_of.items() if (c or "").upper() in codes]
+              missing = sorted(set(codes) - {(code_of[i] or '').upper() for i in ids})
+              print(f"\nrequested pilot codes found={len(ids)} missing={missing}")
+              report(ids, "requested pilot")
+              for i in ids:
+                  q, u = len(per_eq_qualified[i]), len(per_eq_users[i])
+                  print(f"pilot {i} | {code_of[i]} | profile={prof_of.get(i)} | status={status_of.get(i)} | has_operator={i in with_ops} | bookers={u} | grandfathered={q} | need_training={u - q}")
+          PY
