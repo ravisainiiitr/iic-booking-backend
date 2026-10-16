@@ -38,6 +38,7 @@ TEMPLATE_DAY = "booking_equipment_maintenance_hold_day_email"
 TEMPLATE_RESOLVED = "booking_equipment_maintenance_resolved_email"
 TEMPLATE_STAFF = "booking_equipment_maintenance_staff_summary_email"
 TEMPLATE_RESCHEDULED = "booking_equipment_maintenance_rescheduled_email"
+TEMPLATE_HOLD_UPDATE = "booking_equipment_maintenance_hold_update_email"
 TEMPLATE_CODES = (TEMPLATE_NOTICE, TEMPLATE_DAY, TEMPLATE_RESOLVED, TEMPLATE_STAFF, TEMPLATE_RESCHEDULED)
 SUPERSEDED_TEMPLATE_CODES = (
     "booking_equipment_maintenance_notice_email",

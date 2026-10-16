@@ -58,6 +58,10 @@ def earliest_new_start(now, cfg) -> datetime:
     return max(now + timedelta(hours=int(cfg.min_lead_hours or 0)), tomorrow)
 
 
+def _iso(dt) -> str:
+    return timezone.localtime(dt).isoformat(timespec="minutes")
+
+
 def _slot_minutes(slot) -> int:
     if not slot.start_datetime or not slot.end_datetime:
         return 0
@@ -418,13 +422,20 @@ def allocate_pending_everywhere(now=None) -> dict:
     return stats
 
 
-def allocation_preview(equipment, now=None) -> dict:
+def allocation_preview(equipment, now=None, *, include_ids=()) -> dict:
     """Read-only: ids of the bookings on hold and where they would go now among today's Available slots (slots that
-    would come back from Under Maintenance are not counted, so this is a lower bound while under maintenance)."""
+    would come back from Under Maintenance are not counted, so this is a lower bound while under maintenance).
+    ``include_ids``: maintenance holds not yet switched to automatic rescheduling, previewed as if they were."""
+    from django.db.models import Q
+
+    from .models import Booking, BookingStatus
+
     now = now or timezone.now()
-    holds = sorted(
-        pending_holds(equipment.pk).select_related("equipment").prefetch_related("daily_slots"), key=_order_key
+    holds_qs = Booking.objects.filter(
+        Q(pk__in=pending_holds(equipment.pk).values("pk"))
+        | Q(pk__in=list(include_ids), equipment_id=equipment.pk, status=BookingStatus.DISRUPTION_PENDING)
     )
+    holds = sorted(holds_qs.select_related("equipment").prefetch_related("daily_slots"), key=_order_key)
     cfg = settings_row()
     earliest = earliest_new_start(now, cfg)
     until = timezone.localtime(now).date() + timedelta(days=int(cfg.horizon_days or 0))
@@ -440,8 +451,208 @@ def allocation_preview(equipment, now=None) -> dict:
             {
                 "booking_id": b.booking_id,
                 "slots": len(held),
-                "original_start": held[0].start_datetime.isoformat() if held else None,
-                "new_start": run[0].start_datetime.isoformat() if run else None,
+                "original_start": _iso(held[0].start_datetime) if held else None,
+                "new_start": _iso(run[0].start_datetime) if run else None,
+                "new_end": _iso(run[-1].end_datetime) if run else None,
             }
         )
     return {"equipment_id": equipment.pk, "holds": len(holds), "rows": rows}
+
+
+# --- switching earlier maintenance holds to automatic rescheduling (admin-approved, one-off) ----------------------
+
+HOLD_UPDATE_MARK = "hold_update_notice"
+_WHEN_BACK = "once the equipment is back in working condition"
+_WHEN_SLOT = "as soon as a matching free slot is available"
+
+
+def _hold_update_sent(booking) -> bool:
+    from .models import BookingEvent
+
+    return BookingEvent.objects.filter(booking=booking, **{f"metadata__{HOLD_UPDATE_MARK}": True}).exists()
+
+
+def hold_update_review(booking_ids, now=None) -> list[dict]:
+    """Read-only: for each booking, whether it is a maintenance hold still awaiting the user (no refund / reschedule
+    chosen) and what switching it to automatic rescheduling would do."""
+    from .maintenance_policy import is_equipment_operational_status, is_equipment_under_maintenance_status
+    from .models import Booking, BookingDisruptionKind, BookingStatus
+
+    now = now or timezone.now()
+    ids = [int(i) for i in booking_ids]
+    found = {
+        b.pk: b
+        for b in Booking.objects.filter(pk__in=ids).select_related("equipment").prefetch_related("daily_slots")
+    }
+    rows = []
+    for bid in ids:
+        b = found.get(bid)
+        row = {"booking_id": bid, "action": None, "skip": None}
+        rows.append(row)
+        if b is None:
+            row["skip"] = "booking not found"
+            continue
+        eq = b.equipment
+        row.update(
+            equipment_id=eq.pk,
+            equipment_code=eq.code,
+            equipment_status=eq.status,
+            status=b.status,
+            kind=b.disruption_kind,
+            pending=bool(b.maintenance_auto_reschedule_pending),
+            deadline_set=b.maintenance_decision_deadline_at is not None,
+            slots=len(_held_slots(b)),
+            notice_sent=_hold_update_sent(b),
+        )
+        if b.status != BookingStatus.DISRUPTION_PENDING:
+            row["skip"] = f"status {b.status}: the user already chose, or the booking is closed"
+        elif b.disruption_kind != BookingDisruptionKind.MAINTENANCE:
+            row["skip"] = f"disruption kind {b.disruption_kind}, not equipment maintenance"
+        elif not row["slots"]:
+            row["skip"] = "no slots linked to the booking, so a new slot of the same length cannot be found"
+        elif is_equipment_under_maintenance_status(eq.status):
+            row["action"] = "notify" if row["pending"] else "convert_notify"
+        elif is_equipment_operational_status(eq.status):
+            row["action"] = "convert_reschedule"
+        else:
+            row["skip"] = f"equipment status {eq.status} (neither under maintenance nor operational)"
+        if row["action"] in ("notify", "convert_notify") and row["notice_sent"]:
+            row["action"] = "convert" if row["action"] == "convert_notify" else "none"
+    by_eq: dict = {}
+    for row in rows:
+        if row["action"] == "convert_reschedule":
+            by_eq.setdefault(row["equipment_id"], []).append(row)
+    for eq_id, eq_rows in by_eq.items():
+        eq = found[eq_rows[0]["booking_id"]].equipment
+        preview = allocation_preview(eq, now, include_ids=[r["booking_id"] for r in eq_rows])
+        where = {p["booking_id"]: p for p in preview["rows"]}
+        for row in eq_rows:
+            p = where.get(row["booking_id"]) or {}
+            row["original_start"] = p.get("original_start")
+            row["new_start"] = p.get("new_start")
+            row["new_end"] = p.get("new_end")
+    return rows
+
+
+def _send_hold_update(booking, *, when: str) -> None:
+    from .booking_events import create_booking_event
+    from .booking_links import booking_detail_path
+    from .maintenance_auto import TEMPLATE_HOLD_UPDATE, _booking_ref, _booking_window, _deliver, _equipment_label, _fmt
+    from .models import BookingEventType
+
+    period = _latest_period(booking.equipment)
+    first, last = _booking_window(booking)
+    ref = _booking_ref(booking)
+    eq = _equipment_label(booking.equipment)
+    _deliver(
+        booking.user,
+        TEMPLATE_HOLD_UPDATE,
+        {
+            "equipment_name": eq,
+            "equipment_code": getattr(booking.equipment, "code", "") or "",
+            "booking_id": ref,
+            "start_time": _fmt(first) if first else "",
+            "end_time": _fmt(last) if last else "",
+            "maintenance_since": _fmt(period.started_at) if period and not period.ended_at else "",
+            "reschedule_when": when,
+        },
+        title=f"Update: booking {ref} will be rescheduled automatically",
+        message=(
+            f"No choice is needed and there is no deadline: booking {ref} on {eq} is moved automatically to the "
+            f"earliest free slot {when}. You can cancel it at any time for a full refund until then."
+        ),
+        path=booking_detail_path(display_id=ref, staff=False) or "/my-bookings",
+        event="maintenance.hold_update",
+        meta={"booking_id": booking.booking_id},
+    )
+    create_booking_event(
+        booking=booking,
+        event_type=BookingEventType.COMMENT,
+        created_by=None,
+        system_actor=True,
+        comment=(
+            "User emailed: no decision deadline; the booking will be rescheduled automatically and can be cancelled "
+            "for a full refund until then."
+        ),
+        metadata={"maintenance_auto_reschedule": True, HOLD_UPDATE_MARK: True},
+        send_notification=False,
+    )
+
+
+def _convert(booking) -> None:
+    from .booking_events import create_booking_event
+    from .models import BookingEventType
+
+    booking.maintenance_auto_reschedule_pending = True
+    booking.maintenance_decision_deadline_at = None
+    booking.save(update_fields=["maintenance_auto_reschedule_pending", "maintenance_decision_deadline_at"])
+    create_booking_event(
+        booking=booking,
+        event_type=BookingEventType.COMMENT,
+        created_by=None,
+        system_actor=True,
+        comment=(
+            "Maintenance hold policy updated: no decision deadline and no automatic refund. The booking is moved "
+            "automatically to the earliest free slot (in booking order) once the equipment is Operational; the user "
+            "may cancel for a full refund until then."
+        ),
+        metadata={"maintenance_auto_reschedule": True, "hold_policy_update": True},
+        send_notification=False,
+    )
+
+
+def apply_hold_update(booking_ids, now=None) -> dict:
+    """Switch the given maintenance holds to automatic rescheduling and tell their users once. Holds on equipment
+    already Operational are placed right away (the reschedule email is their notice). Idempotent."""
+    from .models import Booking, Equipment
+
+    now = now or timezone.now()
+    out = {"converted": [], "notified": [], "rescheduled": [], "still_on_hold": [], "skipped": {}}
+    to_place: dict = {}
+    with transaction.atomic():
+        list(Booking.objects.select_for_update().filter(pk__in=list(booking_ids)).values_list("pk", flat=True))
+        for row in hold_update_review(booking_ids, now):
+            bid = row["booking_id"]
+            if row["skip"]:
+                out["skipped"][bid] = row["skip"]
+                continue
+            action = row["action"]
+            if action == "none":
+                out["skipped"][bid] = "already switched and notified"
+                continue
+            booking = Booking.objects.select_related("equipment", "user").get(pk=bid)
+            if action in ("convert", "convert_notify", "convert_reschedule"):
+                _convert(booking)
+                out["converted"].append(bid)
+            if action in ("notify", "convert_notify"):
+                _send_hold_update(booking, when=_WHEN_BACK)
+                out["notified"].append(bid)
+            if action == "convert_reschedule":
+                to_place.setdefault(row["equipment_id"], []).append(bid)
+    for eq_id, ids in to_place.items():
+        res = allocate_for_equipment(Equipment.objects.get(pk=eq_id), now=now)
+        from .serializers import _booking_slot_bounds
+
+        for item in res.placed:
+            b = item["booking"]
+            start, end = _booking_slot_bounds(b)
+            out["rescheduled"].append(
+                {
+                    "booking_id": b.booking_id,
+                    "requested": b.booking_id in ids,
+                    "original_start": _iso(item["original_start"]) if item["original_start"] else None,
+                    "new_start": _iso(start) if start else None,
+                    "new_end": _iso(end) if end else None,
+                }
+            )
+        placed = {item["booking"].booking_id for item in res.placed}
+        for bid in ids:
+            if bid in placed:
+                continue
+            out["still_on_hold"].append(bid)
+            with transaction.atomic():
+                booking = Booking.objects.select_for_update().select_related("equipment", "user").get(pk=bid)
+                if not _hold_update_sent(booking):
+                    _send_hold_update(booking, when=_WHEN_SLOT)
+                    out["notified"].append(bid)
+    return out

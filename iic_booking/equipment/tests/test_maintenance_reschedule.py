@@ -469,6 +469,104 @@ def test_hold_policy_command_converts_only_holds_the_mechanism_made(lab):
     assert BookingEvent.objects.filter(booking=mine, metadata__hold_policy_update=True).count() == 1
 
 
+def _legacy(booking):
+    Booking.objects.filter(pk=booking.pk).update(
+        maintenance_auto_reschedule_pending=False, maintenance_decision_deadline_at=timezone.now() + timedelta(days=2)
+    )
+
+
+def _hold_update_logs(booking):
+    from iic_booking.communication.models import CommunicationLog
+
+    return CommunicationLog.objects.filter(
+        template__code="booking_equipment_maintenance_hold_update_email", recipient=booking.user
+    )
+
+
+def test_hold_update_under_maintenance_converts_and_emails_each_user_once(
+    lab, mailoutbox, django_capture_on_commit_callbacks
+):
+    eq, _oic, _day, now = lab
+    legacy = _held(eq, _user(UserType.STUDENT), _past(3), (9,))
+    _legacy(legacy)
+    already = _held(eq, _user(UserType.STUDENT), _past(2), (9,))
+    type(eq).objects.filter(pk=eq.pk).update(status=EquipmentStatus.REPAIR)
+
+    rows = {r["booking_id"]: r for r in mr.hold_update_review([legacy.pk, already.pk], now)}
+    assert rows[legacy.pk]["action"] == "convert_notify" and rows[already.pk]["action"] == "notify"
+    assert not mailoutbox
+
+    with django_capture_on_commit_callbacks(execute=True):
+        out = mr.apply_hold_update([legacy.pk, already.pk], now)
+    with django_capture_on_commit_callbacks(execute=True):
+        again = mr.apply_hold_update([legacy.pk, already.pk], now)
+
+    assert out["converted"] == [legacy.pk] and sorted(out["notified"]) == sorted([legacy.pk, already.pk])
+    assert not out["rescheduled"] and not again["converted"] and not again["notified"]
+    assert set(again["skipped"]) == {legacy.pk, already.pk}
+    legacy.refresh_from_db()
+    assert legacy.maintenance_auto_reschedule_pending and legacy.maintenance_decision_deadline_at is None
+    assert legacy.status == BookingStatus.DISRUPTION_PENDING
+    for b in (legacy, already):
+        assert _hold_update_logs(b).count() == 1
+        assert BookingEvent.objects.filter(booking=b, metadata__hold_update_notice=True).count() == 1
+    subjects = [m.subject for m in mailoutbox]
+    assert len(subjects) == 2 and all(s.startswith("Update: booking") for s in subjects)
+    assert "no deadline" in mailoutbox[0].body and "full refund" in mailoutbox[0].body
+
+
+def test_hold_update_on_operational_equipment_reschedules_right_away(
+    lab, mailoutbox, django_capture_on_commit_callbacks
+):
+    eq, _oic, day, now = lab
+    _slots(eq, day)
+    legacy = _held(eq, _user(UserType.STUDENT), _past(3), (9,))
+    _legacy(legacy)
+
+    row = mr.hold_update_review([legacy.pk], now)[0]
+    assert row["action"] == "convert_reschedule"
+    assert datetime.fromisoformat(row["new_start"]) == _at(day, 9)
+
+    with django_capture_on_commit_callbacks(execute=True):
+        out = mr.apply_hold_update([legacy.pk], now)
+
+    assert out["converted"] == [legacy.pk] and not out["notified"] and not out["still_on_hold"]
+    assert [r["booking_id"] for r in out["rescheduled"]] == [legacy.pk]
+    assert _starts(legacy) == [_at(day, 9)]
+    legacy.refresh_from_db()
+    assert legacy.status == BookingStatus.BOOKED and legacy.auto_rescheduled_at == now
+    assert not _hold_update_logs(legacy).exists()
+    assert any("rescheduled" in m.subject for m in mailoutbox)
+
+
+def test_hold_update_skips_bookings_that_are_not_waiting_maintenance_holds(lab, mailoutbox):
+    eq, _oic, _day, now = lab
+    chosen = _held(eq, _user(UserType.STUDENT), _past(3), (9,))
+    Booking.objects.filter(pk=chosen.pk).update(status=BookingStatus.REFUNDED)
+    absent = _held(eq, _user(UserType.STUDENT), _past(2), (9,))
+    Booking.objects.filter(pk=absent.pk).update(disruption_kind=BookingDisruptionKind.OPERATOR_ABSENT)
+
+    out = mr.apply_hold_update([chosen.pk, absent.pk, 999999], now)
+
+    assert set(out["skipped"]) == {chosen.pk, absent.pk, 999999}
+    assert "already chose" in out["skipped"][chosen.pk] and "not equipment maintenance" in out["skipped"][absent.pk]
+    assert not out["converted"] and not mailoutbox
+
+
+def test_hold_update_command_dry_run_changes_nothing(lab, mailoutbox):
+    eq, _oic, _day, _now = lab
+    legacy = _held(eq, _user(UserType.STUDENT), _past(3), (9,))
+    _legacy(legacy)
+    type(eq).objects.filter(pk=eq.pk).update(status=EquipmentStatus.REPAIR)
+
+    out = StringIO()
+    call_command("maintenance_auto", "--hold-update", str(legacy.pk), stdout=out)
+
+    assert "action=convert_notify" in out.getvalue() and "Dry run only" in out.getvalue()
+    legacy.refresh_from_db()
+    assert not legacy.maintenance_auto_reschedule_pending and not mailoutbox
+
+
 def test_enable_refund_job_registers_a_single_row(lab):
     from django_celery_beat.models import PeriodicTask
 

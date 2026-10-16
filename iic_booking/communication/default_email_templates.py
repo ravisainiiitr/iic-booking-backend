@@ -157,6 +157,7 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "booking_equipment_maintenance_hold_day_email",
     "booking_equipment_maintenance_rescheduled_email",
     "booking_equipment_maintenance_staff_summary_email",
+    "booking_equipment_maintenance_hold_update_email",
 ]
 
 
@@ -3204,7 +3205,42 @@ def _maintenance_hold_templates(period_rows, bookings_html: str, bookings_text: 
             "{{ results_resumed }}, {{ bookings_html }}, {{ bookings_text }}, {{ link }}"
         ),
     )
-    return [notice, day, rescheduled, staff]
+    hold_update_text = (
+        "You do not need to choose anything and there is no deadline: {{ reschedule_when }}, the booking is moved "
+        "automatically to the earliest free slot, in the order bookings were made, at no extra charge, and we email "
+        "you the new slot. Until then you can cancel it at any time from My Bookings for a full refund."
+    )
+    hold_update = _simple_email(
+        code="booking_equipment_maintenance_hold_update_email",
+        title="Update: Booking Will Be Rescheduled Automatically",
+        subject="Update: booking {{ booking_id }} will be rescheduled automatically ({{ equipment_name }})",
+        intro=(
+            "This is an update to our earlier email about your booking on <strong>{{ equipment_name }}</strong>, "
+            "which is on hold because the equipment was under maintenance. The earlier email asked you to choose a "
+            "refund or a reschedule within a deadline; that no longer applies."
+        ),
+        description=(
+            "Sent once, with the admin's approval, to users whose booking was put on hold for equipment maintenance "
+            "under the earlier refund-or-reschedule policy, when the booking is switched to automatic rescheduling. "
+            "Service message (Booking updates)."
+        ),
+        detail_rows=[
+            optional_detail_row("Booking ID", "booking_id"),
+            optional_detail_row("Equipment", "equipment_name"),
+            optional_detail_row("Original start", "start_time"),
+            optional_detail_row("Original end", "end_time"),
+            optional_detail_row("Under maintenance since", "maintenance_since"),
+        ],
+        details_heading="Booking details",
+        post_details_html=paragraph_html(hold_update_text),
+        post_details_text=hold_update_text + "\n",
+        cta_label="View booking",
+        variable_help=(
+            "{{ user_name }}, {{ booking_id }}, {{ equipment_name }}, {{ start_time }}, {{ end_time }}, "
+            "{{ maintenance_since }}, {{ reschedule_when }}, {{ link }}"
+        ),
+    )
+    return [notice, day, rescheduled, staff, hold_update]
 
 
 def get_default_email_template(code: str) -> Optional[dict[str, Any]]:

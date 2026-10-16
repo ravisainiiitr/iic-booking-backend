@@ -6,6 +6,8 @@ name: Equipment maintenance production actions (guarded)
 #   adopt              adopt equipment already Under Maintenance (confirm: ADOPT-UNDER-MAINTENANCE)
 #   mark_repair        set one equipment REPAIR through the normal status path (confirm: MARK-REPAIR-<id>)
 #   hold_policy        existing maintenance holds -> no deadline, rescheduled automatically (confirm: MAINTENANCE-HOLD-POLICY)
+#   hold_update_dry_run  read-only review of booking_ids: qualifies?, action, slot it would get, email log
+#   hold_update        switch booking_ids to automatic reschedule + one email each (confirm: HOLD-UPDATE-NOTIFY)
 #   enable_refund_job  schedule the 5-day auto refund, maintenance holds excluded (confirm: ENABLE-REFUND-JOB)
 #   verify             maintenance periods, slots, notifications, emails, results pauses, holds, banner counts, beat rows
 
@@ -15,10 +17,14 @@ on:
       action:
         description: "Action"
         type: choice
-        options: [dry_run, adopt, mark_repair, hold_policy, enable_refund_job, verify]
+        options: [dry_run, adopt, mark_repair, hold_policy, hold_update_dry_run, hold_update, enable_refund_job, verify]
         default: dry_run
       equipment_ids:
         description: "Equipment ids (space separated) for adopt / mark_repair / verify"
+        type: string
+        default: ""
+      booking_ids:
+        description: "Booking ids (space separated) for hold_update_dry_run / hold_update"
         type: string
         default: ""
       reason:
@@ -38,6 +44,7 @@ jobs:
         env:
           ACTION: ${{ inputs.action }}
           IDS: ${{ inputs.equipment_ids }}
+          BOOKING_IDS: ${{ inputs.booking_ids }}
           REASON: ${{ inputs.reason }}
           CONFIRM: ${{ inputs.confirm }}
         run: |
@@ -46,7 +53,34 @@ jobs:
           CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
           test -n "$CID"
           for i in $IDS; do case "$i" in (*[!0-9]*) echo "equipment ids must be numeric"; exit 1;; esac; done
+          for i in $BOOKING_IDS; do case "$i" in (*[!0-9]*) echo "booking ids must be numeric"; exit 1;; esac; done
           case "$ACTION" in
+            hold_update_dry_run)
+              test -n "$BOOKING_IDS"
+              docker exec -i -w /app -e BOOKING_IDS="$BOOKING_IDS" "$CID" python - <<'PY'
+          import os
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from io import StringIO
+          from django.core.management import call_command
+          from django.db import connection, transaction
+          ids = os.environ["BOOKING_IDS"].split()
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+              out = StringIO()
+              call_command("maintenance_auto", "--hold-update", *ids, stdout=out)
+              print(out.getvalue())
+              transaction.set_rollback(True)
+          PY
+              ;;
+            hold_update)
+              test "$CONFIRM" = "HOLD-UPDATE-NOTIFY" || { echo "confirm string mismatch"; exit 1; }
+              test -n "$BOOKING_IDS"
+              docker exec -i -w /app "$CID" python manage.py maintenance_auto --hold-update $BOOKING_IDS --apply
+              ;;
             adopt)
               test "$CONFIRM" = "ADOPT-UNDER-MAINTENANCE" || { echo "confirm string mismatch"; exit 1; }
               test -n "$IDS"

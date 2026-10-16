@@ -47,6 +47,10 @@ class Command(BaseCommand):
             help="Read-only: bookings on hold for maintenance and the slot each would get if placed now.",
         )
         parser.add_argument(
+            "--hold-update", nargs="+", type=int, metavar="BOOKING_ID",
+            help="Switch these maintenance holds to automatic rescheduling and email the users once (with --apply).",
+        )
+        parser.add_argument(
             "--enable-refund-job", action="store_true",
             help="Register the 5-day auto refund in Celery beat, duplicate-safe (with --apply).",
         )
@@ -67,6 +71,9 @@ class Command(BaseCommand):
             return
         if opts["reschedule_preview"]:
             self._reschedule_preview()
+            return
+        if opts["hold_update"]:
+            self._hold_update(opts["hold_update"], opts["apply"])
             return
         if opts["enable_refund_job"]:
             self._enable_refund_job(opts["apply"])
@@ -212,6 +219,61 @@ class Command(BaseCommand):
                     f"  booking={r['booking_id']} slots={r['slots']} original={r['original_start']} "
                     f"new={r['new_start'] or '(no free run yet)'}"
                 )
+
+    def _hold_update(self, booking_ids, apply):
+        from collections import Counter
+
+        from iic_booking.communication.models import CommunicationLog
+        from iic_booking.equipment.maintenance_reschedule import apply_hold_update, hold_update_review
+        from iic_booking.equipment.models import Booking
+
+        def comm_logs(bid):
+            booking = Booking.objects.filter(pk=bid).only("user_id").first()
+            if booking is None:
+                return {}
+            from django.db.models import Q
+
+            from iic_booking.equipment.models import BookingEvent
+
+            held_at = (
+                BookingEvent.objects.filter(booking_id=bid, new_status="DISRUPTION_PENDING")
+                .order_by("created_at")
+                .values_list("created_at", flat=True)
+                .first()
+            )
+            logs = CommunicationLog.objects.filter(recipient_id=booking.user_id).filter(
+                Q(metadata__booking_id=bid)
+                | Q(
+                    created_at__gte=held_at or booking.created_at,
+                    template__code__iregex=r"(maintenance|disruption|hold)",
+                )
+            )
+            return dict(Counter(f"{code}:{status}" for code, status in logs.values_list("template__code", "status")))
+
+        for row in hold_update_review(booking_ids):
+            fields = " ".join(
+                f"{k}={row[k]}"
+                for k in (
+                    "booking_id", "equipment_id", "equipment_code", "equipment_status", "status", "kind", "pending",
+                    "deadline_set", "slots", "notice_sent", "action", "skip", "original_start", "new_start", "new_end",
+                )
+                if k in row
+            )
+            self.stdout.write(fields)
+            self.stdout.write(f"  comm logs for this booking={comm_logs(row['booking_id'])}")
+        if not apply:
+            self.stdout.write("Dry run only: add --apply to switch and notify.")
+            return
+        out = apply_hold_update(booking_ids)
+        self.stdout.write(
+            f"converted={sorted(out['converted'])} notified={sorted(out['notified'])} "
+            f"still_on_hold={sorted(out['still_on_hold'])} skipped={out['skipped']}"
+        )
+        for r in out["rescheduled"]:
+            self.stdout.write(
+                f"  rescheduled booking={r['booking_id']} requested={r['requested']} "
+                f"original={r['original_start']} new={r['new_start']}..{r['new_end']}"
+            )
 
     def _enable_refund_job(self, apply):
         from django.utils import timezone
