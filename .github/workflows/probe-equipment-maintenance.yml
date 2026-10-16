@@ -1,0 +1,193 @@
+name: Probe equipment under maintenance (read-only)
+
+# Equipment currently Under Maintenance: since when, slot statuses around today, upcoming bookings and how many
+# users hold them, past bookings awaiting results, maintenance / disruption email logs, the maintenance Celery beat
+# rows and the related email templates. Prints ids, codes, statuses and counts only (no names, no emails, no
+# free text). Runs inside a READ ONLY transaction that is rolled back.
+# With dry_run (after the maintenance-auto release), also prints what the new mechanism would notify / pause.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Also print the maintenance-auto dry run (needs the maintenance-auto release deployed)"
+        type: boolean
+        default: false
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Maintenance state (SELECT only)
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          echo "== containers (names / status) =="
+          docker ps --format '{{.Names}} {{.Status}}' | grep -iE 'celery|beat|django|worker' || true
+          for C in $(docker ps --format '{{.Names}}' | grep -iE 'celery|beat|worker|django'); do
+            echo "== log line counts (30 days) in $C =="
+            for P in "maintenance_policy:" "maintenance disruption email failed" "daily_under_maintenance_sweep" "process_maintenance_booking_deadlines" "maintenance_auto"; do
+              N=$(docker logs --since 720h "$C" 2>&1 | grep -c "$P" || true)
+              echo "  '$P' -> $N"
+            done
+          done
+          docker exec -i -w /app -e DRY_RUN="${{ inputs.dry_run }}" "$CID" python - <<'PY'
+          import os
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from collections import Counter
+          from datetime import timedelta
+
+          from django.db import connection, transaction
+          from django.db.models import Max, Min, Q
+          from django.utils import timezone
+
+          from iic_booking.communication.models import CommunicationLog, CommunicationTemplate
+          from iic_booking.equipment.models import (
+              Booking, BookingEvent, DailySlot, DisruptionEvent, Equipment, SlotStatusChangeLog,
+          )
+
+          now = timezone.now()
+          today = timezone.localdate()
+          OPEN_RESULTS = ["PENDING", "BOOKED", "PROCESSING"]
+          UPCOMING = ["PENDING", "BOOKED", "DISRUPTION_PENDING"]
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+              print(f"now={timezone.localtime(now).isoformat()}")
+
+              print("\n== Celery beat rows (maintenance / disruption / overdue) ==")
+              try:
+                  from django_celery_beat.models import PeriodicTask
+                  names = Counter(PeriodicTask.objects.values_list("task", flat=True))
+                  print(f"  periodic tasks={sum(names.values())} distinct={len(names)}")
+                  for p in PeriodicTask.objects.select_related("crontab", "interval").order_by("task", "pk"):
+                      t = p.task or ""
+                      if not any(k in t for k in ("maint", "disruption", "operator", "overdue", "completion", "leave")):
+                          continue
+                      if p.crontab_id:
+                          c = p.crontab
+                          sched = f"crontab '{c.minute} {c.hour} {c.day_of_month} {c.month_of_year} {c.day_of_week}' tz={c.timezone}"
+                      elif p.interval_id:
+                          sched = f"every {p.interval.every} {p.interval.period}"
+                      else:
+                          sched = "other"
+                      print(f"  id={p.pk} task={t} enabled={p.enabled} {sched} runs={p.total_run_count} last_run={p.last_run_at}")
+                  for t in ("equipment.daily_under_maintenance_sweep", "equipment.process_maintenance_booking_deadlines",
+                            "equipment.daily_operator_on_leave_sweep", "equipment.maintenance_auto_daily_check"):
+                      print(f"  registered[{t}]={names.get(t, 0)}")
+              except Exception as e:
+                  print(f"  beat probe failed: {type(e).__name__}")
+
+              print("\n== Email templates (maintenance / disruption / operational) ==")
+              for t in CommunicationTemplate.objects.filter(
+                  Q(code__icontains="maint") | Q(code__icontains="disruption") | Q(code__icontains="operational")
+              ).order_by("code"):
+                  print(f"  code={t.code} type={t.communication_type} active={t.is_active} updated={t.updated_at:%Y-%m-%d}")
+
+              STATUSES = ("REPAIR", "INACTIVE", "MAINTENANCE")
+              eqs = list(Equipment.objects.filter(status__in=STATUSES).order_by("code"))
+              print(f"\n== Equipment under maintenance now: {len(eqs)} ==")
+              total_users, total_bookings, total_paused = set(), set(), set()
+              for e in eqs:
+                  ev = (
+                      DisruptionEvent.objects.filter(
+                          equipment=e, disruption_type="UNDER_MAINTENANCE", scope="EQUIPMENT", is_deleted=False,
+                          ended_at__isnull=True,
+                      ).order_by("start_at").first()
+                  )
+                  since = ev.start_at if ev else None
+                  print(
+                      f"\n  eq_id={e.equipment_id} code={e.code} status={e.status} parent={e.parent_equipment_id}"
+                      f" follows_parent={getattr(e, 'status_follows_parent', None)}"
+                      f" open_event={ev.pk if ev else None} since={since and timezone.localtime(since).isoformat()}"
+                      f" source={ev.source if ev else None} started_by_role={ev.started_by_role if ev else None}"
+                      f" event_slots={ev.slots_affected if ev else None} event_bookings={ev.bookings_affected if ev else None}"
+                  )
+                  start_day = timezone.localtime(since).date() if since else today - timedelta(days=7)
+                  slots = DailySlot.objects.filter(slot_master__equipment=e)
+                  buckets = Counter()
+                  for d, st, start in slots.filter(date__gte=start_day, date__lte=today + timedelta(days=60)).values_list(
+                      "date", "status", "start_datetime"
+                  ):
+                      when = "past_day" if d < today else ("today_past" if start and start <= now else "today_future") if d == today else "future_day"
+                      buckets[(when, st)] += 1
+                  for k, v in sorted(buckets.items()):
+                      print(f"    slots {k[0]:<13} {k[1]:<20} {v}")
+                  fd = slots.filter(date__gt=today).aggregate(mn=Min("date"), mx=Max("date"))
+                  print(f"    generated future dates: {fd['mn']} .. {fd['mx']}")
+
+                  up = (
+                      Booking.objects.filter(equipment=e, status__in=UPCOMING)
+                      .annotate(first=Min("daily_slots__start_datetime"), last=Max("daily_slots__end_datetime"))
+                      .filter(last__gt=now)
+                  )
+                  by_status = Counter(up.values_list("status", flat=True))
+                  ids = list(up.values_list("booking_id", flat=True))
+                  users = set(up.values_list("user_id", flat=True))
+                  today_ids = list(up.filter(first__date=today).values_list("booking_id", flat=True))
+                  print(f"    upcoming bookings={len(ids)} users={len(users)} by_status={dict(by_status)} ids={ids[:40]}")
+                  print(f"    of which with a slot today={len(today_ids)} ids={today_ids}")
+                  print(f"    disruption kinds={dict(Counter(up.values_list('disruption_kind', flat=True)))}")
+                  total_users |= users
+                  total_bookings |= set(ids)
+
+                  past_open = (
+                      Booking.objects.filter(equipment=e, status__in=OPEN_RESULTS)
+                      .annotate(last=Max("daily_slots__end_datetime"))
+                      .filter(last__isnull=False, last__lte=now)
+                  )
+                  past_ids = list(past_open.values_list("booking_id", flat=True))
+                  total_paused |= set(past_ids)
+                  try:
+                      from iic_booking.equipment.results_overdue import overdue_booking_ids
+                      od = overdue_booking_ids(Booking.objects.filter(equipment=e))
+                  except Exception as ex:
+                      od = f"err {type(ex).__name__}"
+                  print(f"    past bookings awaiting results={len(past_ids)} ids={past_ids[:40]} currently_in_results_overdue={od}")
+
+                  if since:
+                      logs = CommunicationLog.objects.filter(created_at__gte=since).filter(
+                          Q(subject__icontains=e.code) | Q(subject__icontains=(e.name or e.code)[:60])
+                      )
+                      print(
+                          f"    communication logs since start mentioning equipment={logs.count()}"
+                          f" by_type_status={dict(Counter(logs.values_list('communication_type', 'status')))}"
+                          f" by_template={dict(Counter(logs.values_list('template__code', flat=True)))}"
+                      )
+                      evs = BookingEvent.objects.filter(booking__equipment=e, created_at__gte=since)
+                      print(
+                          f"    booking events since start={evs.count()}"
+                          f" mentioning_maintenance={evs.filter(comment__icontains='maintenance').count()}"
+                      )
+                      sl = SlotStatusChangeLog.objects.filter(equipment=e, changed_at__gte=since - timedelta(days=1))
+                      print(f"    slot status change logs={dict(Counter(sl.values_list('new_status', 'source')))}")
+
+              print(
+                  f"\n== Totals: upcoming bookings={len(total_bookings)} distinct users={len(total_users)}"
+                  f" past bookings awaiting results={len(total_paused)} =="
+              )
+
+              recent = CommunicationLog.objects.filter(created_at__gte=now - timedelta(days=60))
+              print(
+                  "\n== Communication logs last 60 days with maintenance-ish subjects: "
+                  f"technical_issue={recent.filter(subject__icontains='Technical issue').count()}"
+                  f" under_maintenance={recent.filter(subject__icontains='maintenance').count()}"
+                  f" operational={recent.filter(subject__icontains='is operational').count()} =="
+              )
+
+              if os.environ.get("DRY_RUN") == "true":
+                  print("\n== maintenance-auto dry run (nothing sent / changed) ==")
+                  try:
+                      from iic_booking.equipment.maintenance_auto import dry_run_report_text
+                      print(dry_run_report_text())
+                  except ImportError:
+                      print("  maintenance_auto not deployed yet")
+              transaction.set_rollback(True)
+          print("\nDONE (rolled back)")
+          PY
