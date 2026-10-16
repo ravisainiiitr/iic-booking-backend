@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, time, timedelta
+from unittest.mock import patch
 
 import pytest
 from django.utils import timezone
 
+from iic_booking.equipment import maintenance_auto
 from iic_booking.equipment.models import (
     BookingStatus,
     DailySlot,
     DisruptionEvent,
     Equipment,
+    EquipmentMaintenancePeriod,
     EquipmentStatus,
     SlotMaster,
     SlotStatus,
@@ -71,10 +74,17 @@ def test_base_under_maintenance_puts_mode_under_maintenance_with_all_rules():
     event = DisruptionEvent.objects.get(equipment=mode)
     assert event.started_by_id == oic.pk
     assert base.code in event.reason and "Vacuum leak" in event.reason
+    # Later days are converted by the 08:30 daily check, not at marking.
     free = DailySlot.objects.filter(slot_master__equipment=mode, date=day, booking__isnull=True)
-    assert set(free.values_list("status", flat=True)) == {SlotStatus.UNDER_MAINTENANCE}
+    assert set(free.values_list("status", flat=True)) == {SlotStatus.AVAILABLE}
+    assert EquipmentMaintenancePeriod.objects.filter(equipment=mode, ended_at__isnull=True).exists()
     booking.refresh_from_db()
     assert booking.status == BookingStatus.DISRUPTION_PENDING and booking.maintenance_disruption_flag
+
+    with patch("iic_booking.equipment.maintenance_auto.timezone.now",
+               return_value=timezone.make_aware(datetime.combine(day, time(8, 30)))):
+        maintenance_auto.daily_check()
+    assert set(free.values_list("status", flat=True)) == {SlotStatus.UNDER_MAINTENANCE}
 
 
 def test_base_back_operational_restores_modes_it_took_down_only():

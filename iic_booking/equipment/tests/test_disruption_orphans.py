@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from io import StringIO
+from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
 from django.utils import timezone
 
+from iic_booking.equipment import maintenance_auto
 from iic_booking.equipment.disruption_service import record_unrecorded_upcoming_slots
 from iic_booking.equipment.maintenance_policy import record_freed_booking_slots
 from iic_booking.equipment.models import (
@@ -62,11 +64,17 @@ def test_slots_generated_while_equipment_under_maintenance_join_its_event():
 def test_equipment_maintenance_links_upcoming_slots_and_operational_releases_them():
     eq = _equipment()
     oic = _oic_for(eq)
-    slots = _slots(eq, _future_weekday())
+    day = _future_weekday()
+    slots = _slots(eq, day)
     res = _client(oic).patch(f"/api/equipments/{eq.pk}/", {"status": "REPAIR"}, format="json")
     assert res.status_code == 200, res.data
     event = DisruptionEvent.objects.get(equipment=eq)
     assert event.scope == "EQUIPMENT"
+    # Later days are converted by the 08:30 daily check, not at marking.
+    assert {s.status for s in DailySlot.objects.filter(pk__in=[s.pk for s in slots])} == {SlotStatus.AVAILABLE}
+    with patch("iic_booking.equipment.maintenance_auto.timezone.now",
+               return_value=timezone.make_aware(datetime.combine(day, time(8, 30)))):
+        maintenance_auto.daily_check()
     assert set(DailySlot.objects.filter(pk__in=[s.pk for s in slots]).values_list("status", flat=True)) == {
         SlotStatus.UNDER_MAINTENANCE
     }
