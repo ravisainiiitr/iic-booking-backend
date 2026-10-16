@@ -59,6 +59,7 @@ SCHEDULED_JOB_LABELS = {
     "equipment.auto_mark_operator_absent_disruption_after_booking_end": "Operator-absent safeguard",
     "equipment.daily_operator_on_leave_sweep": "Operator-on-leave sweep",
     "equipment.daily_under_maintenance_sweep": "Daily under-maintenance sweep",
+    "equipment.maintenance_auto_daily_check": "Daily 08:30 under-maintenance check",
 }
 
 REASON_OPERATOR_ABSENT = "OPERATOR_ABSENT"

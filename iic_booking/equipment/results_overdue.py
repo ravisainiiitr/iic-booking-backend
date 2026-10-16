@@ -151,8 +151,15 @@ def waiting_for_user(booking) -> bool:
     return _latest_stage(booking) in _awaiting_user_stages()
 
 
+def is_results_paused(booking) -> bool:
+    """Equipment Under Maintenance: the results clock is paused (``maintenance_auto``)."""
+    return getattr(booking, "results_paused_at", None) is not None
+
+
 def is_results_overdue(booking, due: Optional[ResultsDue], now=None) -> bool:
     if due is None or getattr(booking, "status", None) not in _open_statuses():
+        return False
+    if is_results_paused(booking):
         return False
     if (now or timezone.now()) < due.due_at:
         return False
@@ -221,7 +228,7 @@ def overdue_bookings(queryset, now=None) -> list[tuple]:
 
     now = now or timezone.now()
     candidates = list(
-        annotate_sample_receipt(queryset.filter(status__in=_open_statuses()))
+        annotate_sample_receipt(queryset.filter(status__in=_open_statuses(), results_paused_at__isnull=True))
         .annotate(last_slot_end=Max("daily_slots__end_datetime"))
         .filter(last_slot_end__isnull=False, last_slot_end__lte=now - timedelta(hours=MIN_HOURS))
         .filter(sample_received_q())
@@ -240,6 +247,15 @@ def overdue_bookings(queryset, now=None) -> list[tuple]:
 
 def overdue_booking_ids(queryset, now=None) -> list[int]:
     return [b.booking_id for b, _d in overdue_bookings(queryset, now)]
+
+
+def paused_bookings(queryset) -> list:
+    """Open bookings whose results clock is paused because the equipment is Under Maintenance."""
+    return list(
+        queryset.filter(status__in=_open_statuses(), results_paused_at__isnull=False)
+        .select_related("equipment", "user")
+        .order_by("results_paused_at", "booking_id")
+    )
 
 
 # --- API payloads -------------------------------------------------------------------------------------------------

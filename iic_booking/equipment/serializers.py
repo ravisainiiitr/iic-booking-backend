@@ -201,6 +201,16 @@ class _ResultsDeadlineFieldMixin:
             logger.exception("results overdue payload failed for booking %s", getattr(obj, "booking_id", None))
             return None
 
+    def get_results_paused(self, obj):
+        """Equipment Under Maintenance: the results clock is paused (shown to staff and the booking user)."""
+        from .maintenance_auto import booking_results_pause_payload
+
+        try:
+            return booking_results_pause_payload(obj)
+        except Exception:
+            logger.exception("results paused payload failed for booking %s", getattr(obj, "booking_id", None))
+            return None
+
     def get_results_deadline(self, obj):
         from .results_deadline import booking_results_deadline_payload
 
@@ -3721,6 +3731,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     booking_id = serializers.SerializerMethodField()
     results_deadline = serializers.SerializerMethodField()
     results_overdue = serializers.SerializerMethodField()
+    results_paused = serializers.SerializerMethodField()
     real_booking_id = serializers.IntegerField(source='booking_id', read_only=True)
     equipment_code = serializers.CharField(source='equipment.code', read_only=True)
     equipment_name = serializers.CharField(source='equipment.name', read_only=True)
@@ -4032,6 +4043,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'operator_absent_hold_until',
             'results_deadline',
             'results_overdue',
+            'results_paused',
             'atmosphere_sensitive_sample',
             'equipment_atmosphere_sensitive_sample_enabled',
             'equipment_allow_multiple_sample_sets',
@@ -4563,6 +4575,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
     booking_id = serializers.SerializerMethodField()
     results_deadline = serializers.SerializerMethodField()
     results_overdue = serializers.SerializerMethodField()
+    results_paused = serializers.SerializerMethodField()
     real_booking_id = serializers.IntegerField(source='booking_id', read_only=True)
     equipment_code = serializers.CharField(source='equipment.code', read_only=True)
     equipment_name = serializers.CharField(source='equipment.name', read_only=True)
@@ -4681,7 +4694,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
             'istem_fbr_number', 'istem_fbr_status', 'istem_fbr_status_display', 'istem_fbr_invalid_reason', 'istem_fbr_executed_at',
             'istem_portal_url', 'istem_fbr_status_url', 'require_istem_fbr',
             'oic_contacts', 'sample_summary', 'lab_questions_open', 'results_deadline', 'results_overdue',
-            'fabrication_rejected_at', 'fabrication_replace_deadline',
+            'results_paused', 'fabrication_rejected_at', 'fabrication_replace_deadline',
         ]
         read_only_fields = [
             'booking_id',

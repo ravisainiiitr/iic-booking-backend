@@ -149,6 +149,10 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "oic_substitute_bulk_lab_staff_email",
     "oic_substitute_bulk_oic_copy_email",
     "monthly_usage_report_email",
+    "booking_equipment_maintenance_notice_email",
+    "booking_equipment_maintenance_day_email",
+    "booking_equipment_maintenance_resolved_email",
+    "booking_equipment_maintenance_staff_email",
 ]
 
 
@@ -2887,9 +2891,172 @@ def _monthly_report_templates() -> list[dict[str, Any]]:
     ]
 
 
+_MAINTENANCE_HELP = (
+    "{{ user_name }}, {{ equipment_name }}, {{ equipment_code }}, {{ maintenance_since }}, {{ expected_recovery }}, "
+    "{{ bookings_html }}, {{ bookings_text }}, {{ link }}"
+)
+
+
+def _maintenance_bookings_block() -> tuple[str, str]:
+    html = "{% if bookings_html %}" + details_card_html(["{{ bookings_html }}"], heading="Your bookings") + "{% endif %}"
+    text = "{% if bookings_text %}Your bookings:\n{{ bookings_text }}\n{% endif %}"
+    return html, text
+
+
+def _maintenance_templates() -> list[dict[str, Any]]:
+    """Equipment Under Maintenance: booking holders and lab staff are told at once, on each maintenance day at the
+    08:30 check, and when the equipment is operational again (``equipment.maintenance_auto``)."""
+    bookings_html, bookings_text = _maintenance_bookings_block()
+    period_rows = [
+        optional_detail_row("Equipment", "equipment_name"),
+        optional_detail_row("Equipment code", "equipment_code"),
+        optional_detail_row("Under maintenance since", "maintenance_since"),
+        optional_detail_row("Expected back", "expected_recovery"),
+    ]
+    day_check = (
+        "The equipment status is checked every morning at 8:30 AM. If it is still under maintenance on the day of a "
+        "booking, you receive a separate email that morning and that booking is put on hold for your choice: cancel "
+        "for a full refund, or reschedule once the equipment is operational. If the equipment is operational again "
+        "before then, your booking stands and we will let you know."
+    )
+    notice = _simple_email(
+        code="booking_equipment_maintenance_notice_email",
+        title="Equipment Under Maintenance",
+        subject="{{ equipment_name }} is under maintenance – your upcoming bookings",
+        intro=(
+            "<strong>{{ equipment_name }}</strong> has been marked Under Maintenance. You have upcoming bookings on "
+            "this equipment, listed below."
+        ),
+        description=(
+            "Sent once per booking the moment equipment is marked Under Maintenance, to every user with an upcoming "
+            "booking on it (all future dates). Service message (Booking updates): not held for quiet hours or digest."
+        ),
+        detail_rows=period_rows,
+        details_heading="Maintenance",
+        post_details_html=bookings_html
+        + paragraph_html(
+            "{% if today_handled %}Bookings for today could not go ahead and have been put on hold for your choice "
+            "(refund or reschedule); a separate email explains how to choose. {% endif %}" + day_check
+        )
+        + paragraph_html("You can also cancel or reschedule a booking now from My Bookings."),
+        post_details_text=bookings_text
+        + "\n{% if today_handled %}Bookings for today could not go ahead and have been put on hold for your choice "
+        "(refund or reschedule); a separate email explains how to choose.\n{% endif %}"
+        + day_check
+        + "\n\nYou can also cancel or reschedule a booking now from My Bookings.\n",
+        cta_label="Open My Bookings",
+        variable_help=_MAINTENANCE_HELP + ", {{ today_handled }}",
+    )
+    day = _simple_email(
+        code="booking_equipment_maintenance_day_email",
+        title="Booking Affected by Maintenance",
+        subject="Action needed: {{ equipment_name }} under maintenance – booking {{ booking_id }}",
+        intro=(
+            "<strong>{{ equipment_name }}</strong> is still under maintenance on {{ maintenance_day }}, so your "
+            "booking cannot go ahead as scheduled."
+        ),
+        description=(
+            "Sent on each maintenance day (when equipment is marked, and at the 08:30 check) to users whose booking "
+            "falls on that day; the booking is put on hold for the user's choice (refund or reschedule). Service "
+            "message (Booking updates)."
+        ),
+        detail_rows=[
+            optional_detail_row("Booking ID", "booking_id"),
+            optional_detail_row("Equipment", "equipment_name"),
+            optional_detail_row("Start time", "start_time"),
+            optional_detail_row("End time", "end_time"),
+            optional_detail_row("Under maintenance since", "maintenance_since"),
+            optional_detail_row("Choose by", "decision_deadline"),
+        ],
+        details_heading="Booking details",
+        post_details_html=paragraph_html(
+            "Please choose in My Bookings (Actions):<br>"
+            "(a) <strong>Cancel booking</strong> – full refund to your wallet.<br>"
+            "(b) <strong>Reschedule</strong> – pick a new time once the equipment is operational; we will email you "
+            "when that happens."
+        )
+        + paragraph_html(
+            "If you make no choice by {{ decision_deadline }}, the booking is refunded in full automatically."
+        ),
+        post_details_text=(
+            "Please choose in My Bookings (Actions):\n"
+            "(a) Cancel booking – full refund to your wallet.\n"
+            "(b) Reschedule – pick a new time once the equipment is operational; we will email you when that happens.\n"
+            "If you make no choice by {{ decision_deadline }}, the booking is refunded in full automatically.\n"
+        ),
+        cta_label="Choose refund or reschedule",
+        variable_help=(
+            "{{ user_name }}, {{ booking_id }}, {{ equipment_name }}, {{ start_time }}, {{ end_time }}, "
+            "{{ maintenance_day }}, {{ maintenance_since }}, {{ decision_deadline }}, {{ link }}"
+        ),
+    )
+    resolved = _simple_email(
+        code="booking_equipment_maintenance_resolved_email",
+        title="Equipment Operational Again",
+        subject="{{ equipment_name }} is operational – your booking stands",
+        intro=(
+            "<strong>{{ equipment_name }}</strong> is back in working condition. Your upcoming bookings listed below "
+            "stand as booked; no action is needed."
+        ),
+        description=(
+            "Sent when equipment is Operational again, to users who were told about the maintenance and still have "
+            "upcoming bookings on it. Service message (Booking updates)."
+        ),
+        detail_rows=[
+            optional_detail_row("Equipment", "equipment_name"),
+            optional_detail_row("Equipment code", "equipment_code"),
+            optional_detail_row("Under maintenance since", "maintenance_since"),
+            optional_detail_row("Operational since", "operational_since"),
+        ],
+        details_heading="Maintenance",
+        post_details_html=bookings_html,
+        post_details_text=bookings_text,
+        cta_label="Open My Bookings",
+        variable_help=_MAINTENANCE_HELP + ", {{ operational_since }}",
+    )
+    staff = _simple_email(
+        code="booking_equipment_maintenance_staff_email",
+        title="Equipment Maintenance Summary",
+        subject="{{ summary_subject }}",
+        intro="{{ summary_intro }}",
+        description=(
+            "Summary to the Officer In Charge and Lab Operators of the equipment when it is marked Under Maintenance, "
+            "after each 08:30 check that affected bookings, and when it is Operational again."
+        ),
+        detail_rows=[
+            optional_detail_row("Equipment", "equipment_name"),
+            optional_detail_row("Equipment code", "equipment_code"),
+            optional_detail_row("Under maintenance since", "maintenance_since"),
+            optional_detail_row("Operational since", "operational_since"),
+            optional_detail_row("Bookings put on hold (refund or reschedule)", "bookings_on_hold"),
+            optional_detail_row("Upcoming bookings at risk", "bookings_at_risk"),
+            optional_detail_row("Users notified", "users_notified"),
+            optional_detail_row("Results overdue paused", "results_paused"),
+            optional_detail_row("Results overdue resumed", "results_resumed"),
+        ],
+        details_heading="Summary",
+        post_details_html="{% if bookings_html %}"
+        + details_card_html(["{{ bookings_html }}"], heading="Bookings")
+        + "{% endif %}",
+        post_details_text="{% if bookings_text %}Bookings:\n{{ bookings_text }}\n{% endif %}",
+        cta_label="Open dashboard",
+        name_var="user_name",
+        variable_help=(
+            "{{ user_name }}, {{ summary_subject }}, {{ summary_intro }}, {{ equipment_name }}, {{ equipment_code }}, "
+            "{{ maintenance_since }}, {{ operational_since }}, {{ bookings_on_hold }}, {{ bookings_at_risk }}, "
+            "{{ users_notified }}, {{ results_paused }}, {{ results_resumed }}, {{ bookings_html }}, "
+            "{{ bookings_text }}, {{ link }}"
+        ),
+    )
+    return [notice, day, resolved, staff]
+
+
 def get_default_email_template(code: str) -> Optional[dict[str, Any]]:
     """Catalog spec for one code without building (and validating) the whole catalog."""
     for spec in _training_templates():
+        if spec["code"] == code:
+            return spec
+    for spec in _maintenance_templates():
         if spec["code"] == code:
             return spec
     for spec in get_default_email_templates():
@@ -2916,6 +3083,7 @@ def get_default_email_templates() -> list[dict]:
     templates.extend(_fabrication_templates())
     templates.extend(_oic_substitute_templates())
     templates.extend(_monthly_report_templates())
+    templates.extend(_maintenance_templates())
 
     by_code = {t["code"]: t for t in templates}
     missing = [c for c in DEFAULT_EMAIL_TEMPLATE_CODES if c not in by_code]

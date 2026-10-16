@@ -4179,6 +4179,23 @@ class Booking(models.Model):
             '(instead of the current booking slots). Used for disruption reschedules so quota stays in the original period.'
         ),
     )
+    results_paused_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('Results overdue paused at'),
+        help_text=_(
+            'Set while the equipment is Under Maintenance: the results-overdue clock is paused and resumes '
+            '(deadline extended by the paused time) when the equipment is Operational again.'
+        ),
+    )
+    results_pause_period = models.ForeignKey(
+        'equipment.EquipmentMaintenancePeriod',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='paused_bookings',
+        verbose_name=_('Results paused by maintenance period'),
+    )
     # I-STEM (https://www.istem.gov.in/) FBR linkage — external user bookings only; null = not applicable (internal) or legacy row
     istem_fbr_number = models.CharField(
         max_length=128,
@@ -7892,3 +7909,8 @@ from iic_booking.equipment.cancellation_models import (  # noqa: E402
 )
 from iic_booking.equipment.testdata_models import TestDataFlag, TestDataKind  # noqa: E402
 from iic_booking.equipment.search_synonym_models import SearchSynonym  # noqa: E402
+from iic_booking.equipment.maintenance_models import (  # noqa: E402
+    EquipmentMaintenancePeriod,
+    MaintenanceNotification,
+    MaintenanceNotificationKind,
+)

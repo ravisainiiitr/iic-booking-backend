@@ -653,7 +653,7 @@ def apply_other_disruption_for_booking_manually(booking, *, reason: str) -> None
 
 def apply_when_equipment_marked_under_maintenance(equipment) -> int:
     """Flag affected bookings, set deadlines, send disruption emails. Returns count updated."""
-    from .models import Booking, BookingDisruptionKind, BookingStatus, DailySlot, SlotStatus
+    from .models import Booking, DailySlot, SlotStatus
 
     # Make slot statuses match the equipment state immediately.
     # Otherwise users may see future days as AVAILABLE until the next scheduled sweep runs.
@@ -668,7 +668,6 @@ def apply_when_equipment_marked_under_maintenance(equipment) -> int:
     ids = get_affected_booking_ids_for_equipment_today(equipment)
     if not ids:
         return 0
-    maintenance_at = now
     count = 0
     for bid in ids:
         try:
@@ -679,58 +678,69 @@ def apply_when_equipment_marked_under_maintenance(equipment) -> int:
             )
         except Booking.DoesNotExist:
             continue
-        if booking.status == BookingStatus.DISRUPTION_PENDING:
-            continue
-        if booking.status not in (BookingStatus.BOOKED, BookingStatus.PENDING):
-            continue
-        first_start = _booking_first_slot_start(booking)
-        if not first_start:
-            continue
-        if timezone.is_naive(first_start):
-            first_start = timezone.make_aware(first_start)
-        deadline = resolve_disruption_decision_deadline(equipment, maintenance_at, first_start)
-        previous_status = booking.status
-        booking.status = BookingStatus.DISRUPTION_PENDING
-        booking.disruption_kind = BookingDisruptionKind.MAINTENANCE
-        booking.disruption_release_slot_status = SlotStatus.UNDER_MAINTENANCE
-        booking.quota_period_anchor_at = _disruption_quota_anchor(booking, first_start)
-        booking.maintenance_disruption_flag = True
-        booking.maintenance_decision_deadline_at = deadline
-        # Allow one additional week navigation immediately while awaiting the user's choice.
-        # Reschedule may still be blocked by equipment status until it becomes operational.
-        booking.maintenance_reschedule_extra_week = True
-        booking.maintenance_operational_marked_at = None
-        booking.save(
-            update_fields=[
-                "status",
-                "disruption_kind",
-                "disruption_release_slot_status",
-                "quota_period_anchor_at",
-                "maintenance_disruption_flag",
-                "maintenance_decision_deadline_at",
-                "maintenance_reschedule_extra_week",
-                "maintenance_operational_marked_at",
-            ]
-        )
-        _record_disruption_entry(
-            booking, previous_status, deadline, reason="Equipment status changed to Under Maintenance"
-        )
-        _send_maintenance_disruption_email(booking, deadline)
-        try:
-            from .tasks import send_manual_disruption_operational_followup
-
-            send_manual_disruption_operational_followup.apply_async(args=[booking.booking_id], countdown=300)
-        except Exception:
-            logger.exception(
-                "Failed to schedule disruption operational follow-up for maintenance booking %s",
-                booking.booking_id,
-            )
-        count += 1
+        if put_booking_on_maintenance_hold(booking, now, reason="Equipment status changed to Under Maintenance"):
+            count += 1
     return count
 
 
-def apply_when_equipment_becomes_operational(equipment) -> int:
-    """Unlock maintenance reschedule (+1 week) and notify users."""
+def put_booking_on_maintenance_hold(booking, maintenance_at, *, reason: str, send_email: bool = True) -> bool:
+    """A BOOKED / PENDING booking on a maintenance day awaits the user's refund or reschedule choice.
+
+    ``send_email=False`` when the caller sends its own email (``maintenance_auto``). Returns False when the booking
+    is not eligible (already awaiting a choice, other status, no slots)."""
+    from .models import BookingDisruptionKind, BookingStatus, SlotStatus
+
+    if booking.status not in (BookingStatus.BOOKED, BookingStatus.PENDING):
+        return False
+    first_start = _booking_first_slot_start(booking)
+    if not first_start:
+        return False
+    if timezone.is_naive(first_start):
+        first_start = timezone.make_aware(first_start)
+    equipment = booking.equipment
+    deadline = resolve_disruption_decision_deadline(equipment, maintenance_at, first_start)
+    previous_status = booking.status
+    booking.status = BookingStatus.DISRUPTION_PENDING
+    booking.disruption_kind = BookingDisruptionKind.MAINTENANCE
+    booking.disruption_release_slot_status = SlotStatus.UNDER_MAINTENANCE
+    booking.quota_period_anchor_at = _disruption_quota_anchor(booking, first_start)
+    booking.maintenance_disruption_flag = True
+    booking.maintenance_decision_deadline_at = deadline
+    # Allow one additional week navigation immediately while awaiting the user's choice.
+    # Reschedule may still be blocked by equipment status until it becomes operational.
+    booking.maintenance_reschedule_extra_week = True
+    booking.maintenance_operational_marked_at = None
+    booking.save(
+        update_fields=[
+            "status",
+            "disruption_kind",
+            "disruption_release_slot_status",
+            "quota_period_anchor_at",
+            "maintenance_disruption_flag",
+            "maintenance_decision_deadline_at",
+            "maintenance_reschedule_extra_week",
+            "maintenance_operational_marked_at",
+        ]
+    )
+    _record_disruption_entry(booking, previous_status, deadline, reason=reason)
+    if send_email:
+        _send_maintenance_disruption_email(booking, deadline)
+    try:
+        from .tasks import send_manual_disruption_operational_followup
+
+        send_manual_disruption_operational_followup.apply_async(args=[booking.booking_id], countdown=300)
+    except Exception:
+        logger.exception(
+            "Failed to schedule disruption operational follow-up for maintenance booking %s",
+            booking.booking_id,
+        )
+    return True
+
+
+def apply_when_equipment_becomes_operational(equipment, *, restore_slots: bool = True) -> int:
+    """Unlock maintenance reschedule (+1 week) and notify users.
+
+    ``restore_slots=False`` when ``maintenance_auto.end_period`` already put back only the slots it converted."""
     from django.db.models import Q
 
     from .models import Booking, BookingDisruptionKind, BookingStatus, DailySlot, SlotStatus
@@ -738,14 +748,14 @@ def apply_when_equipment_becomes_operational(equipment) -> int:
     # Restore previously under-maintenance slots to AVAILABLE for booking.
     # Keep booked/held slots untouched (they should already be BOOKED/HOLD/etc).
     # Restored slots do not auto-confirm the waitlist (only booking cancellations / reschedules do).
-    now = timezone.now()
-    today = timezone.localtime(now).date()
-    DailySlot.objects.filter(
-        slot_master__equipment=equipment,
-        date__gte=today,
-        status=SlotStatus.UNDER_MAINTENANCE,
-        booking_id__isnull=True,
-    ).update(status=SlotStatus.AVAILABLE)
+    if restore_slots:
+        today = timezone.localdate()
+        DailySlot.objects.filter(
+            slot_master__equipment=equipment,
+            date__gte=today,
+            status=SlotStatus.UNDER_MAINTENANCE,
+            booking_id__isnull=True,
+        ).update(status=SlotStatus.AVAILABLE)
 
     qs = (
         Booking.objects.filter(
@@ -786,31 +796,42 @@ def on_equipment_status_changed(equipment, old_status: str | None, new_status: s
     if old_status == new_status:
         return
     if is_equipment_under_maintenance_status(new_status) and not is_equipment_under_maintenance_status(old_status):
-        n = 0
-        try:
-            n = apply_when_equipment_marked_under_maintenance(equipment)
-            logger.info(
-                "maintenance_policy: equipment %s marked under maintenance; affected bookings=%s",
-                equipment.equipment_id,
-                n,
-            )
-        except Exception:
-            logger.exception("apply_when_equipment_marked_under_maintenance failed for equipment %s", equipment.pk)
         from .disruption_service import record_equipment_under_maintenance, record_unrecorded_slots
+        from .maintenance_auto import start_period
 
         data = _equipment_disruption_input(equipment)
-        equipment._disruption_result = record_equipment_under_maintenance(equipment, data, bookings_affected=n)
+        equipment._disruption_result = record_equipment_under_maintenance(equipment, data, bookings_affected=0)
+        try:
+            outcome = start_period(equipment, user=data.user)
+            equipment._maintenance_outcome = outcome
+            logger.info(
+                "maintenance_policy: equipment %s marked under maintenance; bookings on hold=%s",
+                equipment.equipment_id,
+                len(outcome.bookings_on_hold),
+            )
+        except Exception:
+            logger.exception("maintenance_auto.start_period failed for equipment %s", equipment.pk)
         record_unrecorded_slots(equipment, _upcoming_slots(equipment), data, old_status=SlotStatus.AVAILABLE)
     elif is_equipment_operational_status(new_status) and is_equipment_under_maintenance_status(old_status):
         from .disruption_service import release_slots_made_available
+        from .maintenance_auto import end_period
 
-        restored_ids = list(
-            _upcoming_slots(equipment)
-            .filter(status=SlotStatus.UNDER_MAINTENANCE, booking_id__isnull=True)
-            .values_list("id", flat=True)
-        )
+        data = _equipment_disruption_input(equipment)
+        ended = None
         try:
-            n = apply_when_equipment_becomes_operational(equipment)
+            ended = end_period(equipment, user=data.user)
+        except Exception:
+            logger.exception("maintenance_auto.end_period failed for equipment %s", equipment.pk)
+        if ended is not None:
+            restored_ids = list(ended.slots_restored)
+        else:
+            restored_ids = list(
+                _upcoming_slots(equipment)
+                .filter(status=SlotStatus.UNDER_MAINTENANCE, booking_id__isnull=True)
+                .values_list("id", flat=True)
+            )
+        try:
+            n = apply_when_equipment_becomes_operational(equipment, restore_slots=ended is None)
             logger.info(
                 "maintenance_policy: equipment %s operational; maintenance reschedule unlock emails=%s",
                 equipment.equipment_id,
@@ -820,7 +841,6 @@ def on_equipment_status_changed(equipment, old_status: str | None, new_status: s
             logger.exception("apply_when_equipment_becomes_operational failed for equipment %s", equipment.pk)
         from .disruption_service import record_equipment_operational
 
-        data = _equipment_disruption_input(equipment)
         release_slots_made_available(equipment, restored_ids, data)
         equipment._disruption_result = record_equipment_operational(equipment, data)
 

@@ -1046,6 +1046,17 @@ def daily_under_maintenance_sweep() -> dict:
     return result
 
 
+@shared_task(name="equipment.maintenance_auto_daily_check")
+def maintenance_auto_daily_check() -> dict:
+    """08:30 IST: equipment still Under Maintenance -> that day's slots and bookings are handled and users emailed
+    (``maintenance_auto.daily_check``; idempotent per day). Not deferred for the Wednesday peak (08:30 is outside it)."""
+    from .maintenance_auto import daily_check
+
+    result = daily_check()
+    logger.info("maintenance_auto_daily_check: %s", result)
+    return result
+
+
 @shared_task(name="equipment.daily_operator_on_leave_sweep")
 @defer_during_peak("equipment.daily_operator_on_leave_sweep")
 def daily_operator_on_leave_sweep() -> dict:

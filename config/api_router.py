@@ -511,6 +511,7 @@ from iic_booking.equipment.equipment_addition_requests import (
 )
 from iic_booking.equipment.completion_reminders import bookings_awaiting_completion_view
 from iic_booking.equipment.results_deadline import results_overdue_view
+from iic_booking.equipment.maintenance_views import maintenance_status_view
 from iic_booking.equipment.admin_dashboard_summary import admin_dashboard_summary
 from iic_booking.equipment.global_search import global_search
 from iic_booking.equipment.search_synonym_views import search_synonym_detail, search_synonym_list
@@ -1592,6 +1593,7 @@ urlpatterns = router.urls + [
         name="bookings-awaiting-completion",
     ),
     path("bookings/results-overdue/", results_overdue_view, name="bookings-results-overdue"),
+    path("equipments/maintenance-status/", maintenance_status_view, name="equipment-maintenance-status"),
     path(
         "bookings/lab-dashboard-calendar-colors/",
         lab_dashboard_calendar_colors,

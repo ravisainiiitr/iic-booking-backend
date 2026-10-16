@@ -364,6 +364,8 @@ def _latest_stage(booking) -> Optional[str]:
 def is_results_overdue(booking, deadline: Optional[BookingDeadline], now=None) -> bool:
     if deadline is None or booking.status not in _open_statuses():
         return False
+    if getattr(booking, "results_paused_at", None) is not None:
+        return False
     if (now or timezone.now()) <= deadline.due_at:
         return False
     return _latest_stage(booking) not in _awaiting_user_stages()
@@ -556,7 +558,44 @@ def results_overdue_view(request):
     now = timezone.now()
     calendar = WorkingCalendar()
     rows = [serialize_overdue_booking(b, d, now, calendar) for b, d in results_overdue_for_user(request.user, now)]
-    return Response({"count": len(rows), "bookings": rows}, status=status.HTTP_200_OK)
+    paused = [serialize_paused_booking(b) for b in results_paused_for_user(request.user)]
+    return Response({"count": len(rows), "bookings": rows, "paused": paused}, status=status.HTTP_200_OK)
+
+
+def results_paused_for_user(user) -> list:
+    from .models import Booking
+    from .results_overdue import paused_bookings
+
+    ids = overdue_scope_equipment_ids(user)
+    qs = Booking.objects.all()
+    if ids is not None:
+        if not ids:
+            return []
+        qs = qs.filter(equipment_id__in=ids)
+    return paused_bookings(qs)
+
+
+def serialize_paused_booking(booking) -> dict:
+    from iic_booking.communication.in_app import person_label
+    from iic_booking.communication.utils import booking_display_id_for_email
+
+    from .maintenance_auto import booking_results_pause_payload
+
+    equipment = booking.equipment
+    pause = booking_results_pause_payload(booking) or {}
+    return {
+        "booking_id": booking.booking_id,
+        "booking_ref": booking_display_id_for_email(booking) or str(booking.booking_id),
+        "equipment_id": equipment.equipment_id,
+        "equipment_name": equipment.name,
+        "equipment_code": equipment.code,
+        "user_name": person_label(booking.user),
+        "status": booking.status,
+        "paused_at": pause.get("paused_at"),
+        "paused_display": pause.get("paused_display", ""),
+        "reason": pause.get("reason", ""),
+        "link": f"/booking-management?expand={booking.booking_id}",
+    }
 
 
 # --- safeguard automation -----------------------------------------------------------------------------------------
@@ -590,6 +629,8 @@ def safeguard_due_at(booking, slot_end, *, legacy_hours, state: AutomationState,
     Legacy mode: the old ``max(slot end, extension) + N hours``.
     """
     slot_end = _aware(slot_end)
+    if getattr(booking, "results_paused_at", None) is not None:
+        return None, (MODE_RESULTS_DEADLINE if uses_results_deadline(slot_end, state) else MODE_LEGACY)
     if uses_results_deadline(slot_end, state):
         if not booking_sample_receipt(booking).received:
             return unreceived_safeguard_due_at(booking, slot_end, calendar), MODE_RESULTS_DEADLINE
