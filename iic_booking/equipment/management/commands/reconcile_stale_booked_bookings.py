@@ -122,7 +122,7 @@ class Command(BaseCommand):
             bid = booking.booking_id
             equipment = booking.equipment
             if trace_allows_booking_not_utilized(bid):
-                nu_hours = auto_not_utilized_hours(equipment)
+                nu_hours = auto_not_utilized_hours(equipment, booking)
                 if nu_hours is None or now < latest_end + timedelta(hours=nu_hours):
                     counts["skipped"] += 1
                     if only_id is not None:

@@ -2,10 +2,12 @@ name: Equipment maintenance production actions (guarded)
 
 # Dry runs are read-only (READ ONLY transaction, rolled back). Apply actions need the exact confirm string.
 # Output: ids, codes, statuses, counts and amounts only (no names, no emails, no free text).
-#   dry_run         maintenance-auto adoption dry run + 5-day refund dry run + legacy-status check
-#   adopt           adopt equipment already Under Maintenance (confirm: ADOPT-UNDER-MAINTENANCE)
-#   mark_repair     set one equipment REPAIR through the normal status path (confirm: MARK-REPAIR-<id>)
-#   verify          maintenance periods, slots, notifications, emails, results pauses, banner counts, beat rows
+#   dry_run            adoption dry run + hold-policy dry run + reschedule preview + 5-day refund dry run + legacy status
+#   adopt              adopt equipment already Under Maintenance (confirm: ADOPT-UNDER-MAINTENANCE)
+#   mark_repair        set one equipment REPAIR through the normal status path (confirm: MARK-REPAIR-<id>)
+#   hold_policy        existing maintenance holds -> no deadline, rescheduled automatically (confirm: MAINTENANCE-HOLD-POLICY)
+#   enable_refund_job  schedule the 5-day auto refund, maintenance holds excluded (confirm: ENABLE-REFUND-JOB)
+#   verify             maintenance periods, slots, notifications, emails, results pauses, holds, banner counts, beat rows
 
 on:
   workflow_dispatch:
@@ -13,7 +15,7 @@ on:
       action:
         description: "Action"
         type: choice
-        options: [dry_run, adopt, mark_repair, verify]
+        options: [dry_run, adopt, mark_repair, hold_policy, enable_refund_job, verify]
         default: dry_run
       equipment_ids:
         description: "Equipment ids (space separated) for adopt / mark_repair / verify"
@@ -24,7 +26,7 @@ on:
         type: string
         default: ""
       confirm:
-        description: "Confirm string for adopt / mark_repair"
+        description: "Confirm string for apply actions"
         type: string
         default: ""
 
@@ -56,6 +58,15 @@ jobs:
               test "$CONFIRM" = "MARK-REPAIR-$1" || { echo "confirm string mismatch"; exit 1; }
               docker exec -i -w /app "$CID" python manage.py maintenance_auto --mark-repair "$1" --reason "$REASON" --apply
               ;;
+            hold_policy)
+              test "$CONFIRM" = "MAINTENANCE-HOLD-POLICY" || { echo "confirm string mismatch"; exit 1; }
+              docker exec -i -w /app "$CID" python manage.py maintenance_auto --hold-policy --apply
+              ;;
+            enable_refund_job)
+              test "$CONFIRM" = "ENABLE-REFUND-JOB" || { echo "confirm string mismatch"; exit 1; }
+              docker exec -i -w /app "$CID" python manage.py maintenance_auto --refund-dry-run
+              docker exec -i -w /app "$CID" python manage.py maintenance_auto --enable-refund-job --apply
+              ;;
             dry_run|verify)
               docker exec -i -w /app -e ACTION="$ACTION" -e IDS="$IDS" "$CID" python - <<'PY'
           import os
@@ -79,6 +90,11 @@ jobs:
           now = timezone.now()
           today = timezone.localdate()
 
+          def run(*args):
+              out = StringIO()
+              call_command("maintenance_auto", *args, stdout=out)
+              return out.getvalue()
+
           with transaction.atomic():
               if connection.vendor == "postgresql":
                   with connection.cursor() as cur:
@@ -86,15 +102,21 @@ jobs:
               print(f"now={timezone.localtime(now).isoformat(timespec='minutes')}")
               legacy = list(Equipment.objects.filter(status="MAINTENANCE").values_list("pk", flat=True))
               print(f"legacy MAINTENANCE status: count={len(legacy)} ids={legacy}")
+              holds = Booking.objects.filter(status="DISRUPTION_PENDING")
+              print(
+                  f"disruption holds: total={holds.count()} by_kind={dict(Counter(holds.values_list('disruption_kind', flat=True)))}"
+                  f" auto_reschedule_pending={holds.filter(maintenance_auto_reschedule_pending=True).count()}"
+                  f" maintenance_with_deadline={holds.filter(disruption_kind='MAINTENANCE', maintenance_decision_deadline_at__isnull=False).count()}"
+              )
               if action == "dry_run":
-                  out = StringIO()
-                  call_command("maintenance_auto", stdout=out)
                   print("== adoption dry run ==")
-                  print(out.getvalue())
-                  out = StringIO()
-                  call_command("maintenance_auto", "--refund-dry-run", stdout=out)
-                  print("== 5-day refund dry run ==")
-                  print(out.getvalue())
+                  print(run())
+                  print("== hold policy dry run ==")
+                  print(run("--hold-policy"))
+                  print("== reschedule preview ==")
+                  print(run("--reschedule-preview"))
+                  print("== 5-day refund dry run (maintenance holds excluded) ==")
+                  print(run("--refund-dry-run"))
               else:
                   from iic_booking.equipment.maintenance_auto import period_summary
                   from iic_booking.communication.models import CommunicationLog
@@ -108,12 +130,19 @@ jobs:
                           print(f"beat id={p.pk} task={p.task} enabled={p.enabled} {sched} runs={p.total_run_count} last_run={p.last_run_at}")
                   except Exception as e:
                       print(f"beat probe failed: {type(e).__name__}")
+                  print("== reschedule preview ==")
+                  print(run("--reschedule-preview"))
                   periods = EquipmentMaintenancePeriod.objects.filter(ended_at__isnull=True).select_related("equipment")
                   if ids:
                       periods = periods.filter(equipment_id__in=ids)
                   print(f"== open maintenance periods: {periods.count()} ==")
                   codes = ["booking_equipment_maintenance_notice_email", "booking_equipment_maintenance_day_email",
-                           "booking_equipment_maintenance_resolved_email", "booking_equipment_maintenance_staff_email"]
+                           "booking_equipment_maintenance_resolved_email", "booking_equipment_maintenance_staff_email",
+                           "booking_equipment_maintenance_hold_notice_email", "booking_equipment_maintenance_hold_day_email",
+                           "booking_equipment_maintenance_rescheduled_email", "booking_equipment_maintenance_staff_summary_email"]
+                  from iic_booking.communication.models import CommunicationTemplate
+                  present = set(CommunicationTemplate.objects.filter(code__in=codes).values_list("code", flat=True))
+                  print(f"templates present={sorted(present)}")
                   for p in periods.order_by("equipment_id"):
                       s = period_summary(p)
                       eq = p.equipment
@@ -142,14 +171,17 @@ jobs:
                           booking_id__in=paused, metadata__results_pause="paused"
                       ).values_list("booking_id", flat=True)
                       on_hold = list(notes.filter(kind="DAY").values_list("booking_id", flat=True))
-                      on_hold_status = Counter(Booking.objects.filter(pk__in=on_hold).values_list("status", flat=True))
+                      on_hold_qs = Booking.objects.filter(pk__in=on_hold)
+                      on_hold_status = Counter(on_hold_qs.values_list("status", flat=True))
+                      pending = sorted(on_hold_qs.filter(maintenance_auto_reschedule_pending=True).values_list("booking_id", flat=True))
+                      with_deadline = sorted(on_hold_qs.filter(maintenance_decision_deadline_at__isnull=False).values_list("booking_id", flat=True))
                       print(
                           f"  eq={eq.pk} code={eq.code} status={eq.status} period={p.pk} adopted={p.adopted}"
                           f" since={timezone.localtime(p.started_at).isoformat(timespec='minutes')} last_checked_on={p.last_checked_on}"
                       )
                       print(f"    banner: affected={s['bookings_affected']} on_hold={s['bookings_on_hold']} users={s['users_notified']} results_paused={s['results_paused']}")
                       print(f"    notifications by kind={dict(kinds)} duplicate_booking_rows={dup_count}")
-                      print(f"    on_hold bookings={sorted(on_hold)} statuses={dict(on_hold_status)}")
+                      print(f"    on_hold bookings={sorted(on_hold)} statuses={dict(on_hold_status)} auto_reschedule_pending={pending} with_deadline={with_deadline}")
                       print(f"    slots today={dict(slots_today)} auto_slot_ids={len(p.auto_slot_ids or [])} auto_slots_already_ended_at_start={past_today_auto} future_days_UM={future_um}")
                       print(f"    comm logs since start={logs.count()} by_template={dict(Counter(logs.values_list('template__code', flat=True)))} by_status={dict(Counter(logs.values_list('status', flat=True)))} max_per_key={max(per_meta.values()) if per_meta else 0}")
                       print(f"    results paused={len(paused)} with_pause_event={len(set(paused_events))} ids={sorted(paused)[:40]}")

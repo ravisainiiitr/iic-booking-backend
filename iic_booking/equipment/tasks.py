@@ -33,6 +33,8 @@ def send_manual_disruption_operational_followup(booking_id: int) -> bool:
         return False
     if booking.status != BookingStatus.DISRUPTION_PENDING:
         return False
+    if getattr(booking, "maintenance_auto_reschedule_pending", False):
+        return False
     if getattr(booking, "maintenance_operational_marked_at", None):
         return False
     equipment = getattr(booking, "equipment", None)
@@ -687,7 +689,7 @@ def check_booking_not_utilized() -> int:
 
     marked = 0
     for booking in qs.iterator(chunk_size=50):
-        hours = auto_not_utilized_hours(booking.equipment)
+        hours = auto_not_utilized_hours(booking.equipment, booking)
         if hours is None or now < booking.latest_booked_slot_end + timedelta(hours=hours):
             continue
         try:

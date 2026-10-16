@@ -277,6 +277,8 @@ class _RescheduleBlockFieldsMixin:
             return RESCHEDULE_LOCKED_SAMPLE_ACCEPTED
         if obj.user_id != user.pk and not _viewer_bypasses_sample_lock(self):
             return RESCHEDULE_OWNER_ONLY
+        if getattr(obj, "maintenance_auto_reschedule_pending", False) and not _viewer_bypasses_sample_lock(self):
+            return "reschedule_maintenance_auto"
         return None
 
     def _cancel_block(self, obj):
@@ -291,6 +293,11 @@ class _RescheduleBlockFieldsMixin:
         if obj.user_id != user.pk and not _viewer_bypasses_sample_lock(self):
             return CANCEL_OWNER_ONLY
         return None
+
+    def get_auto_reschedule(self, obj):
+        from .maintenance_reschedule import auto_reschedule_payload
+
+        return auto_reschedule_payload(obj)
 
     def get_can_reschedule(self, obj):
         if _viewer_user(self) is None:
@@ -311,6 +318,10 @@ class _RescheduleBlockFieldsMixin:
         return {
             RESCHEDULE_LOCKED_SAMPLE_ACCEPTED: RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
             RESCHEDULE_OWNER_ONLY: RESCHEDULE_OWNER_ONLY_MESSAGE,
+            "reschedule_maintenance_auto": (
+                "On hold for equipment maintenance: it will be moved automatically to the earliest free slot once "
+                "the equipment is back. You can cancel for a full refund until then."
+            ),
         }.get(self._reschedule_block(obj))
 
     def get_can_cancel(self, obj):
@@ -1478,6 +1489,7 @@ class DailySlotSerializer(serializers.ModelSerializer):
     booking_is_external = serializers.SerializerMethodField()
     booking_sample_status_display = serializers.SerializerMethodField()
     booking_sample_accepted = serializers.SerializerMethodField()
+    booking_auto_reschedule_note = serializers.SerializerMethodField()
     available_for_external = serializers.SerializerMethodField()
     # Wall-clock open time (HH:mm:ss) from SlotMaster — aligns weekly grid rows with slot_master_times (start_datetime is TZ-aware ISO).
     slot_open_time = serializers.SerializerMethodField()
@@ -1514,6 +1526,7 @@ class DailySlotSerializer(serializers.ModelSerializer):
             'booking_is_external',
             'booking_sample_status_display',
             'booking_sample_accepted',
+            'booking_auto_reschedule_note',
             'available_for_external',
             'created_at',
             'updated_at'
@@ -1687,6 +1700,15 @@ class DailySlotSerializer(serializers.ModelSerializer):
         if not booking:
             return None
         return getattr(booking, "user", None)
+
+    def get_booking_auto_reschedule_note(self, obj):
+        booking = getattr(obj, "booking", None)
+        if booking is None or not getattr(booking, "auto_rescheduled_at", None):
+            return None
+        from .maintenance_reschedule import auto_reschedule_payload
+
+        payload = auto_reschedule_payload(booking)
+        return payload["note"] if payload else None
 
     def get_booking_user_name(self, obj):
         """
@@ -3751,6 +3773,8 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     maintenance_disruption_flag = serializers.BooleanField(read_only=True)
     disruption_kind = serializers.CharField(read_only=True, allow_null=True)
     maintenance_decision_deadline_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    maintenance_auto_reschedule_pending = serializers.BooleanField(read_only=True)
+    auto_reschedule = serializers.SerializerMethodField()
     equipment_is_operational = serializers.SerializerMethodField()
     equipment_operator_unavailable_after_booking_end_hours = serializers.IntegerField(
         source='equipment.operator_unavailable_after_booking_end_hours', read_only=True, default=24
@@ -4014,6 +4038,8 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'maintenance_disruption_flag',
             'disruption_kind',
             'maintenance_decision_deadline_at',
+            'maintenance_auto_reschedule_pending',
+            'auto_reschedule',
             'equipment_is_operational',
             'equipment_profile_type',
             'equipment_profile_type_display',
@@ -4606,6 +4632,8 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
     maintenance_decision_deadline_at = serializers.DateTimeField(read_only=True, allow_null=True)
     maintenance_reschedule_extra_week = serializers.BooleanField(read_only=True)
     maintenance_operational_marked_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    maintenance_auto_reschedule_pending = serializers.BooleanField(read_only=True)
+    auto_reschedule = serializers.SerializerMethodField()
     disruption_kind = serializers.CharField(read_only=True, allow_null=True)
     disruption_release_slot_status = serializers.CharField(read_only=True, allow_null=True)
     istem_fbr_status_display = serializers.SerializerMethodField()
@@ -4675,6 +4703,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
             'equipment_user_rating_enabled', 'equipment_enable_remote_analysis', 'equipment_status', 'equipment_is_operational',
             'maintenance_disruption_flag', 'maintenance_decision_deadline_at', 'maintenance_reschedule_extra_week',
             'maintenance_operational_marked_at', 'disruption_kind', 'disruption_release_slot_status',
+            'maintenance_auto_reschedule_pending', 'auto_reschedule',
             'charge_profile', 'user_type_snapshot', 'total_time_minutes', 'total_hours',
             'total_charge', 'status', 'status_display', 'list_status', 'list_status_group', 'start_time', 'end_time',
             'equipment_weekly_view_display',

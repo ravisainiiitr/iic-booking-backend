@@ -2,8 +2,8 @@
 Automatic handling of equipment Under Maintenance, day by day.
 
 * Marked Under Maintenance (any path that saves the equipment): an ``EquipmentMaintenancePeriod`` starts. Today's
-  remaining Available slots become Under Maintenance, today's bookings from now on are put on hold for the user's
-  refund-or-reschedule choice (the existing lab-disruption flow, ``maintenance_policy.put_booking_on_maintenance_hold``),
+  remaining Available slots become Under Maintenance, today's bookings from now on are put on hold until they are
+  rescheduled automatically (``maintenance_policy.put_booking_on_maintenance_hold``, ``maintenance_reschedule``),
   every user with an upcoming booking on the equipment is emailed once per booking, the results-overdue clock of the
   equipment's past bookings awaiting results is paused, and the OIC / Lab Operators get a summary.
 * Every morning at 08:30 IST (``equipment.maintenance_auto_daily_check``): for each equipment still Under Maintenance,
@@ -33,11 +33,17 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
-TEMPLATE_NOTICE = "booking_equipment_maintenance_notice_email"
-TEMPLATE_DAY = "booking_equipment_maintenance_day_email"
+TEMPLATE_NOTICE = "booking_equipment_maintenance_hold_notice_email"
+TEMPLATE_DAY = "booking_equipment_maintenance_hold_day_email"
 TEMPLATE_RESOLVED = "booking_equipment_maintenance_resolved_email"
-TEMPLATE_STAFF = "booking_equipment_maintenance_staff_email"
-TEMPLATE_CODES = (TEMPLATE_NOTICE, TEMPLATE_DAY, TEMPLATE_RESOLVED, TEMPLATE_STAFF)
+TEMPLATE_STAFF = "booking_equipment_maintenance_staff_summary_email"
+TEMPLATE_RESCHEDULED = "booking_equipment_maintenance_rescheduled_email"
+TEMPLATE_CODES = (TEMPLATE_NOTICE, TEMPLATE_DAY, TEMPLATE_RESOLVED, TEMPLATE_STAFF, TEMPLATE_RESCHEDULED)
+SUPERSEDED_TEMPLATE_CODES = (
+    "booking_equipment_maintenance_notice_email",
+    "booking_equipment_maintenance_day_email",
+    "booking_equipment_maintenance_staff_email",
+)
 
 PAUSE_REASON = "Paused – equipment under maintenance"
 STAFF_SLOT_SOURCES = ("CHANGE_SLOT_STATUS", "DASHBOARD_CALENDAR", "ADMIN_SLOT_API", "DJANGO_ADMIN", "BOOKING_DETAILS")
@@ -177,7 +183,10 @@ def _manually_marked_slot_ids(equipment_id) -> set[int]:
 
 def restorable_slot_ids(period, now) -> list[int]:
     """Unbooked Under Maintenance slots from now on that this period put there: converted by the mechanism, or
-    generated while the equipment was Under Maintenance. Slots staff marked by hand are kept."""
+    generated while the equipment was Under Maintenance. Slots staff marked by hand are kept.
+
+    Adopted periods were marked before the mechanism existed, when marking converted every future slot at once,
+    so all of them are restored (except the hand-marked ones), as the old Operational path did."""
     from django.db.models import Q
 
     from .models import DailySlot, SlotStatus
@@ -187,7 +196,9 @@ def restorable_slot_ids(period, now) -> list[int]:
         status=SlotStatus.UNDER_MAINTENANCE,
         booking__isnull=True,
         end_datetime__gt=now,
-    ).filter(Q(pk__in=list(period.auto_slot_ids or [])) | Q(created_at__gte=period.started_at))
+    )
+    if not period.adopted:
+        qs = qs.filter(Q(pk__in=list(period.auto_slot_ids or [])) | Q(created_at__gte=period.started_at))
     manual = _manually_marked_slot_ids(period.equipment_id)
     return [sid for sid in qs.values_list("id", flat=True) if sid not in manual]
 
@@ -411,12 +422,11 @@ def _send_day_email(period, booking, now) -> bool:
             "start_time": _fmt(first),
             "end_time": _fmt(last),
             "maintenance_day": timezone.localtime(now).strftime("%a %d %b %Y"),
-            "decision_deadline": _fmt(booking.maintenance_decision_deadline_at),
         },
-        title=f"Action needed: {eq} under maintenance",
+        title=f"On hold: {eq} under maintenance",
         message=(
-            f"Booking {ref} cannot go ahead today because {eq} is under maintenance. Choose a full refund or "
-            "reschedule in My Bookings."
+            f"Booking {ref} is on hold because {eq} is under maintenance. It will be moved automatically to the "
+            "earliest free slot once the equipment is back; you can cancel for a full refund until then."
         ),
         path=booking_detail_path(display_id=ref, staff=False) or "/my-bookings",
         event="maintenance.day",
@@ -453,8 +463,9 @@ def _notify_upcoming(period, now, *, on_hold_ids: set, outcome: Outcome) -> None
             title=f"{eq} is under maintenance",
             message=(
                 f"{eq} is under maintenance. Your upcoming booking{'s' if len(fresh) != 1 else ''} "
-                f"({', '.join(_booking_ref(b) for b in fresh[:5])}) may be affected; the status is checked every "
-                "morning at 8:30 AM and you will be told on the day."
+                f"({', '.join(_booking_ref(b) for b in fresh[:5])}) may be affected. If it is still under "
+                "maintenance on the day, the booking goes on hold and is moved automatically to the earliest free "
+                "slot once the equipment is back."
             ),
             path="/my-bookings",
             event="maintenance.marked",
@@ -464,7 +475,9 @@ def _notify_upcoming(period, now, *, on_hold_ids: set, outcome: Outcome) -> None
         outcome.users_notified.add(uid)
 
 
-def _staff_summary(period, kind: str, *, subject: str, intro: str, bookings: list, for_date=None, extra=None):
+def _staff_summary(
+    period, kind: str, *, subject: str, intro: str, bookings: list, for_date=None, extra=None, claim_booking=None
+):
     from .completion_reminders import _candidate_recipients
 
     html, text = _bookings_list(bookings, with_user=True)
@@ -477,7 +490,7 @@ def _staff_summary(period, kind: str, *, subject: str, intro: str, bookings: lis
         **{k: (str(v) if v not in (None, "") else "") for k, v in (extra or {}).items()},
     }
     for user in _candidate_recipients([period.equipment_id]):
-        if not _claim(period, kind, user=user, for_date=for_date):
+        if not _claim(period, kind, booking=claim_booking, user=user, for_date=for_date):
             continue
         _deliver(
             user,
@@ -669,8 +682,10 @@ def _summarise_start(period, now, outcome: Outcome) -> None:
         subject=f"Under maintenance: {eq} – {n_hold + n_risk} booking{'s' if n_hold + n_risk != 1 else ''} affected",
         intro=(
             f"{eq} was marked Under Maintenance on {_fmt(period.started_at)}. Today's bookings from now on are on hold "
-            "for the users' choice (refund or reschedule); users with later bookings were told, and each day at "
-            "8:30 AM the bookings of that day are handled the same way while the equipment stays under maintenance."
+            "and will be moved automatically, in booking order, to the earliest free slots once the equipment is "
+            "Operational (users may cancel for a full refund until then); users with later bookings were told, and "
+            "each day at 8:30 AM the bookings of that day are handled the same way while the equipment stays under "
+            "maintenance."
         ),
         bookings=on_hold + at_risk,
         extra={
@@ -715,7 +730,8 @@ def run_daily_for_period(period, now) -> Outcome:
             subject=f"Still under maintenance: {eq} – {len(on_hold)} booking{'s' if len(on_hold) != 1 else ''} on hold today",
             intro=(
                 f"{eq} is still Under Maintenance at the 8:30 AM check on {timezone.localtime(now):%a %d %b %Y}. "
-                "Today's bookings are on hold for the users' choice (refund or reschedule) and the users were emailed."
+                "Today's bookings are on hold until they are rescheduled automatically once the equipment is "
+                "Operational, and the users were emailed."
             ),
             bookings=on_hold,
             for_date=today,
@@ -760,6 +776,15 @@ def daily_check(now=None) -> dict:
         stats["bookings_on_hold"] += len(out.bookings_on_hold)
         stats["users_notified"] += len(out.users_notified)
         stats["results_paused"] += len(out.results_paused)
+    from .maintenance_reschedule import allocate_pending_everywhere
+
+    try:
+        placed = allocate_pending_everywhere(now)
+    except Exception:
+        logger.exception("maintenance_auto: automatic reschedule failed at the daily check")
+        placed = {}
+    stats["rescheduled"] = placed.get("placed", 0)
+    stats["still_on_hold"] = placed.get("unplaced", 0)
     return stats
 
 

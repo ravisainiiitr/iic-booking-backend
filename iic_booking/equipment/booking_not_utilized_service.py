@@ -36,21 +36,27 @@ def not_utilized_window_hours(equipment) -> int:
     return int(getattr(equipment, "booking_not_utilize_window_hours", 0) or 0)
 
 
-def auto_not_utilized_hours(equipment) -> Optional[int]:
-    """Hours after the last booked slot end before the scheduled job may act; None when switched off."""
+def auto_not_utilized_hours(equipment, booking: Optional[Booking] = None) -> Optional[int]:
+    """Hours after the last booked slot end before the scheduled job may act; None when switched off.
+    A booking rescheduled automatically after maintenance gets its extension on top."""
+    from .maintenance_reschedule import extension_hours
+
     window = not_utilized_window_hours(equipment)
     if window <= 0:
         return None
-    return max(window, AUTO_NOT_UTILIZED_MIN_HOURS)
+    return max(window, AUTO_NOT_UTILIZED_MIN_HOURS) + (extension_hours(booking) if booking is not None else 0)
 
 
 def not_utilized_allowed_from(booking: Booking):
-    """Earliest time Booking Not Utilized may be recorded (last booked slot end + equipment window), or None."""
+    """Earliest time Booking Not Utilized may be recorded (last booked slot end + equipment window, plus the
+    extension of a booking rescheduled automatically after maintenance), or None."""
+    from .maintenance_reschedule import extension_hours
+
     window = not_utilized_window_hours(getattr(booking, "equipment", None))
     latest_end = latest_booked_slot_end_datetime(booking)
     if window <= 0 or latest_end is None:
         return None
-    return latest_end + timedelta(hours=window)
+    return latest_end + timedelta(hours=window + extension_hours(booking))
 
 
 def _normalize_daily_slot_end_datetime(end_dt):

@@ -21,6 +21,7 @@ SLOT_BOOKING_IDENTITY_FIELDS = (
     "booking_user_type",
     "booking_sample_status_display",
     "booking_sample_accepted",
+    "booking_auto_reschedule_note",
 )
 
 

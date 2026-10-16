@@ -1,7 +1,8 @@
 """
-When equipment is marked Under Maintenance (REPAIR/INACTIVE), affected same-day bookings
-enter a special policy: cancel anytime (refund), reschedule only after equipment is operational
-(with optional extra week in slots API); undecided after DISRUPTION_DECISION_DAYS, the booking is
+When equipment is marked Under Maintenance (REPAIR/INACTIVE), affected same-day bookings go on hold:
+cancel anytime (full refund), otherwise moved automatically to the earliest free slot once the equipment
+is operational (``maintenance_reschedule``). Other lab disruptions (operator absent, analysis not possible)
+await the user's refund-or-reschedule choice; undecided after DISRUPTION_DECISION_DAYS, the booking is
 marked Refunded with a full refund.
 """
 from __future__ import annotations
@@ -77,6 +78,7 @@ def clear_disruption_policy_fields(booking, *, keep_quota_anchor: bool = False) 
     booking.maintenance_decision_deadline_at = None
     booking.maintenance_reschedule_extra_week = False
     booking.maintenance_operational_marked_at = None
+    booking.maintenance_auto_reschedule_pending = False
     booking.disruption_kind = None
     booking.disruption_reason = None
     booking.disruption_release_slot_status = None
@@ -154,8 +156,16 @@ def _fbr_block(booking) -> str:
     return f"{line}\n\n" if line else ""
 
 
-def _send_maintenance_disruption_email(booking, deadline_at) -> None:
-    from iic_booking.communication.utils import booking_display_id_for_email
+MAINTENANCE_HOLD_USER_TEXT = (
+    "Your booking is on hold while the equipment is under maintenance. You do not need to do anything: once the "
+    "equipment is back in working condition, your booking is moved automatically to the earliest free slot, in the "
+    "order bookings were made, at no extra charge, and we email you the new slot. Until then you can cancel it at "
+    "any time for a full refund from My Bookings."
+)
+
+
+def _send_maintenance_disruption_email(booking, deadline_at=None) -> None:
+    from iic_booking.communication.utils import booking_display_id_for_email, get_frontend_absolute_url
 
     user = booking.user
     if not user or not getattr(user, "email", None):
@@ -163,18 +173,13 @@ def _send_maintenance_disruption_email(booking, deadline_at) -> None:
     eq = booking.equipment
     eq_name = (getattr(eq, "name", None) or getattr(eq, "code", None) or "Equipment") if eq else "Equipment"
     bid = booking_display_id_for_email(booking)
-    dl = timezone.localtime(deadline_at).strftime("%Y-%m-%d %H:%M %Z") if deadline_at else "—"
-    subject = f"Technical issue — {eq_name} (booking {bid})"
+    my_bookings = get_frontend_absolute_url("/dashboard/my-bookings")
+    subject = f"On hold: {eq_name} under maintenance (booking {bid})"
     body = (
         f"Dear {getattr(user, 'name', None) or 'user'},\n\n"
-        f"We are facing technical issues with {eq_name}. Your slot could not be completed as scheduled "
-        f"because the equipment is under maintenance.\n\n"
-        f"Please choose one of the following in My Bookings (Actions):\n"
-        f"(a) Cancel booking — full refund to your wallet.\n"
-        f"(b) Reschedule — pick a new time once the equipment is operational; we will email you when that happens. "
-        f"Reschedule will then include an additional week in the booking calendar where applicable.\n\n"
-        f"If you take no action before the decision deadline ({dl}), your booking will be treated as a refund request: "
-        f"it will be marked Refunded, the full amount refunded to your wallet and the slot(s) released per our policy.\n\n"
+        f"{eq_name} is under maintenance, so booking {bid} cannot go ahead as scheduled.\n\n"
+        f"{MAINTENANCE_HOLD_USER_TEXT}\n\n"
+        f"{my_bookings}\n\n"
         f"{_fbr_block(booking)}— {getattr(settings, 'SITE_NAME', 'IIC Booking')}"
     )
     try:
@@ -325,7 +330,7 @@ def _send_other_disruption_email(booking, deadline_at, reason: str) -> None:
         logger.exception("other disruption email failed for booking %s: %s", booking.booking_id, e)
 
 
-def _record_disruption_entry(booking, previous_status, deadline, *, reason: str = "") -> None:
+def _record_disruption_entry(booking, previous_status, deadline, *, reason: str = "", auto_reschedule: bool = False) -> None:
     """History entry for a booking that now awaits the user's refund / reschedule choice.
 
     Staff paths run in their request (the signed-in OIC / admin / operator is the actor); jobs and scripts
@@ -339,12 +344,17 @@ def _record_disruption_entry(booking, previous_status, deadline, *, reason: str 
     label = REASON_LABELS.get(code, "Lab disruption")
     reason_clean = (reason or "").strip()
     deadline_text = timezone.localtime(deadline).strftime("%d %b %Y %H:%M") if deadline else "—"
-    comment = (
-        f"Marked {label}."
-        + (f" Reason: {reason_clean}." if reason_clean else "")
-        + f" Awaiting the user's choice (reschedule or full refund) until {deadline_text}; "
-        "after that the booking is refunded in full automatically."
-    )
+    if auto_reschedule:
+        tail = (
+            " On hold: moved automatically to the earliest free slot (in booking order) once the equipment is "
+            "Operational; the user may cancel for a full refund until then."
+        )
+    else:
+        tail = (
+            f" Awaiting the user's choice (reschedule or full refund) until {deadline_text}; "
+            "after that the booking is refunded in full automatically."
+        )
+    comment = f"Marked {label}." + (f" Reason: {reason_clean}." if reason_clean else "") + tail
     actor = current_actor()
     try:
         with transaction.atomic():
@@ -359,6 +369,7 @@ def _record_disruption_entry(booking, previous_status, deadline, *, reason: str 
                 metadata={
                     AUDIT_KEY: reason_fields(code, reason_clean, disruption_kind=booking.disruption_kind),
                     "decision_deadline_at": deadline.isoformat() if deadline else None,
+                    **({"maintenance_auto_reschedule": True} if auto_reschedule else {}),
                 },
                 send_notification=False,
             )
@@ -389,8 +400,6 @@ def apply_maintenance_disruption_for_booking_manually(booking, *, notes: str = "
     if timezone.is_naive(first_start):
         first_start = timezone.make_aware(first_start)
 
-    deadline = resolve_disruption_decision_deadline(equipment, maintenance_at, first_start)
-
     extra_notes = (notes or "").strip()
     update_fields = [
         "status",
@@ -401,6 +410,7 @@ def apply_maintenance_disruption_for_booking_manually(booking, *, notes: str = "
         "maintenance_decision_deadline_at",
         "maintenance_reschedule_extra_week",
         "maintenance_operational_marked_at",
+        "maintenance_auto_reschedule_pending",
     ]
     if extra_notes:
         tag = "[Under maintenance — Admin/OIC]"
@@ -413,24 +423,14 @@ def apply_maintenance_disruption_for_booking_manually(booking, *, notes: str = "
     booking.disruption_release_slot_status = SlotStatus.UNDER_MAINTENANCE
     booking.quota_period_anchor_at = _disruption_quota_anchor(booking, first_start)
     booking.maintenance_disruption_flag = True
-    booking.maintenance_decision_deadline_at = deadline
-    # Allow one additional week navigation immediately while awaiting the user's choice.
-    # Reschedule may still be blocked by equipment status until it becomes operational.
+    booking.maintenance_decision_deadline_at = None
     booking.maintenance_reschedule_extra_week = True
     booking.maintenance_operational_marked_at = None
+    booking.maintenance_auto_reschedule_pending = True
     booking.save(update_fields=update_fields)
-    _record_disruption_entry(booking, previous_status, deadline, reason=extra_notes)
+    _record_disruption_entry(booking, previous_status, None, reason=extra_notes, auto_reschedule=True)
 
-    _send_maintenance_disruption_email(booking, deadline)
-
-    # Manual (booking-details) disruption: send an "operational" reschedule email 5 minutes later
-    # if the booking is still awaiting the user's decision.
-    try:
-        from .tasks import send_manual_disruption_operational_followup
-
-        send_manual_disruption_operational_followup.apply_async(args=[booking.booking_id], countdown=300)
-    except Exception:
-        logger.exception("Failed to schedule manual disruption operational follow-up for booking %s", booking.booking_id)
+    _send_maintenance_disruption_email(booking)
 
 
 def apply_operator_absent_disruption_for_booking(booking, *, triggered_at=None, reason: str = "") -> None:
@@ -685,10 +685,12 @@ def apply_when_equipment_marked_under_maintenance(equipment) -> int:
 
 
 def put_booking_on_maintenance_hold(booking, maintenance_at, *, reason: str, send_email: bool = True) -> bool:
-    """A BOOKED / PENDING booking on a maintenance day awaits the user's refund or reschedule choice.
+    """A BOOKED / PENDING booking on a maintenance day goes on hold until the equipment works again, when
+    ``maintenance_reschedule.allocate_for_equipment`` moves it to the earliest free slot. There is no decision
+    deadline and no automatic refund; the user may cancel for a full refund until the move.
 
     ``send_email=False`` when the caller sends its own email (``maintenance_auto``). Returns False when the booking
-    is not eligible (already awaiting a choice, other status, no slots)."""
+    is not eligible (already on hold, other status, no slots)."""
     from .models import BookingDisruptionKind, BookingStatus, SlotStatus
 
     if booking.status not in (BookingStatus.BOOKED, BookingStatus.PENDING):
@@ -698,19 +700,16 @@ def put_booking_on_maintenance_hold(booking, maintenance_at, *, reason: str, sen
         return False
     if timezone.is_naive(first_start):
         first_start = timezone.make_aware(first_start)
-    equipment = booking.equipment
-    deadline = resolve_disruption_decision_deadline(equipment, maintenance_at, first_start)
     previous_status = booking.status
     booking.status = BookingStatus.DISRUPTION_PENDING
     booking.disruption_kind = BookingDisruptionKind.MAINTENANCE
     booking.disruption_release_slot_status = SlotStatus.UNDER_MAINTENANCE
     booking.quota_period_anchor_at = _disruption_quota_anchor(booking, first_start)
     booking.maintenance_disruption_flag = True
-    booking.maintenance_decision_deadline_at = deadline
-    # Allow one additional week navigation immediately while awaiting the user's choice.
-    # Reschedule may still be blocked by equipment status until it becomes operational.
+    booking.maintenance_decision_deadline_at = None
     booking.maintenance_reschedule_extra_week = True
     booking.maintenance_operational_marked_at = None
+    booking.maintenance_auto_reschedule_pending = True
     booking.save(
         update_fields=[
             "status",
@@ -721,20 +720,12 @@ def put_booking_on_maintenance_hold(booking, maintenance_at, *, reason: str, sen
             "maintenance_decision_deadline_at",
             "maintenance_reschedule_extra_week",
             "maintenance_operational_marked_at",
+            "maintenance_auto_reschedule_pending",
         ]
     )
-    _record_disruption_entry(booking, previous_status, deadline, reason=reason)
+    _record_disruption_entry(booking, previous_status, None, reason=reason, auto_reschedule=True)
     if send_email:
-        _send_maintenance_disruption_email(booking, deadline)
-    try:
-        from .tasks import send_manual_disruption_operational_followup
-
-        send_manual_disruption_operational_followup.apply_async(args=[booking.booking_id], countdown=300)
-    except Exception:
-        logger.exception(
-            "Failed to schedule disruption operational follow-up for maintenance booking %s",
-            booking.booking_id,
-        )
+        _send_maintenance_disruption_email(booking)
     return True
 
 
@@ -762,6 +753,7 @@ def apply_when_equipment_becomes_operational(equipment, *, restore_slots: bool =
         Booking.objects.filter(
             equipment_id=equipment.equipment_id,
             maintenance_disruption_flag=True,
+            maintenance_auto_reschedule_pending=False,
         )
         .exclude(disruption_kind=BookingDisruptionKind.OPERATOR_ABSENT)
         .filter(
@@ -856,8 +848,19 @@ def on_equipment_status_changed(equipment, old_status: str | None, new_status: s
             )
         except Exception:
             logger.exception("apply_when_equipment_becomes_operational failed for equipment %s", equipment.pk)
-        from .disruption_service import record_equipment_operational
+        from .maintenance_reschedule import allocate_for_equipment
 
+        try:
+            equipment._maintenance_reschedule = allocate_for_equipment(equipment)
+        except Exception:
+            logger.exception("maintenance_reschedule: allocation failed for equipment %s", equipment.pk)
+        from .disruption_service import record_equipment_operational
+        from .models import DailySlot
+
+        if restored_ids:
+            restored_ids = list(
+                DailySlot.objects.filter(pk__in=restored_ids, booking__isnull=True).values_list("id", flat=True)
+            )
         release_slots_made_available(equipment, restored_ids, data)
         equipment._disruption_result = record_equipment_operational(equipment, data)
 
@@ -969,13 +972,20 @@ DECISION_WINDOW_POLICY_SINCE = "2026-10-12"
 
 def expired_disruption_bookings(now):
     """Disruption bookings still waiting for the user's choice (refund / reschedule) past the decision deadline.
-    A refund ends the booking and a reschedule clears the disruption fields, so neither is selected."""
-    from .models import Booking, BookingStatus
+    A refund ends the booking and a reschedule clears the disruption fields, so neither is selected.
 
-    return Booking.objects.filter(
-        maintenance_disruption_flag=True,
-        maintenance_decision_deadline_at__lte=now,
-        status__in=[BookingStatus.BOOKED, BookingStatus.PENDING, BookingStatus.DISRUPTION_PENDING],
+    Bookings on hold for equipment maintenance are never refunded automatically: they are rescheduled
+    automatically once the equipment works again (``maintenance_reschedule``)."""
+    from .models import Booking, BookingDisruptionKind, BookingStatus
+
+    return (
+        Booking.objects.filter(
+            maintenance_disruption_flag=True,
+            maintenance_decision_deadline_at__lte=now,
+            status__in=[BookingStatus.BOOKED, BookingStatus.PENDING, BookingStatus.DISRUPTION_PENDING],
+            maintenance_auto_reschedule_pending=False,
+        )
+        .exclude(disruption_kind=BookingDisruptionKind.MAINTENANCE)
     )
 
 

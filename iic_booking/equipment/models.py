@@ -4196,6 +4196,29 @@ class Booking(models.Model):
         related_name='paused_bookings',
         verbose_name=_('Results paused by maintenance period'),
     )
+    maintenance_auto_reschedule_pending = models.BooleanField(
+        default=False,
+        verbose_name=_('Waiting for automatic reschedule after maintenance'),
+        help_text=_(
+            'On hold because the equipment is under maintenance: moved automatically to the earliest free slot '
+            '(in booking order) once the equipment is Operational. The user may take a full refund until then.'
+        ),
+    )
+    auto_rescheduled_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('Automatically rescheduled after maintenance at'),
+    )
+    auto_rescheduled_from = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('Original slot start before the automatic reschedule'),
+    )
+    auto_reschedule_extension_hours = models.PositiveIntegerField(
+        default=0,
+        verbose_name=_('Deadline extension after the automatic reschedule (hours)'),
+        help_text=_('Added to the sample submission deadline and the Booking Not Utilized threshold.'),
+    )
     # I-STEM (https://www.istem.gov.in/) FBR linkage — external user bookings only; null = not applicable (internal) or legacy row
     istem_fbr_number = models.CharField(
         max_length=128,
@@ -7913,4 +7936,5 @@ from iic_booking.equipment.maintenance_models import (  # noqa: E402
     EquipmentMaintenancePeriod,
     MaintenanceNotification,
     MaintenanceNotificationKind,
+    MaintenanceRescheduleSettings,
 )

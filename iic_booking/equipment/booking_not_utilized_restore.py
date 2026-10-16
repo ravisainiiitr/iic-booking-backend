@@ -74,7 +74,7 @@ def evaluate(booking: Booking, now=None) -> Optional[RestoreCandidate]:
     statuses = set(booking.daily_slots.values_list("status", flat=True))
     if statuses != {SlotStatus.BOOKING_NOT_UTILIZED}:
         return None
-    hours = auto_not_utilized_hours(booking.equipment)
+    hours = auto_not_utilized_hours(booking.equipment, booking)
     allowed_from = last_end + timedelta(hours=hours) if hours is not None else None
     if allowed_from is not None and (event.created_at >= allowed_from or now >= allowed_from):
         return None

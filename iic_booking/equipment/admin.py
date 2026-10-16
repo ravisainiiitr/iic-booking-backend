@@ -53,6 +53,7 @@ from .models import (
     SlotStatus,
     QuotaType,
     BookingBufferConfig,
+    MaintenanceRescheduleSettings,
     InternalUserSlotWindowSetting,
     PeakWindowSetting,
     ResultsDeadlinePolicy,
@@ -2120,6 +2121,17 @@ class BookingBufferConfigAdmin(admin.ModelAdmin):
         (_("Timestamps"), {"fields": ("created_at", "updated_at"), "classes": ("collapse",)}),
     )
     readonly_fields = ["created_at", "updated_at"]
+
+
+@admin.register(MaintenanceRescheduleSettings)
+class MaintenanceRescheduleSettingsAdmin(admin.ModelAdmin):
+    """Singleton: automatic reschedule of bookings on hold for equipment maintenance."""
+
+    list_display = ["min_lead_hours", "horizon_days", "deadline_extension_hours", "cancel_grace_hours", "updated_at"]
+    readonly_fields = ["updated_at"]
+
+    def has_add_permission(self, request):
+        return not MaintenanceRescheduleSettings.objects.exists()
 
 
 # ============================================================================

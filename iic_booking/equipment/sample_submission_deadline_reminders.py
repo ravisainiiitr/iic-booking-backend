@@ -77,7 +77,13 @@ def compute_sample_submission_deadline(booking: "Booking") -> Optional[datetime]
         deadline = start_dt
     else:
         deadline = start_dt - timedelta(hours=lead_hours)
-    return adjust_datetime_to_previous_working_day(deadline)
+    deadline = adjust_datetime_to_previous_working_day(deadline)
+    from .maintenance_reschedule import extension_hours
+
+    extra = extension_hours(booking)
+    if extra:
+        deadline = min(deadline + timedelta(hours=extra), start_dt)
+    return deadline
 
 
 def adjust_datetime_to_previous_working_day(dt: datetime, *, max_days: int = 31) -> datetime:

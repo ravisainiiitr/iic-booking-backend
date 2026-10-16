@@ -13579,6 +13579,10 @@ def user_cancel_booking(request, booking_id):
     if not rejected_by_lab and cancel_locked_for(request.user, booking):
         return Response(cancel_locked_payload(), status=status.HTTP_400_BAD_REQUEST)
 
+    from .maintenance_reschedule import cancel_full_refund_until
+
+    auto_reschedule_cutoff = cancel_full_refund_until(booking)
+
     # Enforce reschedule-hours threshold for user actions (normal case).
     # If now is strictly inside the threshold window before the allocated slot start time,
     # disallow cancel. (Maintenance disruption policy keeps cancel available.)
@@ -13601,6 +13605,8 @@ def user_cancel_booking(request, booking_id):
             )
 
         cutoff_time = earliest_start - timedelta(hours=int(threshold_hours))
+        if auto_reschedule_cutoff is not None:
+            cutoff_time = max(cutoff_time, auto_reschedule_cutoff)
         if timezone.now() > cutoff_time:
             cutoff_str = timezone.localtime(cutoff_time).strftime("%Y-%m-%d %H:%M")
             return Response(
@@ -13615,6 +13621,8 @@ def user_cancel_booking(request, booking_id):
     
     # Get options from request (disruption-pending: default refund when using Cancel)
     should_refund = request.data.get("refund", booking.status == BookingStatus.DISRUPTION_PENDING)
+    if auto_reschedule_cutoff is not None and timezone.now() <= auto_reschedule_cutoff:
+        should_refund = True
     cancel_notes = request.data.get("notes", "")
 
     try:
@@ -13905,6 +13913,20 @@ def user_reschedule_booking(request, booking_id):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+    if not is_staff_rescheduler and getattr(booking, "maintenance_auto_reschedule_pending", False):
+        return Response(
+            {
+                "error": (
+                    "This booking is on hold because the equipment is under maintenance. It will be moved "
+                    "automatically to the earliest free slot once the equipment is back, and you will get an email "
+                    "with the new slot. You can cancel it now for a full refund from My Bookings."
+                ),
+                "maintenance_disruption": True,
+                "maintenance_auto_reschedule": True,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     equipment = booking.equipment
     disruption_kind = getattr(booking, "disruption_kind", None)

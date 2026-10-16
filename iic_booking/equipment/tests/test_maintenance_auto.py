@@ -146,7 +146,8 @@ def test_marking_puts_todays_booking_on_hold_and_tells_every_upcoming_user(
     assert today.disruption_release_slot_status == SlotStatus.UNDER_MAINTENANCE
     assert future.status == BookingStatus.BOOKED
     today_subjects = _subjects(mailoutbox, today_user)
-    assert len(today_subjects) == 1 and today_subjects[0].startswith("Action needed:")
+    assert len(today_subjects) == 1 and today_subjects[0].startswith("On hold:")
+    assert today.maintenance_auto_reschedule_pending and today.maintenance_decision_deadline_at is None
     later_subjects = _subjects(mailoutbox, later_user)
     assert later_subjects == [f"{eq.name} is under maintenance – your upcoming bookings"]
     body = next(m for m in mailoutbox if later_user.email in m.to).body
@@ -214,7 +215,7 @@ def test_daily_check_handles_that_days_bookings_once(lab, mailoutbox, django_cap
         SlotStatus.UNDER_MAINTENANCE
     }
     subjects = _subjects(mailoutbox, user)
-    assert len(subjects) == 2 and subjects[1].startswith("Action needed:")
+    assert len(subjects) == 2 and subjects[1].startswith("On hold:")
     assert any(s.startswith(f"Still under maintenance: {eq.name}") for s in _subjects(mailoutbox, oic))
     sent = len(mailoutbox)
 
@@ -352,6 +353,26 @@ def test_operational_restores_only_slots_the_mechanism_set(lab, django_capture_o
     assert statuses[later.pk] == statuses[s9.pk] == statuses[s12.pk] == statuses[generated.pk] == SlotStatus.AVAILABLE
     period = EquipmentMaintenancePeriod.objects.get(equipment=eq)
     assert period.ended_at is not None and period.ended_by_id == oic.pk
+
+
+def test_operational_after_adoption_restores_slots_the_old_marking_converted(lab, django_capture_on_commit_callbacks):
+    from iic_booking.equipment.models import Equipment
+
+    eq, oic = lab
+    day = _future_weekday()
+    s9, s10, s11, s12 = _slots(eq, day)
+    Equipment.objects.filter(pk=eq.pk).update(status=EquipmentStatus.REPAIR)
+    DailySlot.objects.filter(pk__in=[s9.pk, s10.pk, s12.pk]).update(status=SlotStatus.UNDER_MAINTENANCE)
+    res = _bulk(oic, eq, status="UNDER_MAINTENANCE", slot_ids=[s11.pk], disruption_reason="Filament")
+    assert res.status_code == 200, res.data
+    with django_capture_on_commit_callbacks(execute=True):
+        maintenance_auto.start_period(Equipment.objects.get(pk=eq.pk), adopted=True)
+
+    _operational(oic, eq, django_capture_on_commit_callbacks)
+
+    statuses = dict(DailySlot.objects.filter(pk__in=[s9.pk, s10.pk, s11.pk, s12.pk]).values_list("pk", "status"))
+    assert statuses[s11.pk] == SlotStatus.UNDER_MAINTENANCE
+    assert statuses[s9.pk] == statuses[s10.pk] == statuses[s12.pk] == SlotStatus.AVAILABLE
 
 
 def test_operational_tells_users_with_remaining_bookings_and_staff(lab, mailoutbox, django_capture_on_commit_callbacks):
@@ -515,18 +536,24 @@ def test_catalog_has_maintenance_templates_in_the_bookings_category():
 def test_template_migration_creates_missing_and_leaves_customised_rows():
     from iic_booking.communication.models import CommunicationTemplate
 
-    mod = importlib.import_module("iic_booking.communication.migrations.0061_equipment_maintenance_email_templates")
+    old = importlib.import_module("iic_booking.communication.migrations.0061_equipment_maintenance_email_templates")
+    mod = importlib.import_module(
+        "iic_booking.communication.migrations.0062_maintenance_auto_reschedule_email_templates"
+    )
     CommunicationTemplate.objects.create(
         code=maintenance_auto.TEMPLATE_DAY, communication_type="email", name="Custom day", subject="Custom",
         body_text="Custom body", body_html="<p>Custom</p>",
     )
 
+    old.create_missing(apps, None)
     mod.create_missing(apps, None)
     mod.create_missing(apps, None)
 
     rows = CommunicationTemplate.objects.filter(code__in=maintenance_auto.TEMPLATE_CODES)
-    assert rows.count() == 4
+    assert rows.count() == len(maintenance_auto.TEMPLATE_CODES) == 5
     assert rows.get(code=maintenance_auto.TEMPLATE_DAY).subject == "Custom"
+    assert set(mod.CODES) <= set(maintenance_auto.TEMPLATE_CODES)
+    assert CommunicationTemplate.objects.filter(code__in=maintenance_auto.SUPERSEDED_TEMPLATE_CODES).count() == 3
 
 
 def test_schedule_migration_registers_a_single_0830_row():
