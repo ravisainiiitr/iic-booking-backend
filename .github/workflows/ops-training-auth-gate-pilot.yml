@@ -1,0 +1,225 @@
+name: Ops - training authorisation gate pilot (equipment 44)
+
+# Turns ON "Authorisation required to book" for equipment 44 only (admin-approved pilot). The Training audience must
+# stay TEST_ACCOUNTS, so only flagged test accounts are checked; the apply step refuses otherwise, and refuses if any
+# other equipment has the gate on. Grandfathering is never applied here: only its read-only preview is printed.
+#   mode=dry-run : read-only; prints switches, the planned setting, a simulated gate check and the grandfathering preview.
+#   mode=apply   : needs confirm=GATE-44-ON; writes the setting with a training audit entry, then re-reads and verifies
+#                  (gate checks are evaluated read-only, record=False: no bookings, no audit, no notifications).
+# Prints flags, counts, user ids and user types only: no names, emails or other personal data.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: dry-run or apply
+        required: true
+        default: dry-run
+      confirm:
+        description: GATE-44-ON (required for apply)
+        required: false
+        default: ''
+      test_faculty_id:
+        description: Test faculty user id to check
+        required: true
+        default: '78'
+
+jobs:
+  gate-pilot:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Gate pilot
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          CONFIRM: ${{ github.event.inputs.confirm }}
+          TEST_FACULTY_ID: ${{ github.event.inputs.test_faculty_id }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e MODE="$MODE" -e CONFIRM="$CONFIRM" -e TEST_FACULTY_ID="$TEST_FACULTY_ID" -e RUN_ID="$RUN_ID" -w /app "$CID" python - <<'PY'
+          import os
+          import sys
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.conf import settings
+          from django.db import connection, transaction
+          from django.db.models import Count
+
+          from iic_booking.equipment.models import Booking, Equipment
+          from iic_booking.training import access, authorisation as auth
+          from iic_booking.training.audit import audit
+          from iic_booking.training.models import (
+              AuthorisationAppliesTo, AuthorisationRequest, CertificationAward, EquipmentAuthorisationSetting, TrainingAuditLog,
+          )
+          from iic_booking.users.models import User
+          from iic_booking.users.models.user_type import UserType
+
+          EQ_ID = 44
+          MODE = (os.environ.get("MODE") or "dry-run").strip()
+          CONFIRM = (os.environ.get("CONFIRM") or "").strip()
+          RUN_ID = os.environ.get("RUN_ID", "")
+          TEST_FACULTY_ID = int(os.environ.get("TEST_FACULTY_ID") or 78)
+          WANT = {
+              "required": True,
+              "applies_to": AuthorisationAppliesTo.INTERNAL,
+              "min_level_code": "TRAINED",
+              "validity_months": 24,
+              "grace_completed_bookings": 0,
+              "grace_months": 12,
+              "note": ("Pilot (test accounts only): booking needs a Trained authorisation, valid 24 months. "
+                       "Users request training from the equipment page; the OIC or Lab Operator schedules it and marks them trained."),
+          }
+          FIELDS = auth.SETTING_FIELDS
+
+          if MODE not in ("dry-run", "apply"):
+              sys.exit(f"unknown mode {MODE!r}")
+
+          def read_only():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+
+          eq = Equipment.objects.get(equipment_id=EQ_ID)
+          internal = sorted(UserType.get_internal_user_codes())
+
+          def pick_subjects():
+              """A real internal user (preferably a recent booker of 44), the given test faculty and a test student."""
+              out = []
+              real = (User.objects.filter(is_active=True, is_test_account=False, user_type__in=internal)
+                      .exclude(user_type__in=list(UserType.get_management_user_codes())))
+              booker_ids = list(Booking.objects.filter(equipment_id=EQ_ID, user__in=real).values("user_id")
+                                .annotate(n=Count("pk")).order_by("-n").values_list("user_id", flat=True)[:1])
+              r = real.filter(pk__in=booker_ids).first() or real.filter(user_type=UserType.STUDENT).order_by("pk").first()
+              if r:
+                  out.append(("real internal user", r))
+              f = User.objects.filter(pk=TEST_FACULTY_ID).first()
+              if f:
+                  out.append(("test faculty", f))
+              st = User.objects.filter(is_active=True, is_test_account=True, user_type=UserType.STUDENT).order_by("pk").first()
+              if st:
+                  out.append(("test student", st))
+              return out
+
+          def switches(title):
+              print(f"\n== {title} ==")
+              print(f"  equipment {EQ_ID}: code={eq.code} name={eq.name} status={eq.status} profile={eq.profile_type}")
+              print(f"  env.TRAINING_MODULE_ENABLED={bool(getattr(settings, 'TRAINING_MODULE_ENABLED', False))}")
+              print(f"  db module_enabled={access.db_module_enabled()} effective module_enabled={access.module_enabled()} audience={access.audience()}")
+              scope = access.pilot_equipment_ids()
+              print(f"  training scope={'ALL' if scope is None else sorted(scope)} equipment {EQ_ID} in scope={access.equipment_in_pilot(eq)}")
+              row = EquipmentAuthorisationSetting.objects.filter(equipment_id=EQ_ID).first()
+              print(f"  gate row for {EQ_ID}: " + ("none" if row is None else ", ".join(f"{f}={getattr(row, f)!r}" for f in FIELDS if f != "note")))
+              if row is not None:
+                  print(f"  gate note set={bool(row.note)} updated_by_id={row.updated_by_id}")
+              others = list(EquipmentAuthorisationSetting.objects.filter(required=True).exclude(equipment_id=EQ_ID)
+                            .values_list("equipment_id", flat=True))
+              print(f"  gate rows total={EquipmentAuthorisationSetting.objects.count()} required elsewhere={len(others)} ids={sorted(others)}")
+              print(f"  gated_equipment_ids()={sorted(auth.gated_equipment_ids())}")
+              print(f"  certificates for {EQ_ID}={CertificationAward.objects.filter(equipment_id=EQ_ID).count()} "
+                    f"open requests for {EQ_ID}={AuthorisationRequest.objects.filter(equipment_id=EQ_ID, status__in=['PENDING','SCHEDULED']).count()}")
+              return row, others
+
+          def subject_line(label, u):
+              return (f"  {label}: user_id={u.pk} type={u.user_type} is_test={bool(getattr(u, 'is_test_account', False))} "
+                      f"active={u.is_active} in_audience={access.in_audience(u)} dept_allows_training_on_eq={access.equipment_allows_user(eq, u)}")
+
+          def simulated_checks():
+              row = EquipmentAuthorisationSetting(equipment=eq, **WANT)
+              print("\n== simulated gate check with the planned setting (unsaved, read-only) ==")
+              for label, u in pick_subjects():
+                  subj = auth.user_subject_to(row, u)
+                  st = auth.evaluate(u, eq, row, _row_known=True) if subj else auth._not_required(eq)
+                  verdict = "allowed" if st["allowed"] else auth.GATE_CODE
+                  print(subject_line(label, u) + f" subject_to_gate={subj} status={st['status']} -> {verdict}")
+
+          def live_checks():
+              print("\n== live gate check: check_booking(user, equipment 44, record=False) — no booking is created ==")
+              results = {}
+              for label, u in pick_subjects():
+                  err = auth.check_booking(u, eq, actor=u, context="verification", record=False)
+                  st = auth.evaluate(u, eq)
+                  verdict = "allowed" if err is None else err["code"]
+                  results[label] = verdict
+                  print(subject_line(label, u) + f" status={st['status']} -> {verdict}")
+              return results
+
+          def grandfather_preview():
+              print("\n== grandfathering PREVIEW (read-only, not applied): >= 2 completed bookings in 12 months ==")
+              rows = auth.grandfather_candidates(eq, min_bookings=2, months=12)
+              done = auth.completed_bookings(None, eq, 12)
+              would = [r for r in rows if not r["already_authorised"]]
+              by_type = {}
+              for r in rows:
+                  t = User.objects.filter(pk=r["user"]["id"]).values_list("user_type", flat=True).first()
+                  by_type[t] = by_type.get(t, 0) + 1
+              any_internal = User.objects.filter(pk__in=list(done), user_type__in=internal, is_active=True).count()
+              print(f"  users with >=1 completed booking on {EQ_ID} in 12 months (any type)={len(done)} internal active={any_internal}")
+              print(f"  qualify={len(rows)} would_authorise={len(would)} already_authorised={len(rows) - len(would)} by_type={by_type}")
+              print(f"  internal recent bookers below threshold (would need training once audience is Everyone)={max(any_internal - len(rows), 0)}")
+
+          with transaction.atomic():
+              read_only()
+              row, others = switches("before (read-only)")
+              simulated_checks()
+              grandfather_preview()
+              transaction.set_rollback(True)
+
+          if MODE == "dry-run":
+              cur = {f: getattr(row, f) for f in FIELDS} if row else None
+              print(f"\nDRY RUN: would set gate for equipment {EQ_ID}: {cur} -> " + str({k: v for k, v in WANT.items() if k != 'note'}) + " (+ note)")
+              print("Nothing changed.")
+              sys.exit(0)
+
+          if CONFIRM != f"GATE-{EQ_ID}-ON":
+              sys.exit(f"refusing to apply: confirm must be GATE-{EQ_ID}-ON")
+          if access.audience() != "TEST_ACCOUNTS":
+              sys.exit(f"refusing to apply: Training audience is {access.audience()}, not TEST_ACCOUNTS")
+          if others:
+              sys.exit(f"refusing to apply: gate already on for other equipment {sorted(others)}")
+          if not access.equipment_in_pilot(eq):
+              sys.exit(f"refusing to apply: equipment {EQ_ID} is not in Training scope")
+
+          audit_before = TrainingAuditLog.objects.count()
+          with transaction.atomic():
+              obj, created = EquipmentAuthorisationSetting.objects.select_for_update().get_or_create(equipment=eq)
+              before = {f: getattr(obj, f) for f in FIELDS}
+              for k, v in WANT.items():
+                  setattr(obj, k, v)
+              after = {f: getattr(obj, f) for f in FIELDS}
+              if after == before:
+                  print(f"\nAPPLY: gate for {EQ_ID} already as requested; nothing changed.")
+              else:
+                  obj.save()
+                  audit(None, "authorisation.setting_updated", obj, before=before,
+                        after={**after, "equipment_code": eq.code, "via": "ops workflow", "run_id": RUN_ID},
+                        note="Admin-approved pilot on equipment 44 (audience TEST_ACCOUNTS); set via ops-training-auth-gate-pilot.")
+                  print(f"\nAPPLY: gate for {EQ_ID} {'created' if created else 'updated'} and audited")
+
+          with transaction.atomic():
+              read_only()
+              row, others = switches("after (read-only verification)")
+              results = live_checks()
+              grandfather_preview()
+              print(f"\n  training audit entries added by this run={TrainingAuditLog.objects.count() - audit_before}")
+              ok_row = row is not None and all(getattr(row, k) == v for k, v in WANT.items())
+              ok = (
+                  ok_row
+                  and not others
+                  and access.audience() == "TEST_ACCOUNTS"
+                  and sorted(auth.gated_equipment_ids()) == [EQ_ID]
+                  and results.get("real internal user") == "allowed"
+                  and results.get("test faculty") == auth.GATE_CODE
+                  and results.get("test student") == auth.GATE_CODE
+              )
+              print(f"  checks: row_ok={ok_row} no_other_gates={not others} audience_test_accounts={access.audience() == 'TEST_ACCOUNTS'} "
+                    f"gated_ids_only_44={sorted(auth.gated_equipment_ids()) == [EQ_ID]} results={results}")
+              transaction.set_rollback(True)
+          print("VERIFIED" if ok else "VERIFICATION FAILED")
+          sys.exit(0 if ok else 1)
+          PY
