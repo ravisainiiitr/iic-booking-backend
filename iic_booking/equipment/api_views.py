@@ -5030,7 +5030,12 @@ def _book_equipment_impl(request, pk):
                         end_time = locked_slots[-1].end_datetime
                     elif book_any_available_slots:
                         # Try to allocate any other available slots (distributed OK) from the visible week only
-                        alt_filter = {"slot_master__equipment": equipment, "status": SlotStatus.AVAILABLE}
+                        # Only slots that have not started: past slots keep status AVAILABLE ("No booking").
+                        alt_filter = {
+                            "slot_master__equipment": equipment,
+                            "status": SlotStatus.AVAILABLE,
+                            "start_datetime__gt": timezone.now(),
+                        }
                         if visible_week_start is not None:
                             alt_filter["date__gte"] = visible_week_start
                         if visible_week_end is not None:
@@ -11378,7 +11383,8 @@ def _find_one_available_slot_in_window(
     Find any one available slot for the equipment within the visible week.
     Returns (slot_id, DailySlot) or None.
     """
-    base_filter = {"slot_master__equipment": equipment, "status": SlotStatus.AVAILABLE}
+    # Only slots that have not started: past slots keep status AVAILABLE ("No booking").
+    base_filter = {"slot_master__equipment": equipment, "status": SlotStatus.AVAILABLE, "start_datetime__gt": timezone.now()}
     if visible_week_start is not None:
         base_filter["date__gte"] = visible_week_start
     if visible_week_end is not None:
@@ -11420,7 +11426,8 @@ def _find_alternative_available_slots(
     """
     from .slot_allocation import allocated_capacity_covers_analysis, slot_tolerance_minutes_for
 
-    base_filter = {"slot_master__equipment": equipment, "status": SlotStatus.AVAILABLE}
+    # Only slots that have not started: past slots keep status AVAILABLE ("No booking").
+    base_filter = {"slot_master__equipment": equipment, "status": SlotStatus.AVAILABLE, "start_datetime__gt": timezone.now()}
     if visible_week_start is not None:
         base_filter["date__gte"] = visible_week_start
     if visible_week_end is not None:
