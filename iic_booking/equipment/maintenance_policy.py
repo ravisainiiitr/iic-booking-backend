@@ -19,10 +19,11 @@ logger = logging.getLogger(__name__)
 
 
 def is_equipment_under_maintenance_status(status: str | None) -> bool:
+    """REPAIR / INACTIVE, and the legacy MAINTENANCE ("Maintenance Scheduled", no longer offered) still on old rows."""
     from .models import EquipmentStatus
 
     s = (status or "").strip().upper()
-    return s in (EquipmentStatus.REPAIR, EquipmentStatus.INACTIVE)
+    return s in (EquipmentStatus.REPAIR, EquipmentStatus.INACTIVE, EquipmentStatus.MAINTENANCE)
 
 
 def is_equipment_operational_status(status: str | None) -> bool:
@@ -790,12 +791,28 @@ def _equipment_disruption_input(equipment):
     return data if isinstance(data, DisruptionInput) else DisruptionInput(source="OTHER")
 
 
+def _leaves_legacy_maintenance_without_period(equipment, old_status, new_status) -> bool:
+    """Legacy MAINTENANCE -> Under Maintenance: never handled by the mechanism, so it starts now."""
+    from .maintenance_auto import active_period
+    from .models import EquipmentStatus
+
+    return (
+        (old_status or "").strip().upper() == EquipmentStatus.MAINTENANCE
+        and (new_status or "").strip().upper() != EquipmentStatus.MAINTENANCE
+        and is_equipment_under_maintenance_status(new_status)
+        and active_period(equipment) is None
+    )
+
+
 def on_equipment_status_changed(equipment, old_status: str | None, new_status: str | None) -> None:
     from .models import SlotStatus
 
     if old_status == new_status:
         return
-    if is_equipment_under_maintenance_status(new_status) and not is_equipment_under_maintenance_status(old_status):
+    if is_equipment_under_maintenance_status(new_status) and (
+        not is_equipment_under_maintenance_status(old_status)
+        or _leaves_legacy_maintenance_without_period(equipment, old_status, new_status)
+    ):
         from .disruption_service import record_equipment_under_maintenance, record_unrecorded_slots
         from .maintenance_auto import start_period
 
@@ -947,6 +964,102 @@ def _upcoming_slots(equipment):
     return DailySlot.objects.filter(slot_master__equipment=equipment, date__gte=timezone.localdate())
 
 
+DECISION_WINDOW_POLICY_SINCE = "2026-10-12"
+
+
+def expired_disruption_bookings(now):
+    """Disruption bookings still waiting for the user's choice (refund / reschedule) past the decision deadline.
+    A refund ends the booking and a reschedule clears the disruption fields, so neither is selected."""
+    from .models import Booking, BookingStatus
+
+    return Booking.objects.filter(
+        maintenance_disruption_flag=True,
+        maintenance_decision_deadline_at__lte=now,
+        status__in=[BookingStatus.BOOKED, BookingStatus.PENDING, BookingStatus.DISRUPTION_PENDING],
+    )
+
+
+def _booking_wallet_txns(booking, ref: str):
+    from iic_booking.users.models.wallet import SubWalletTransaction
+
+    return SubWalletTransaction.objects.filter(description__contains=ref)
+
+
+def auto_cancel_dry_run(now=None) -> dict:
+    """Read-only: what ``auto_cancel_expired_maintenance_bookings`` would do now (ids, counts and amounts only).
+
+    For each booking: the refund amount, whether the refund sub-wallet is the one the booking was charged from,
+    and anything that looks wrong (already credited, decided before the 5-day policy, no wallet, amount mismatch).
+    """
+    from datetime import date
+
+    from iic_booking.communication.utils import booking_display_id_for_email
+    from iic_booking.users.models.wallet import SubWallet, SubWalletTransaction
+
+    from .booking_paid_amount import booking_paid_charge
+
+    now = now or timezone.now()
+    since = date.fromisoformat(DECISION_WINDOW_POLICY_SINCE)
+    rows, total = [], Decimal("0.00")
+    for b in expired_disruption_bookings(now).select_related("user", "equipment").order_by("booking_id"):
+        ref = booking_display_id_for_email(b) or str(b.booking_id)
+        amount = booking_paid_charge(b)
+        wallet = b.user.get_accessible_wallet() if b.user_id else None
+        dept = getattr(b.equipment, "internal_department", None)
+        target = None
+        if wallet is not None:
+            sub_q = SubWallet.objects.filter(wallet=wallet)
+            target = (sub_q.filter(department=dept) if dept else sub_q.filter(department__code="GENERAL")).first()
+        txns = _booking_wallet_txns(b, ref)
+        debits = txns.filter(transaction_type=SubWalletTransaction.TransactionType.DEBIT)
+        credits = txns.filter(transaction_type=SubWalletTransaction.TransactionType.CREDIT)
+        debit_total = sum((t.amount for t in debits), Decimal("0.00"))
+        credit_total = sum((t.amount for t in credits), Decimal("0.00"))
+        debit_wallets = set(debits.values_list("sub_wallet_id", flat=True))
+        marked_at = (
+            b.maintenance_decision_deadline_at - timedelta(days=DISRUPTION_DECISION_DAYS)
+            if b.maintenance_decision_deadline_at
+            else None
+        )
+        flags = []
+        if wallet is None:
+            flags.append("no_wallet_would_cancel_without_refund")
+        if amount > 0 and not debits.exists():
+            flags.append("no_charge_debit_found")
+        if debit_wallets and target is not None and debit_wallets != {target.pk}:
+            flags.append("refund_wallet_differs_from_charged_wallet")
+        if amount > 0 and debits.exists() and amount > debit_total - credit_total:
+            flags.append("refund_exceeds_net_paid")
+        if credit_total > 0:
+            flags.append("already_has_credit")
+        if marked_at and timezone.localtime(marked_at).date() < since:
+            flags.append("disrupted_before_5_day_policy")
+        if getattr(b.user, "is_test_account", False):
+            flags.append("test_account")
+        total += amount if wallet is not None else Decimal("0.00")
+        rows.append(
+            {
+                "booking_id": b.booking_id,
+                "equipment_code": getattr(b.equipment, "code", ""),
+                "status": b.status,
+                "disruption_kind": b.disruption_kind or "",
+                "disrupted_on": timezone.localtime(marked_at).date().isoformat() if marked_at else None,
+                "deadline": timezone.localtime(b.maintenance_decision_deadline_at).isoformat(timespec="minutes"),
+                "refund_amount": str(amount),
+                "charged": str(debit_total),
+                "already_credited": str(credit_total),
+                "flags": flags,
+            }
+        )
+    return {
+        "now": timezone.localtime(now).isoformat(timespec="minutes"),
+        "count": len(rows),
+        "total_refund": str(total),
+        "flagged": sum(1 for r in rows if r["flags"]),
+        "rows": rows,
+    }
+
+
 def auto_cancel_expired_maintenance_bookings() -> int:
     """Undecided disruption bookings past the decision deadline are marked Refunded with a full refund."""
     from .models import Booking, BookingStatus, BookingEventType, CancellationReason
@@ -959,19 +1072,22 @@ def auto_cancel_expired_maintenance_bookings() -> int:
     )
 
     now = timezone.now()
-    qs = (
-        Booking.objects.filter(
-            maintenance_disruption_flag=True,
-            maintenance_decision_deadline_at__lte=now,
-            status__in=[BookingStatus.BOOKED, BookingStatus.PENDING, BookingStatus.DISRUPTION_PENDING],
-        )
-        .select_related("user", "equipment")
-    )
+    qs = expired_disruption_bookings(now).select_related("user", "equipment")
     cancelled = 0
     for booking in qs:
         try:
-            released_slot_ids = list(booking.daily_slots.values_list("id", flat=True))
             with transaction.atomic():
+                # Re-read under a row lock: a concurrent run, or the user's own refund / reschedule, wins.
+                booking = (
+                    expired_disruption_bookings(now)
+                    .select_for_update(of=("self",))
+                    .select_related("user", "equipment")
+                    .filter(pk=booking.pk)
+                    .first()
+                )
+                if booking is None:
+                    continue
+                released_slot_ids = list(booking.daily_slots.values_list("id", flat=True))
                 previous_status = booking.status
                 refund_amount = Decimal("0.00")
                 slot_status = effective_slot_status_when_freeing_disruption_booking(booking)

@@ -177,3 +177,91 @@ def test_booking_details_expose_disruption_fields(lab):
     assert data["maintenance_disruption_flag"] is True
     assert data["disruption_kind"] == BookingDisruptionKind.OPERATOR_ABSENT
     assert data["equipment_is_operational"] is True
+
+
+# --- 5-day automatic refund: safety before scheduling -------------------------------------------------------------
+
+
+def _charged(booking, sub, amount="100.00"):
+    from iic_booking.communication.utils import booking_display_id_for_email
+
+    ref = booking_display_id_for_email(booking)
+    sub.debit(Decimal(amount), description=f"Booking #{booking.equipment.code} | Ref: {ref}")
+
+
+def test_auto_refund_runs_once_and_credits_the_charged_sub_wallet(lab, quiet):
+    from iic_booking.equipment.maintenance_policy import auto_cancel_expired_maintenance_bookings
+    from iic_booking.equipment.models import BookingEvent, BookingEventType
+    from iic_booking.equipment.tests.fabrication_helpers import funded_student
+    from iic_booking.users.models.wallet import SubWalletTransaction
+
+    f, eq, _student = lab
+    student, sub = funded_student(f, balance="1000.00")
+    booking = _expired_disruption(f, eq, student, deadline_delta=-timedelta(minutes=1))
+    _charged(booking, sub)
+
+    assert auto_cancel_expired_maintenance_bookings() == 1
+    assert auto_cancel_expired_maintenance_bookings() == 0
+
+    sub.refresh_from_db()
+    assert sub.balance == Decimal("1000.00")
+    credits = SubWalletTransaction.objects.filter(
+        sub_wallet=sub, transaction_type=SubWalletTransaction.TransactionType.CREDIT, amount=Decimal("100.00")
+    )
+    assert credits.count() == 1
+    event = BookingEvent.objects.get(booking=booking, event_type=BookingEventType.REFUNDED)
+    assert event.metadata["refund_amount"] == "100.00"
+
+
+def test_auto_refund_skips_bookings_the_user_already_decided(lab, quiet):
+    from iic_booking.equipment.maintenance_policy import (
+        auto_cancel_expired_maintenance_bookings,
+        clear_disruption_policy_fields,
+    )
+    from iic_booking.equipment.tests.fabrication_helpers import funded_student
+
+    f, eq, _student = lab
+    student, sub = funded_student(f, balance="1000.00")
+    refunded = _expired_disruption(f, eq, student, deadline_delta=-timedelta(hours=1))
+    refunded.status = BookingStatus.REFUNDED
+    refunded.save(update_fields=["status"])
+    rescheduled = _expired_disruption(f, eq, student, deadline_delta=-timedelta(hours=1))
+    clear_disruption_policy_fields(rescheduled, keep_quota_anchor=True)
+    rescheduled.status = BookingStatus.BOOKED
+    rescheduled.save()
+
+    assert auto_cancel_expired_maintenance_bookings() == 0
+    sub.refresh_from_db()
+    assert sub.balance == Decimal("1000.00")
+    rescheduled.refresh_from_db()
+    assert rescheduled.status == BookingStatus.BOOKED
+
+
+def test_auto_refund_dry_run_reports_counts_amounts_and_flags_without_changing_anything(lab, quiet, monkeypatch):
+    from iic_booking.equipment import maintenance_policy
+    from iic_booking.equipment.maintenance_policy import auto_cancel_dry_run
+    from iic_booking.equipment.tests.fabrication_helpers import funded_student
+
+    monkeypatch.setattr(maintenance_policy, "DECISION_WINDOW_POLICY_SINCE", "2000-01-01")
+    f, eq, _student = lab
+    student, sub = funded_student(f, balance="1000.00")
+    ok = _expired_disruption(f, eq, student, deadline_delta=-timedelta(minutes=5))
+    _charged(ok, sub)
+    uncharged = _expired_disruption(f, eq, student, deadline_delta=-timedelta(minutes=5))
+    _expired_disruption(f, eq, student, deadline_delta=timedelta(days=1))
+
+    report = auto_cancel_dry_run()
+
+    assert report["count"] == 2
+    assert report["total_refund"] == "200.00"
+    rows = {r["booking_id"]: r for r in report["rows"]}
+    assert rows[ok.booking_id]["flags"] == []
+    assert rows[ok.booking_id]["charged"] == "100.00"
+    assert "no_charge_debit_found" in rows[uncharged.booking_id]["flags"]
+    assert report["flagged"] == 1
+
+    monkeypatch.setattr(maintenance_policy, "DECISION_WINDOW_POLICY_SINCE", "2999-01-01")
+    assert "disrupted_before_5_day_policy" in auto_cancel_dry_run()["rows"][0]["flags"]
+    ok.refresh_from_db()
+    sub.refresh_from_db()
+    assert ok.status == BookingStatus.DISRUPTION_PENDING and sub.balance == Decimal("900.00")

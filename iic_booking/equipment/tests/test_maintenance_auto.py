@@ -275,6 +275,59 @@ def test_equipment_already_under_maintenance_is_not_touched_by_daily_check(mailo
     assert not EquipmentMaintenancePeriod.objects.exists()
 
 
+# --- legacy MAINTENANCE status ------------------------------------------------------------------------------------
+
+
+def test_legacy_maintenance_status_counts_as_under_maintenance():
+    from iic_booking.equipment.maintenance_policy import is_equipment_under_maintenance_status
+
+    assert is_equipment_under_maintenance_status(EquipmentStatus.MAINTENANCE)
+    assert is_equipment_under_maintenance_status("maintenance")
+    assert not is_equipment_under_maintenance_status(EquipmentStatus.ACTIVE)
+
+
+def test_mark_repair_command_moves_legacy_maintenance_through_the_normal_path(
+    lab, mailoutbox, django_capture_on_commit_callbacks
+):
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    from iic_booking.equipment.models import DisruptionEvent, Equipment
+
+    eq, oic = lab
+    Equipment.objects.filter(pk=eq.pk).update(status=EquipmentStatus.MAINTENANCE)
+    later = _later_today(eq)
+    user = _user(UserType.STUDENT)
+    _book(eq, _slots(eq, _future_weekday())[0], user)
+
+    dry = StringIO()
+    call_command("maintenance_auto", "--mark-repair", str(eq.pk), stdout=dry)
+    eq.refresh_from_db()
+    assert eq.status == EquipmentStatus.MAINTENANCE and "Dry run only" in dry.getvalue()
+
+    out = StringIO()
+    with django_capture_on_commit_callbacks(execute=True):
+        call_command("maintenance_auto", "--mark-repair", str(eq.pk), "--reason", "Legacy status", "--apply", stdout=out)
+
+    eq.refresh_from_db()
+    later.refresh_from_db()
+    assert eq.status == EquipmentStatus.REPAIR
+    period = EquipmentMaintenancePeriod.objects.get(equipment=eq, ended_at__isnull=True)
+    assert f"period={period.pk}" in out.getvalue() and "slots_marked=1" in out.getvalue()
+    assert later.status == SlotStatus.UNDER_MAINTENANCE
+    assert DisruptionEvent.objects.filter(equipment=eq, ended_at__isnull=True).count() == 1
+    assert len(_subjects(mailoutbox, user)) == 1
+
+
+def test_repair_to_inactive_does_not_start_a_second_period(lab, django_capture_on_commit_callbacks):
+    eq, oic = lab
+    _mark(oic, eq, django_capture_on_commit_callbacks)
+    with django_capture_on_commit_callbacks(execute=True):
+        _patch(_user(UserType.ADMIN), eq, {"status": "INACTIVE"})
+    assert EquipmentMaintenancePeriod.objects.filter(equipment=eq).count() == 1
+
+
 # --- operational again --------------------------------------------------------------------------------------------
 
 
