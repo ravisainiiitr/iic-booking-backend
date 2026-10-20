@@ -28,6 +28,7 @@ urlpatterns = [
     path("devices/<uuid:device_id>/suspend/", views.device_suspend, name="device-suspend"),
     path("devices/<uuid:device_id>/revoke/", views.device_revoke, name="device-revoke"),
     path("devices/<uuid:device_id>/retire/", views.device_retire, name="device-retire"),
+    path("devices/<uuid:device_id>/remove/", views.device_remove_retired, name="device-remove"),
     path("devices/<uuid:device_id>/replace/", views.device_replace, name="device-replace"),
     path("devices/<uuid:device_id>/heartbeat/", views.device_heartbeat, name="device-heartbeat"),
     path("audit/", views.audit_list, name="audit-list"),

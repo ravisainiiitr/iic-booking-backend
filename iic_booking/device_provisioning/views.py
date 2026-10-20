@@ -586,6 +586,41 @@ def device_retire(request, device_id):
     return _lifecycle_action(request, device_id, DeviceLifecycle.RETIRED, "Device retired")
 
 
+@api_view(["DELETE"])
+@permission_classes(_MANAGE)
+def device_remove_retired(request, device_id):
+    """Permanently remove a retired device from the console inventory."""
+    device = get_object_or_404(ProvisionedDevice, id=device_id)
+    if device.lifecycle != DeviceLifecycle.RETIRED:
+        return Response(
+            {
+                "error": {
+                    "code": "not_retired",
+                    "message": "Only retired devices can be permanently removed.",
+                }
+            },
+            status=400,
+        )
+    detail = {
+        "device_id": str(device.id),
+        "display_name": device.display_name,
+        "hostname": device.hostname,
+        "device_type": device.device_type,
+        "fingerprint": device.fingerprint,
+        "department_id": device.department_id,
+    }
+    services.write_audit(
+        action=AuditAction.DEVICE_REMOVED,
+        message=f"Retired device permanently removed: {device.display_name or device.hostname or device.id}",
+        device=device,
+        actor=request.user,
+        detail=detail,
+        client_ip=request.META.get("REMOTE_ADDR"),
+    )
+    device.delete()
+    return Response({"ok": True, "removed": detail})
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 @authentication_classes([])
