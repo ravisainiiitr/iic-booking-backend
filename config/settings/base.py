@@ -140,6 +140,7 @@ LOCAL_APPS = [
     "iic_booking.department_modules.apps.DepartmentModulesConfig",
     "iic_booking.facility_groups.apps.FacilityGroupsConfig",
     "iic_booking.automation.apps.AutomationConfig",
+    "iic_booking.istem.apps.IstemConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -836,6 +837,12 @@ MY_RESEARCH_GROUPS_ENABLED = env.bool("MY_RESEARCH_GROUPS_ENABLED", default=Fals
 MY_RESEARCH_GROUPS_PILOT_EMAILS = env("MY_RESEARCH_GROUPS_PILOT_EMAILS", default="")
 MY_RESEARCH_GROUP_ATTACHMENT_MAX_SIZE = env.int("MY_RESEARCH_GROUP_ATTACHMENT_MAX_SIZE", default=50 * 1024**2)
 MY_RESEARCH_GROUP_MAX_ATTACHMENTS = env.int("MY_RESEARCH_GROUP_MAX_ATTACHMENTS", default=10)
+# --- I-STEM integration (https://www.istem.gov.in/) ---
+# Master switch. Off: nothing is queued or sent to I-STEM; manual FBR submission, OIC review and the
+# result-download gate are unchanged either way.
+ISTEM_ENABLED = env.bool("ISTEM_ENABLED", default=False)
+# off | shadow | live; read only when ISTEM_ENABLED is on. Unknown values count as off.
+ISTEM_MODE = env("ISTEM_MODE", default="off")
 # --- Remote Analysis RDP ---
 # Send disable-gfx=true to guacd (falls back from RDP GFX pipeline). Off by default: parameter not sent.
 REMOTE_ANALYSIS_RDP_DISABLE_GFX = env.bool("RA_RDP_DISABLE_GFX", default=False)
