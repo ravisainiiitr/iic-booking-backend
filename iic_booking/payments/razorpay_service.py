@@ -411,6 +411,47 @@ def mark_order_failed(razorpay_order_id: str, raw_payload: dict | None = None) -
     return order
 
 
+def confirm_gateway_payment(order: PaymentOrder, razorpay_payment_id: str) -> dict:
+    """Ask Razorpay for the payment before anything is delivered: it must belong to ``order``, carry the order's amount
+    and currency, and be captured. An authorised payment is captured here for exactly the order amount (Razorpay:
+    deliver only after capture; an uncaptured payment is refunded automatically). Returns the payment entity.
+    """
+    client = get_razorpay_client()
+    try:
+        entity = client.payment.fetch(razorpay_payment_id)
+    except Exception as exc:
+        logger.warning("Razorpay payment fetch failed for %s", razorpay_payment_id, exc_info=True)
+        raise RazorpayServiceError("The payment could not be confirmed with Razorpay yet.") from exc
+    if not isinstance(entity, dict) or entity.get("order_id") != order.razorpay_order_id:
+        raise RazorpayServiceError("The payment does not belong to this order.")
+    problem = _amount_or_currency_problem(order, entity)
+    if problem:
+        raise RazorpayServiceError(f"The payment does not match the order: {problem}.")
+    if entity.get("status") == "authorized":
+        try:
+            entity = client.payment.capture(razorpay_payment_id, _amount_to_paise(order.total_amount),
+                                            {"currency": order.currency or "INR"})
+        except Exception as exc:
+            logger.warning("Razorpay capture failed for %s", razorpay_payment_id, exc_info=True)
+            raise RazorpayServiceError("The payment could not be captured yet.") from exc
+    if not isinstance(entity, dict) or entity.get("status") != "captured":
+        status = entity.get("status") if isinstance(entity, dict) else "unknown"
+        raise RazorpayServiceError(f"The payment is {status}, not captured.")
+    return entity
+
+
+def _amount_or_currency_problem(order: PaymentOrder, entity: dict) -> str:
+    try:
+        paise = int(entity.get("amount"))
+    except (TypeError, ValueError):
+        return "amount missing"
+    if paise != _amount_to_paise(order.total_amount):
+        return f"amount {paise} paise differs from the order total {_amount_to_paise(order.total_amount)} paise"
+    if str(entity.get("currency") or "").upper() != (order.currency or "INR").upper():
+        return f"currency {entity.get('currency')!r} differs from the order currency {order.currency!r}"
+    return ""
+
+
 def _webhook_amount_problem(razorpay_order_id: str, entity: dict) -> str:
     """"" when a payment event may settle its order: the amount (paise) and currency must equal the order's.
 
@@ -421,15 +462,7 @@ def _webhook_amount_problem(razorpay_order_id: str, entity: dict) -> str:
     order = PaymentOrder.objects.filter(razorpay_order_id=razorpay_order_id).first()
     if order is None or order.status == PaymentOrderStatus.PAID:
         return ""
-    try:
-        paise = int(entity.get("amount"))
-    except (TypeError, ValueError):
-        return "amount missing"
-    if paise != _amount_to_paise(order.total_amount):
-        return f"amount {paise} paise differs from the order total {_amount_to_paise(order.total_amount)} paise"
-    if str(entity.get("currency") or "").upper() != (order.currency or "INR").upper():
-        return f"currency {entity.get('currency')!r} differs from the order currency {order.currency!r}"
-    return ""
+    return _amount_or_currency_problem(order, entity)
 
 
 def handle_webhook(payload: dict, body: bytes | str, signature: str) -> dict:
@@ -447,14 +480,29 @@ def handle_webhook(payload: dict, body: bytes | str, signature: str) -> dict:
         ((payload.get("payload") or {}).get("settlement") or {}).get("entity") or {}
     )
 
+    # A signed event that cannot be applied (unknown order, wrong amount) is answered 200 and logged for Finance:
+    # a non-2xx answer makes Razorpay retry for 24 hours and then disable the webhook for every payment.
     if event in ("payment.captured", "payment.authorized"):
         order_id = payment_entity.get("order_id")
         payment_id = payment_entity.get("id")
         if order_id and payment_id:
+            order = PaymentOrder.objects.filter(razorpay_order_id=order_id).first()
+            if order is None:
+                logger.error("Razorpay webhook %s for unknown order %s (payment %s) not applied", event, order_id,
+                             payment_id)
+                return {"ok": True, "event": event, "ignored": "unknown order"}
             problem = _webhook_amount_problem(order_id, payment_entity)
             if problem:
-                logger.warning("Razorpay webhook for order %s not applied: %s", order_id, problem)
-                raise RazorpayServiceError(f"Payment event does not match the order: {problem}.")
+                logger.error("Razorpay webhook for order %s not applied: %s", order_id, problem)
+                return {"ok": True, "event": event, "ignored": f"does not match the order: {problem}"}
+            if event == "payment.authorized" and order.status != PaymentOrderStatus.PAID:
+                # Authorised is not paid: capture it (checked against the order) before delivering anything.
+                try:
+                    payment_entity = confirm_gateway_payment(order, payment_id)
+                except RazorpayServiceError as exc:
+                    logger.error("Razorpay authorised payment %s for order %s not captured: %s", payment_id,
+                                 order_id, exc)
+                    return {"ok": True, "event": event, "ignored": str(exc)}
             settle_order_success(
                 razorpay_order_id=order_id,
                 razorpay_payment_id=payment_id,
@@ -478,12 +526,22 @@ def handle_webhook(payload: dict, body: bytes | str, signature: str) -> dict:
     if event in ("refund.processed", "refund.failed"):
         refund_id = refund_entity.get("id")
         if refund_id:
-            PaymentRefund.objects.filter(razorpay_refund_id=refund_id).update(
-                status=RefundStatus.PROCESSED
-                if event == "refund.processed"
-                else RefundStatus.FAILED,
-                raw_payload=payload,
-            )
+            with transaction.atomic():
+                refund = (
+                    PaymentRefund.objects.select_for_update()
+                    .select_related("payment")
+                    .filter(razorpay_refund_id=refund_id)
+                    .first()
+                )
+                if refund is not None:
+                    new_status = RefundStatus.PROCESSED if event == "refund.processed" else RefundStatus.FAILED
+                    # A refund that already processed is final; a late or replayed "failed" event can't undo it.
+                    if not (refund.status == RefundStatus.PROCESSED and new_status == RefundStatus.FAILED):
+                        refund.status = new_status
+                        refund.raw_payload = payload
+                        refund.save(update_fields=["status", "raw_payload", "updated_at"])
+                    payment = Payment.objects.select_for_update().get(pk=refund.payment_id)
+                    recompute_payment_refund_status(payment)
         return {"ok": True, "event": event}
 
     if event.startswith("settlement."):
@@ -505,25 +563,29 @@ def create_refund(
     initiated_by=None,
 ) -> PaymentRefund:
     """Refund a captured payment through Razorpay. Closed while ``GATEWAY_REFUNDS_SUPPORTED`` is False: refunds are
-    credited to the user's wallet instead (``refund_booking_internal``)."""
+    credited to the user's wallet instead (``refund_booking_internal``).
+
+    The payment row is locked, so concurrent refund requests are serialised. Refunds that are still PENDING count
+    toward the captured amount just like PROCESSED ones, so a retry while a refund is in flight can't over-refund.
+    A full refund (``amount=None``) that is already fully covered by pending/processed refunds returns the latest
+    of them instead of asking Razorpay again. ``Payment.status`` reflects PROCESSED refunds only.
+    """
     if not GATEWAY_REFUNDS_SUPPORTED:
         raise RazorpayServiceError(GATEWAY_REFUNDS_UNSUPPORTED)
-    payment =Payment.objects.select_for_update().select_related("payment_order").get(pk=payment.pk)
-    if payment.status == PaymentStatus.REFUNDED:
-        existing = payment.refunds.order_by("-created_at").first()
+    payment = Payment.objects.select_for_update().select_related("payment_order").get(pk=payment.pk)
+    committed_refunds = payment.refunds.filter(status__in=[RefundStatus.PENDING, RefundStatus.PROCESSED])
+    committed = sum((r.amount for r in committed_refunds), Decimal("0"))
+    if amount is None and committed + Decimal("0.01") >= payment.amount:
+        existing = committed_refunds.order_by("-created_at").first()
         if existing:
             return existing
-    refund_amount = Decimal(str(amount if amount is not None else payment.amount)).quantize(
+    refund_amount = Decimal(str(amount if amount is not None else payment.amount - committed)).quantize(
         Decimal("0.01")
     )
     if refund_amount <= 0:
         raise RazorpayServiceError("Refund amount must be positive.")
-    already = sum(
-        (r.amount for r in payment.refunds.filter(status=RefundStatus.PROCESSED)),
-        Decimal("0"),
-    )
-    if already + refund_amount > payment.amount + Decimal("0.01"):
-        raise RazorpayServiceError("Refund exceeds captured amount.")
+    if committed + refund_amount > payment.amount + Decimal("0.01"):
+        raise RazorpayServiceError("Refund exceeds the captured amount still available for refund.")
 
     client = get_razorpay_client()
     try:
@@ -555,14 +617,26 @@ def create_refund(
         initiated_by=initiated_by,
         raw_payload=rp_refund if isinstance(rp_refund, dict) else {"raw": str(rp_refund)},
     )
-
-    total_refunded = already + refund_amount
-    if total_refunded >= payment.amount:
-        payment.status = PaymentStatus.REFUNDED
-    else:
-        payment.status = PaymentStatus.PARTIALLY_REFUNDED
-    payment.save(update_fields=["status", "updated_at"])
+    recompute_payment_refund_status(payment)
     return refund
+
+
+def recompute_payment_refund_status(payment: Payment) -> None:
+    """Set Payment.status from PROCESSED refunds: REFUNDED when they cover the amount, PARTIALLY_REFUNDED when some
+    have processed, CAPTURED otherwise (pending or failed refunds don't change the captured state)."""
+    processed = sum(
+        (r.amount for r in payment.refunds.filter(status=RefundStatus.PROCESSED)),
+        Decimal("0"),
+    )
+    if processed + Decimal("0.01") >= payment.amount:
+        new_status = PaymentStatus.REFUNDED
+    elif processed > 0:
+        new_status = PaymentStatus.PARTIALLY_REFUNDED
+    else:
+        new_status = PaymentStatus.CAPTURED
+    if payment.status != new_status and payment.status != PaymentStatus.FAILED:
+        payment.status = new_status
+        payment.save(update_fields=["status", "updated_at"])
 
 
 def upsert_settlement_from_entity(entity: dict) -> PaymentSettlement:

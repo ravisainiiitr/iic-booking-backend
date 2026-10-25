@@ -616,6 +616,16 @@ REST_FRAMEWORK = {
 # Inactivity logout disabled: tokens do not expire due to inactivity.
 # AUTH_INACTIVITY_TIMEOUT_SECONDS is kept for backwards compatibility but not used.
 AUTH_INACTIVITY_TIMEOUT_SECONDS = env.int("AUTH_INACTIVITY_TIMEOUT_SECONDS", default=1800)
+# Sign-up attempts allowed per client IP per hour (users.api.auth_views.register). 0 disables the limit.
+# Off by default: enable only after REGISTRATION_TRUSTED_PROXY_HOPS matches the deployed proxy chain, otherwise all
+# users share the proxy's address (one shared limit) or a forged X-Forwarded-For evades it.
+REGISTRATION_MAX_ATTEMPTS_PER_IP_PER_HOUR = env.int("REGISTRATION_MAX_ATTEMPTS_PER_IP_PER_HOUR", default=0)
+# Number of reverse proxies in front of Django that append to X-Forwarded-For (e.g. 1 for Traefik only,
+# 2 for Apache -> Traefik). 0 = ignore X-Forwarded-For and use REMOTE_ADDR.
+REGISTRATION_TRUSTED_PROXY_HOPS = env.int("REGISTRATION_TRUSTED_PROXY_HOPS", default=0)
+# Wallet-to-wallet transfer combinations approved by the Institute, as "sender_user_type>recipient_user_type"
+# (comma-separated in the environment, e.g. "faculty>faculty"). Empty = no transfers, whatever the admin switch says.
+WALLET_TRANSFER_APPROVED_CATEGORY_PAIRS = env.list("WALLET_TRANSFER_APPROVED_CATEGORY_PAIRS", default=[])
 
 # Mobile app device sessions (separate from the web's single-session DRF Token)
 # ------------------------------------------------------------------------------

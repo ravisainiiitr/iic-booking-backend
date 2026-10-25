@@ -19,6 +19,7 @@ from iic_booking.payments.models import Payment, PaymentOrder, PaymentPurpose
 from iic_booking.payments.razorpay_service import (
     RazorpayNotConfigured,
     RazorpayServiceError,
+    confirm_gateway_payment,
     create_order,
     create_refund,
     settle_order_success,
@@ -202,12 +203,25 @@ def razorpay_verify(request):
     try:
         if not verify_checkout_signature(order_id, payment_id, signature):
             return Response({"error": "Invalid payment signature."}, status=status.HTTP_400_BAD_REQUEST)
+        entity = {}
+        if order.status != "PAID":
+            # The signature only proves the browser saw a payment: Razorpay must confirm it is captured for the
+            # order amount before anything is delivered.
+            try:
+                entity = confirm_gateway_payment(order, payment_id)
+            except RazorpayServiceError as e:
+                return Response(
+                    {"error": f"{e} If money was deducted, the payment will be updated automatically once Razorpay "
+                              "confirms it.", "code": "payment_not_confirmed"},
+                    status=status.HTTP_409_CONFLICT,
+                )
         order, payment = settle_order_success(
             razorpay_order_id=order_id,
             razorpay_payment_id=payment_id,
             razorpay_signature=signature,
             verified_via="CHECKOUT",
             raw_payload=dict(request.data),
+            method=str(entity.get("method") or ""),
         )
     except RazorpayNotConfigured as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -286,10 +300,12 @@ def razorpay_order_detail(request, order_id: int):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def razorpay_refund(request):
-    """Admin/finance/operator refund of a captured Razorpay payment."""
-    from iic_booking.equipment.api_views import check_operator_permission
+    """Main Admin / Finance refund of a captured Razorpay payment.
 
-    if not (_is_finance_or_admin(request.user) or check_operator_permission(request.user)):
+    Operators and OICs refund through the booking refund flow (``refund_booking_internal``), which ties the
+    gateway refund to a specific booking; this endpoint refunds an arbitrary payment and is finance-only.
+    """
+    if not _is_finance_or_admin(request.user):
         return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
     payment_id = request.data.get("razorpay_payment_id") or request.data.get("payment_id")
