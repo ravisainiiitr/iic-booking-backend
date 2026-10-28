@@ -660,3 +660,40 @@ def test_schedule_migration_registers_a_single_0830_row():
     row = PeriodicTask.objects.get(task=mod.TASK)
     assert row.enabled
     assert (row.crontab.minute, row.crontab.hour, str(row.crontab.timezone)) == ("30", "8", "Asia/Kolkata")
+
+
+# --- clean-up of weekend slots reopened before the fix ----------------------------------------------------------
+
+
+def test_cleanup_closes_weekend_slots_reopened_by_maintenance_and_keeps_booked_and_staff_opened(
+    lab, django_capture_on_commit_callbacks
+):
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    eq, oic = lab
+    saturday = _next_saturday(_future_weekday())
+    staff_opened = _slot_at(eq, timezone.make_aware(datetime.combine(saturday, time(9))), number=30)
+    _mark(oic, eq, django_capture_on_commit_callbacks)
+    # What the old switch-back did: slots generated during maintenance all became Available.
+    reopened = _slot_at(eq, timezone.make_aware(datetime.combine(saturday, time(10))), number=31)
+    booked = _slot_at(eq, timezone.make_aware(datetime.combine(saturday, time(11))), number=32)
+    weekday = _slot_at(eq, timezone.make_aware(datetime.combine(_future_weekday(), time(10))), number=33)
+    _book(eq, booked, _user(UserType.STUDENT))
+    _operational(oic, eq, django_capture_on_commit_callbacks)
+    DailySlot.objects.filter(pk__in=[reopened.pk, weekday.pk]).update(status=SlotStatus.AVAILABLE)
+
+    out = StringIO()
+    call_command("close_reopened_weekend_slots", stdout=out)
+    assert "Total: 1 " in out.getvalue()
+    reopened.refresh_from_db()
+    assert reopened.status == SlotStatus.AVAILABLE  # dry run
+
+    call_command("close_reopened_weekend_slots", "--apply", stdout=StringIO())
+    statuses = dict(DailySlot.objects.filter(
+        pk__in=[reopened.pk, booked.pk, weekday.pk, staff_opened.pk]).values_list("pk", "status"))
+    assert statuses[reopened.pk] == SlotStatus.NOT_AVAILABLE
+    assert statuses[weekday.pk] == SlotStatus.AVAILABLE
+    assert statuses[staff_opened.pk] == SlotStatus.AVAILABLE
+    assert DailySlot.objects.get(pk=booked.pk).booking_id is not None

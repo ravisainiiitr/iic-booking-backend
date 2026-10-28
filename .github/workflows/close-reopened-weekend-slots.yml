@@ -1,0 +1,41 @@
+name: Close Weekend Slots Reopened By Maintenance
+
+# Weekend / holiday slots that switching equipment back from Under Maintenance wrongly made Available go back to
+# Not Available. Booked slots, slots that already started, and slots staff opened before maintenance are kept.
+# Dry run unless confirm is APPLY. Needs release v2.5.47.279 or later deployed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Leave empty for a dry run (list only). Type APPLY to close the listed slots."
+        required: false
+        default: ""
+      equipment_id:
+        description: "Optional: only this equipment id"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: List (and close with APPLY)
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          EQUIPMENT_ID: ${{ inputs.equipment_id }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          ARGS=()
+          if [ -n "${EQUIPMENT_ID}" ]; then
+            [[ "${EQUIPMENT_ID}" =~ ^[0-9]+$ ]] || { echo "equipment_id must be a number"; exit 2; }
+            ARGS+=(--equipment "${EQUIPMENT_ID}")
+          fi
+          if [ "${CONFIRM}" = "APPLY" ]; then
+            ARGS+=(--apply)
+          elif [ -n "${CONFIRM}" ]; then
+            echo "confirm must be empty (dry run) or exactly APPLY"; exit 2
+          fi
+          docker exec -w /app "$CID" python manage.py close_reopened_weekend_slots "${ARGS[@]}"
