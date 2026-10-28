@@ -1120,6 +1120,7 @@ def _urgent_templates() -> list[dict[str, Any]]:
                 optional_detail_row("Equipment code", "equipment_code"),
                 optional_detail_row("Requested by", "requester_name"),
                 optional_detail_row("Requester category", "requester_category"),
+                optional_detail_row("Supervisor", "supervisor_name"),
                 optional_detail_row("Required time", "required_time"),
                 optional_detail_row("Amount at submission", "amount"),
             ],
@@ -1131,7 +1132,7 @@ def _urgent_templates() -> list[dict[str, Any]]:
             variable_help=(
                 "{{ user_name }}, {{ headline }}, {{ intro }}, {{ request_id }}, {{ status_label }}, "
                 "{{ status_detail }}, {{ equipment_name }}, {{ equipment_code }}, {{ requester_name }}, "
-                "{{ requester_category }}, {{ required_time }}, {{ amount }}, {{ preferred_schedule }}, "
+                "{{ requester_category }}, {{ supervisor_name }}, {{ required_time }}, {{ amount }}, {{ preferred_schedule }}, "
                 "{{ reason }}, {{ link }}"
             ),
         ),

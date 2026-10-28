@@ -86,6 +86,10 @@ def world():
 
 
 def test_similar_instruments_sorted_by_earliest_open_slot(world):
+    group = EquipmentGroup.objects.create(name=f"XRD pool {uuid.uuid4().hex[:4]}")
+    Equipment.objects.filter(pk__in=[world["full"].pk, world["late"].pk, world["soon"].pk]).update(
+        equipment_group=group
+    )
     client = APIClient()
     client.force_authenticate(user=world["user"])
     resp = client.get(f"/api/equipments/{world['full'].pk}/similar-availability/")
@@ -94,15 +98,19 @@ def test_similar_instruments_sorted_by_earliest_open_slot(world):
     # The only open slot on this instrument is 20 days out, past every user's booking window.
     assert body["equipment"]["earliest"] is None
     names = [row["name"] for row in body["alternatives"]]
-    assert names == ["PXRD C", "PXRD B"] and body["basis"] == "category"
+    assert names == ["PXRD C", "PXRD B"] and body["basis"] == "group"
     assert body["alternatives"][0]["earliest"]["date"] == (timezone.localdate() + timedelta(days=2)).isoformat()
 
 
-def test_equipment_group_takes_precedence_over_category(world):
-    group = EquipmentGroup.objects.create(name=f"XRD pool {uuid.uuid4().hex[:4]}")
-    Equipment.objects.filter(pk__in=[world["full"].pk, world["late"].pk]).update(equipment_group=group)
+def test_only_the_equipment_group_counts_not_the_category(world):
     client = APIClient()
     client.force_authenticate(user=world["user"])
+    # Same category but no group (e.g. NMR and FLS under Spectroscopy): nothing is suggested.
+    body = client.get(f"/api/equipments/{world['full'].pk}/similar-availability/").json()
+    assert body["alternatives"] == [] and body["basis"] is None
+
+    group = EquipmentGroup.objects.create(name=f"XRD pool {uuid.uuid4().hex[:4]}")
+    Equipment.objects.filter(pk__in=[world["full"].pk, world["late"].pk]).update(equipment_group=group)
     body = client.get(f"/api/equipments/{world['full'].pk}/similar-availability/").json()
     assert body["basis"] == "group"
     assert [row["name"] for row in body["alternatives"]] == ["PXRD B"]

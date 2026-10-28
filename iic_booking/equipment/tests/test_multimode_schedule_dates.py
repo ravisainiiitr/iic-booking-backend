@@ -282,6 +282,7 @@ def test_staff_rows_keep_status_but_flag_user_blocks(family, egs_factory):
     assert depth_row["status"] == "AVAILABLE"
     assert depth_row["users_blocked_label"] == "Mode not scheduled"
     assert "No schedule" in depth_row["users_blocked_reason"]
+    assert depth_row["users_blocked_color"]  # staff calendars paint it as users see it
     base_rows = rows(base)
     assert "runs on its own" in base_rows[0]["users_blocked_reason"]
     assert "users_blocked_reason" not in base_rows[1]

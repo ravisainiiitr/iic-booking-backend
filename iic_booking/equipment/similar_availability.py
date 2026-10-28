@@ -1,7 +1,7 @@
-"""'Next available on similar instruments': the earliest open slot on equivalent equipment.
+"""'Next available on similar instruments': the earliest open slot on equipment of the same group.
 
-Equivalent means the same administrator-defined equipment group when the instrument has one, otherwise the same
-category.
+Only the administrator-defined equipment group counts: an instrument without a group gets no suggestions (a shared
+category such as "Spectroscopy" puts NMR next to FLS, which is not a substitute).
 
 Shown on the booking page so a user facing a full week does not have to check every other XRD or SEM by hand.
 Only slots inside each instrument's booking window for this viewer are considered; the booking page still applies
@@ -121,12 +121,9 @@ def similar_availability(request, equipment_id: int):
     now = timezone.now()
     own = earliest_open_slot(source, user, now=now) if is_equipment_operational_status(source.status) else None
     result: dict[str, Any] = {"equipment": _row(source, own), "alternatives": [], "basis": None}
-    if source.equipment_group_id:
-        peers, result["basis"] = visible.filter(equipment_group_id=source.equipment_group_id), "group"
-    elif source.category_id:
-        peers, result["basis"] = visible.filter(category_id=source.category_id), "category"
-    else:
+    if not source.equipment_group_id:
         return Response(result)
+    peers, result["basis"] = visible.filter(equipment_group_id=source.equipment_group_id), "group"
 
     candidates = (
         peers.exclude(pk__in=_family_ids(source))

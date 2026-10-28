@@ -12,6 +12,7 @@ from rest_framework.test import APIClient
 
 from iic_booking.equipment import mode_utils, search_index
 from iic_booking.equipment.models import (
+    Equipment,
     EquipmentCategory,
     EquipmentModeSchedule,
     ModeScheduleBehavior,
@@ -171,6 +172,9 @@ def test_similar_instruments_skip_inactive_modes(nmr):
     tomorrow = f.future(days=1)
     for eq in (nmr["base"], nmr["txi"], nmr["cosy"]):
         f.slot(eq, tomorrow)
+    # Suggestions come only from the equipment group.
+    group = f.group()
+    Equipment.objects.filter(pk__in=[nmr[k].pk for k in ("base", "txi", "cosy", "plain")]).update(equipment_group=group)
     student = f.student()
     body = f.client_for(student).get(f"/api/equipments/{nmr['plain'].pk}/similar-availability/").json()
     names = [row["name"] for row in body["alternatives"]]

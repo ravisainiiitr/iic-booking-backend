@@ -6361,6 +6361,13 @@ def export_bookings(request):
         return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+def _urgent_supervisor_name(req) -> str:
+    """Supervisor shown on an urgent request (named on it, else the requester's supervisor on record)."""
+    from .urgent_oic_alerts import urgent_supervisor_name
+
+    return urgent_supervisor_name(req)
+
+
 def approved_wallet_student_ids(faculty_ids):
     """Students whose request to join one of these faculty members' wallets was approved."""
     from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
@@ -9770,6 +9777,7 @@ def list_urgent_booking_requests(request):
             "reviewer_comment": req.reviewer_comment or "",
             "wallet_approved_at": req.wallet_approved_at.isoformat() if req.wallet_approved_at else None,
             "wallet_approved_by_name": get_user_display_name(req.wallet_approved_by) if req.wallet_approved_by else None,
+            "supervisor_name": _urgent_supervisor_name(req),
             "wallet_notes": req.wallet_notes or "",
             "pending_wallet_approval": pending_wallet,
             "supervisor_approval_required": req.supervisor_approval_required,
@@ -9897,6 +9905,7 @@ def get_urgent_request_detail(request, request_id):
         "reviewer_comment": urg.reviewer_comment or "",
         "wallet_approved_at": urg.wallet_approved_at.isoformat() if urg.wallet_approved_at else None,
         "wallet_approved_by_name": get_user_display_name(urg.wallet_approved_by) if urg.wallet_approved_by else None,
+        "supervisor_name": _urgent_supervisor_name(urg),
         "wallet_notes": urg.wallet_notes or "",
         "pending_wallet_approval": pending_wallet,
         "supervisor_approval_required": urg.supervisor_approval_required,
@@ -10812,6 +10821,7 @@ def _urgent_supervisor_row(req) -> dict:
         "pending_wallet_approval": req.pending_supervisor_approval,
         "wallet_approved_at": req.wallet_approved_at.isoformat() if req.wallet_approved_at else None,
         "wallet_approved_by_name": get_user_display_name(req.wallet_approved_by) if req.wallet_approved_by else None,
+        "supervisor_name": _urgent_supervisor_name(req),
         "wallet_notes": req.wallet_notes or "",
         "reviewer_comment": req.reviewer_comment or "",
         "number_of_samples": req.number_of_samples,

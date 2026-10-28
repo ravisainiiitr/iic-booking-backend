@@ -20,6 +20,8 @@ EQUIPMENT_LIMIT = 6
 BOOKING_LIMIT = 8
 PEOPLE_LIMIT = 6
 _DISPLAY_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]*-(\d+)$")
+# Roles whose people search covers every user (others: only users within their bookings scope).
+LOOKS_UP_ANY_USER = frozenset({"admin", "manager", "operator", "dept_admin"})
 
 
 def _searchable_equipment_ids(user) -> set[int]:
@@ -75,9 +77,17 @@ def _search_bookings(user, q: str, *, staff_view: bool) -> list[dict[str, Any]]:
     from .admin_insights.user_card import _slot_annotations
     from .api_views import bookings_visible_to
 
+    from .api_views import faculty_wallet_student_ids
+
     match = Q(virtual_booking_id__icontains=q) | Q(equipment__name__icontains=q) | Q(equipment__code__iexact=q)
     if staff_view:
         match |= Q(user__name__icontains=q) | Q(user__email__icontains=q) | Q(user__phone_number__icontains=q)
+        # A supervisor's name also finds the bookings of their approved wallet students.
+        students = faculty_wallet_student_ids(
+            Q(name__icontains=q) | Q(email__icontains=q) | Q(phone_number__icontains=q)
+        )
+        if students:
+            match |= Q(user_id__in=students)
     if q.isdigit():
         match |= Q(booking_id=int(q))
     display = _DISPLAY_ID.match(q)
@@ -120,7 +130,8 @@ def _people_scope(user):
 
     from .api_views import check_operator_permission
 
-    if getattr(user, "is_superuser", False) or user.user_type == UserType.ADMIN:
+    if getattr(user, "is_superuser", False) or user.user_type in LOOKS_UP_ANY_USER:
+        # Main Admin, and lab staff (OIC, Lab Operator, Department Administrator), find any user.
         return User.objects.all()
     if not (check_operator_permission(user) or user.user_type in (UserType.DEPT_ADMIN, UserType.FINANCE)):
         return None

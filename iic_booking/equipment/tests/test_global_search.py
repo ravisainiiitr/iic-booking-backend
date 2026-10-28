@@ -97,12 +97,28 @@ def test_status_word_matches_bookings(world):
     assert [b["virtual_booking_id"] for b in _get(world["bob"], "completed")["bookings"]] == ["IICSEM202600012"]
 
 
-def test_oic_sees_bookings_and_people_on_their_equipment_only(world):
+def test_oic_sees_bookings_on_their_equipment_and_finds_any_user(world):
     body = _get(world["oic"], "IIC")
     assert [b["virtual_booking_id"] for b in body["bookings"]] == ["IICXRD202600011"]
     assert body["bookings"][0]["user_name"] == "Alice Kumar"
     assert [p["name"] for p in _get(world["oic"], "Alice")["people"]] == ["Alice Kumar"]
-    assert _get(world["oic"], "Bob")["people"] == []
+    # Like the Main Admin, the OIC finds any user; bookings stay limited to their equipment.
+    bob = _get(world["oic"], "Bob")
+    assert [p["name"] for p in bob["people"]] == ["Bob Singh"]
+    assert bob["bookings"] == []
+
+
+def test_supervisor_name_finds_their_students_bookings(world):
+    from iic_booking.users.models.wallet import Wallet, WalletJoinRequest, WalletJoinRequestStatus
+
+    prof = UserFactory(admin_approved=True, user_type=UserType.FACULTY, name="Prof Meera Iyer")
+    WalletJoinRequest.objects.create(
+        student=world["alice"], faculty=prof, wallet=Wallet.objects.create(user=prof),
+        status=WalletJoinRequestStatus.APPROVED,
+    )
+    _booking(prof, world["xrd"], "IICXRD202600099")
+    body = _get(world["oic"], "Meera")
+    assert sorted(b["virtual_booking_id"] for b in body["bookings"]) == ["IICXRD202600011", "IICXRD202600099"]
 
 
 def test_admin_finds_everyone(world):

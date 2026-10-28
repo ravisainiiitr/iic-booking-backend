@@ -275,7 +275,12 @@ def build_scoped_user_card(viewer, user_id: int, request=None) -> dict[str, Any]
         bookings = _bookings_scope(viewer)
         return {**_card_payload(viewer, person, request, is_main=False, bookings=bookings, scoped=True), "access": "self"}
     bookings = _scoped_bookings(viewer)
-    if not _within_scope(viewer, user_id, bookings):
+    from iic_booking.equipment.global_search import LOOKS_UP_ANY_USER
+
+    # Lab staff (OIC, Lab Operator, Department Administrator) find any user in search and may open their card;
+    # the bookings on it stay limited to the viewer's scope.
+    looks_up_anyone = getattr(viewer, "user_type", None) in LOOKS_UP_ANY_USER
+    if not looks_up_anyone and not _within_scope(viewer, user_id, bookings):
         raise CardError("User not found.")
     person = _any_person(user_id)
     if person is None:

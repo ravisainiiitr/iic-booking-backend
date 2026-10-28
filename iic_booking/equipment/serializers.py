@@ -3773,6 +3773,8 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     real_booking_id = serializers.IntegerField(source='booking_id', read_only=True)
     equipment_code = serializers.CharField(source='equipment.code', read_only=True)
     equipment_name = serializers.CharField(source='equipment.name', read_only=True)
+    # Booking details offer Slot Exchange (internal owners) only when the Main Admin enabled it on the equipment.
+    equipment_slot_exchange_enabled = serializers.BooleanField(source='equipment.slot_exchange_enabled', read_only=True)
     equipment_reschedule_hours_threshold = serializers.IntegerField(source='equipment.reschedule_hours_threshold', read_only=True)
     equipment_repeat_sample_request_days = serializers.IntegerField(source='equipment.repeat_sample_request_days', read_only=True, allow_null=True)
     equipment_repeat_sample_disclaimer = serializers.CharField(source='equipment.repeat_sample_disclaimer', read_only=True, allow_blank=True)
@@ -4044,6 +4046,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'equipment',
             'equipment_code',
             'equipment_name',
+            'equipment_slot_exchange_enabled',
             'equipment_reschedule_hours_threshold',
             'equipment_repeat_sample_request_days',
             'equipment_repeat_sample_disclaimer',

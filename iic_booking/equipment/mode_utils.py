@@ -466,6 +466,8 @@ def annotate_user_mode_blocks_for_staff(
             continue
         row["users_blocked_label"] = overlay["label"]
         row["users_blocked_reason"] = _USER_BLOCK_REASONS.get(overlay.get("mode_overlay") or "", overlay["label"])
+        # Staff calendars show these slots as users see them (label and colour); staff may still act on them.
+        row["users_blocked_color"] = overlay.get("color")
     return serialized
 
 

@@ -22,6 +22,27 @@ STAGE_SUBMITTED = "submitted"
 STAGE_SUPERVISOR_APPROVED = "supervisor_approved"
 
 
+def urgent_supervisor_name(req) -> str:
+    """The requester's supervisor: the one named on the request, else the one on record (wallet / profile)."""
+    from iic_booking.users.display import get_user_display_name
+
+    if req.supervisor_id:
+        sup = req.supervisor
+        email = (getattr(sup, "email", "") or "").strip()
+        name = get_user_display_name(sup)
+        return f"{name} ({email})" if email and email != name else name
+    try:
+        from .admin_insights.supervisors import resolve_supervisors
+
+        found = resolve_supervisors([req.user_id]).get(req.user_id) or {}
+    except Exception:
+        logger.exception("Could not resolve the supervisor for urgent request %s", req.id)
+        return ""
+    name = (found.get("name") or "").strip()
+    email = (found.get("email") or "").strip()
+    return f"{name} ({email})" if name and email else name or email
+
+
 def urgent_request_path(request_id: int) -> str:
     return f"/urgent-requests?request={request_id}"
 
@@ -96,6 +117,10 @@ def send_urgent_oic_alert_emails(req, *, stage: str) -> int:
     else:
         headline = "New urgent booking request"
         intro = f"A new urgent (Type B) booking request #{req.id} was raised for {equipment.name}. {status_detail}"
+    supervisor = urgent_supervisor_name(req)
+    if supervisor:
+        # In the opening line too, so it shows even where the template was customised before the Supervisor row.
+        intro = f"{intro} Requested by {get_user_display_name(requester)}; supervisor: {supervisor}."
     context = {
         "headline": headline,
         "intro": intro,
@@ -104,6 +129,7 @@ def send_urgent_oic_alert_emails(req, *, stage: str) -> int:
         "equipment_code": equipment.code,
         "requester_name": get_user_display_name(requester),
         "requester_category": str(requester.get_user_type_display_label() or ""),
+        "supervisor_name": supervisor,
         "required_time": _duration_text(_required_minutes(req)),
         "amount": f"₹{amount:,.2f} (includes the 50% urgent surcharge)" if amount is not None else "",
         "preferred_schedule": (req.preferred_schedule or "").strip(),

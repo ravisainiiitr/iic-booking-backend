@@ -235,8 +235,10 @@ def test_user_card_access_by_role(world):
     scoped = card(world.oic, world.s1)
     assert scoped.status_code == 200 and scoped.data["access"] == "scoped"
     assert scoped.data.get("wallet") is None
-    assert card(world.oic, world.ind).status_code == 404
-    assert card(world.oic, world.outsider).status_code == 404
+    # Lab staff find any user in search and may open their card (bookings on it stay within their scope).
+    other = card(world.oic, world.ind)
+    assert other.status_code == 200 and other.data["access"] == "scoped"
+    assert card(world.oic, world.outsider).status_code == 200
     assert card(world.finance, world.ind).status_code == 200
     assert card(world.s1, world.oic).status_code == 200
     assert card(world.operator, world.oic).status_code == 200

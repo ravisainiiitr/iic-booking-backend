@@ -159,6 +159,9 @@ def test_submit_and_supervisor_approval_email_oic_and_temp_oic_once_each(emails)
     assert ctx["required_time"] and ctx["amount"].startswith("₹")
     assert ctx["preferred_schedule"] == "Any morning next week"
     assert ctx["reason"] == REASON
+    # The supervisor is named in its own row and in the opening line.
+    assert s["faculty"].email in ctx["supervisor_name"]
+    assert "supervisor:" in ctx["intro"]
 
     emails.clear()
     res = _client(s["faculty"]).post(
@@ -214,14 +217,16 @@ def test_default_template_renders_the_request_details():
     ctx = Context({
         "user_name": "OIC", "headline": "New urgent booking request", "intro": "Intro text", "request_id": 42,
         "status_label": "Ready to allocate", "equipment_name": "XRD", "equipment_code": "XRD1",
-        "requester_name": "Requester", "requester_category": "Student", "required_time": "1 h 30 min",
+        "requester_name": "Requester", "requester_category": "Student", "supervisor_name": "Prof Rao",
+        "required_time": "1 h 30 min",
         "amount": "₹150.00", "preferred_schedule": "Mornings", "reason": "Reviewer deadline",
         "link": "https://portal.example/urgent-requests?request=42",
     })
     subject = Template(tpl.subject).render(ctx)
     html = Template(tpl.body_html).render(ctx)
     assert "#42" in subject and "XRD" in subject
-    for text in ("1 h 30 min", "₹150.00", "Mornings", "Reviewer deadline", "Student", "urgent-requests?request=42"):
+    for text in ("1 h 30 min", "₹150.00", "Mornings", "Reviewer deadline", "Student", "Prof Rao",
+                 "urgent-requests?request=42"):
         assert text in html
 
     tpl.subject = "Customised"
