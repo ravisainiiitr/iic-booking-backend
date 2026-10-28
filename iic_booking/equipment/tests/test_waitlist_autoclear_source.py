@@ -232,7 +232,11 @@ def test_blocking_a_booked_slot_refunds_but_never_hands_the_blocked_slot_to_the_
     assert spy.booked == [[freed.pk]]
 
 
-def test_equipment_back_to_operational_does_not_auto_confirm(egs_factory, spy):
+def test_equipment_back_to_operational_does_not_auto_confirm(egs_factory, spy, monkeypatch):
+    from iic_booking.equipment.models import Holiday
+
+    # About the waitlist, not the calendar: weekend / holiday slots would (rightly) stay closed.
+    monkeypatch.setattr(Holiday, "get_holidays_in_range", staticmethod(lambda start, end: {}))
     w = _setup(egs_factory)
     _cancel(egs_factory, w.booking)
     DailySlot.objects.filter(pk=w.slots[0].pk).update(status=SlotStatus.UNDER_MAINTENANCE)

@@ -182,6 +182,36 @@ def _manually_marked_slot_ids(equipment_id) -> set[int]:
     return {sid for sid, st in latest.items() if st == SlotStatus.UNDER_MAINTENANCE}
 
 
+def restore_slots_after_maintenance(slot_ids, *, was_open_ids=()) -> list[int]:
+    """Put Under Maintenance slots back when the equipment is Operational again; returns the ids made Available.
+
+    Weekend and holiday slots stay closed (Not Available): only those that were open before maintenance
+    converted them (``was_open_ids``, e.g. a Saturday staff opened) become Available again.
+    """
+    from .models import DailySlot, Holiday, SlotStatus
+
+    rows = list(
+        DailySlot.objects.filter(pk__in=list(slot_ids), status=SlotStatus.UNDER_MAINTENANCE, booking__isnull=True)
+        .values_list("id", "date")
+    )
+    if not rows:
+        return []
+    dates = [d for _, d in rows]
+    closed_days = Holiday.get_holidays_in_range(min(dates), max(dates))
+    keep_open = set(was_open_ids or [])
+    closed = [sid for sid, d in rows if d in closed_days and sid not in keep_open]
+    opened = [sid for sid, _ in rows if sid not in set(closed)]
+    if closed:
+        DailySlot.objects.filter(pk__in=closed, status=SlotStatus.UNDER_MAINTENANCE, booking__isnull=True).update(
+            status=SlotStatus.NOT_AVAILABLE
+        )
+    if opened:
+        DailySlot.objects.filter(pk__in=opened, status=SlotStatus.UNDER_MAINTENANCE, booking__isnull=True).update(
+            status=SlotStatus.AVAILABLE
+        )
+    return opened
+
+
 def restorable_slot_ids(period, now) -> list[int]:
     """Unbooked Under Maintenance slots from now on that this period put there: converted by the mechanism, or
     generated while the equipment was Under Maintenance. Slots staff marked by hand are kept.
@@ -804,11 +834,7 @@ def end_period(equipment, *, user=None, now=None) -> Optional[Outcome]:
     outcome = Outcome(period=period)
 
     restore = restorable_slot_ids(period, now)
-    if restore:
-        DailySlot.objects.filter(pk__in=restore, status=SlotStatus.UNDER_MAINTENANCE, booking__isnull=True).update(
-            status=SlotStatus.AVAILABLE
-        )
-    outcome.slots_restored = restore
+    outcome.slots_restored = restore_slots_after_maintenance(restore, was_open_ids=period.auto_slot_ids or [])
     outcome.results_resumed = resume_results(period, now, actor=actor)
 
     told = set(

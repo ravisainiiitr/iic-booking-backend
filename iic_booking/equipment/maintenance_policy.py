@@ -741,13 +741,18 @@ def apply_when_equipment_becomes_operational(equipment, *, restore_slots: bool =
     # Keep booked/held slots untouched (they should already be BOOKED/HOLD/etc).
     # Restored slots do not auto-confirm the waitlist (only booking cancellations / reschedules do).
     if restore_slots:
+        from .maintenance_auto import restore_slots_after_maintenance
+
         today = timezone.localdate()
-        DailySlot.objects.filter(
-            slot_master__equipment=equipment,
-            date__gte=today,
-            status=SlotStatus.UNDER_MAINTENANCE,
-            booking_id__isnull=True,
-        ).update(status=SlotStatus.AVAILABLE)
+        # Weekend / holiday slots go back to Not Available, not Available.
+        restore_slots_after_maintenance(
+            DailySlot.objects.filter(
+                slot_master__equipment=equipment,
+                date__gte=today,
+                status=SlotStatus.UNDER_MAINTENANCE,
+                booking_id__isnull=True,
+            ).values_list("id", flat=True)
+        )
 
     qs = (
         Booking.objects.filter(
@@ -858,8 +863,11 @@ def on_equipment_status_changed(equipment, old_status: str | None, new_status: s
         from .models import DailySlot
 
         if restored_ids:
+            # Only slots that really became Available (weekend / holiday ones stay closed).
             restored_ids = list(
-                DailySlot.objects.filter(pk__in=restored_ids, booking__isnull=True).values_list("id", flat=True)
+                DailySlot.objects.filter(
+                    pk__in=restored_ids, booking__isnull=True, status=SlotStatus.AVAILABLE
+                ).values_list("id", flat=True)
             )
         release_slots_made_available(equipment, restored_ids, data)
         equipment._disruption_result = record_equipment_operational(equipment, data)

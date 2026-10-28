@@ -50,6 +50,9 @@ class SlotGenerator:
                 current = date(current.year, current.month + 1, 1)
         return start_date + timedelta(days=days_to_add)
 
+    # Initial statuses replaced by Not Available on weekends and holidays.
+    CLOSED_ON_HOLIDAYS = frozenset({SlotStatus.AVAILABLE, SlotStatus.UNDER_MAINTENANCE})
+
     @staticmethod
     def _get_initial_slot_status_for_equipment(equipment: Equipment) -> str:
         """
@@ -137,8 +140,9 @@ class SlotGenerator:
             ).order_by('slot_number'))
 
         initial_status = SlotGenerator._get_initial_slot_status_for_equipment(equipment)
-        if allow_holiday and initial_status == SlotStatus.AVAILABLE:
-            # Admin/OIC grid: weekend + table holidays are closed until staff sets e.g. AVAILABLE.
+        if allow_holiday and initial_status in SlotGenerator.CLOSED_ON_HOLIDAYS:
+            # Admin/OIC grid: weekend + table holidays are closed until staff sets e.g. AVAILABLE — also while the
+            # equipment is Under Maintenance, so they do not reopen when it is Operational again.
             is_holiday, _ = Holiday.is_holiday(target_date)
             if is_holiday:
                 initial_status = SlotStatus.NOT_AVAILABLE
@@ -218,7 +222,7 @@ class SlotGenerator:
                 row_status = initial_status
                 if (
                     allow_holiday
-                    and row_status == SlotStatus.AVAILABLE
+                    and row_status in SlotGenerator.CLOSED_ON_HOLIDAYS
                     and current_date in holidays_in_range
                 ):
                     row_status = SlotStatus.NOT_AVAILABLE

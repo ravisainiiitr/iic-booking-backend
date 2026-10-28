@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import importlib
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 import pytest
 from django.apps import apps
@@ -342,7 +342,8 @@ def test_operational_restores_only_slots_the_mechanism_set(lab, django_capture_o
         maintenance_auto.daily_check(now=_morning(day))
     res = _bulk(oic, eq, status="UNDER_MAINTENANCE", slot_ids=[s11.pk], disruption_reason="Filament")
     assert res.status_code == 200, res.data
-    generated = _slot_at(eq, timezone.make_aware(datetime.combine(day + timedelta(days=1), time(15))),
+    next_weekday = _future_weekday((day - timezone.localdate()).days + 1)
+    generated = _slot_at(eq, timezone.make_aware(datetime.combine(next_weekday, time(15))),
                          status=SlotStatus.UNDER_MAINTENANCE, number=22)
 
     _operational(oic, eq, django_capture_on_commit_callbacks)
@@ -408,6 +409,97 @@ def test_operational_without_period_keeps_the_previous_behaviour():
 
     assert res.status_code == 200, res.data
     assert {s.status for s in DailySlot.objects.filter(pk__in=[s.pk for s in slots])} == {SlotStatus.AVAILABLE}
+
+
+def _next_saturday(after: date) -> date:
+    return after + timedelta(days=(5 - after.weekday()) % 7 or 7)
+
+
+def test_operational_keeps_weekend_slots_generated_during_maintenance_closed(lab, django_capture_on_commit_callbacks):
+    eq, oic = lab
+    _mark(oic, eq, django_capture_on_commit_callbacks)
+    weekday = _future_weekday()
+    saturday = _next_saturday(weekday)
+    on_weekday = _slot_at(eq, timezone.make_aware(datetime.combine(weekday, time(15))),
+                          status=SlotStatus.UNDER_MAINTENANCE, number=23)
+    on_saturday = _slot_at(eq, timezone.make_aware(datetime.combine(saturday, time(10))),
+                           status=SlotStatus.UNDER_MAINTENANCE, number=24)
+
+    _operational(oic, eq, django_capture_on_commit_callbacks)
+
+    on_weekday.refresh_from_db()
+    on_saturday.refresh_from_db()
+    assert on_weekday.status == SlotStatus.AVAILABLE
+    assert on_saturday.status == SlotStatus.NOT_AVAILABLE
+
+
+def test_operational_keeps_holiday_slots_closed(lab, django_capture_on_commit_callbacks):
+    from iic_booking.equipment.models import Holiday
+
+    eq, oic = lab
+    _mark(oic, eq, django_capture_on_commit_callbacks)
+    holiday = _future_weekday(20)
+    Holiday.objects.create(date=holiday, reason="Institute holiday", is_active=True)
+    slot = _slot_at(eq, timezone.make_aware(datetime.combine(holiday, time(10))),
+                    status=SlotStatus.UNDER_MAINTENANCE, number=25)
+
+    _operational(oic, eq, django_capture_on_commit_callbacks)
+
+    slot.refresh_from_db()
+    assert slot.status == SlotStatus.NOT_AVAILABLE
+
+
+def test_weekend_slot_staff_had_opened_is_open_again(lab, django_capture_on_commit_callbacks):
+    """A Saturday slot that was Available before maintenance converted it comes back Available."""
+    eq, oic = lab
+    saturday = _next_saturday(timezone.localdate())
+    opened = _slot_at(eq, timezone.make_aware(datetime.combine(saturday, time(10))), number=26)
+    _mark(oic, eq, django_capture_on_commit_callbacks)
+    period = EquipmentMaintenancePeriod.objects.get(equipment=eq, ended_at__isnull=True)
+    DailySlot.objects.filter(pk=opened.pk).update(status=SlotStatus.UNDER_MAINTENANCE)
+    period.auto_slot_ids = list(period.auto_slot_ids or []) + [opened.pk]
+    period.save(update_fields=["auto_slot_ids"])
+
+    _operational(oic, eq, django_capture_on_commit_callbacks)
+
+    opened.refresh_from_db()
+    assert opened.status == SlotStatus.AVAILABLE
+
+
+def test_operational_without_period_keeps_weekend_slots_closed():
+    from iic_booking.equipment.models import Equipment
+
+    eq = _equipment()
+    oic = _oic_for(eq)
+    saturday = _next_saturday(_future_weekday())
+    weekday_slots = _slots(eq, _future_weekday())
+    saturday_slot = _slot_at(eq, timezone.make_aware(datetime.combine(saturday, time(10))), number=27)
+    Equipment.objects.filter(pk=eq.pk).update(status=EquipmentStatus.REPAIR)
+    DailySlot.objects.filter(pk__in=[s.pk for s in weekday_slots] + [saturday_slot.pk]).update(
+        status=SlotStatus.UNDER_MAINTENANCE
+    )
+
+    res = _patch(oic, eq, {"status": "ACTIVE"})
+
+    assert res.status_code == 200, res.data
+    assert {s.status for s in DailySlot.objects.filter(pk__in=[s.pk for s in weekday_slots])} == {SlotStatus.AVAILABLE}
+    saturday_slot.refresh_from_db()
+    assert saturday_slot.status == SlotStatus.NOT_AVAILABLE
+
+
+def test_slots_generated_under_maintenance_start_closed_on_weekends():
+    from iic_booking.equipment.models import Equipment
+    from iic_booking.equipment.slot_utils import SlotGenerator
+
+    eq = _equipment()
+    Equipment.objects.filter(pk=eq.pk).update(status=EquipmentStatus.REPAIR)
+    eq.refresh_from_db()
+    saturday = _next_saturday(_future_weekday())
+    weekday = _future_weekday()
+    on_saturday = SlotGenerator.generate_daily_slots(eq, saturday, allow_holiday=True)
+    on_weekday = SlotGenerator.generate_daily_slots(eq, weekday, allow_holiday=True)
+    assert on_saturday and {s.status for s in on_saturday} == {SlotStatus.NOT_AVAILABLE}
+    assert on_weekday and {s.status for s in on_weekday} == {SlotStatus.UNDER_MAINTENANCE}
 
 
 # --- results overdue pause ----------------------------------------------------------------------------------------
