@@ -133,6 +133,95 @@ def test_multi_slot_booking_gets_back_to_back_slots_of_the_same_length(lab, djan
     assert {s.status for s in b.daily_slots.all()} == {SlotStatus.BOOKED}
 
 
+def _next_working_day(d):
+    d += timedelta(days=1)
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d
+
+
+def _held_over_days(eq, user, days_hours, now):
+    """A booking over several days (e.g. a whole day then the next morning), put on hold for maintenance."""
+    picked = []
+    for day, hours in days_hours:
+        by_hour = {timezone.localtime(s.start_datetime).hour: s for s in _slots(eq, day)}
+        picked += [by_hour[h] for h in hours]
+    booking = _book(eq, picked[0], _user(UserType.STUDENT) if user is None else user)
+    DailySlot.objects.filter(pk__in=[s.pk for s in picked]).update(status=SlotStatus.BOOKED, booking=booking)
+    booking = Booking.objects.prefetch_related("daily_slots").select_related("equipment", "user").get(pk=booking.pk)
+    assert put_booking_on_maintenance_hold(booking, now, reason="test", send_email=False)
+    return booking
+
+
+def test_booking_longer_than_a_day_is_placed_day_by_day(lab, django_capture_on_commit_callbacks):
+    """Like 16 + 5 half-hour slots on two days: no single run of 21 exists, so each day's block gets its own day."""
+    eq, _oic, day, now = lab
+    first, second = _past(3), _next_working_day(_past(3))
+    b = _held_over_days(eq, None, [(first, (9, 10, 11, 12)), (second, (9, 10))], now)
+
+    res = _allocate(eq, now, django_capture_on_commit_callbacks)
+
+    assert [x["booking"].pk for x in res.placed] == [b.pk] and not res.unplaced
+    nxt = _next_working_day(day)
+    assert _starts(b) == [_at(day, 9), _at(day, 10), _at(day, 11), _at(day, 12), _at(nxt, 9), _at(nxt, 10)]
+    b.refresh_from_db()
+    assert b.status == BookingStatus.BOOKED and not b.maintenance_auto_reschedule_pending
+    assert b.auto_rescheduled_from == _at(first, 9)  # the full booking was moved, including its first day
+
+
+def test_day_blocks_move_to_the_next_day_with_room(lab, django_capture_on_commit_callbacks):
+    eq, _oic, day, now = lab
+    _book(eq, _slots(eq, day)[0], _user(UserType.STUDENT))  # the first day has no room for a full-day block
+    b = _held_over_days(eq, None, [(_past(3), (9, 10, 11, 12)), (_next_working_day(_past(3)), (9,))], now)
+
+    _allocate(eq, now, django_capture_on_commit_callbacks)
+
+    d1 = _next_working_day(day)
+    d2 = _next_working_day(d1)
+    assert _starts(b) == [_at(d1, 9), _at(d1, 10), _at(d1, 11), _at(d1, 12), _at(d2, 9)]
+
+
+def test_multi_day_preview_shows_the_placement(lab):
+    eq, _oic, day, now = lab
+    b = _held_over_days(eq, None, [(_past(3), (9, 10, 11, 12)), (_next_working_day(_past(3)), (9, 10))], now)
+    _slots(eq, day), _slots(eq, _next_working_day(day))  # the read-only preview does not generate slots
+
+    preview = mr.allocation_preview(eq, now=now)
+
+    row = next(r for r in preview["rows"] if r["booking_id"] == b.pk)
+    assert row["slots"] == 6 and row["new_start"] == mr._iso(_at(day, 9))
+    assert row["new_end"] == mr._iso(_at(_next_working_day(day), 11))
+
+
+def test_staff_can_move_a_multi_day_hold_by_hand(lab):
+    eq, oic, day, now = lab
+    b = _held_over_days(eq, None, [(_past(3), (9, 10, 11, 12)), (_next_working_day(_past(3)), (9, 10))], now)
+    nxt = _next_working_day(day)
+    _slots(eq, day), _slots(eq, nxt)
+
+    r = _client(_user(UserType.ADMIN, is_staff=True)).post(f"/api/bookings/{b.pk}/reschedule/",
+                          {"start_time": _at(day, 9).isoformat(), "end_time": _at(nxt, 11).isoformat()}, format="json")
+
+    assert r.status_code == 200, r.content
+    assert _starts(b) == [_at(day, 9), _at(day, 10), _at(day, 11), _at(day, 12), _at(nxt, 9), _at(nxt, 10)]
+
+
+def test_multi_day_range_with_a_gap_is_refused(lab):
+    eq, oic, day, now = lab
+    b = _held_over_days(eq, None, [(_past(3), (9, 10, 11, 12)), (_next_working_day(_past(3)), (9, 10))], now)
+    nxt = _next_working_day(day)
+    other = _book(eq, _slots(eq, day)[2], _user(UserType.STUDENT))  # someone else holds 11:00 on the first day
+    DailySlot.objects.filter(pk=_slots(eq, day)[2].pk).update(status=SlotStatus.BOOKED, booking=other)
+    _slots(eq, nxt)
+
+    r = _client(_user(UserType.ADMIN, is_staff=True)).post(f"/api/bookings/{b.pk}/reschedule/",
+                          {"start_time": _at(day, 9).isoformat(), "end_time": _at(nxt, 11).isoformat()}, format="json")
+
+    assert r.status_code == 400 and "needs 6" in r.json()["error"], r.content
+    b.refresh_from_db()
+    assert b.status == BookingStatus.DISRUPTION_PENDING  # nothing moved
+
+
 def test_minimum_notice_and_never_the_same_day(lab, django_capture_on_commit_callbacks):
     eq, _oic, day, now = lab
     MaintenanceRescheduleSettings.objects.create(min_lead_hours=28)

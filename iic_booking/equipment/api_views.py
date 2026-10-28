@@ -6361,6 +6361,31 @@ def export_bookings(request):
         return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+def approved_wallet_student_ids(faculty_ids):
+    """Students whose request to join one of these faculty members' wallets was approved."""
+    from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
+
+    return list(
+        WalletJoinRequest.objects.filter(
+            faculty_id__in=list(faculty_ids),
+            status=WalletJoinRequestStatus.APPROVED,
+        )
+        .values_list("student_id", flat=True)
+        .distinct()
+    )
+
+
+def faculty_wallet_student_ids(user_q):
+    """Approved wallet students of the IITR faculty members matching ``user_q`` (a Q on User).
+
+    Searching or filtering bookings by a faculty member then also lists the bookings their students made.
+    """
+    from django.contrib.auth import get_user_model
+
+    faculty_ids = get_user_model().objects.filter(user_q, user_type=UserType.FACULTY).values_list("pk", flat=True)
+    return approved_wallet_student_ids(faculty_ids)
+
+
 def bookings_visible_to(user, queryset=None):
     """Role scope of the bookings list: the bookings ``user`` may see."""
     if queryset is None:
@@ -6377,13 +6402,7 @@ def bookings_visible_to(user, queryset=None):
     if not check_operator_permission(user):
         # Regular users see their own bookings.
         # Wallet owners (Faculty/Supervisor) also see bookings made by internal students who use their wallet.
-        from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
-        student_ids_using_my_wallet = list(
-            WalletJoinRequest.objects.filter(
-                faculty=user,
-                status=WalletJoinRequestStatus.APPROVED,
-            ).values_list("student_id", flat=True)
-        )
+        student_ids_using_my_wallet = approved_wallet_student_ids([user.pk])
         if student_ids_using_my_wallet:
             return queryset.filter(Q(user=user) | Q(user_id__in=student_ids_using_my_wallet)).distinct()
         return queryset.filter(user=user)
@@ -6431,7 +6450,10 @@ def _booking_list_queryset(request, *, min_search_chars: int = 0):
                 status=status.HTTP_403_FORBIDDEN,
             )
         try:
-            queryset = queryset.filter(user_id=int(user_id_filter))
+            target_user_id = int(user_id_filter)
+            # An IITR faculty member's bookings include those of the students whose wallet join they approved.
+            student_ids = faculty_wallet_student_ids(Q(pk=target_user_id))
+            queryset = queryset.filter(Q(user_id=target_user_id) | Q(user_id__in=student_ids))
         except (ValueError, TypeError):
             return None, Response(
                 {"error": "Invalid user_id parameter."},
@@ -6503,6 +6525,12 @@ def _booking_list_queryset(request, *, min_search_chars: int = 0):
             | Q(user__email__icontains=search)
             | Q(user__phone_number__icontains=search)
         )
+        # Searching for an IITR faculty member also finds the bookings of their approved wallet students.
+        student_ids = faculty_wallet_student_ids(
+            Q(name__icontains=search) | Q(email__icontains=search) | Q(phone_number__icontains=search)
+        )
+        if student_ids:
+            search_q |= Q(user_id__in=student_ids)
         # Match numeric primary key (display id can be CODE-pk when no virtual_booking_id)
         if search.isdigit():
             try:
@@ -6523,7 +6551,8 @@ def _booking_list_queryset(request, *, min_search_chars: int = 0):
     # Filter by user name (booking user's name) – if specified
     user_name_filter = _text_param('user_name')
     if user_name_filter:
-        queryset = queryset.filter(user__name__icontains=user_name_filter)
+        student_ids = faculty_wallet_student_ids(Q(name__icontains=user_name_filter))
+        queryset = queryset.filter(Q(user__name__icontains=user_name_filter) | Q(user_id__in=student_ids)).distinct()
 
     # Filter by Supervisor name – if specified
     supervisor_name_filter = _text_param('supervisor_name')
@@ -13115,6 +13144,20 @@ def booking_other_disruption(request, booking_id):
         status=status.HTTP_200_OK,
     )
 
+def _multi_day_reschedule_problem(booking, start_time, end_time, available_slots) -> str:
+    """A reschedule range over several days takes every free slot between its start and end, so it must hold exactly
+    the booking's number of slots: a gap (another booking, a closed slot) never silently shortens or lengthens it."""
+    if timezone.localtime(start_time).date() == timezone.localtime(end_time - timedelta(microseconds=1)).date():
+        return ""
+    required = booking.daily_slots.count()
+    found = available_slots.count()
+    if required and found != required:
+        return (
+            f"The selected time over several days has {found} free slot(s), but this booking needs {required}. "
+            "Choose consecutive slots with no other booking or closed slot in between."
+        )
+    return ""
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def reschedule_booking(request, booking_id):
@@ -13238,6 +13281,9 @@ def reschedule_booking(request, booking_id):
             {"error": "No available slots found for the requested time range."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    multi_day_problem = _multi_day_reschedule_problem(booking, start_time, end_time, available_slots)
+    if multi_day_problem:
+        return Response({"error": multi_day_problem}, status=status.HTTP_400_BAD_REQUEST)
 
     from iic_booking.equipment.external_slot_quota import ExternalSlotQuotaService
 
@@ -14023,7 +14069,10 @@ def user_reschedule_booking(request, booking_id):
             {"error": "No available slots found for the requested time range."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    
+    multi_day_problem = _multi_day_reschedule_problem(booking, start_time, end_time, available_slots)
+    if multi_day_problem:
+        return Response({"error": multi_day_problem}, status=status.HTTP_400_BAD_REQUEST)
+
     # Check if all slots are available
     slot_checker = (
         SlotAvailabilityChecker.is_slot_available_for_external

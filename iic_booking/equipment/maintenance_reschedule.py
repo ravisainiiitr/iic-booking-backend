@@ -9,7 +9,8 @@ before the bookings on hold are placed; it runs again at the 08:30 check for boo
 * Each booking gets the earliest run of consecutive Available slots with the same number of slots and the same
   total length, starting at least ``min_lead_hours`` from now and never the same day, on a working day (no weekend
   or institute holiday), allowed for the equipment mode at that time, within ``horizon_days`` (weeks not yet open to
-  users included; missing slots are generated first).
+  users included; missing slots are generated first). A booking spanning several days (more slots than a day has)
+  is placed day by day: each day's block of slots on its own later working day, the full booking again.
 * The booking keeps its price and quota period, becomes Booked (Pending when the lab already had the sample), and
   records a history entry by the System; the user gets an email and an in-app notice, staff a summary.
 * A booking that does not fit stays on hold and is retried at the next 08:30 check; staff are told.
@@ -133,6 +134,48 @@ def find_run(free: list, count: int, minutes: int, equipment, taken: set) -> Opt
     return None
 
 
+def _day_blocks(held: list) -> list[tuple[int, int]]:
+    """The booking's slots per calendar day, in order: ``[(slot count, total minutes), ...]``."""
+    blocks: list[tuple[int, int]] = []
+    last_day = None
+    for s in held:
+        day = timezone.localtime(s.start_datetime).date()
+        if day != last_day:
+            blocks.append((0, 0))
+            last_day = day
+        count, minutes = blocks[-1]
+        blocks[-1] = (count + 1, minutes + _slot_minutes(s))
+    return blocks
+
+
+def find_placement(free: list, held: list, equipment, taken: set) -> Optional[list]:
+    """Where a booking on hold goes: the same shape as its slots.
+
+    One day: the earliest run of back-to-back slots (``find_run``). Several days (a booking longer than a day's
+    slots, e.g. 16 + 5): each day's block on its own later working day, earliest first, the full booking again.
+    """
+    blocks = _day_blocks(held)
+    if len(blocks) <= 1:
+        return find_run(free, len(held), sum(_slot_minutes(s) for s in held), equipment, taken)
+    placed: list = []
+    used = set(taken)
+    after_day = None
+    for count, minutes in blocks:
+        candidates = free if after_day is None else [
+            s for s in free if timezone.localtime(s.start_datetime).date() > after_day
+        ]
+        run = find_run(candidates, count, minutes, equipment, used)
+        if run is None:
+            return None
+        day = timezone.localtime(run[0].start_datetime).date()
+        if any(timezone.localtime(s.start_datetime).date() != day for s in run):
+            return None  # a day's block stays within one day
+        placed.extend(run)
+        used.update(s.pk for s in run)
+        after_day = day
+    return placed
+
+
 def _status_before_hold(booking):
     from .models import BookingEvent, BookingStatus
 
@@ -228,7 +271,7 @@ def allocate_for_equipment(equipment, *, now=None) -> AllocationResult:
         taken: set = set()
         for booking in holds:
             held = _held_slots(booking)
-            run = find_run(free, len(held), sum(_slot_minutes(s) for s in held), equipment, taken)
+            run = find_placement(free, held, equipment, taken)
             if run is None:
                 result.unplaced.append(booking)
                 continue
@@ -444,7 +487,7 @@ def allocation_preview(equipment, now=None, *, include_ids=()) -> dict:
     rows = []
     for b in holds:
         held = _held_slots(b)
-        run = find_run(free, len(held), sum(_slot_minutes(s) for s in held), equipment, taken) if free else None
+        run = find_placement(free, held, equipment, taken) if free else None
         if run:
             taken.update(s.pk for s in run)
         rows.append(
