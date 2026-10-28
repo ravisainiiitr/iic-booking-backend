@@ -1618,6 +1618,7 @@ class EquipmentAdmin(admin.ModelAdmin):
                 'make', 'show_make_on_card',
                 'model_information', 'show_model_on_card',
                 'split_booking_enabled',
+                'slot_exchange_enabled',
                 'skip_quota_check',
                 'auto_slot_selection_default',
                 'enable_charge_recalculation', 'user_rating_enabled',
@@ -1719,6 +1720,14 @@ class EquipmentAdmin(admin.ModelAdmin):
     )
     
     readonly_fields = ['created_at', 'updated_at', 'image_preview', 'video_preview']
+
+    def get_readonly_fields(self, request, obj=None):
+        fields = list(super().get_readonly_fields(request, obj))
+        # Slot Exchange is switched by the Main Admin only (as in the portal's equipment form).
+        user = request.user
+        if not (getattr(user, "is_superuser", False) or getattr(user, "user_type", None) == "admin"):
+            fields.append("slot_exchange_enabled")
+        return fields
     
     ordering = ['name', 'profile_type']
     

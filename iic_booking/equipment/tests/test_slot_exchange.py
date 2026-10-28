@@ -223,3 +223,15 @@ def test_only_main_admin_can_switch_slot_exchange(lab):
     ok = EquipmentAdminWriteSerializer(eq, data={"slot_exchange_enabled": False}, partial=True,
                                        context={"request": request})
     assert ok.is_valid(), ok.errors
+
+
+def test_django_admin_equipment_page_has_the_switch(lab):
+    from django.test import Client
+
+    factory, eq, alice, bob, a, b = lab
+    admin_user = UserFactory(user_type=UserType.ADMIN, is_staff=True, is_superuser=True, admin_approved=True)
+    client = Client()
+    client.force_login(admin_user)
+    resp = client.get(f"/admin/equipment/equipment/{eq.pk}/change/")
+    assert resp.status_code == 200
+    assert b'name="slot_exchange_enabled"' in resp.content
