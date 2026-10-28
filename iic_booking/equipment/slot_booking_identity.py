@@ -44,6 +44,9 @@ class SlotBookingIdentityPolicy:
         authenticated = user is not None and getattr(user, "is_authenticated", False)
         self.user_id = user.pk if authenticated else None
         self.equipment_ids = booking_identity_equipment_ids(user)
+        self.viewer_internal = authenticated and str(getattr(user, "user_type", "") or "").lower() in (
+            UserType.get_internal_user_codes()
+        )
 
     def allows(self, slot) -> bool:
         if not getattr(slot, "booking_id", None):
@@ -58,6 +61,31 @@ class SlotBookingIdentityPolicy:
         if equipment_id is not None and equipment_id in self.equipment_ids:
             return True
         return self.user_id is not None and getattr(booking, "user_id", None) == self.user_id
+
+    def allows_peer(self, slot) -> bool:
+        """Internal users see who booked a slot when the booker is internal too (name, department, contact)."""
+        if not self.viewer_internal or not getattr(slot, "booking_id", None):
+            return False
+        from .slot_exchange import booking_is_internal
+
+        booking = getattr(slot, "booking", None)
+        return booking is not None and booking_is_internal(booking)
+
+
+# Shown to staff only, even when a peer may see the booker.
+STAFF_ONLY_SLOT_FIELDS = ("booking_sample_status_display", "booking_sample_accepted", "booking_auto_reschedule_note")
+
+
+def peer_slot_booking_identity(data: dict, slot) -> dict:
+    """Booker details another internal user may see: identity and contact, not the lab's working fields."""
+    for key in STAFF_ONLY_SLOT_FIELDS:
+        if key in data:
+            data[key] = None
+    user = getattr(getattr(slot, "booking", None), "user", None)
+    if user is not None:
+        data["booking_user_email"] = (getattr(user, "email", "") or "").strip() or None
+        data["booking_user_phone"] = (getattr(user, "phone_number", "") or "").strip() or None
+    return data
 
 
 def mask_slot_booking_identity(data: dict) -> dict:

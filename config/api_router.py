@@ -306,6 +306,13 @@ from iic_booking.equipment.slot_window_opening import slot_window_opening
 from iic_booking.equipment.booking_quota_summary import equipment_my_booking_quota
 from iic_booking.equipment.quota_breakdown import quota_breakdown_view
 from iic_booking.equipment.booking_lab_messages import booking_lab_message_reply, booking_lab_messages
+from iic_booking.equipment.slot_exchange_views import (
+    slot_exchange_accept,
+    slot_exchange_cancel,
+    slot_exchange_decline,
+    slot_exchange_options,
+    slot_exchanges,
+)
 from iic_booking.equipment.booking_lab_outreach import (
     booking_lab_outreach_send,
     booking_lab_question_resolve,
@@ -1693,6 +1700,11 @@ urlpatterns = router.urls + [
     # Booking event history endpoints
     path("bookings/<int:booking_id>/events/", list_booking_events, name="list-booking-events"),
     path("bookings/<int:booking_id>/events/comment/", create_booking_event_comment, name="create-booking-event-comment"),
+    path("slot-exchanges/", slot_exchanges, name="slot-exchanges"),
+    path("slot-exchanges/options/", slot_exchange_options, name="slot-exchange-options"),
+    path("slot-exchanges/<int:request_id>/accept/", slot_exchange_accept, name="slot-exchange-accept"),
+    path("slot-exchanges/<int:request_id>/decline/", slot_exchange_decline, name="slot-exchange-decline"),
+    path("slot-exchanges/<int:request_id>/cancel/", slot_exchange_cancel, name="slot-exchange-cancel"),
     path("bookings/<int:booking_id>/lab-messages/", booking_lab_messages, name="booking-lab-messages"),
     path(
         "bookings/<int:booking_id>/lab-messages/reply/",

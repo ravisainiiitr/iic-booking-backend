@@ -323,6 +323,15 @@ class Equipment(models.Model):
         verbose_name=_('Split Booking Enabled')
     )
 
+    slot_exchange_enabled = models.BooleanField(
+        default=False,
+        help_text=_(
+            'If enabled (Main Admin only), internal users may agree to exchange booked slots of the same charge '
+            'on this equipment, up to 5 minutes before the slots start.'
+        ),
+        verbose_name=_('Slot Exchange Enabled'),
+    )
+
     auto_slot_selection_default = models.BooleanField(
         null=True,
         blank=True,
@@ -7937,4 +7946,8 @@ from iic_booking.equipment.maintenance_models import (  # noqa: E402
     MaintenanceNotification,
     MaintenanceNotificationKind,
     MaintenanceRescheduleSettings,
+)
+from iic_booking.equipment.slot_exchange_models import (  # noqa: E402
+    SlotExchangeRequest,
+    SlotExchangeStatus,
 )

@@ -39,6 +39,7 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "booking_comment_email",
     "booking_lab_message_email",
     "booking_lab_staff_message_email",
+    "slot_exchange_email",
     "booking_reminder_email",
     "booking_charge_recalculated_email",
     "booking_not_utilized_email",
@@ -584,6 +585,35 @@ def _booking_templates() -> list[dict[str, Any]]:
                 _BOOKING_COMMON_HELP
                 + ", {{ booking_status }}, {{ sender_name }}, {{ sender_display }}, {{ sent_at }}, "
                 "{{ message_reason }}, {{ lab_message }}, {{ lab_message_html }}"
+            ),
+        ),
+        _booking_email(
+            code="slot_exchange_email",
+            title="{{ exchange_heading }}",
+            subject="{{ exchange_heading }} – {{ equipment_name }}",
+            intro="{{ exchange_intro }}",
+            description=(
+                "Sent for Slot Exchange between two internal users of the same equipment: to the other user when "
+                "an exchange is requested or withdrawn, and to the requester when it is accepted or declined."
+            ),
+            include_duration=False,
+            include_charges=False,
+            extra_detail_rows=[
+                optional_detail_row("Exchange", "exchange_status"),
+                optional_detail_row("Slots given", "slots_given"),
+                optional_detail_row("Slots received", "slots_received"),
+                optional_detail_row("Respond by", "respond_by"),
+                optional_detail_row("Other user", "counterparty_display"),
+            ],
+            note_vars=(),
+            post_details_html=optional_note_block("exchange_message_html", label="Message"),
+            post_details_text="{% if exchange_message %}Message:\n{{ exchange_message }}\n{% endif %}",
+            cta_label="Open slot exchanges",
+            variable_help=(
+                _BOOKING_COMMON_HELP
+                + ", {{ exchange_heading }}, {{ exchange_intro }}, {{ exchange_status }}, {{ slots_given }}, "
+                "{{ slots_received }}, {{ respond_by }}, {{ counterparty_display }}, {{ exchange_message }}, "
+                "{{ exchange_message_html }}"
             ),
         ),
         _booking_email(

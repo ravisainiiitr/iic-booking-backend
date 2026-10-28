@@ -1563,9 +1563,12 @@ class DailySlotSerializer(serializers.ModelSerializer):
         # Slot calendars pass a SlotBookingIdentityPolicy; booking payloads nest their own slots without one.
         policy = self.context.get("booking_identity_policy")
         if policy is not None and not policy.allows(instance):
-            from .slot_booking_identity import mask_slot_booking_identity
+            from .slot_booking_identity import mask_slot_booking_identity, peer_slot_booking_identity
 
-            mask_slot_booking_identity(data)
+            if policy.allows_peer(instance):
+                peer_slot_booking_identity(data, instance)
+            else:
+                mask_slot_booking_identity(data)
         return data
 
     def _status_representation(self, instance):
@@ -2174,6 +2177,7 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'slots_per_day',
             'slot_tolerance_minutes',
             'split_booking_enabled',
+            'slot_exchange_enabled',
             'auto_slot_selection_default',
             'repeat_sample_request_days',
             'repeat_sample_disclaimer',
@@ -2711,7 +2715,8 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'enable_multi_mode', 'parent_equipment',
             'slot_duration_minutes', 'slots_per_day',
             'slot_tolerance_minutes',
-            'reschedule_hours_threshold', 'results_base_location', 'split_booking_enabled', 'auto_slot_selection_default', 'weekly_view_display',
+            'reschedule_hours_threshold', 'results_base_location', 'split_booking_enabled', 'slot_exchange_enabled',
+            'auto_slot_selection_default', 'weekly_view_display',
             'weekly_view_time_from', 'weekly_view_time_to', 'weekly_view_max_rows', 'weekly_view_default_days',
             'slot_window_reference_weekday', 'slot_window_reference_time',
             'external_slot_quota_percent',
@@ -2898,6 +2903,17 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         attrs = super().validate(attrs)
         instance = getattr(self, "instance", None)
         self._validate_results_deadline(attrs, instance)
+        if "slot_exchange_enabled" in attrs:
+            # Slot Exchange is switched on or off by the Main Admin only; other editors keep the current value.
+            request = self.context.get("request")
+            actor = getattr(request, "user", None)
+            if getattr(actor, "user_type", None) != UserType.ADMIN and not getattr(actor, "is_superuser", False):
+                current = bool(getattr(instance, "slot_exchange_enabled", False)) if instance else False
+                if bool(attrs["slot_exchange_enabled"]) != current:
+                    raise serializers.ValidationError(
+                        {"slot_exchange_enabled": "Only the Main Admin can turn Slot Exchange on or off."}
+                    )
+                attrs.pop("slot_exchange_enabled")
         if "fabrication_notification_emails" in attrs:
             # Deprecated single-address column, kept in step so a rollback to an older release still has it.
             emails = attrs["fabrication_notification_emails"] or []

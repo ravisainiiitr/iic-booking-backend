@@ -138,12 +138,20 @@ def test_anonymous_visitor_gets_status_only(lab):
     _assert_masked(rows[lab.not_utilized.pk], SlotStatus.BOOKING_NOT_UTILIZED)
 
 
-def test_other_signed_in_user_gets_status_only(lab):
-    student = UserFactory(admin_approved=True, user_type=UserType.STUDENT)
-    rows = _slot_rows(student, lab.eq, lab.day)
+def test_external_signed_in_user_gets_status_only(lab):
+    outsider = UserFactory(admin_approved=True, user_type=UserType.EXTERNAL)
+    rows = _slot_rows(outsider, lab.eq, lab.day)
     _assert_masked(rows[lab.booked.pk])
     assert rows[lab.booked.pk]["display_status"] == SlotStatus.BOOKED
     _assert_masked(rows[lab.not_utilized.pk], SlotStatus.BOOKING_NOT_UTILIZED)
+
+
+def test_other_internal_user_sees_internal_booker_but_not_lab_fields(lab):
+    student = UserFactory(admin_approved=True, user_type=UserType.STUDENT)
+    row = _slot_rows(student, lab.eq, lab.day)[lab.booked.pk]
+    _assert_identity(row, lab.booking)
+    assert row["booking_user_email"] == lab.owner.email
+    assert row["booking_sample_status_display"] is None and row["booking_sample_accepted"] is None
 
 
 def test_owner_gets_own_booking_identity(lab):
@@ -183,7 +191,7 @@ def test_staff_of_other_equipment_get_status_only(lab, who):
 
 def test_policy_masks_identity_fields_in_serializer(lab):
     slot = DailySlot.objects.select_related("slot_master", "booking__user").get(pk=lab.booked.pk)
-    stranger = UserFactory(admin_approved=True, user_type=UserType.STUDENT)
+    stranger = UserFactory(admin_approved=True, user_type=UserType.EXTERNAL)
     masked = DailySlotSerializer(
         slot, context={"booking_identity_policy": SlotBookingIdentityPolicy(stranger), "include_booking_user_contact": True}
     ).data
