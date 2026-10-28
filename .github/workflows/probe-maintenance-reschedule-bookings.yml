@@ -1,0 +1,114 @@
+name: Probe maintenance auto-reschedule for bookings (read-only)
+
+# Why one booking was moved automatically after its equipment came back from maintenance and another was not.
+# For each booking reference: status and the maintenance flags the reschedule uses, its slots, its event timeline,
+# the equipment (and base/mode link), maintenance periods, reschedule settings, the system's own preview of where each
+# booking on hold would go now, and the reschedule log lines. Prints ids, codes, statuses, times and counts only
+# (no names, no emails). Runs inside a READ ONLY transaction that is rolled back.
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking_refs:
+        description: "Booking references (virtual booking ids), comma separated"
+        type: string
+        default: "IICMPAES202600006,IICMPAES202600007"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Booking maintenance state (SELECT only)
+        env:
+          REFS: ${{ inputs.booking_refs }}
+        run: |
+          set -euo pipefail
+          case "$REFS" in *[!A-Za-z0-9,]*) echo "booking_refs: letters, digits and commas only"; exit 2;; esac
+          cd /home/ubuntu/iic-booking-backend
+          echo "deployed: $(git describe --tags --always 2>/dev/null || true)"
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          for C in $(docker ps --format '{{.Names}}' | grep -iE 'celery|worker|beat|django'); do
+            echo "== reschedule / maintenance log lines (30 days) in $C =="
+            docker logs --since 720h "$C" 2>&1 \
+              | grep -E "maintenance_reschedule|maintenance_policy: equipment|end_period failed|allocation failed" \
+              | tail -n 40 || true
+          done
+          docker exec -i -w /app -e REFS="$REFS" "$CID" python - <<'PY'
+          import os
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+          from django.utils import timezone
+
+          from iic_booking.equipment.models import Booking, BookingEvent, Equipment
+
+          def iso(v):
+              return timezone.localtime(v).isoformat(timespec="minutes") if v else None
+
+          FLAGS = [
+              "status", "disruption_kind", "maintenance_disruption_flag", "maintenance_auto_reschedule_pending",
+              "maintenance_decision_deadline_at", "maintenance_operational_marked_at", "maintenance_reschedule_extra_week",
+              "auto_rescheduled_at", "auto_rescheduled_from", "disruption_release_slot_status", "quota_period_anchor_at",
+              "source_booking_id", "created_at", "updated_at",
+          ]
+          refs = [r for r in os.environ.get("REFS", "").split(",") if r]
+          now = timezone.now()
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+              print(f"now={iso(now)}")
+              equipment_ids = set()
+              for ref in refs:
+                  b = Booking.objects.filter(virtual_booking_id=ref).select_related("equipment").first()
+                  print(f"\n===== {ref} =====")
+                  if b is None:
+                      print("  not found")
+                      continue
+                  equipment_ids.add(b.equipment_id)
+                  print(f"  booking_id={b.booking_id} equipment_id={b.equipment_id} code={b.equipment.code}"
+                        f" user_type={b.user_type_snapshot}")
+                  for f in FLAGS:
+                      v = getattr(b, f, "<no field>")
+                      print(f"  {f}={iso(v) if hasattr(v, 'tzinfo') else v}")
+                  slots = sorted(b.daily_slots.all(), key=lambda s: (s.start_datetime is None, s.start_datetime))
+                  print(f"  held slots={len(slots)}")
+                  for s in slots:
+                      mins = int((s.end_datetime - s.start_datetime).total_seconds() // 60) if s.start_datetime and s.end_datetime else None
+                      print(f"    slot={s.pk} {iso(s.start_datetime)} -> {iso(s.end_datetime)} min={mins} status={s.status}")
+                  print("  events:")
+                  for e in BookingEvent.objects.filter(booking=b).order_by("created_at", "pk"):
+                      meta = e.metadata if isinstance(getattr(e, "metadata", None), dict) else {}
+                      keys = {k: meta[k] for k in ("maintenance_auto_reschedule", "original_start", "new_start") if k in meta}
+                      text = " ".join((e.comment or "").split())[:160]
+                      print(f"    {iso(e.created_at)} {e.event_type} {e.previous_status}->{e.new_status}"
+                            f" system={getattr(e, 'system_actor', None)} {keys} | {text}")
+
+              from iic_booking.equipment.maintenance_reschedule import allocation_preview, settings_row
+              cfg = settings_row()
+              print(f"\n== reschedule settings: min_lead_hours={cfg.min_lead_hours} horizon_days={cfg.horizon_days}"
+                    f" deadline_extension_hours={cfg.deadline_extension_hours} ==")
+              try:
+                  from iic_booking.equipment.models import EquipmentMaintenancePeriod
+              except ImportError:
+                  from iic_booking.equipment.maintenance_models import EquipmentMaintenancePeriod
+              for eq in Equipment.objects.filter(pk__in=equipment_ids):
+                  modes = list(Equipment.objects.filter(parent_equipment_id=eq.pk).values_list("pk", "code", "status"))
+                  print(f"\n== equipment {eq.pk} {eq.code} status={eq.status} parent={eq.parent_equipment_id}"
+                        f" follows_parent={getattr(eq, 'status_follows_parent', None)} modes={modes} ==")
+                  for p in EquipmentMaintenancePeriod.objects.filter(equipment=eq).order_by("-started_at")[:6]:
+                      print(f"  period={p.pk} started={iso(p.started_at)} ended={iso(p.ended_at)}"
+                            f" auto_slots={len(p.auto_slot_ids or [])}")
+                  held = list(Booking.objects.filter(equipment=eq, status="DISRUPTION_PENDING").values_list(
+                      "booking_id", "virtual_booking_id", "maintenance_auto_reschedule_pending", "disruption_kind"))
+                  print(f"  bookings still on hold: {held}")
+                  try:
+                      preview = allocation_preview(eq, include_ids=[h[0] for h in held])
+                      print(f"  preview (where each hold would go now): {preview}")
+                  except Exception as ex:
+                      print(f"  preview failed: {type(ex).__name__}: {ex}")
+              transaction.set_rollback(True)
+          print("\nDONE (rolled back)")
+          PY
