@@ -588,6 +588,7 @@ from iic_booking.support.portal_feedback_views import (
 )
 from iic_booking.support.notification_settings_views import support_notification_settings
 from iic_booking.cms.views import menu_list, home_page_content, hero_slides, page_by_slug, site_stats, analysis_charges_document, public_publications
+from iic_booking.istem.api_views import istem_link_find_account, istem_link_send_otp, istem_link_status, istem_link_verify_otp
 
 router = DefaultRouter() if settings.DEBUG else SimpleRouter()
 router.register("users", UserViewSet, basename="user")
@@ -1641,6 +1642,10 @@ urlpatterns = router.urls + [
     path("data-sharing/users/<int:user_id>/", data_sharing_user_detail, name="data-sharing-user-detail"),
     path("data-sharing/shared-with-me/", shared_with_me, name="data-sharing-shared-with-me"),
     path("public/equipment-availability/", public_equipment_availability, name="public-equipment-availability"),
+    path("istem/link/", istem_link_status, name="istem-link-status"),
+    path("istem/link/find-account/", istem_link_find_account, name="istem-link-find-account"),
+    path("istem/link/send-otp/", istem_link_send_otp, name="istem-link-send-otp"),
+    path("istem/link/verify-otp/", istem_link_verify_otp, name="istem-link-verify-otp"),
     path("bookings/<int:booking_id>/istem-fbr/", update_booking_istem_fbr, name="booking-istem-fbr-update"),
     path("bookings/<int:booking_id>/istem-fbr/review/", review_booking_istem_fbr, name="booking-istem-fbr-review"),
     path("bookings/<int:booking_id>/complete/", complete_booking, name="complete-booking"),

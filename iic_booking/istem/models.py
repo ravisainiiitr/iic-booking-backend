@@ -17,6 +17,7 @@ from .choices import (
     EvidenceType,
     JobState,
     LIVE_JOB_STATES,
+    LinkOtpState,
     Operation,
     RemoteStatus,
     SyncState,
@@ -29,7 +30,11 @@ class IstemUserLink(models.Model):
 
     ``public_user_id`` is deliberately not unique: Create User returns the existing I-STEM user when the email *or*
     the mobile number is already registered, and local mobile numbers are not unique, so two local users can resolve
-    to one I-STEM user. That case is flagged for review instead of being blocked by the database.
+    to one I-STEM user. That case is flagged for review instead of being blocked by the database; only two *linked*
+    accounts on one I-STEM user are refused by it.
+
+    ``candidate_*`` hold the existing I-STEM user awaiting the user's email OTP (state ``AWAITING_OTP``); they are
+    cleared once the account is linked.
     """
 
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="istem_link")
@@ -44,6 +49,21 @@ class IstemUserLink(models.Model):
         help_text=_("SHA-256 of the normalised email and mobile sent to I-STEM; detects later changes."),
     )
     review_reason = models.TextField(blank=True, default="")
+    candidate_public_user_id = models.CharField(
+        max_length=64, blank=True, default="", help_text=_("Existing I-STEM user the email OTP would link to.")
+    )
+    candidate_email = models.EmailField(
+        blank=True, default="", help_text=_("Email registered on I-STEM for the candidate user; the OTP goes here.")
+    )
+    candidate_profile = models.JSONField(
+        default=dict, blank=True, help_text=_("Profile I-STEM's user lookup returned for the candidate (for prefill).")
+    )
+    istem_profile = models.JSONField(
+        default=dict, blank=True, help_text=_("The linked I-STEM user's profile from the lookup, kept for prefill.")
+    )
+    otp_paused_until = models.DateTimeField(
+        null=True, blank=True, help_text=_("OTP linking is paused after repeated wrong codes.")
+    )
     linked_at = models.DateTimeField(null=True, blank=True)
     last_verified_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -53,13 +73,47 @@ class IstemUserLink(models.Model):
         verbose_name = _("I-STEM user link")
         verbose_name_plural = _("I-STEM user links")
         ordering = ["-updated_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["public_user_id"],
+                condition=Q(state=UserLinkState.LINKED) & Q(public_user_id__isnull=False),
+                name="istem_user_uniq_linked_id",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.user} → {self.public_user_id or '—'} ({self.state})"
 
 
+class IstemLinkOtp(models.Model):
+    """One OTP sent to an existing I-STEM user's email, and what became of it (audit of every send and attempt).
+
+    Only an HMAC of the code is stored; the email itself is kept masked.
+    """
+
+    user_link = models.ForeignKey(IstemUserLink, on_delete=models.PROTECT, related_name="otps")
+    public_user_id = models.CharField(max_length=64)
+    email_masked = models.CharField(max_length=255)
+    code_hash = models.CharField(max_length=64)
+    state = models.CharField(max_length=20, choices=LinkOtpState.choices, default=LinkOtpState.PENDING)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    sent_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = _("I-STEM link OTP")
+        verbose_name_plural = _("I-STEM link OTPs")
+        ordering = ["-sent_at"]
+        indexes = [models.Index(fields=["user_link", "sent_at"], name="istem_otp_link_idx")]
+
+    def __str__(self):
+        return f"OTP {self.pk} → {self.email_masked} ({self.state})"
+
+
 class IstemEquipmentMapping(models.Model):
-    """The I-STEM ``equipment_id`` for a local instrument, entered by an admin (I-STEM has no master-data API).
+    """The I-STEM ``equipment_id`` for a local instrument, entered by an admin and checked against I-STEM's Equipment
+    List (``remote_*``, written only by ``service.verify_equipment_mappings``).
 
     ``istem_equipment_id`` is not unique until I-STEM confirms whether several local instruments may share one ID.
     """
@@ -77,6 +131,16 @@ class IstemEquipmentMapping(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
     )
     verified_at = models.DateTimeField(null=True, blank=True)
+    remote_checked_at = models.DateTimeField(
+        null=True, blank=True, help_text=_("Last check against I-STEM's Equipment List (Active equipment only).")
+    )
+    remote_found = models.BooleanField(
+        null=True, blank=True, help_text=_("Whether the last check found this equipment_id; empty = never checked.")
+    )
+    remote_equipment_name = models.CharField(max_length=255, blank=True, default="")
+    remote_institute_id = models.CharField(
+        max_length=32, blank=True, default="", help_text=_("institute_id of the token used for the last check.")
+    )
     notes = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -153,7 +217,19 @@ class IstemBookingLink(models.Model):
         help_text=_("new_service_id returned by Create Booking; sent as request_id afterwards."),
     )
     fbr_no = models.CharField(max_length=64, null=True, blank=True)
-    confirmation_id = models.CharField(max_length=64, null=True, blank=True)
+    confirmation_id = models.CharField(
+        max_length=64, null=True, blank=True, help_text=_("Returned by Confirm Booking; required by FBR Execute.")
+    )
+    payment_id = models.CharField(
+        max_length=64, null=True, blank=True, help_text=_("Returned by FBR Execute (also when already executed).")
+    )
+    istem_slot_shift_hours = models.PositiveSmallIntegerField(
+        default=0,
+        help_text=_("Hours the I-STEM slot was moved later because the covering hourly slot was occupied on I-STEM."),
+    )
+    executed_at = models.DateTimeField(
+        null=True, blank=True, help_text=_("When I-STEM reported the FBR as executed (FBR Execute or Get FBR Details).")
+    )
     sync_state = models.CharField(max_length=32, choices=SyncState.choices, default=SyncState.NOT_ELIGIBLE)
     remote_status = models.CharField(max_length=20, choices=RemoteStatus.choices, blank=True, default="")
     remote_status_raw = models.CharField(max_length=64, blank=True, default="")
@@ -211,6 +287,7 @@ class IstemBookingLink(models.Model):
             ("link_manually", "Can link I-STEM identifiers manually"),
             ("resolve_uncertain", "Can request resolution of an uncertain I-STEM operation"),
             ("approve_resubmission", "Can approve resubmitting an uncertain I-STEM operation"),
+            ("request_confirm", "Can request I-STEM booking confirmation"),
             ("request_execute", "Can request I-STEM FBR execute"),
         ]
 

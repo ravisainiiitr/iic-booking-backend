@@ -10,9 +10,21 @@ from django.utils.translation import gettext_lazy as _
 
 class UserLinkState(models.TextChoices):
     PENDING = "PENDING", _("Pending")
+    AWAITING_OTP = "AWAITING_OTP", _("Waiting for the user's email OTP")
     LINKED = "LINKED", _("Linked")
     NEEDS_REVIEW = "NEEDS_REVIEW", _("Needs review")
     DISABLED = "DISABLED", _("Disabled")
+
+
+class LinkOtpState(models.TextChoices):
+    """One OTP sent to an existing I-STEM user's email to prove the account belongs to the local user."""
+
+    PENDING = "PENDING", _("Sent, waiting for the code")
+    VERIFIED = "VERIFIED", _("Verified")
+    EXPIRED = "EXPIRED", _("Expired")
+    EXHAUSTED = "EXHAUSTED", _("Too many wrong codes")
+    SUPERSEDED = "SUPERSEDED", _("Replaced by a newer OTP")
+    REFUSED = "REFUSED", _("Refused: I-STEM user linked to another account")
 
 
 class CodeType(models.TextChoices):
@@ -21,6 +33,8 @@ class CodeType(models.TextChoices):
     USER_TYPE = "USER_TYPE", _("User type")
     ANALYSIS_TYPE = "ANALYSIS_TYPE", _("Analysis type")
     EQUIPMENT_UOM = "EQUIPMENT_UOM", _("Equipment unit of measure")
+    # Create User has its own user_type list, distinct from Create Booking's usage_type / user_type list.
+    PUBLIC_USER_TYPE = "PUBLIC_USER_TYPE", _("Create User user type")
 
 
 class SyncState(models.TextChoices):
@@ -77,6 +91,8 @@ class Operation(models.TextChoices):
     GET_FBR_DETAILS = "GET_FBR_DETAILS", _("Get FBR details")
     REFRESH_STATUS = "REFRESH_STATUS", _("Refresh status")
     RECONCILE = "RECONCILE", _("Reconcile")
+    LIST_EQUIPMENT = "LIST_EQUIPMENT", _("Equipment list")
+    LOOKUP_USER = "LOOKUP_USER", _("Public user lookup")
 
 
 class JobState(models.TextChoices):
@@ -122,4 +138,5 @@ class EvidenceType(models.TextChoices):
     RECONCILIATION = "RECONCILIATION", _("Reconciliation result")
     ISTEM_PORTAL = "ISTEM_PORTAL", _("Checked on the I-STEM portal")
     ISTEM_TEAM = "ISTEM_TEAM", _("Written confirmation from the I-STEM team")
+    EMAIL_OTP = "EMAIL_OTP", _("OTP sent to the I-STEM email, entered by the user")
     OTHER = "OTHER", _("Other")
