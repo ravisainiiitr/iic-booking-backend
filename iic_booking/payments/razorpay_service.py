@@ -103,16 +103,29 @@ def create_order(
     booking: Booking | None = None,
     wallet=None,
     department=None,
+    checkout=None,
 ) -> tuple[PaymentOrder, dict]:
     """
     Create PaymentOrder + Razorpay order. Recomputes fee server-side.
-    For BOOKING_SHORTFALL, base is booking.amount_due (ignores client amount).
+    For BOOKING_SHORTFALL, base is booking.amount_due (ignores client amount), or for an external booking checkout
+    (no booking yet) the checkout's server-computed gateway part.
     """
     purpose = (purpose or "").strip().upper()
     if purpose not in PaymentPurpose.values:
         raise RazorpayServiceError("Invalid purpose.")
 
-    if purpose == PaymentPurpose.BOOKING_SHORTFALL:
+    if purpose == PaymentPurpose.BOOKING_SHORTFALL and checkout is not None:
+        from iic_booking.external_services.models import CheckoutState
+
+        if booking is not None or checkout.user_id != user.id:
+            raise RazorpayServiceError("Forbidden.")
+        if checkout.state != CheckoutState.AWAITING_PAYMENT or checkout.payment_order_id:
+            raise RazorpayServiceError("This checkout is not awaiting online payment.")
+        base = Decimal(str(checkout.gateway_amount or 0)).quantize(Decimal("0.01"))
+        if base <= 0:
+            raise RazorpayServiceError("Nothing to pay online for this checkout.")
+        department = getattr(checkout.equipment, "internal_department", None)
+    elif purpose == PaymentPurpose.BOOKING_SHORTFALL:
         if not booking:
             raise RazorpayServiceError("booking is required for booking shortfall.")
         booking = Booking.objects.select_for_update().get(pk=booking.pk)
@@ -125,6 +138,11 @@ def create_order(
             # Allow PENDING_PAYMENT primarily; BOOKED with due shouldn't happen
             if booking.status != BookingStatus.PENDING_PAYMENT:
                 raise RazorpayServiceError("Booking is not awaiting payment.")
+        from iic_booking.external_services.special_payment import payment_refusal
+
+        refusal = payment_refusal(booking)  # None for every booking that is not an external special allocation
+        if refusal:
+            raise RazorpayServiceError(refusal["error"])
         base = due
         if department is None:
             department = booking.settlement_department
@@ -184,6 +202,7 @@ def create_order(
             "wallet_id": str(wallet.id) if wallet else "",
             "department_id": str(department.id) if department else "",
             "base_amount": str(breakup.base_amount),
+            "checkout_id": str(checkout.public_id) if checkout is not None else "",
         },
     }
     try:
@@ -232,6 +251,11 @@ def create_order(
 
 def _settle_booking_shortfall(order: PaymentOrder) -> None:
     if not order.booking_id:
+        from iic_booking.external_services.checkout import settle_checkout_order
+
+        # External booking checkout: the booking is created now (or the payment stays recorded when it can't be).
+        if settle_checkout_order(order) is not None:
+            return
         raise RazorpayServiceError("Booking missing on shortfall order")
     booking = Booking.objects.select_for_update().get(pk=order.booking_id)
     due = Decimal(str(booking.amount_due or 0))
@@ -247,6 +271,14 @@ def _settle_booking_shortfall(order: PaymentOrder) -> None:
             booking.booking_id,
         )
         raise RazorpayServiceError("Paid amount does not cover booking balance.")
+    from iic_booking.external_services.special_payment import settlement_hook
+
+    if not settlement_hook(booking, source="gateway"):
+        # External special allocation paid after its deadline: record the money, never revive the booking.
+        booking.payment_settled_at = timezone.now()
+        booking.amount_due = Decimal("0.00")
+        booking.save(update_fields=["payment_settled_at", "amount_due", "updated_at"])
+        return
     booking.payment_settled_at = timezone.now()
     booking.amount_due = Decimal("0.00")
     if booking.status == BookingStatus.PENDING_PAYMENT:
@@ -374,6 +406,27 @@ def mark_order_failed(razorpay_order_id: str, raw_payload: dict | None = None) -
     return order
 
 
+def _webhook_amount_problem(razorpay_order_id: str, entity: dict) -> str:
+    """"" when a payment event may settle its order: the amount (paise) and currency must equal the order's.
+
+    Only events that would change an unpaid order are checked; a replay for an order that is already paid changes
+    nothing and is left to ``settle_order_success``. An unknown order is reported there as well. (The
+    ``fix/payment-security`` branch replaces this with a full gateway confirmation and reconciliation flow.)
+    """
+    order = PaymentOrder.objects.filter(razorpay_order_id=razorpay_order_id).first()
+    if order is None or order.status == PaymentOrderStatus.PAID:
+        return ""
+    try:
+        paise = int(entity.get("amount"))
+    except (TypeError, ValueError):
+        return "amount missing"
+    if paise != _amount_to_paise(order.total_amount):
+        return f"amount {paise} paise differs from the order total {_amount_to_paise(order.total_amount)} paise"
+    if str(entity.get("currency") or "").upper() != (order.currency or "INR").upper():
+        return f"currency {entity.get('currency')!r} differs from the order currency {order.currency!r}"
+    return ""
+
+
 def handle_webhook(payload: dict, body: bytes | str, signature: str) -> dict:
     if not verify_webhook_signature(body, signature):
         raise RazorpayServiceError("Invalid webhook signature.")
@@ -393,6 +446,10 @@ def handle_webhook(payload: dict, body: bytes | str, signature: str) -> dict:
         order_id = payment_entity.get("order_id")
         payment_id = payment_entity.get("id")
         if order_id and payment_id:
+            problem = _webhook_amount_problem(order_id, payment_entity)
+            if problem:
+                logger.warning("Razorpay webhook for order %s not applied: %s", order_id, problem)
+                raise RazorpayServiceError(f"Payment event does not match the order: {problem}.")
             settle_order_success(
                 razorpay_order_id=order_id,
                 razorpay_payment_id=payment_id,

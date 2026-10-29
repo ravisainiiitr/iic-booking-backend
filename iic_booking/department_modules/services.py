@@ -15,7 +15,16 @@ from django.utils import timezone
 
 from . import audit
 from .access import installed_at, is_main_admin, new_department_ids
-from .constants import ALL_MODULES, LOCAL_MODULES, OFF_HELP, REASON_MIN_LENGTH, TEST_USERS_ONLY_HELP, ModuleKey
+from .constants import (
+    ALL_MODULES,
+    LOCAL_MODULES,
+    OFF_HELP,
+    OFF_UNLESS_CONFIGURED,
+    REASON_MIN_LENGTH,
+    TEST_USERS_ONLY_HELP,
+    ModuleKey,
+    is_iic_department,
+)
 from .errors import DepartmentModuleError
 from .models import DepartmentModuleAuditLog, DepartmentModuleSetting, SettingSource
 
@@ -37,11 +46,21 @@ def _state(enabled: bool, test_users_only: bool, configured: bool) -> dict:
 NEW_DEPARTMENT_NOTE = "New department: off until the Main Administrator turns it on"
 
 
-def _local_state(row: DepartmentModuleSetting | None, *, new_department: bool = False) -> dict:
+def _local_state(
+    row: DepartmentModuleSetting | None, *, new_department: bool = False, default_on: bool | None = None
+) -> dict:
     if row is None:
-        # No row: a department created after installation is off; an older one behaves as before the switches.
-        return _state(not new_department, False, False)
+        # No row: a department created after installation is off; an older one behaves as before the switches,
+        # except for modules that are off unless configured (``default_on`` is then whether it is IIC).
+        on = (not new_department) if default_on is None else (default_on and not new_department)
+        return _state(on, False, False)
     return _state(row.enabled, row.test_users_only, True)
+
+
+def _default_on(department, module_key: str) -> bool | None:
+    if module_key not in OFF_UNLESS_CONFIGURED or department is None:
+        return None
+    return is_iic_department(getattr(department, "code", ""), getattr(department, "name", ""))
 
 
 def _is_new_department(department) -> bool:
@@ -144,7 +163,7 @@ def set_module(
             .first()
         )
         new_department = row is None and _is_new_department(department)
-        before = _local_state(row, new_department=new_department)
+        before = _local_state(row, new_department=new_department, default_on=_default_on(department, module_key))
         if row is None:
             row = DepartmentModuleSetting(
                 department=department,
@@ -195,10 +214,16 @@ def _set_procurement(actor, department, enabled, test_users_only, reason, reques
 # ---------------------------------------------------------------------------
 # Read models for the admin page and the management command
 # ---------------------------------------------------------------------------
-def local_cell(row: DepartmentModuleSetting | None, *, usage: int | None, new_department: bool = False) -> dict:
+def local_cell(
+    row: DepartmentModuleSetting | None,
+    *,
+    usage: int | None,
+    new_department: bool = False,
+    default_on: bool | None = None,
+) -> dict:
     new_default = row is None and new_department
     out = {
-        **_local_state(row, new_department=new_department),
+        **_local_state(row, new_department=new_department, default_on=default_on),
         "source": row.source if row else (SettingSource.NEW_DEPARTMENT.value if new_default else None),
         "note": row.seed_note if row else (NEW_DEPARTMENT_NOTE if new_default else ""),
         "disabled_at": _iso(row.disabled_at) if row else None,
@@ -250,6 +275,14 @@ def usage_by_department() -> dict[str, dict[int, int]]:
         )
     except Exception:  # noqa: BLE001
         usage[ModuleKey.TRAINING] = {}
+    try:
+        from iic_booking.courier_tracking.models import ArrivalMode, SampleArrival
+
+        usage[ModuleKey.COURIER_TRACKING] = _counts(
+            SampleArrival.objects.filter(arrival_mode=ArrivalMode.COURIER), "department_id"
+        )
+    except Exception:  # noqa: BLE001
+        usage[ModuleKey.COURIER_TRACKING] = {}
     return usage
 
 
@@ -265,6 +298,7 @@ def modules_meta() -> list[dict]:
                 ModuleKey.REMOTE_ANALYSIS: "RA-enabled equipment",
                 ModuleKey.TRAINING: "Training equipment",
                 ModuleKey.PROCUREMENT: "pilot users",
+                ModuleKey.COURIER_TRACKING: "courier shipments",
             }[key],
         }
         for key in ALL_MODULES
@@ -294,6 +328,7 @@ def matrix(*, include_usage: bool = True) -> dict:
                 rows.get((dept.id, key)),
                 usage=usage.get(key, {}).get(dept.id, 0) if include_usage else None,
                 new_department=dept.id in new_ids,
+                default_on=_default_on(dept, key),
             )
             for key in LOCAL_MODULES
         }

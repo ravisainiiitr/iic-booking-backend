@@ -87,7 +87,16 @@ class ExternalSlotQuotaService:
         On/after reference: next week + next-to-next week [W1, W2].
 
         Returns (min_date, max_date, before_reference). All None/False when not configured.
+
+        When the central external booking window (``external_services``) is enabled it replaces this rule for
+        every equipment: its open range is returned (an empty range, min > max, while it is closed).
         """
+        from iic_booking.external_services.window import legacy_bounds_or_policy
+
+        central = legacy_bounds_or_policy(equipment, at)
+        if central is not None:
+            return central
+
         from iic_booking.equipment.api_views import (
             get_equipment_slot_window_reference_config,
             get_slot_window_reference_datetime_for_local_week,
@@ -241,19 +250,33 @@ class ExternalSlotQuotaService:
         """
         Count DailySlots in the week held by external bookings (BOOKED/COMPLETED),
         excluding repeat samples (source_booking set).
+
+        Slots of an external special-request allocation awaiting payment (``external_services``) also count, so
+        ordinary bookings cannot use quota an Officer in Charge has already allocated. Ordinary PENDING_PAYMENT
+        bookings are not counted (unchanged).
         """
-        qs = DailySlot.objects.filter(
+        from django.db import DatabaseError
+
+        base = DailySlot.objects.filter(
             slot_master__equipment=equipment,
             date__gte=week_start,
             date__lte=week_end,
             status=SlotStatus.BOOKED,
             booking__isnull=False,
-            booking__status__in=EXTERNAL_USAGE_BOOKING_STATUSES,
             booking__source_booking__isnull=True,
         ).filter(cls._external_booking_q())
         if exclude_booking_id is not None:
-            qs = qs.exclude(booking_id=exclude_booking_id)
-        return qs.count()
+            base = base.exclude(booking_id=exclude_booking_id)
+        with_special = Q(booking__status__in=EXTERNAL_USAGE_BOOKING_STATUSES) | Q(
+            booking__status=BookingStatus.PENDING_PAYMENT,
+            booking__external_special_allocation__state="awaiting_payment",
+        )
+        try:
+            with transaction.atomic():  # savepoint: the external_services table may not be migrated yet
+                return base.filter(with_special).count()
+        except DatabaseError:
+            logger.warning("special allocations unavailable; counting external usage without them", exc_info=True)
+            return base.filter(booking__status__in=EXTERNAL_USAGE_BOOKING_STATUSES).count()
 
     @classmethod
     def validate_external_booking(

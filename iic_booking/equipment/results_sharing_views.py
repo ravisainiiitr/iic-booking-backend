@@ -16,7 +16,6 @@ from rest_framework.response import Response
 
 from iic_booking.communication.utils import booking_display_id_for_email
 from iic_booking.equipment.api_views import (
-    _booking_requires_istem_fbr_results_block,
     _booking_results_gates_apply,
     _user_may_access_booking_results,
     get_visible_equipment_queryset,
@@ -63,8 +62,6 @@ def _results_lock(booking) -> tuple[str, str] | tuple[None, None]:
         return "not_completed", "Results can be downloaded once the booking is completed."
     if getattr(booking.equipment, "user_rating_enabled", True) and (booking.rating is None or booking.rating_removed):
         return "rating_required", "Submit your rating for this booking to unlock the results."
-    if _booking_requires_istem_fbr_results_block(booking):
-        return "istem_fbr_not_executed", "Your I-STEM FBR must be verified before results can be downloaded."
     return None, None
 
 
@@ -214,8 +211,6 @@ def _share_block_reason(booking) -> str | None:
     code, _message = _results_lock(booking)
     if code == "rating_required":
         return "Submit your rating for this booking before sharing its results."
-    if code == "istem_fbr_not_executed":
-        return "The I-STEM FBR must be verified before results can be shared."
     return None
 
 

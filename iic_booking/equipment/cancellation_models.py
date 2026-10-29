@@ -35,6 +35,8 @@ class CancellationReason(models.TextChoices):
     LAB_REJECTED_FILES = "LAB_REJECTED_FILES", _("Lab rejected the design files")
     URGENT_HOLD_RELEASED = "URGENT_HOLD_RELEASED", _("Urgent hold released or expired")
     NO_SHOW = "NO_SHOW", _("Booking not utilized (no-show)")
+    # External special requests (external_services): not paid by the payment deadline.
+    PAYMENT_DEADLINE_EXPIRED = "PAYMENT_DEADLINE_EXPIRED", _("Not paid by the payment deadline")
     OTHER = "OTHER", _("Other")
 
 

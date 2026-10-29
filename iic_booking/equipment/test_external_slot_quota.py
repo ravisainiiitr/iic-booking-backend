@@ -53,6 +53,14 @@ class ExternalSlotQuotaMathTests(SimpleTestCase):
 
 
 class ExternalSlotWindowBoundsTests(SimpleTestCase):
+    """The per-equipment rule, which applies while the central external booking window (external_services) is
+    disabled; patched to "disabled" because these tests run without a database."""
+
+    def setUp(self):
+        patcher = patch("iic_booking.external_services.window.legacy_bounds_or_policy", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     @patch("iic_booking.equipment.api_views.get_slot_window_reference_datetime_for_local_week")
     @patch("iic_booking.equipment.api_views.get_equipment_slot_window_reference_config")
     def test_before_reference_opens_w1_only(self, mock_cfg, mock_ref):

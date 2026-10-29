@@ -66,6 +66,12 @@ def is_iic(facts: DepartmentFacts) -> bool:
     return (facts.code or "").strip().upper() in IIC_CODES or (facts.name or "").strip().lower() in IIC_NAMES
 
 
+def _courier_tracking_seed(facts: DepartmentFacts) -> Seed:
+    if is_iic(facts):
+        return Seed(True, False, "IIC (central facility): courier tracking on by default")
+    return Seed(False, False, "courier tracking starts off; enable it explicitly")
+
+
 def _signals(counts: dict[str, int]) -> str:
     return ", ".join(f"{k.replace('_', ' ')} {n}" for k, n in sorted(counts.items()) if n)
 
@@ -99,6 +105,7 @@ def compute_initial_matrix(facts: list[DepartmentFacts], training: TrainingGloba
             ModuleKey.DSA.value: _usage_seed(f, f.dsa, "DSA profiles, agents or workspaces"),
             ModuleKey.REMOTE_ANALYSIS.value: _usage_seed(f, f.remote_analysis, "Remote Analysis equipment or sessions"),
             ModuleKey.TRAINING.value: _training_seed(f, training),
+            ModuleKey.COURIER_TRACKING.value: _courier_tracking_seed(f),
         }
         for f in facts
     }

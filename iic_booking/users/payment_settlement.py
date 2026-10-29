@@ -39,8 +39,11 @@ def settle_payment_gateway_transaction(txn: PaymentGatewayTransaction) -> Paymen
         booking = Booking.objects.select_for_update().get(pk=txn.booking_id)
         due = Decimal(str(booking.amount_due or 0))
         if due > 0 and txn.amount >= due:
+            from iic_booking.external_services.special_payment import settlement_hook
+
+            confirm = settlement_hook(booking, source="gateway")  # True for every non-special booking
             booking.payment_settled_at = timezone.now()
-            if booking.status == BookingStatus.PENDING_PAYMENT:
+            if confirm and booking.status == BookingStatus.PENDING_PAYMENT:
                 booking.status = BookingStatus.BOOKED
             if not booking.istem_fbr_status and charge_profile_requires_istem_fbr(booking.charge_profile):
                 fbr_defaults = initial_istem_fbr_fields_for_charge_profile(booking.charge_profile)

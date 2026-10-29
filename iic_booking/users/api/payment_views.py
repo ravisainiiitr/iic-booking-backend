@@ -311,8 +311,13 @@ def finance_payment_receipt_process(request, receipt_id: int):
 
         if receipt.purpose == DepartmentPaymentReceiptPurpose.BOOKING_SHORTFALL and receipt.booking_id:
             booking = Booking.objects.select_for_update().get(pk=receipt.booking_id)
+            from iic_booking.external_services.special_payment import settlement_hook
+
+            # External special allocation: on time if the receipt was submitted by the deadline; a late one is
+            # recorded for Finance and never revives the booking (no effect on any other booking).
+            confirm = settlement_hook(booking, realised_at=receipt.created_at, source="offline")
             booking.payment_settled_at = timezone.now()
-            if booking.status == BookingStatus.PENDING_PAYMENT:
+            if confirm and booking.status == BookingStatus.PENDING_PAYMENT:
                 booking.status = BookingStatus.BOOKED
             if not booking.istem_fbr_status and charge_profile_requires_istem_fbr(booking.charge_profile):
                 for k, v in initial_istem_fbr_fields_for_charge_profile(booking.charge_profile).items():

@@ -6,12 +6,24 @@ class ModuleKey(models.TextChoices):
     REMOTE_ANALYSIS = "remote_analysis", "Remote Analysis"
     TRAINING = "training", "Training & Certification"
     PROCUREMENT = "procurement", "Procurement & Assets"
+    COURIER_TRACKING = "courier_tracking", "Courier Tracking"
 
 
 # Switches stored in DepartmentModuleSetting. Procurement keeps its own per-department configuration
 # (ProcurementManagementConfiguration) as the single source of truth; the central service reads and writes it.
-LOCAL_MODULES = (ModuleKey.DSA, ModuleKey.REMOTE_ANALYSIS, ModuleKey.TRAINING)
+LOCAL_MODULES = (ModuleKey.DSA, ModuleKey.REMOTE_ANALYSIS, ModuleKey.TRAINING, ModuleKey.COURIER_TRACKING)
 ALL_MODULES = LOCAL_MODULES + (ModuleKey.PROCUREMENT,)
+
+# Modules that are off for a department without a row, whatever its age, except IIC (the central facility). Every
+# other module keeps the pre-switch behaviour (on) for departments that predate the installation.
+OFF_UNLESS_CONFIGURED = (ModuleKey.COURIER_TRACKING,)
+IIC_CODES = frozenset({"IIC"})
+IIC_NAMES = frozenset({"institute instrumentation centre", "institute instrumentation center"})
+
+
+def is_iic_department(code: str | None, name: str | None) -> bool:
+    """IIC is the department with code IIC or the Institute Instrumentation Centre name (same rule as the seeding)."""
+    return (code or "").strip().upper() in IIC_CODES or (name or "").strip().lower() in IIC_NAMES
 LOCAL_MODULE_CHOICES = [(k.value, k.label) for k in LOCAL_MODULES]
 
 TEST_USERS_ONLY_HELP = {
@@ -22,6 +34,9 @@ TEST_USERS_ONLY_HELP = {
         "nominated or request demonstrations on its equipment."
     ),
     ModuleKey.PROCUREMENT: "Pilot mode: only the pilot users chosen in Procurement & Assets settings can use it.",
+    ModuleKey.COURIER_TRACKING: (
+        "Only external test accounts can register courier shipments for this department's equipment."
+    ),
 }
 
 OFF_HELP = {
@@ -29,6 +44,10 @@ OFF_HELP = {
     ModuleKey.REMOTE_ANALYSIS: "No new remote analysis on this department's equipment; bookings made earlier can finish.",
     ModuleKey.TRAINING: "The department's equipment leaves Training and its faculty and students no longer see it.",
     ModuleKey.PROCUREMENT: "Procurement & Assets is hidden for this department.",
+    ModuleKey.COURIER_TRACKING: (
+        "External users can no longer register courier shipments for this department's equipment and no new "
+        "tracking lookups are made; shipments already registered keep their history and are shown read-only."
+    ),
 }
 
 REASON_MIN_LENGTH = 5

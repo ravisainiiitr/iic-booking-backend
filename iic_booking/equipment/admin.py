@@ -999,8 +999,8 @@ class ChargeProfileForm(forms.ModelForm):
 
         if "require_istem_fbr" in self.fields:
             self.fields["require_istem_fbr"].help_text = _(
-                "When enabled, users booking with this charge profile must submit an I-STEM FBR number "
-                "and have it verified by the Officer in Charge before results are released."
+                "When enabled, bookings with this charge profile are recorded on I-STEM. The portal creates the "
+                "I-STEM user and booking through the I-STEM API; users do not enter an FBR number."
             )
 
         if "time_formula" in self.fields:

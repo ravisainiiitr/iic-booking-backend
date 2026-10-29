@@ -22,7 +22,7 @@ from iic_booking.department_modules import seeding, services
 from iic_booking.department_modules.constants import ALL_MODULES
 from iic_booking.department_modules.errors import DepartmentModuleError
 
-SHORT = {"dsa": "DSA", "remote_analysis": "RAA", "training": "TRAINING", "procurement": "PROCUREMENT"}
+SHORT = {"dsa": "DSA", "remote_analysis": "RAA", "training": "TRAINING", "courier_tracking": "COURIER", "procurement": "PROCUREMENT"}
 
 
 def _cell_text(cell: dict) -> str:

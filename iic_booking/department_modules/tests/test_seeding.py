@@ -5,6 +5,7 @@ from django.apps import apps
 
 from iic_booking.department_modules import seeding
 from iic_booking.department_modules.models import DepartmentModuleAuditLog, DepartmentModuleSetting
+from iic_booking.department_modules.constants import LOCAL_MODULES
 from iic_booking.department_modules.seeding import DepartmentFacts, TrainingGlobals, compute_initial_matrix
 
 from .conftest import make_department, make_equipment, make_user
@@ -23,9 +24,15 @@ def state(seed):
 
 def test_production_like_matrix():
     m = compute_initial_matrix([IIC, TL, CHEM], PROD_TRAINING)
-    assert {k: state(v) for k, v in m[33].items()} == {"dsa": "on", "remote_analysis": "on", "training": "on"}
-    assert {k: state(v) for k, v in m[47].items()} == {"dsa": "off", "remote_analysis": "off", "training": "test-only"}
-    assert {k: state(v) for k, v in m[40].items()} == {"dsa": "off", "remote_analysis": "off", "training": "off"}
+    assert {k: state(v) for k, v in m[33].items()} == {
+        "dsa": "on", "remote_analysis": "on", "training": "on", "courier_tracking": "on"
+    }
+    assert {k: state(v) for k, v in m[47].items()} == {
+        "dsa": "off", "remote_analysis": "off", "training": "test-only", "courier_tracking": "off"
+    }
+    assert {k: state(v) for k, v in m[40].items()} == {
+        "dsa": "off", "remote_analysis": "off", "training": "off", "courier_tracking": "off"
+    }
 
 
 def test_iic_is_on_even_without_usage():
@@ -34,6 +41,7 @@ def test_iic_is_on_even_without_usage():
     m = compute_initial_matrix([bare_iic, by_name], TrainingGlobals())
     for dept in (1, 2):
         assert m[dept]["dsa"].enabled and m[dept]["remote_analysis"].enabled
+        assert m[dept]["courier_tracking"].enabled
         assert not m[dept]["training"].enabled
 
 
@@ -135,8 +143,8 @@ def test_seed_covers_every_department_and_records_installation():
     assert not DepartmentModulesInstallation.objects.exists()
     seeding.seed(apps.get_model)
     assert DepartmentModulesInstallation.objects.filter(pk=1).exists()
-    assert DepartmentModuleSetting.objects.filter(department=fresh).count() == 3
-    assert DepartmentModuleSetting.objects.count() == 3 * Department.objects.count()
+    assert DepartmentModuleSetting.objects.filter(department=fresh).count() == len(LOCAL_MODULES)
+    assert DepartmentModuleSetting.objects.count() == len(LOCAL_MODULES) * Department.objects.count()
 
 
 @pytest.mark.django_db

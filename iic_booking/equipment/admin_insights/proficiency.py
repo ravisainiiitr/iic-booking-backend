@@ -5,7 +5,7 @@ users' bookings and test staff left out; Disposed equipment ignored):
 
 - Pending: work waiting on them now. Lab Operators: bookings awaiting completion (slot over, sample received, not
   yet marked Completed — ``completion_reminders``) and repeat-sample requests. Officers in Charge: the same, plus
-  urgent booking requests ready for their decision and I-STEM FBR numbers to verify. Everyone assigned to an
+  urgent booking requests ready for their decision. Everyone assigned to an
   equipment shares its queue.
 - Overdue: pending completions past the equipment's results overdue time; requests waiting over
   ``DECISION_OVERDUE_HOURS`` hours.
@@ -107,8 +107,6 @@ def _pending(ids, now) -> dict[int, list[dict[str, Any]]]:
     """Equipment id -> pending items (all kinds; ``OIC_ONLY_KINDS`` are dropped for Lab Operators)."""
     from iic_booking.equipment.completion_reminders import bookings_awaiting_completion, with_results_due
     from iic_booking.equipment.models import (
-        Booking,
-        IstemFbrStatus,
         RepeatSampleRequest,
         RepeatSampleRequestStatus,
         UrgentBookingRequest,
@@ -145,16 +143,6 @@ def _pending(ids, now) -> dict[int, list[dict[str, Any]]]:
         items[r.equipment_id].append(
             _item("urgent", f"urgent:{r.pk}", r.equipment_id, since, since <= late, now,
                   ref=f"Urgent request #{r.pk}", link="/urgent-requests", user=r.user)
-        )
-    fbr = (
-        Booking.objects.filter(istem_fbr_status=IstemFbrStatus.PENDING_OIC, equipment_id__in=ids)
-        .exclude(user__is_test_account=True)
-        .select_related("user")
-    )
-    for b in fbr:
-        items[b.equipment_id].append(
-            _item("istem_fbr", f"istem:{b.pk}", b.equipment_id, b.updated_at, b.updated_at <= late, now,
-                  booking=b, user=b.user)
         )
     return items
 

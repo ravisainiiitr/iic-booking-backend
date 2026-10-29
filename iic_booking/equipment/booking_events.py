@@ -199,6 +199,30 @@ def apply_user_sample_preparation_notice_to_context(
     return context
 
 
+ISTEM_TIMING_NOTE_PLAIN = (
+    "I-STEM: any timing in an email from I-STEM about this booking is for record purposes only. "
+    "The timing in this email prevails."
+)
+
+
+def apply_istem_timing_note_to_context(context: dict, user, *, also_append_to_comment: bool = False) -> dict:
+    """External bookings are registered on I-STEM, whose hourly slot may differ from the booked time and whose own
+    emails (until I-STEM offers a silent mode) could otherwise confuse the user. Internal users get an empty note."""
+    if not isinstance(context, dict):
+        return context
+    from iic_booking.users.models.user_type import UserType
+
+    context.setdefault("istem_timing_note", "")
+    if not UserType.is_external_user(getattr(user, "user_type", None) or ""):
+        return context
+    context["istem_timing_note"] = ISTEM_TIMING_NOTE_PLAIN
+    if also_append_to_comment:
+        base = (str(context.get("comment", "") or "")).strip()
+        if ISTEM_TIMING_NOTE_PLAIN not in base:
+            context["comment"] = (base + ("\n\n" if base else "") + ISTEM_TIMING_NOTE_PLAIN).strip()
+    return context
+
+
 def _format_contact_block(name: str, email: str, phone: str) -> str:
     lines = [part for part in [name.strip(), email.strip(), phone.strip()] if part]
     return "\n".join(lines).strip()
@@ -911,6 +935,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 apply_user_sample_preparation_notice_to_context(
                     context, user, equipment, also_append_to_comment=True
                 )
+                apply_istem_timing_note_to_context(context, user, also_append_to_comment=True)
             if email_template_code == "booking_completed_email":
                 apply_equipment_completion_email_extra_to_context(
                     context, equipment, also_append_to_comment=True

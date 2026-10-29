@@ -361,13 +361,6 @@ def booking_op(user, conversation, b, op: str) -> dict[str, Any]:
                 actions=[*(([B.chip(b, "rate", primary=True)]) if elig["rate"] else []), C.link("Open booking", href)],
                 intent="results",
             )
-        if elig["results"] and elig["results_blocked"] == "istem_fbr":
-            return C.reply(
-                f"Results for **{ref}** are uploaded but locked until your I-STEM FBR number is verified. Enter the FBR "
-                "number on the booking; the Officer In Charge verifies it and the download unlocks.",
-                actions=[C.link("Open booking", href, primary=True)],
-                intent="results",
-            )
         if elig["results"]:
             return C.reply(
                 f"Results for **{ref}** ({b.equipment.name}) are available. Open the booking to view and download them.",

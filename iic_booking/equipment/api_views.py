@@ -55,7 +55,6 @@ from .models import (
     Booking,
     BookingResultFile,
     BookingStatus,
-    IstemFbrStatus,
     initial_istem_fbr_fields_for_charge_profile,
     get_equipment_istem_portal_url,
     charge_profile_requires_istem_fbr,
@@ -400,35 +399,6 @@ SLOTS_ALREADY_OCCUPIED_MESSAGE = (
     "The selected slot(s) have already been booked by another user. Please choose a different slot."
 )
 
-ISTEM_PORTAL_URL = "https://www.istem.gov.in/"
-
-def _booking_requires_istem_fbr_results_block(booking) -> bool:
-    """True when booking is in the I-STEM FBR workflow and FBR is not yet executed."""
-    st = booking.istem_fbr_status
-    if st is None:
-        return False
-    return st != IstemFbrStatus.EXECUTED
-
-def _booking_istem_portal_url(booking) -> str:
-    equipment = getattr(booking, "equipment", None)
-    return get_equipment_istem_portal_url(equipment) if equipment else ISTEM_PORTAL_URL
-
-def _ensure_istem_fbr_initialized(booking) -> None:
-    """If charge profile requires I-STEM but booking predates the flag, initialize workflow status."""
-    if getattr(booking, "istem_fbr_status", None):
-        return
-    cp = getattr(booking, "charge_profile", None)
-    if not charge_profile_requires_istem_fbr(cp):
-        return
-    if booking.status not in (
-        BookingStatus.BOOKED,
-        BookingStatus.COMPLETED,
-        BookingStatus.PENDING_PAYMENT,
-    ):
-        return
-    booking.istem_fbr_status = IstemFbrStatus.PENDING_FBR
-    booking.save(update_fields=["istem_fbr_status", "updated_at"])
-
 def _user_can_act_as_oic_for_equipment(user, equipment) -> bool:
     if not user or not getattr(user, "is_authenticated", False):
         return False
@@ -460,55 +430,6 @@ def _oic_booking_scope_denied(user, booking):
     return Response(
         {"error": "You can only manage bookings for equipment you are Officer In-charge of."},
         status=status.HTTP_403_FORBIDDEN,
-    )
-
-def _notify_oic_istem_fbr_submitted(booking) -> None:
-    """Email OIC(s) for the equipment when external user submits I-STEM FBR."""
-    from django.conf import settings as django_settings
-    from django.core.mail import send_mail
-    from iic_booking.equipment.models import EquipmentManager
-
-    equipment = booking.equipment
-    emails: set[str] = set()
-    for em in EquipmentManager.objects.filter(equipment=equipment).select_related("manager"):
-        mgr = em.manager
-        if mgr and mgr.email and mgr.is_active:
-            emails.add(mgr.email.strip())
-    if not emails:
-        return
-    vid = getattr(booking, "virtual_booking_id", None) or booking.booking_id
-    subject = f"I-STEM FBR verification required — {vid}"
-    body = (
-        f"An external user submitted an I-STEM FBR number for booking {vid} "
-        f"({equipment.name}).\n\n"
-        f"FBR number: {booking.istem_fbr_number}\n"
-        f"User: {booking.user.email}\n\n"
-        f"Please verify on the I-STEM portal and mark verified in the booking portal."
-    )
-    try:
-        send_mail(
-            subject=subject[:250],
-            message=body,
-            from_email=django_settings.DEFAULT_FROM_EMAIL,
-            recipient_list=sorted(emails),
-            fail_silently=True,
-        )
-    except Exception:
-        pass
-    from iic_booking.communication.in_app import equipment_oic_users, notify_in_app, person_label
-
-    ref = booking_display_id_for_email(booking)
-    notify_in_app(
-        equipment_oic_users(equipment),
-        title="Action needed: verify I-STEM FBR",
-        message=(
-            f"{person_label(booking.user)} submitted I-STEM FBR number {booking.istem_fbr_number} for {ref} — "
-            f"{equipment.name}. Verify it on the I-STEM portal and mark it in Booking Management."
-        ),
-        link=f"/booking-management?expand={booking.booking_id}",
-        notification_type="warning",
-        event="istem_fbr.submitted",
-        extra={"real_booking_id": booking.booking_id, "action_required": True},
     )
 
 def _to_float_or_none(value):
@@ -3911,6 +3832,16 @@ def equipment_daily_slots(request, pk):
     except Exception:
         waitlist_current_count = 0
     waitlist_has_room = waitlist_depth > 0 and waitlist_current_count < waitlist_depth
+    # Central external booking window (external_services): when enabled it replaces the per-equipment weekly
+    # reference for external users, so the reference fields are left out and its own opening times are sent.
+    central_window_payload = None
+    if for_external_user and not is_admin:
+        from iic_booking.external_services.window import external_window as _central_external_window
+
+        _central = _central_external_window()
+        if _central.enabled:
+            central_window_payload = _central.as_dict()
+    show_reference = (slot_window_min_date is not None or slot_window_max_date is not None) and central_window_payload is None
     # Admin-configurable colors for weekly window (slot statuses + holiday + weekend)
     # calendar_colors already computed above for holidays weekend colors
     return Response(
@@ -3934,8 +3865,9 @@ def equipment_daily_slots(request, pk):
             "weekly_view_default_days": equipment.weekly_view_default_days,
             "slot_window_min_date": slot_window_min_date.isoformat() if slot_window_min_date else None,
             "slot_window_max_date": slot_window_max_date.isoformat() if slot_window_max_date else None,
-            "slot_window_reference_weekday": effective_ref_weekday if (slot_window_min_date is not None or slot_window_max_date is not None) else None,
-            "slot_window_reference_time": (effective_ref_time.strftime("%H:%M") if effective_ref_time else None) if (slot_window_min_date is not None or slot_window_max_date is not None) else None,
+            "slot_window_reference_weekday": effective_ref_weekday if show_reference else None,
+            "slot_window_reference_time": (effective_ref_time.strftime("%H:%M") if effective_ref_time else None) if show_reference else None,
+            "external_window": central_window_payload,
             "urgent_peak_window_minutes": getattr(equipment, "urgent_peak_window_minutes", None),
             "max_urgent_requests": getattr(equipment, "max_urgent_requests", None),
             "max_rush_relief_requests_per_week": getattr(equipment, "max_rush_relief_requests_per_week", None),
@@ -4160,8 +4092,6 @@ def _book_equipment_impl(request, pk):
     user_type = booking_user.user_type
     if not user_type:
         user_type = UserType.STUDENT
-    if UserType.is_external_user(user_type) and not getattr(booking_user, "istem_portal_acknowledged", False):
-        pass  # External users confirm I-STEM after payment on the next-steps page (no pre-book gate).
     # Admin and OIC (and other admin-panel users) see all slots and are not restricted by slot window; only regular users are.
     is_admin = getattr(request.user, "user_type", None) in UserType.get_admin_panel_codes()
     skip_period_limits = is_admin or staff_booking_skips_period_limits(request.user, equipment, booking_user)
@@ -4185,7 +4115,12 @@ def _book_equipment_impl(request, pk):
                 {"error": cap_error, "code": "URGENT_WEEKLY_CAP_REACHED"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-    
+    from iic_booking.external_services.guards import external_hold_refusal
+
+    hold_refusal = external_hold_refusal(booking_user, create_as_hold=create_as_hold, exempt=skip_period_limits)
+    if hold_refusal:
+        return Response(hold_refusal, status=status.HTTP_403_FORBIDDEN)
+
     # Clean input_values: convert by type. Numeric strings must stay numeric (e.g. "1" -> 1, not True).
     input_values = {}
     for key, value in input_values_raw.items():
@@ -4969,10 +4904,28 @@ def _book_equipment_impl(request, pk):
             )
         booking_target.refresh_from_db()
         from iic_booking.equipment.booking_payment_service import compute_booking_payment_split
+        from iic_booking.external_services import checkout_context
 
-        wallet_applied_precheck, amount_due_precheck, bal_err = compute_booking_payment_split(
-            booking_target, total_charge, user_type=user_type, create_as_hold=create_as_hold
+        checkout_ctx = checkout_context.current()
+        # External self-bookings are priced and paid through a checkout first; nothing is held before payment. The
+        # request still goes through every check below, and is refused only where the booking would be written.
+        needs_external_checkout = (
+            checkout_ctx is None
+            and not create_as_hold
+            and booking_user.pk == request.user.pk
+            and UserType.is_external_user(user_type)
+            and quantize_money(total_charge or 0) > 0
         )
+        if needs_external_checkout:
+            checkout_ctx = checkout_context.CheckoutContext(mode=checkout_context.QUOTE)
+        if checkout_ctx is not None:
+            wallet_applied_precheck, amount_due_precheck, bal_err = checkout_context.payment_split(
+                checkout_ctx, booking_target, total_charge
+            )
+        else:
+            wallet_applied_precheck, amount_due_precheck, bal_err = compute_booking_payment_split(
+                booking_target, total_charge, user_type=user_type, create_as_hold=create_as_hold
+            )
         if bal_err:
             _create_booking_attempt_log(
                 request, equipment, BookingAttemptOutcome.FAILED,
@@ -4982,10 +4935,21 @@ def _book_equipment_impl(request, pk):
                 duration_minutes=total_time_minutes,
                 additional_info=_get_additional_info_from_request(request, equipment),
             )
-            return Response(
-                {"error": bal_err or "Insufficient wallet balance"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            refusal = {"error": bal_err or "Insufficient wallet balance"}
+            if (
+                checkout_ctx is None
+                and not create_as_hold
+                and booking_user.pk == request.user.pk
+                and not UserType.is_external_user(user_type)
+                and quantize_money(total_charge or 0) > 0
+            ):
+                from iic_booking.users.wallet_credit_facility import wallet_booking_block_message
+
+                if not wallet_booking_block_message(booking_target):
+                    # The wallet falls short (not blocked): the user may pay this booking online instead
+                    # (POST /api/v1/external-booking/checkouts/ with the same request, then pay full_gateway).
+                    refusal.update(code="wallet_insufficient", gateway_checkout_available=True)
+            return Response(refusal, status=status.HTTP_400_BAD_REQUEST)
         if not skip_period_limits:
             limit_resp = _student_spending_limit_response(
                 request, equipment, booking_user, booking_target, total_charge,
@@ -5202,7 +5166,9 @@ def _book_equipment_impl(request, pk):
                 perf.mark("slot_lock_path_resolved")
                 if not skip_period_limits:
                     from iic_booking.equipment.external_slot_quota import ExternalSlotQuotaService
+                    from iic_booking.external_services.guards import ordinary_booking_guard
 
+                    ordinary_booking_guard(booking_user, locked_slots, exempt=False)
                     ext_quota = ExternalSlotQuotaService.validate_external_booking(
                         booking_user,
                         equipment,
@@ -5241,6 +5207,32 @@ def _book_equipment_impl(request, pk):
                     limit_err = spending_limit_error(booking_user, booking_target, total_charge, lock=True)
                     if limit_err:
                         raise ValueError(limit_err)
+                # Slots another user is paying for are held for them (15 minutes or until paid, whichever is earlier).
+                from iic_booking.external_services.slot_holds import HELD_MESSAGE, held_slot_ids
+
+                if held_slot_ids([s.id for s in locked_slots], holder_user_id=booking_user.pk):
+                    raise ValueError(HELD_MESSAGE)
+                if needs_external_checkout:
+                    return Response(
+                        {
+                            "error": "Choose how to pay for this booking. Your slots are held for you for 15 minutes "
+                                     "once you choose how to pay.",
+                            "code": "external_checkout_required",
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                if checkout_ctx is not None and checkout_ctx.mode == checkout_context.QUOTE:
+                    # Every check above passed with the slots locked; stop before any write (the locks are released).
+                    checkout_ctx.quote = {
+                        "total_charge": quantize_money(total_charge or 0),
+                        "charge_breakdown": charge_breakdown,
+                        "slot_ids": [s.id for s in locked_slots],
+                        "slots": [(s.start_datetime, s.end_datetime) for s in locked_slots],
+                        "total_time_minutes": total_time_minutes,
+                        "subwallet_id": getattr(booking_target, "pk", None),
+                        "user_type": user_type,
+                    }
+                    return Response({"quote": True}, status=status.HTTP_200_OK)
                 debit_transaction = None
                 wallet_applied = wallet_applied_precheck
                 amount_due = amount_due_precheck
@@ -5986,7 +5978,9 @@ def _book_equipment_impl(request, pk):
             slot_ids = [s.id for s in locked_slots_list]
             if not skip_period_limits:
                 from iic_booking.equipment.external_slot_quota import ExternalSlotQuotaService
+                from iic_booking.external_services.guards import ordinary_booking_guard
 
+                ordinary_booking_guard(booking_user, locked_slots_list, exempt=False)
                 ext_quota = ExternalSlotQuotaService.validate_external_booking(
                     booking_user,
                     equipment,
@@ -6107,6 +6101,8 @@ def _book_equipment_impl(request, pk):
             )
         except TransactionManagementError:
             pass  # Request is inside ATOMIC_REQUESTS and inner atomic failed; skip logging, still return 400
+        if (getattr(e, "fields", None) or {}).get("code") == "EXTERNAL_WINDOW_CLOSED":
+            return Response({"error": err_msg, **e.fields}, status=status.HTTP_400_BAD_REQUEST)
         # For slot-occupancy/all-slots-occupied errors, route through waitlist enrichment
         # so frontend can show WL1/WL2/... when queue has space.
         err_lower = err_msg.lower()
@@ -6229,7 +6225,6 @@ def list_bookings(request):
         supervisor_name: Optional. Filter by Supervisor name (partial match).
         user_type_filter: Optional. "internal" (students/faculty) or "external" – filter by booking user_type_snapshot.
         rating: Optional. Filter by rating (admin/OIC/lab only). Use "unrated", "2_and_below", "3_and_below", "4_and_below", or "5".
-        istem_fbr: Optional. Filter I-STEM FBR seal status (admin/OIC only). Use "verified" or "unverified".
     
     Returns:
         Response: List of bookings with count, total_count, limit, offset
@@ -6292,10 +6287,6 @@ def list_bookings(request):
 
     total_count = queryset.count()
     page = list(queryset[offset:offset + limit])
-
-    if not list_view:
-        for booking in page:
-            _ensure_istem_fbr_initialized(booking)
 
     from .serializers import wallet_owner_display_names
 
@@ -6571,17 +6562,6 @@ def _booking_list_queryset(request, *, min_search_chars: int = 0):
             queryset = queryset.filter(rating__isnull=False, rating__lte=4)
         elif rating_filter == '5':
             queryset = queryset.filter(rating=5)
-
-    # Filter by I-STEM FBR verification (admin/OIC only)
-    istem_fbr_filter = (request.query_params.get('istem_fbr') or '').strip().lower()
-    if istem_fbr_filter in ('verified', 'unverified') and is_operator_or_manager:
-        istem_fbr_applicable = Q(charge_profile__require_istem_fbr=True) | Q(istem_fbr_status__isnull=False)
-        if istem_fbr_filter == 'verified':
-            queryset = queryset.filter(istem_fbr_status=IstemFbrStatus.EXECUTED)
-        else:
-            queryset = queryset.filter(istem_fbr_applicable).exclude(
-                istem_fbr_status=IstemFbrStatus.EXECUTED
-            )
 
     # Filter by date range if provided
     start_date_param = request.query_params.get('start_date')
@@ -13241,6 +13221,13 @@ def reschedule_booking(request, booking_id):
 
     from iic_booking.equipment.external_slot_quota import ExternalSlotQuotaService
 
+    from iic_booking.external_services.guards import reschedule_window_refusal
+
+    window_refusal = reschedule_window_refusal(
+        request.user, equipment, booking.user, available_slots.values_list("date", flat=True)
+    )
+    if window_refusal:
+        return Response(window_refusal, status=status.HTTP_400_BAD_REQUEST)
     ext_quota = ExternalSlotQuotaService.validate_external_booking(
         booking.user,
         equipment,
@@ -13630,6 +13617,12 @@ def user_cancel_booking(request, booking_id):
     should_refund = request.data.get("refund", booking.status == BookingStatus.DISRUPTION_PENDING)
     if auto_reschedule_cutoff is not None and timezone.now() <= auto_reschedule_cutoff:
         should_refund = True
+    from iic_booking.external_services.guards import external_free_cancellation
+
+    first_slot_start = booking.daily_slots.order_by("start_datetime").values_list("start_datetime", flat=True).first()
+    free_cancellation = external_free_cancellation(booking.user, first_slot_start)
+    if free_cancellation:
+        should_refund = True  # no penalty before the Wednesday 20:30 cut-off: the full charge back to the wallet
     cancel_notes = request.data.get("notes", "")
 
     try:
@@ -13675,7 +13668,7 @@ def user_cancel_booking(request, booking_id):
     booking.refresh_from_db()
     serializer = BookingSerializer(booking, context={"viewer": request.user})
     if cancel_result["is_full_cancel"]:
-        message = "Booking cancelled successfully."
+        message = "Booking cancelled free of charge." if free_cancellation else "Booking cancelled successfully."
         if should_refund and refund_transaction:
             message += f" ₹{refund_amount} refunded to wallet."
     else:
@@ -13687,6 +13680,7 @@ def user_cancel_booking(request, booking_id):
         "message": message,
         "booking": serializer.data,
         "partial_cancellation": not cancel_result["is_full_cancel"],
+        "free_cancellation": free_cancellation,
     }
     if should_refund and refund_transaction:
         response_data["refund_amount"] = str(refund_amount)
@@ -13920,6 +13914,11 @@ def user_reschedule_booking(request, booking_id):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        from iic_booking.external_services.guards import external_reschedule_refusal
+
+        weekly_refusal = external_reschedule_refusal(booking.user, earliest_start)
+        if weekly_refusal:
+            return Response(weekly_refusal, status=status.HTTP_400_BAD_REQUEST)
 
     if not is_staff_rescheduler and getattr(booking, "maintenance_auto_reschedule_pending", False):
         return Response(
@@ -14083,6 +14082,13 @@ def user_reschedule_booking(request, booking_id):
 
     from iic_booking.equipment.external_slot_quota import ExternalSlotQuotaService
 
+    from iic_booking.external_services.guards import reschedule_window_refusal
+
+    window_refusal = reschedule_window_refusal(
+        request.user, equipment, booking.user, available_slots.values_list("date", flat=True)
+    )
+    if window_refusal:
+        return Response(window_refusal, status=status.HTTP_400_BAD_REQUEST)
     ext_quota = ExternalSlotQuotaService.validate_external_booking(
         booking.user,
         equipment,
@@ -14516,149 +14522,6 @@ def _schedule_notify_user_results_available(booking_id: int):
 
         threading.Thread(target=_run, daemon=True).start()
 
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def update_booking_istem_fbr(request, booking_id):
-    """External booking user submits or updates the I-STEM FBR number after booking on https://www.istem.gov.in/ ."""
-    try:
-        booking = Booking.objects.select_related("equipment", "charge_profile").get(booking_id=booking_id)
-    except Booking.DoesNotExist:
-        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
-    if booking.user_id != request.user.id:
-        return Response({"error": "You can only update your own bookings."}, status=status.HTTP_403_FORBIDDEN)
-    if booking.istem_fbr_status is None and not charge_profile_requires_istem_fbr(booking.charge_profile):
-        return Response(
-            {"error": "This booking is not in the I-STEM FBR workflow."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    from iic_booking.equipment.booking_payment_service import booking_payment_fully_settled
-
-    if not booking_payment_fully_settled(booking):
-        return Response(
-            {"error": "Complete payment for this booking before submitting your I-STEM FBR number."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    if booking.status not in (BookingStatus.BOOKED, BookingStatus.COMPLETED):
-        return Response(
-            {"error": "Booking must be confirmed before submitting FBR."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    st = booking.istem_fbr_status
-    if st not in (IstemFbrStatus.PENDING_FBR, IstemFbrStatus.INVALID):
-        if st is None:
-            return Response(
-                {"error": "This booking is not in the I-STEM FBR workflow."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if st == IstemFbrStatus.PENDING_OIC:
-            return Response(
-                {"error": "Your FBR is awaiting Officer in Charge verification. You cannot change it now."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        return Response(
-            {"error": "This FBR has already been marked as verified."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    raw = (request.data.get("istem_fbr_number") if isinstance(request.data, dict) else None) or ""
-    raw = str(raw).strip()
-    if not raw:
-        return Response({"error": "I-STEM FBR number is required."}, status=status.HTTP_400_BAD_REQUEST)
-    booking.istem_fbr_number = raw[:128]
-    booking.istem_fbr_status = IstemFbrStatus.PENDING_OIC
-    booking.istem_fbr_invalid_reason = None
-    booking.save(update_fields=["istem_fbr_number", "istem_fbr_status", "istem_fbr_invalid_reason", "updated_at"])
-    create_booking_event(
-        booking=booking,
-        event_type=BookingEventType.COMMENT,
-        created_by=request.user,
-        comment=f"I-STEM FBR number submitted for verification: {booking.istem_fbr_number}",
-        send_notification=True,
-    )
-    _notify_oic_istem_fbr_submitted(booking)
-    return Response({"message": "FBR submitted. An Officer in Charge will verify it on I-STEM.", "booking": BookingSerializer(booking, context={"viewer": request.user}).data})
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def review_booking_istem_fbr(request, booking_id):
-    """OIC (or admin): mark external user's FBR as executed on I-STEM or invalid."""
-    try:
-        booking = Booking.objects.select_related("equipment", "charge_profile").get(booking_id=booking_id)
-    except Booking.DoesNotExist:
-        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
-    if booking.istem_fbr_status is None and not charge_profile_requires_istem_fbr(booking.charge_profile):
-        return Response(
-            {"error": "I-STEM FBR review does not apply to this booking."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    equipment = booking.equipment
-    if not _user_can_act_as_oic_for_equipment(request.user, equipment):
-        return Response(
-            {"error": "Only the Officer in Charge for this equipment (or an administrator) can verify FBR."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-    if booking.istem_fbr_status != IstemFbrStatus.PENDING_OIC:
-        return Response(
-            {"error": "No FBR is pending verification for this booking."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    action = (request.data.get("action") if isinstance(request.data, dict) else None) or ""
-    action = str(action).strip().lower()
-    if action == "execute":
-        booking.istem_fbr_status = IstemFbrStatus.EXECUTED
-        booking.istem_fbr_executed_at = timezone.now()
-        booking.istem_fbr_verified_by = request.user
-        booking.istem_fbr_invalid_reason = None
-        booking.save(
-            update_fields=[
-                "istem_fbr_status",
-                "istem_fbr_executed_at",
-                "istem_fbr_verified_by_id",
-                "istem_fbr_invalid_reason",
-                "updated_at",
-            ]
-        )
-        create_booking_event(
-            booking=booking,
-            event_type=BookingEventType.COMMENT,
-            created_by=request.user,
-            comment="I-STEM FBR marked as verified. User may download results after completing other requirements (e.g. rating).",
-            send_notification=True,
-        )
-        return Response({"message": "FBR marked as verified.", "booking": BookingSerializer(booking, context={"viewer": request.user}).data})
-    if action == "invalidate":
-        reason = (request.data.get("reason") if isinstance(request.data, dict) else None) or ""
-        reason = str(reason).strip()
-        if not reason:
-            return Response(
-                {"error": "A reason is required when marking the FBR as invalid."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        booking.istem_fbr_status = IstemFbrStatus.INVALID
-        booking.istem_fbr_invalid_reason = reason[:4000]
-        booking.istem_fbr_executed_at = None
-        booking.istem_fbr_verified_by = request.user
-        booking.save(
-            update_fields=[
-                "istem_fbr_status",
-                "istem_fbr_invalid_reason",
-                "istem_fbr_executed_at",
-                "istem_fbr_verified_by_id",
-                "updated_at",
-            ]
-        )
-        create_booking_event(
-            booking=booking,
-            event_type=BookingEventType.COMMENT,
-            created_by=request.user,
-            comment=f"I-STEM FBR marked invalid. Reason: {reason}",
-            send_notification=True,
-        )
-        return Response({"message": "User has been notified to correct the FBR.", "booking": BookingSerializer(booking, context={"viewer": request.user}).data})
-    return Response(
-        {"error": 'Invalid action. Use "execute" or "invalidate".'},
-        status=status.HTTP_400_BAD_REQUEST,
-    )
-
 def _results_download_booking(request, booking_id):
     """``(booking, user, None)`` for a results download by a signed-in user or a ``t`` link token, else ``(.., error)``."""
     from iic_booking.equipment.results_download import download_user
@@ -14837,21 +14700,6 @@ def booking_results(request, booking_id):
                 {"exists": False, "virtual_booking_id": (booking.virtual_booking_id or "").strip() or None, "files": [], "error": "Rating required. Please submit your rating first, then view results."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        if _booking_requires_istem_fbr_results_block(booking):
-            return Response(
-                {
-                    "exists": False,
-                    "virtual_booking_id": (booking.virtual_booking_id or "").strip() or None,
-                    "files": [],
-                    "error": (
-                        "I-STEM FBR is not executed yet. Enter your FBR from https://www.istem.gov.in/ "
-                        "and wait for the Officer in Charge to mark it executed before results are available."
-                    ),
-                    "code": "istem_fbr_not_executed",
-                    "istem_portal_url": _booking_istem_portal_url(booking),
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
 
     virtual_booking_id = (booking.virtual_booking_id or "").strip() or None
     s3_files: list = []
@@ -14878,7 +14726,7 @@ def _user_may_access_booking_results(user, booking) -> bool:
     return is_active_share_recipient(user, booking)
 
 def _booking_results_gates_apply(user, booking) -> bool:
-    """Completion/rating/FBR gates apply to the owner and share recipients; booking staff bypass them."""
+    """Completion/rating gates apply to the owner and share recipients; booking staff bypass them."""
     return booking.user_id == getattr(user, "pk", None) or not check_operator_permission(user)
 
 def _booking_results_access_denied(user, booking):
@@ -14897,19 +14745,6 @@ def _booking_results_access_denied(user, booking):
         if getattr(booking.equipment, "user_rating_enabled", True) and (booking.rating is None or booking.rating_removed):
             return Response(
                 {"error": "Rating required. Please submit your rating first, then download results."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        if _booking_requires_istem_fbr_results_block(booking):
-            return Response(
-                {
-                    "error": (
-                        "Your I-STEM Facility Booking Record (FBR) is not verified yet. "
-                        "Complete your booking on https://www.istem.gov.in/, enter the FBR number here, "
-                        "and wait for the Officer in Charge to verify it before downloading results."
-                    ),
-                    "code": "istem_fbr_not_executed",
-                    "istem_portal_url": _booking_istem_portal_url(booking),
-                },
                 status=status.HTTP_403_FORBIDDEN,
             )
     return None
