@@ -396,9 +396,6 @@ def filters_summary(request, *, view: str) -> list[tuple[str, str]]:
     user_type = (params.get("user_type_filter") or "").strip().lower()
     if user_type in ("internal", "external"):
         out.append(("User type", "Internal (students / faculty)" if user_type == "internal" else "External"))
-    istem = (params.get("istem_fbr") or "").strip().lower()
-    if istem in ("verified", "unverified"):
-        out.append(("I-STEM FBR", istem.capitalize()))
     ordering = (params.get("ordering") or "").strip()
     key = ordering.lstrip("-")
     if ordering == DEFAULT_ORDERING:

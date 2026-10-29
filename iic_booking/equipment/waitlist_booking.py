@@ -294,14 +294,6 @@ def create_booking_for_waitlist_user(
     if not charge_profile:
         return None, f"No active charge profile for equipment and user type {user_type}."
 
-    istem_required_msg = (
-        "I-STEM portal registration must be confirmed on your profile before a waitlist booking can be confirmed. "
-        "Open Profile, confirm I-STEM registration, save, then try again."
-    )
-    # Cheap early exit; authoritative re-check is inside the atomic block below
-    # (acknowledgement is user-editable on Profile and can change between requests).
-    if is_external and not getattr(booking_user, "istem_portal_acknowledged", False):
-        return None, istem_required_msg
 
     base_filter = {
         "id__in": slot_ids,
@@ -404,6 +396,14 @@ def create_booking_for_waitlist_user(
     from iic_booking.equipment.external_slot_quota import ExternalSlotQuotaService
 
     _slots_for_ext = list(daily_slots)
+    from iic_booking.external_services.window import ExternalWindowClosed, check_booking_dates
+
+    try:
+        check_booking_dates(
+            booking_user, [s.date for s in _slots_for_ext if getattr(s, "date", None)], exempt=bool(staff_override)
+        )
+    except ExternalWindowClosed as exc:
+        return None, exc.message
     ext_quota = ExternalSlotQuotaService.validate_external_booking(
         booking_user,
         equipment,
@@ -463,12 +463,6 @@ def create_booking_for_waitlist_user(
             bad = [s.id for s in locked if not checker(s)]
             if bad:
                 return None, f"Slots {bad} are not available for booking."
-
-            # Re-validate I-STEM under the same lock window as slot claim + debit.
-            if is_external:
-                booking_user.refresh_from_db(fields=["istem_portal_acknowledged"])
-                if not getattr(booking_user, "istem_portal_acknowledged", False):
-                    return None, istem_required_msg
 
             booking_target.refresh_from_db()
             ok_w2, w_err2 = subwallet_booking_balance_ok(booking_target, total_charge, False)

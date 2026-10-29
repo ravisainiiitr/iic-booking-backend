@@ -157,15 +157,6 @@ def _periodic_symbols(f, raw: Any) -> tuple[list[str] | None, str | None]:
     return out, None
 
 
-def istem_ack_error(user) -> str:
-    """Booking page rule (client-side there): external users confirm I-STEM registration in Profile first."""
-    from iic_booking.users.models.user_type import UserType
-
-    if UserType.is_external_user(getattr(user, "user_type", "") or "") and not getattr(user, "istem_portal_acknowledged", False):
-        return "Confirm I-STEM portal registration in your Profile before booking (Profile → I-STEM confirmation → Save)."
-    return ""
-
-
 def portal_slots_needed(analysis_minutes: Any, slot_minutes: Any, tolerance_minutes: Any = 0) -> int:
     """Same as the booking page's slotsNeededForAnalysisTime (integer minutes, tolerance subtracted first)."""
     import math
@@ -445,9 +436,6 @@ def prepare_booking_create(
     locked, lock_message = booking_is_locked(user)
     if locked:
         return _safe_error("BOOKING_LOCKED", lock_message or "Booking is temporarily locked.")
-    istem = istem_ack_error(user)
-    if istem:
-        return _safe_error("ISTEM_ACK_REQUIRED", istem)
 
     ctx = context or {}
     eid = equipment_id or ctx.get("equipment_id") or ctx.get("last_equipment_id")
@@ -695,9 +683,6 @@ def _execute_claimed_booking_create(*, user, proposal_id: str, prop: dict[str, A
     payload = prop.get("payload") or {}
     eid = int(payload["equipment_id"])
     slot_ids = [int(x) for x in (payload.get("slot_ids") or [])]
-    istem = istem_ack_error(user)
-    if istem:
-        return _safe_error("ISTEM_ACK_REQUIRED", istem, proposal_id=proposal_id)
 
     # Revalidate slots before execute
     for sid in slot_ids:
@@ -1158,8 +1143,6 @@ def _friendly_book_message(ok: bool, data: dict) -> str:
             if due not in (None, "")
             else " A payment is still due; complete it from My Bookings to keep the booking."
         )
-    if d.get("require_istem_fbr"):
-        msg += " This booking needs your I-STEM FBR number; submit it from My Bookings."
     return msg
 
 

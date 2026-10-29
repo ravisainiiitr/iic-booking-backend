@@ -22,7 +22,7 @@ from datetime import datetime
 from django.db import DatabaseError, transaction
 from django.db.models import Q
 
-from .constants import LOCAL_MODULES, ModuleKey
+from .constants import LOCAL_MODULES, OFF_UNLESS_CONFIGURED, ModuleKey, is_iic_department
 
 logger = logging.getLogger(__name__)
 
@@ -108,15 +108,37 @@ def default_cell(department_id) -> Cell:
     return NEW_DEPARTMENT_OFF if department_id and department_id in new_department_ids([department_id]) else UNCONFIGURED
 
 
+def unconfigured_off_cell(department_id) -> Cell:
+    """No-row cell of an ``OFF_UNLESS_CONFIGURED`` module: on for IIC only."""
+    from iic_booking.users.models import Department
+
+    try:
+        dept = Department.objects.filter(pk=department_id).values("code", "name").first()
+    except DatabaseError:
+        logger.warning("department lookup failed; treating module as off", exc_info=True)
+        dept = None
+    return UNCONFIGURED if dept and is_iic_department(dept["code"], dept["name"]) else NEW_DEPARTMENT_OFF
+
+
 def cell(department_id, module_key: str) -> Cell:
     if not department_id or module_key not in LOCAL_MODULES:
         return UNCONFIGURED
     rows = _rows(department_id=department_id, module_key=module_key)
-    return _cell_from_row(rows[0]) if rows else default_cell(department_id)
+    if rows:
+        return _cell_from_row(rows[0])
+    if module_key in OFF_UNLESS_CONFIGURED:
+        return unconfigured_off_cell(department_id)
+    return default_cell(department_id)
 
 
 def cells(module_key: str) -> dict[int, Cell]:
     out = {r.department_id: _cell_from_row(r) for r in _rows(module_key=module_key)}
+    if module_key in OFF_UNLESS_CONFIGURED:
+        from iic_booking.users.models import Department
+
+        for dept in Department.objects.exclude(pk__in=list(out)).only("pk", "code", "name"):
+            out[dept.pk] = UNCONFIGURED if is_iic_department(dept.code, dept.name) else NEW_DEPARTMENT_OFF
+        return out
     for dept_id in new_department_ids():
         out.setdefault(dept_id, NEW_DEPARTMENT_OFF)
     return out
@@ -302,6 +324,21 @@ def user_availability(user) -> dict:
     modules[ModuleKey.PROCUREMENT] = {
         "available": procurement,
         "department_enabled": procurement,
+        "test_users_only": False,
+        "configured": True,
+    }
+    # Courier tracking follows the booking's equipment department, not the user's: shown to external users and staff
+    # while any department has it on (the booking page decides per booking).
+    from iic_booking.users.models.user_type import UserType
+
+    courier_any = any(c.enabled for c in cells(ModuleKey.COURIER_TRACKING).values())
+    user_type = getattr(user, "user_type", None)
+    modules[ModuleKey.COURIER_TRACKING] = {
+        "available": admin or (courier_any and (
+            user_type in UserType.get_external_user_codes()
+            or user_type in (UserType.MANAGER, UserType.DEPT_ADMIN, UserType.OPERATOR, UserType.FINANCE)
+        )),
+        "department_enabled": courier_any,
         "test_users_only": False,
         "configured": True,
     }

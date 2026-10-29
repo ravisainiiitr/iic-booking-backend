@@ -99,9 +99,9 @@ def test_matrix_api_is_main_admin_only(world):
     res = client_for(world.admin).get(f"{ADMIN_API}/")
     assert res.status_code == 200
     body = res.json()
-    assert [m["key"] for m in body["modules"]] == ["dsa", "remote_analysis", "training", "procurement"]
+    assert [m["key"] for m in body["modules"]] == ["dsa", "remote_analysis", "training", "courier_tracking", "procurement"]
     row = next(d for d in body["departments"] if d["id"] == world.dept.id)
-    assert set(row["cells"]) == {"dsa", "remote_analysis", "training", "procurement"}
+    assert set(row["cells"]) == {"dsa", "remote_analysis", "training", "courier_tracking", "procurement"}
     assert row["equipment_count"] == 1
 
 

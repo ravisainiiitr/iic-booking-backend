@@ -140,6 +140,8 @@ LOCAL_APPS = [
     "iic_booking.department_modules.apps.DepartmentModulesConfig",
     "iic_booking.facility_groups.apps.FacilityGroupsConfig",
     "iic_booking.automation.apps.AutomationConfig",
+    "iic_booking.courier_tracking.apps.CourierTrackingConfig",
+    "iic_booking.external_services.apps.ExternalServicesConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -886,6 +888,16 @@ CHANNEL_LAYERS = {
 RAZORPAY_KEY_ID = env("RAZORPAY_KEY_ID", default="")
 RAZORPAY_KEY_SECRET = env("RAZORPAY_KEY_SECRET", default="")
 RAZORPAY_WEBHOOK_SECRET = env("RAZORPAY_WEBHOOK_SECRET", default="")
+
+# TrackCourier.io (courier tracking for external users' sample shipments). Secrets come from the environment only.
+# Without TRACKCOURIER_API_KEY no tracking request is made (registrations still work and show "not yet checked").
+# Without TRACKCOURIER_WEBHOOK_SECRET the webhook endpoint refuses every delivery (the free plan has no live webhooks).
+TRACKCOURIER_API_KEY = env("TRACKCOURIER_API_KEY", default="")
+TRACKCOURIER_API_BASE_URL = env("TRACKCOURIER_API_BASE_URL", default="https://api.trackcourier.io/v1")
+TRACKCOURIER_TIMEOUT_SECONDS = env.float("TRACKCOURIER_TIMEOUT_SECONDS", default=20.0)
+TRACKCOURIER_WEBHOOK_SECRET = env("TRACKCOURIER_WEBHOOK_SECRET", default="")
+# Keep accepting the previous signing secret for a while after rotating (the provider asks for at least 15 minutes).
+TRACKCOURIER_WEBHOOK_PREVIOUS_SECRET = env("TRACKCOURIER_WEBHOOK_PREVIOUS_SECRET", default="")
 
 # SBIePay (legacy — new online payments use Razorpay)
 SBIEPAY_MERCHANT_ID = env("SBIEPAY_MERCHANT_ID", default="")

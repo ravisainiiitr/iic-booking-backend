@@ -5,7 +5,7 @@ import pytest
 from django.apps import apps
 
 from iic_booking.department_modules import access, seeding, services
-from iic_booking.department_modules.constants import LOCAL_MODULES, ModuleKey
+from iic_booking.department_modules.constants import LOCAL_MODULES, OFF_UNLESS_CONFIGURED, ModuleKey
 from iic_booking.department_modules.models import (
     DepartmentModuleAuditLog,
     DepartmentModuleSetting,
@@ -18,6 +18,7 @@ from iic_booking.users.models.user_type import UserType
 from .conftest import make_booking, make_department, make_equipment, make_user, switch
 
 frozen_migration = importlib.import_module("iic_booking.department_modules.migrations.0002_seed_initial_state")
+courier_migration = importlib.import_module("iic_booking.department_modules.migrations.0003_courier_tracking_module")
 
 
 def bulk_department(name):
@@ -40,7 +41,9 @@ def test_department_created_after_installation_starts_off(installed):
     for row in rows.values():
         assert not row.enabled and not row.test_users_only
         assert row.source == "new" and row.disabled_at is not None
-    assert DepartmentModuleAuditLog.objects.filter(department=dept, action="module.new_department_off").count() == 3
+    assert DepartmentModuleAuditLog.objects.filter(department=dept, action="module.new_department_off").count() == len(
+        LOCAL_MODULES
+    )
 
     student = make_user(department=dept)
     tester = make_user(department=dept, is_test_account=True)
@@ -92,6 +95,11 @@ def test_main_admin_turns_a_new_department_on(installed):
 def test_departments_from_before_installation_are_unchanged(world, installed):
     assert access.new_department_ids() == set()
     for key in LOCAL_MODULES:
+        if key in OFF_UNLESS_CONFIGURED:
+            # Courier tracking is off without a row for every department except IIC.
+            assert not access.cell(world.dept.id, key).enabled
+            assert not access.equipment_allows(world.equipment, key, world.student)
+            continue
         assert access.cell(world.dept.id, key) == access.UNCONFIGURED
         assert access.equipment_allows(world.equipment, key, world.student)
     assert not DepartmentModuleSetting.objects.filter(department=world.dept).exists()
@@ -120,21 +128,26 @@ def test_frozen_migration_seeds_every_existing_department(settings):
 
     installation = DepartmentModulesInstallation.objects.get(pk=1)
     rows = {(r.department_id, r.module_key): r for r in DepartmentModuleSetting.objects.all()}
+    frozen_keys = ("dsa", "remote_analysis", "training")  # the modules 0002 knows; later ones have their own seed
     for dept_id in Department.objects.values_list("pk", flat=True):
-        assert all((dept_id, key) in rows for key in LOCAL_MODULES)
+        assert all((dept_id, key) in rows for key in frozen_keys)
     assert rows[(iic.id, "dsa")].enabled and rows[(iic.id, "remote_analysis")].enabled
     assert rows[(ra_dept.id, "remote_analysis")].enabled and not rows[(ra_dept.id, "dsa")].enabled
     for dept in filter(None, (idle, general)):
         assert not rows[(dept.id, "dsa")].enabled and not rows[(dept.id, "remote_analysis")].enabled
 
     # The frozen copy agrees with the live rules on the same data.
+    courier_migration.seed_courier_tracking(apps, None)
+    rows = {(r.department_id, r.module_key): r for r in DepartmentModuleSetting.objects.all()}
     facts, live = seeding.plan(apps.get_model)
     for f in facts:
         for key, s in live[f.id].items():
             assert (rows[(f.id, key)].enabled, rows[(f.id, key)].test_users_only) == (s.enabled, s.test_users_only)
+    assert rows[(iic.id, "courier_tracking")].enabled and not rows[(idle.id, "courier_tracking")].enabled
 
     # Idempotent, and departments created afterwards start off.
     frozen_migration.seed_initial_state(apps, None)
+    courier_migration.seed_courier_tracking(apps, None)
     assert DepartmentModuleSetting.objects.count() == len(rows)
     assert DepartmentModulesInstallation.objects.get(pk=1).installed_at == installation.installed_at
     later = make_department("Later Dept")

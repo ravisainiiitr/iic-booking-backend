@@ -173,7 +173,6 @@ def _personal_items(c: _Collector) -> None:
         Booking,
         BookingDataShare,
         BookingStatus,
-        IstemFbrStatus,
         StudentEquipmentNomination,
         StudentEquipmentNominationStatus,
         TAAssignment,
@@ -270,18 +269,6 @@ def _personal_items(c: _Collector) -> None:
             "/my-bookings",
             "These bookings were disrupted. Choose to reschedule or cancel.",
             _booking_line,
-        )
-        c.add(
-            "istem_fbr_pending",
-            "I-STEM FBR required",
-            my_bookings.filter(
-                status__in=(BookingStatus.BOOKED, BookingStatus.COMPLETED),
-                istem_fbr_status__in=(IstemFbrStatus.PENDING_FBR, IstemFbrStatus.INVALID),
-            ).order_by("-created_at"),
-            "/my-bookings",
-            "Submit (or correct) your I-STEM FBR number for these bookings.",
-            lambda b: _booking_line(b)
-            + (" (rejected — correction required)" if b.istem_fbr_status == IstemFbrStatus.INVALID else ""),
         )
         from .models import RepeatSampleRequest, RepeatSampleRequestStatus
 
@@ -448,10 +435,8 @@ def _personal_items(c: _Collector) -> None:
 def _staff_items(c: _Collector) -> None:
     from .api_views import _get_equipment_ids_for_log_access, check_operator_permission, get_equipment_ids_managed_by_oic
     from .models import (
-        Booking,
         EquipmentPublicationClaim,
         EquipmentPublicationClaimStatus,
-        IstemFbrStatus,
         OperatorLeaveRequest,
         RepeatSampleRequest,
         RepeatSampleRequestStatus,
@@ -506,20 +491,6 @@ def _staff_items(c: _Collector) -> None:
         },
     )
     c.safely("lab_messages", lambda: _lab_message_items(c))
-
-    def fbr():
-        c.add(
-            "istem_fbr_verification",
-            "I-STEM FBR verification",
-            _scoped(
-                Booking.objects.filter(istem_fbr_status=IstemFbrStatus.PENDING_OIC).select_related("equipment", "user"),
-                "equipment_id",
-                oic_ids,
-            ).order_by("-updated_at"),
-            "/booking-management",
-            "External users submitted I-STEM FBR numbers. Verify them on I-STEM and mark them in Booking Management.",
-            lambda b: f"{_booking_line(b)} — FBR {b.istem_fbr_number} by {_person(b.user)}",
-        )
 
     def nominations():
         c.add(
@@ -578,7 +549,6 @@ def _staff_items(c: _Collector) -> None:
             )
 
     for name, fn in (
-        ("fbr", fbr),
         ("nominations", nominations),
         ("duty_logs", duty_logs),
         ("leave", leave),

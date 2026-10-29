@@ -137,6 +137,14 @@ def booking_window(equipment, viewer: Viewer, global_reference, now: datetime) -
     monday = today - timedelta(days=today.weekday())
     if viewer.kind == VIEWER_ADMIN:
         return Window(today, monday + timedelta(days=13), None)
+    if viewer.kind == VIEWER_EXTERNAL:
+        from iic_booking.external_services.window import external_window
+
+        central = external_window(now)
+        if central.enabled:  # central external window replaces the per-equipment weekly reference
+            if central.is_open and central.first_date and central.last_date:
+                return Window(central.first_date, central.last_date, None)
+            return Window(today, today - timedelta(days=1), None)
     reference = _reference(equipment, global_reference)
     before = reference is not None and local < _reference_instant(monday, reference)
     if viewer.kind == VIEWER_EXTERNAL:
@@ -147,8 +155,14 @@ def booking_window(equipment, viewer: Viewer, global_reference, now: datetime) -
     return Window(today, monday + timedelta(days=6 if before else 13), reference)
 
 
-def opens_at(window: Window, viewer: Viewer, on_date: date) -> datetime:
+def opens_at(window: Window, viewer: Viewer, on_date: date) -> Optional[datetime]:
     """When ``on_date`` (after the window) becomes visible for booking to this kind of viewer."""
+    if viewer.kind == VIEWER_EXTERNAL:
+        from iic_booking.external_services.window import date_opens_at, external_window
+
+        central = external_window()
+        if central.enabled:
+            return date_opens_at(central, on_date)
     week = on_date - timedelta(days=on_date.weekday())
     if window.reference is None:
         start = datetime.combine(week - timedelta(days=7), time.min)
@@ -319,7 +333,7 @@ def _day_status(mode, schedules, viewer, window, rule, rows, on_date, holiday, n
         if is_weekend:
             return {"status": CLOSED, "label": "Weekend"}
         at = opens_at(window, viewer, on_date)
-        return {"status": NOT_OPEN, "label": "Booking not open yet", "opens_at": at.isoformat()}
+        return {"status": NOT_OPEN, "label": "Booking not open yet", "opens_at": at.isoformat() if at else None}
     if on_date < window.min_date:
         return {"status": NOT_AVAILABLE, "label": "Outside your booking window"}
     if mode.status != EquipmentStatus.ACTIVE:

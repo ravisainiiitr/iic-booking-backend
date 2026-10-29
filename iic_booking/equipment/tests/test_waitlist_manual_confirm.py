@@ -114,6 +114,27 @@ def test_oic_confirms_waitlist_entry_into_maintenance_slot(setup, wallet_ok):
     assert not WaitlistEntry.objects.filter(pk=entry.pk).exists()
 
 
+def test_external_user_needs_no_istem_profile_confirmation(setup, wallet_ok):
+    eq, _student, oic, _entry = setup
+    ChargeProfile.objects.create(
+        equipment=eq, user_type=UserType.EXTERNAL, primary_unit_charge=Decimal("0"), require_istem_fbr=True
+    )
+    external = UserFactory(admin_approved=True, user_type=UserType.EXTERNAL, istem_portal_acknowledged=False)
+    entry = WaitlistEntry.objects.create(equipment=eq, user=external)
+    slot = _slot(eq, timezone.now() + timedelta(days=5), SlotStatus.NOT_AVAILABLE)
+
+    res = _client(oic).post(
+        f"/api/admin/equipment/{eq.pk}/waitlist-confirm/",
+        {"entry_id": entry.id, "slot_ids": [slot.id]},
+        format="json",
+    )
+    assert res.status_code == 201, res.data
+    booking = Booking.objects.get(booking_id=res.data["booking_id"])
+    assert booking.user_id == external.pk
+    # The portal creates the I-STEM booking; the user is not asked for an FBR number.
+    assert booking.istem_fbr_status is None and not booking.istem_fbr_number
+
+
 def test_manual_confirm_rejects_booked_slot_and_lab_operator(setup, wallet_ok):
     eq, _student, oic, entry = setup
     slot = _slot(eq, timezone.now() + timedelta(days=3), SlotStatus.BOOKED)

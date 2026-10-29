@@ -181,7 +181,6 @@ def account_problems(user, eq) -> list[str]:
     """Rules that block booking this equipment at all, before any slot is picked."""
     from iic_booking.equipment.api_views import user_can_see_equipment
     from iic_booking.equipment.models import EquipmentStatus
-    from iic_booking.research_copilot.services.v2.mutations.booking import istem_ack_error
     from iic_booking.users.legacy_ledger.booking_lock import booking_is_locked, department_equipment_booking_blocked
 
     out: list[str] = []
@@ -200,9 +199,6 @@ def account_problems(user, eq) -> list[str]:
     gate = gate_error_text(user, eq, actor=user, record=False)
     if gate:
         out.append(gate)
-    istem = istem_ack_error(user)
-    if istem:
-        out.append(istem)
     return out
 
 

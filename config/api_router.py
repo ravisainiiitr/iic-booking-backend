@@ -11,6 +11,7 @@ from rest_framework.routers import DefaultRouter
 from rest_framework.routers import SimpleRouter
 
 from iic_booking.department_modules import urls as department_modules_urls
+from iic_booking.external_services import urls as external_services_urls
 from iic_booking.equipment import disruption_views
 from iic_booking.equipment import flash_message_views
 from iic_booking.equipment.peak_window_views import PeakWindowSettingView, peak_window_status
@@ -374,8 +375,6 @@ from iic_booking.equipment.api_views import (
     booking_results_download_link,
     booking_result_attachment_download,
     booking_result_file_download,
-    update_booking_istem_fbr,
-    review_booking_istem_fbr,
     complete_booking,
     add_booking_results,
     refund_booking,
@@ -703,6 +702,14 @@ urlpatterns = router.urls + [
         include((department_modules_urls.admin_urlpatterns, "department_modules_admin")),
     ),
     path("v1/department-modules/", include("iic_booking.department_modules.urls")),
+    # Courier tracking / sample arrival (external users; per-department switch, IIC on by default)
+    path("v1/courier-tracking/", include("iic_booking.courier_tracking.urls")),
+    # External-user services: central external booking window (Main Admin config + read for users)
+    path(
+        "v1/admin/external-booking/",
+        include((external_services_urls.admin_urlpatterns, "external_services_admin")),
+    ),
+    path("v1/external-booking/", include("iic_booking.external_services.urls")),
     # Facility user groups + group email (Main Admin)
     path("v1/admin/facility-groups/", include("iic_booking.facility_groups.urls")),
     path("v1/portal-migration/booking-status/", portal_booking_status, name="portal-migration-booking-status-v1"),
@@ -1648,8 +1655,6 @@ urlpatterns = router.urls + [
     path("data-sharing/users/<int:user_id>/", data_sharing_user_detail, name="data-sharing-user-detail"),
     path("data-sharing/shared-with-me/", shared_with_me, name="data-sharing-shared-with-me"),
     path("public/equipment-availability/", public_equipment_availability, name="public-equipment-availability"),
-    path("bookings/<int:booking_id>/istem-fbr/", update_booking_istem_fbr, name="booking-istem-fbr-update"),
-    path("bookings/<int:booking_id>/istem-fbr/review/", review_booking_istem_fbr, name="booking-istem-fbr-review"),
     path("bookings/<int:booking_id>/complete/", complete_booking, name="complete-booking"),
     path("bookings/<int:booking_id>/add-results/", add_booking_results, name="add-booking-results"),
     path("bookings/<int:booking_id>/refund/", refund_booking, name="refund-booking"),

@@ -196,7 +196,13 @@ def booking_window(equipment, user, *, now=None) -> BookingWindow:
     if UserType.is_external_user(_user_type(user)):
         from .external_slot_quota import ExternalSlotQuotaService
 
+        from iic_booking.external_services.window import external_window
+
         lo, hi, before = ExternalSlotQuotaService.get_external_slot_window_date_bounds(equipment, at=now)
+        central = external_window(now)
+        if central.enabled:
+            # Central external window: its own opening times, not the per-equipment weekly reference.
+            return BookingWindow(max(lo, today), hi, central.next_expansion_at if central.is_open else central.opens_at)
         if lo is None or hi is None:
             lo, hi, before = monday + timedelta(days=7), monday + timedelta(days=13), False
     else:

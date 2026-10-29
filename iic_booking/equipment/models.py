@@ -3663,9 +3663,12 @@ def get_equipment_istem_fbr_status_url(equipment) -> str:
 
 
 def initial_istem_fbr_fields_for_charge_profile(charge_profile) -> dict:
-    """Return Booking field defaults for I-STEM FBR tracking when required by charge profile."""
-    if charge_profile_requires_istem_fbr(charge_profile):
-        return {"istem_fbr_status": IstemFbrStatus.PENDING_FBR}
+    """Booking field defaults for I-STEM FBR tracking: none.
+
+    The portal creates the I-STEM user and booking through the I-STEM API, so new bookings no longer start the manual
+    FBR workflow (user submits the FBR number, OIC verifies it). ``require_istem_fbr`` on the charge profile still marks
+    the bookings that belong on I-STEM. Bookings already in the manual workflow keep their stored status and number.
+    """
     return {}
 
 
@@ -4874,15 +4877,38 @@ class UrgentBookingRequestStatus(models.TextChoices):
     APPROVED = 'APPROVED', _('Approved')
     REJECTED = 'REJECTED', _('Rejected')
     EXPIRED = 'EXPIRED', _('Expired')
+    # External special requests only: the Officer in Charge asked the user for more information.
+    CLARIFICATION = 'CLARIFICATION', _('Clarification requested')
 
 
 class UrgentBookingRequestType(models.TextChoices):
     NO_SLOT = 'NO_SLOT', _('Unable to get slot despite repeated trials')
     REVIEWER_URGENT = 'REVIEWER_URGENT', _('Urgent comment from reviewer')
+    # External users' special booking requests (external_services); hidden from the default manager.
+    EXTERNAL_SPECIAL = 'EXTERNAL_SPECIAL', _('External special booking request')
+
+
+class InternalUrgentRequestManager(models.Manager):
+    """Default manager: internal urgent requests only (Type A / Type B).
+
+    External special requests (``EXTERNAL_SPECIAL``) are handled by ``iic_booking.external_services`` through
+    ``UrgentBookingRequest.all_types``. Keeping them out of the default manager means no existing urgent-request
+    screen, cap, approval, report or expiry job can see or act on them.
+    """
+
+    def get_queryset(self):
+        return super().get_queryset().exclude(request_type=UrgentBookingRequestType.EXTERNAL_SPECIAL)
 
 
 class UrgentBookingRequest(models.Model):
-    """Urgent booking request from an internal user who could not get slots or has urgent reviewer comment."""
+    """Urgent booking request from an internal user who could not get slots or has urgent reviewer comment.
+
+    Also carries external users' special booking requests (type ``EXTERNAL_SPECIAL``), which only
+    ``all_types`` returns; see ``InternalUrgentRequestManager``.
+    """
+    objects = InternalUrgentRequestManager()
+    all_types = models.Manager()
+
     id = models.AutoField(primary_key=True)
     user = models.ForeignKey(
         User,
