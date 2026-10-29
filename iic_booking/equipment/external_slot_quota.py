@@ -140,6 +140,41 @@ class ExternalSlotQuotaService:
         return (int(total_bookable) * percent) // 100
 
     @classmethod
+    def _ensure_week_slots(cls, equipment, week_start: date, week_end: date) -> None:
+        """Generate the week's missing daily slots so they can be counted (never fails the caller)."""
+        from .slot_utils import SlotGenerator
+
+        try:
+            SlotGenerator.generate_slots_for_week(equipment, week_start, week_end)
+        except Exception:
+            logger.exception(
+                "external_slot_quota: slot generation failed equipment=%s week_start=%s",
+                getattr(equipment, "equipment_id", None),
+                week_start,
+            )
+
+    @classmethod
+    def retake_if_empty(cls, snap: ExternalWeeklySlotQuotaSnapshot, equipment) -> ExternalWeeklySlotQuotaSnapshot:
+        """A snapshot that counted no bookable slots was taken before the week's slots existed, so it never limited
+        anything real: take it again (slot count and the equipment's current percentage) until it counts slots.
+        A snapshot that counted slots is never changed. ``snap`` must be locked by the caller."""
+        if snap.total_bookable_slots:
+            return snap
+        total = cls.count_bookable_slots(equipment, snap.week_start, snap.week_end)
+        if not total:
+            return snap
+        percent = max(0, min(100, int(getattr(equipment, "external_slot_quota_percent", 0) or 0)))
+        snap.total_bookable_slots = total
+        snap.external_quota_percent = percent
+        snap.max_external_slots = cls.compute_max_external_slots(total, percent)
+        snap.save(update_fields=["total_bookable_slots", "external_quota_percent", "max_external_slots"])
+        logger.info(
+            "external_slot_quota snapshot retaken equipment=%s week_start=%s total=%s percent=%s",
+            getattr(equipment, "equipment_id", None), snap.week_start, total, percent,
+        )
+        return snap
+
+    @classmethod
     def ensure_snapshot(
         cls,
         equipment: Equipment,
@@ -156,6 +191,11 @@ class ExternalSlotQuotaService:
             week_start=week_start,
         ).first()
         if existing:
+            if existing.total_bookable_slots == 0:
+                cls._ensure_week_slots(equipment, week_start, week_end)
+                with transaction.atomic():
+                    locked = ExternalWeeklySlotQuotaSnapshot.objects.select_for_update().get(pk=existing.pk)
+                    return cls.retake_if_empty(locked, equipment)
             return existing
 
         percent = (
@@ -164,6 +204,9 @@ class ExternalSlotQuotaService:
             else int(getattr(equipment, "external_slot_quota_percent", 0) or 0)
         )
         percent = max(0, min(100, percent))
+        # The snapshot is taken two weeks ahead, usually before that week's slots exist: generate them first, or the
+        # count (and so the cap) would be 0 for good.
+        cls._ensure_week_slots(equipment, week_start, week_end)
         total = cls.count_bookable_slots(equipment, week_start, week_end)
         max_slots = cls.compute_max_external_slots(total, percent)
 
@@ -264,7 +307,7 @@ class ExternalSlotQuotaService:
             status=SlotStatus.BOOKED,
             booking__isnull=False,
             booking__source_booking__isnull=True,
-        ).filter(cls._external_booking_q())
+        ).filter(cls._external_booking_q()).exclude(booking__user__is_test_account=True)  # test accounts: exempt
         if exclude_booking_id is not None:
             base = base.exclude(booking_id=exclude_booking_id)
         with_special = Q(booking__status__in=EXTERNAL_USAGE_BOOKING_STATUSES) | Q(
@@ -296,7 +339,9 @@ class ExternalSlotQuotaService:
         if not UserType.is_external_user(user_type):
             return ExternalQuotaValidationResult(allowed=True)
 
-        if bypass:
+        # Test accounts (external workflow pilot) are not limited by the share, and their bookings are not counted
+        # against it (count_external_usage), so real external users keep the whole share.
+        if bypass or getattr(user, "is_test_account", False) is True:
             return ExternalQuotaValidationResult(allowed=True)
 
         slots_requested = max(0, int(slots_requested or 0))
@@ -355,6 +400,8 @@ class ExternalSlotQuotaService:
                     ExternalWeeklySlotQuotaSnapshot.objects.select_for_update()
                     .get(pk=snap.pk)
                 )
+            else:
+                snap = cls.retake_if_empty(snap, equipment)
 
             consumed = cls.count_external_usage(
                 equipment,
