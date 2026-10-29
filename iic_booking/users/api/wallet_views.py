@@ -2283,9 +2283,9 @@ def create_wallet_recharge_request(request):
 
     if mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT:
         msg = (
-            f"Request submitted ({txn}). Visit the SRIC Bill Section to deposit cash, "
-            f"share this transaction number for immediate recharge, and after approval "
-            f"upload the receipt for Accounts reconciliation."
+            f"Request submitted ({txn}). Deposit the amount at the SRIC Bill Section or by bank transfer, then "
+            f"upload the payment proof with the UTR number on this request. The IIC Accounts In Charge approves it "
+            f"once SRIC confirms the amount, and your wallet is recharged."
         )
     else:
         msg = (
@@ -2778,9 +2778,16 @@ def attach_receipt_to_approved_recharge_request(request, request_id):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    if recharge_request.status != WalletRechargeRequestStatus.APPROVED:
+    # Offline payment (bank transfer / cash deposit): the proof and UTR go in with the pending request, so the
+    # Accounts In Charge can check them against the SRIC testing grant before approving; still editable after.
+    from iic_booking.users.models.wallet import WalletRechargeMode
+
+    allowed = {WalletRechargeRequestStatus.APPROVED}
+    if recharge_request.recharge_mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT:
+        allowed.add(WalletRechargeRequestStatus.PENDING)
+    if recharge_request.status not in allowed:
         return Response(
-            {"error": "Receipt can only be updated on an approved recharge request."},
+            {"error": "Payment proof can be added to a pending bank-transfer request or an approved recharge request."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
