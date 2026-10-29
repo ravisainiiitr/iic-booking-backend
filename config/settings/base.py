@@ -142,6 +142,7 @@ LOCAL_APPS = [
     "iic_booking.automation.apps.AutomationConfig",
     "iic_booking.courier_tracking.apps.CourierTrackingConfig",
     "iic_booking.external_services.apps.ExternalServicesConfig",
+    "iic_booking.istem.apps.IstemConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -838,6 +839,38 @@ MY_RESEARCH_GROUPS_ENABLED = env.bool("MY_RESEARCH_GROUPS_ENABLED", default=Fals
 MY_RESEARCH_GROUPS_PILOT_EMAILS = env("MY_RESEARCH_GROUPS_PILOT_EMAILS", default="")
 MY_RESEARCH_GROUP_ATTACHMENT_MAX_SIZE = env.int("MY_RESEARCH_GROUP_ATTACHMENT_MAX_SIZE", default=50 * 1024**2)
 MY_RESEARCH_GROUP_MAX_ATTACHMENTS = env.int("MY_RESEARCH_GROUP_MAX_ATTACHMENTS", default=10)
+# --- I-STEM integration (https://www.istem.gov.in/) ---
+# Master switch. Off: nothing is queued or sent to I-STEM; manual FBR submission, OIC review and the
+# result-download gate are unchanged either way.
+ISTEM_ENABLED = env.bool("ISTEM_ENABLED", default=False)
+# off | shadow | live; read only when ISTEM_ENABLED is on. Unknown values count as off.
+ISTEM_MODE = env("ISTEM_MODE", default="off")
+# Connection (live mode only). Credentials come from the environment and are never logged or stored.
+ISTEM_BASE_URL = env("ISTEM_BASE_URL", default="")
+ISTEM_USERNAME = env("ISTEM_USERNAME", default="")
+ISTEM_PASSWORD = env("ISTEM_PASSWORD", default="")
+ISTEM_CONNECT_TIMEOUT = env.float("ISTEM_CONNECT_TIMEOUT", default=5.0)
+ISTEM_READ_TIMEOUT = env.float("ISTEM_READ_TIMEOUT", default=30.0)
+ISTEM_MAX_ATTEMPTS = env.int("ISTEM_MAX_ATTEMPTS", default=5)
+# The institute when the token response names none (staging tokens carry none). IIT Roorkee is 213.
+ISTEM_INSTITUTE_ID = env("ISTEM_INSTITUTE_ID", default="")
+# PEM bundle for verifying I-STEM's certificate; empty = certifi. Staging needs ISRG Root YR (not in certifi yet).
+ISTEM_CA_BUNDLE = env("ISTEM_CA_BUNDLE", default="")
+# Each remote operation beyond Create Booking is off until its open questions are answered.
+ISTEM_USER_CREATION_ENABLED = env.bool("ISTEM_USER_CREATION_ENABLED", default=False)
+ISTEM_ACCEPT_DUPLICATE_USER_ID = env.bool("ISTEM_ACCEPT_DUPLICATE_USER_ID", default=False)
+# A user already registered on I-STEM proves the account by an OTP sent to its I-STEM email (no staff step).
+ISTEM_OTP_LINKING_ENABLED = env.bool("ISTEM_OTP_LINKING_ENABLED", default=False)
+# Silent-mode flag requested from I-STEM (no I-STEM emails for API bookings); empty until I-STEM names the field.
+ISTEM_SILENT_MODE_FIELD = env("ISTEM_SILENT_MODE_FIELD", default="")
+ISTEM_SILENT_MODE_VALUE = env("ISTEM_SILENT_MODE_VALUE", default="1")
+ISTEM_CONFIRM_ENABLED = env.bool("ISTEM_CONFIRM_ENABLED", default=False)
+ISTEM_CONFIRM_APPROVED_BY = env("ISTEM_CONFIRM_APPROVED_BY", default="")
+# FBR Execute after local completion; also needs a confirmation_id, so it does nothing while Confirm is off.
+ISTEM_EXECUTE_ENABLED = env.bool("ISTEM_EXECUTE_ENABLED", default=False)
+ISTEM_EXECUTE_UPDATED_BY = env("ISTEM_EXECUTE_UPDATED_BY", default="")
+# Bookings created before this ISO datetime are never sent (no backfill). Empty: no cut-over.
+ISTEM_SYNC_START_AT = env("ISTEM_SYNC_START_AT", default="")
 # --- Remote Analysis RDP ---
 # Send disable-gfx=true to guacd (falls back from RDP GFX pipeline). Off by default: parameter not sent.
 REMOTE_ANALYSIS_RDP_DISABLE_GFX = env.bool("RA_RDP_DISABLE_GFX", default=False)
