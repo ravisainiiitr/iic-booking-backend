@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('equipment', '0255_urgent_request_external_special_choices'),
+        ('equipment', '0256_urgent_request_external_special_choices'),
         ('external_services', '0004_special_request_seed'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]

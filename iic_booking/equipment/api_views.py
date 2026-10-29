@@ -226,6 +226,10 @@ from .reports import get_equipment_ids_managed_by_oic
 from .request_memo import with_request_memo
 from iic_booking.users.models.user import User
 from iic_booking.users.models.user_type import UserType
+from iic_booking.external_services.pilot import (
+    external_workflow_user as _external_workflow_user,
+    internal_gateway_fallback_user as _internal_gateway_fallback_user,
+)
 from iic_booking.users.models.equipment_supply_chain_role import (
     UserEquipmentSupplyChainRole,
     EquipmentSupplyChainRole,
@@ -3914,7 +3918,7 @@ def equipment_daily_slots(request, pk):
     # Central external booking window (external_services): when enabled it replaces the per-equipment weekly
     # reference for external users, so the reference fields are left out and its own opening times are sent.
     central_window_payload = None
-    if for_external_user and not is_admin:
+    if for_external_user and not is_admin and _external_workflow_user(user):
         from iic_booking.external_services.window import external_window as _central_external_window
 
         _central = _central_external_window()
@@ -4995,6 +4999,7 @@ def _book_equipment_impl(request, pk):
             and not create_as_hold
             and booking_user.pk == request.user.pk
             and UserType.is_external_user(user_type)
+            and _external_workflow_user(booking_user)
             and quantize_money(total_charge or 0) > 0
         )
         if needs_external_checkout:
@@ -5022,6 +5027,7 @@ def _book_equipment_impl(request, pk):
                 and not create_as_hold
                 and booking_user.pk == request.user.pk
                 and not UserType.is_external_user(user_type)
+                and _internal_gateway_fallback_user(booking_user)
                 and quantize_money(total_charge or 0) > 0
             ):
                 from iic_booking.users.wallet_credit_facility import wallet_booking_block_message

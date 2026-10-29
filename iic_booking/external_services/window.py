@@ -170,9 +170,10 @@ def date_opens_at(window: ExternalWindow, d: date) -> Optional[datetime]:
 
 
 def is_external_booking_user(user) -> bool:
-    from iic_booking.users.models.user_type import UserType
+    """An external user to whom the new external workflow applies (test accounts only while it is piloted)."""
+    from .pilot import external_workflow_user
 
-    return bool(user is not None and UserType.is_external_user(getattr(user, "user_type", None)))
+    return external_workflow_user(user)
 
 
 class ExternalWindowClosed(Exception):

@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('equipment', '0254_maintenance_auto_reschedule'),
+        ('equipment', '0255_slot_exchange'),
     ]
 
     operations = [

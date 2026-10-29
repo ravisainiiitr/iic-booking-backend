@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('equipment', '0255_urgent_request_external_special_choices'),
+        ('equipment', '0256_urgent_request_external_special_choices'),
         ('external_services', '0006_invoice_seed'),
         ('payments', '0002_seed_razorpay_fee_settings'),
         ('users', '0140_sric_signin_notice'),

@@ -258,6 +258,10 @@ def create(user, equipment_id: int, body: dict) -> ExternalBookingCheckout:
     from iic_booking.users.models.user_type import UserType
 
     internal = not UserType.is_external_user(getattr(user, "user_type", "") or "")
+    from .pilot import external_workflow_user, internal_gateway_fallback_user
+
+    if not (internal_gateway_fallback_user(user) if internal else external_workflow_user(user)):
+        raise CheckoutError("Online checkout is not available for your account yet.", status=403, code="not_available")
     equipment = Equipment.objects.filter(pk=equipment_id).first()
     if equipment is None:
         raise CheckoutError("Equipment not found.", status=404, code="not_found")

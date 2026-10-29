@@ -212,8 +212,14 @@ def apply_istem_timing_note_to_context(context: dict, user, *, also_append_to_co
         return context
     from iic_booking.users.models.user_type import UserType
 
+    from iic_booking.external_services.pilot import external_workflow_user
+    from iic_booking.istem import conf as istem_conf
+
     context.setdefault("istem_timing_note", "")
     if not UserType.is_external_user(getattr(user, "user_type", None) or ""):
+        return context
+    # Only true once bookings are registered on I-STEM through the API, and only for the piloted users.
+    if not (istem_conf.istem_enabled() and external_workflow_user(user)):
         return context
     context["istem_timing_note"] = ISTEM_TIMING_NOTE_PLAIN
     if also_append_to_comment:

@@ -839,6 +839,11 @@ MY_RESEARCH_GROUPS_ENABLED = env.bool("MY_RESEARCH_GROUPS_ENABLED", default=Fals
 MY_RESEARCH_GROUPS_PILOT_EMAILS = env("MY_RESEARCH_GROUPS_PILOT_EMAILS", default="")
 MY_RESEARCH_GROUP_ATTACHMENT_MAX_SIZE = env.int("MY_RESEARCH_GROUP_ATTACHMENT_MAX_SIZE", default=50 * 1024**2)
 MY_RESEARCH_GROUP_MAX_ATTACHMENTS = env.int("MY_RESEARCH_GROUP_MAX_ATTACHMENTS", default=10)
+# --- External booking workflow pilot (external_services.pilot) ---
+# Off: the new external rules apply to external test accounts (User.is_test_account) only.
+EXTERNAL_WORKFLOW_ALL_EXTERNAL_USERS = env.bool("EXTERNAL_WORKFLOW_ALL_EXTERNAL_USERS", default=False)
+# Off: only internal test accounts are offered online payment when their wallet falls short.
+INTERNAL_GATEWAY_FALLBACK_ALL_USERS = env.bool("INTERNAL_GATEWAY_FALLBACK_ALL_USERS", default=False)
 # --- I-STEM integration (https://www.istem.gov.in/) ---
 # Master switch. Off: nothing is queued or sent to I-STEM; manual FBR submission, OIC review and the
 # result-download gate are unchanged either way.
