@@ -64,7 +64,15 @@ def _pending_otp(link: IstemUserLink) -> IstemLinkOtp | None:
 
 
 def link_status(user) -> dict:
-    """What the portal shows the user about their I-STEM link."""
+    """What the portal shows the user about their I-STEM link. ``linking_available``: the user may look up and link an
+    existing I-STEM account now (OTP linking switched on, and the user is in the external workflow)."""
+    from iic_booking.external_services.pilot import external_workflow_user
+
+    available = bool(conf.otp_linking_enabled() and external_workflow_user(user))
+    return {**_link_status(user), "linking_available": available}
+
+
+def _link_status(user) -> dict:
     link = IstemUserLink.objects.filter(user=user).first()
     if link is None:
         return {"state": None, "otp_required": False}
@@ -90,8 +98,9 @@ def find_existing_account(user, *, email: str = "", mobile: str = "", client_fac
     I-STEM: Public User Lookup finds the account, and the OTP flow above proves it. The profile I-STEM returns is
     kept on the link, shown to the user only once the OTP is verified, and used to fill their portal profile.
 
-    [STAGING] Public User Lookup is not deployed on staging (404) and its rows carry no email yet; both were requested
-    from I-STEM. Until then this answers ``lookup_unavailable`` / ``istem_email_missing``.
+    [STAGING] Since 2026-10-29 Public User Lookup answers on staging with the full record, email included. Earlier
+    it was not deployed (404) and rows carried no email; those cases still answer ``lookup_unavailable`` /
+    ``istem_email_missing``.
     """
     from .service import _finish_attempt, _outcome_for, _start_attempt, default_client
 

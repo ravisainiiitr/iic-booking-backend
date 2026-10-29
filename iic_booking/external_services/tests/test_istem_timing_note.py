@@ -12,7 +12,8 @@ from .conftest import make_user
 pytestmark = pytest.mark.django_db
 
 
-def test_external_users_get_the_note_once():
+def test_external_users_get_the_note_once(settings):
+    settings.ISTEM_ENABLED = True  # the note is only true once bookings are registered on I-STEM (see test_pilot)
     user = make_user(UserType.EXTERNAL)
     context = {"comment": "Bring the sample by 10:00."}
     apply_istem_timing_note_to_context(context, user, also_append_to_comment=True)

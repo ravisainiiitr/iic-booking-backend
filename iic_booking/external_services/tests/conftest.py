@@ -15,6 +15,14 @@ from iic_booking.users.models.user_type import UserType
 from iic_booking.users.tests.factories import UserFactory
 
 
+@pytest.fixture(autouse=True)
+def _external_workflow_for_everyone(settings):
+    """These tests cover the workflow itself, so it applies to every external user and the internal online-payment
+    fallback to every internal user (production pilots both on test accounts; see test_pilot.py)."""
+    settings.EXTERNAL_WORKFLOW_ALL_EXTERNAL_USERS = True
+    settings.INTERNAL_GATEWAY_FALLBACK_ALL_USERS = True
+
+
 def client_for(user=None) -> APIClient:
     client = APIClient()
     if user is not None:
