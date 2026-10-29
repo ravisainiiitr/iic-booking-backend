@@ -154,16 +154,29 @@ class ExternalSlotQuotaService:
             )
 
     @classmethod
-    def retake_if_empty(cls, snap: ExternalWeeklySlotQuotaSnapshot, equipment) -> ExternalWeeklySlotQuotaSnapshot:
-        """A snapshot that counted no bookable slots was taken before the week's slots existed, so it never limited
-        anything real: take it again (slot count and the equipment's current percentage) until it counts slots.
-        A snapshot that counted slots is never changed. ``snap`` must be locked by the caller."""
+    def refresh_snapshot(cls, snap: ExternalWeeklySlotQuotaSnapshot, equipment) -> ExternalWeeklySlotQuotaSnapshot:
+        """Bring a weekly snapshot up to date where that can only allow more bookings. ``snap`` must be locked.
+
+        * A snapshot that counted no bookable slots was taken before the week's slots existed, so it never limited
+          anything real: it is taken again (slot count and the current percentage) until it counts slots.
+        * Otherwise the slot count stays as snapshotted; a share raised since then applies at once, a lowered one
+          does not (bookings made within the old share stay valid)."""
+        percent = max(0, min(100, int(getattr(equipment, "external_slot_quota_percent", 0) or 0)))
         if snap.total_bookable_slots:
+            # A raised share applies at once (it only allows more bookings); a lowered one waits for the next
+            # snapshot, so bookings already made within the old share stay valid.
+            if percent > snap.external_quota_percent:
+                snap.external_quota_percent = percent
+                snap.max_external_slots = cls.compute_max_external_slots(snap.total_bookable_slots, percent)
+                snap.save(update_fields=["external_quota_percent", "max_external_slots"])
+                logger.info(
+                    "external_slot_quota snapshot share raised equipment=%s week_start=%s percent=%s",
+                    getattr(equipment, "equipment_id", None), snap.week_start, percent,
+                )
             return snap
         total = cls.count_bookable_slots(equipment, snap.week_start, snap.week_end)
         if not total:
             return snap
-        percent = max(0, min(100, int(getattr(equipment, "external_slot_quota_percent", 0) or 0)))
         snap.total_bookable_slots = total
         snap.external_quota_percent = percent
         snap.max_external_slots = cls.compute_max_external_slots(total, percent)
@@ -195,7 +208,7 @@ class ExternalSlotQuotaService:
                 cls._ensure_week_slots(equipment, week_start, week_end)
                 with transaction.atomic():
                     locked = ExternalWeeklySlotQuotaSnapshot.objects.select_for_update().get(pk=existing.pk)
-                    return cls.retake_if_empty(locked, equipment)
+                    return cls.refresh_snapshot(locked, equipment)
             return existing
 
         percent = (
@@ -401,7 +414,7 @@ class ExternalSlotQuotaService:
                     .get(pk=snap.pk)
                 )
             else:
-                snap = cls.retake_if_empty(snap, equipment)
+                snap = cls.refresh_snapshot(snap, equipment)
 
             consumed = cls.count_external_usage(
                 equipment,

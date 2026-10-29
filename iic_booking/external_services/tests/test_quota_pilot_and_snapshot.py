@@ -63,16 +63,34 @@ def test_empty_snapshot_is_taken_again_once_the_week_has_slots(factory):
     assert (snap.total_bookable_slots, snap.external_quota_percent, snap.max_external_slots) == (10, 20, 2)
 
 
-def test_a_snapshot_that_counted_slots_is_never_changed(factory):
-    eq = factory.equipment(external_slot_quota_percent=0)
+def _snapshot_with_slots(factory, percent):
+    eq = factory.equipment(external_slot_quota_percent=percent)
     monday = _next_monday()
-    week_start, week_end = ExternalSlotQuotaService.week_bounds_for_date(monday)
+    week_start, _week_end = ExternalSlotQuotaService.week_bounds_for_date(monday)
     for h in range(9, 13):
         factory.slot(eq, factory.at(monday, h))
     first = ExternalSlotQuotaService.ensure_snapshot(eq, week_start)  # generates the rest of the week's slots too
     assert first.total_bookable_slots > 4
-    eq.external_slot_quota_percent = 100
+    return eq, monday, first
+
+
+def _set_percent(eq, percent):
+    eq.external_slot_quota_percent = percent
     eq.save(update_fields=["external_slot_quota_percent"])
-    assert not _validate(make_user(UserType.EXTERNAL), eq, monday).allowed
-    snap = ExternalWeeklySlotQuotaSnapshot.objects.get(equipment=eq, week_start=week_start)
-    assert (snap.total_bookable_slots, snap.external_quota_percent) == (first.total_bookable_slots, 0)
+
+
+def test_a_raised_share_applies_to_a_snapshotted_week_at_once(factory):
+    eq, monday, first = _snapshot_with_slots(factory, 0)
+    _set_percent(eq, 20)
+    assert _validate(make_user(UserType.EXTERNAL), eq, monday).allowed
+    snap = ExternalWeeklySlotQuotaSnapshot.objects.get(pk=first.pk)
+    assert (snap.total_bookable_slots, snap.external_quota_percent) == (first.total_bookable_slots, 20)
+    assert snap.max_external_slots == first.total_bookable_slots * 20 // 100
+
+
+def test_a_lowered_share_waits_for_the_next_snapshot(factory):
+    eq, monday, first = _snapshot_with_slots(factory, 50)
+    _set_percent(eq, 0)
+    assert _validate(make_user(UserType.EXTERNAL), eq, monday).allowed
+    snap = ExternalWeeklySlotQuotaSnapshot.objects.get(pk=first.pk)
+    assert (snap.total_bookable_slots, snap.external_quota_percent) == (first.total_bookable_slots, 50)
