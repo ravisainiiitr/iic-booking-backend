@@ -3663,12 +3663,9 @@ def get_equipment_istem_fbr_status_url(equipment) -> str:
 
 
 def initial_istem_fbr_fields_for_charge_profile(charge_profile) -> dict:
-    """Booking field defaults for I-STEM FBR tracking: none.
-
-    The portal creates the I-STEM user and booking through the I-STEM API, so new bookings no longer start the manual
-    FBR workflow (user submits the FBR number, OIC verifies it). ``require_istem_fbr`` on the charge profile still marks
-    the bookings that belong on I-STEM. Bookings already in the manual workflow keep their stored status and number.
-    """
+    """Return Booking field defaults for I-STEM FBR tracking when required by charge profile."""
+    if charge_profile_requires_istem_fbr(charge_profile):
+        return {"istem_fbr_status": IstemFbrStatus.PENDING_FBR}
     return {}
 
 

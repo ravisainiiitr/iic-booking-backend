@@ -106,6 +106,8 @@ def eligibility(b, *, now=None) -> dict[str, Any]:
     if results:
         if getattr(eq, "user_rating_enabled", True) and (b.rating is None or getattr(b, "rating_removed", False)):
             results_blocked = "rating"
+        elif getattr(b, "istem_fbr_status", None) and str(b.istem_fbr_status) != "EXECUTED":
+            results_blocked = "istem_fbr"
     message, message_reason = _lab_message_state(b, status, now)
     sample_locked = False
     if active:
@@ -138,6 +140,8 @@ def _results_line(elig: dict[str, Any]) -> str:
         return "not uploaded yet."
     if elig["results_blocked"] == "rating":
         return "uploaded — submit your rating first, then you can download them."
+    if elig["results_blocked"] == "istem_fbr":
+        return "uploaded — they unlock once your I-STEM FBR number is verified by the Officer In Charge."
     return "available — open the booking to download them."
 
 

@@ -98,6 +98,13 @@ class TestSlotRules:
         assert not booking_mut.selection_matches_required_time(eq, self._slots(4), 120)
         assert booking_mut.selection_matches_required_time(eq, self._slots(3), 150)
 
+    def test_istem_ack_required_for_external_users_only(self):
+        from iic_booking.users.models.user_type import UserType
+
+        assert booking_mut.istem_ack_error(SimpleNamespace(user_type=UserType.EXTERNAL, istem_portal_acknowledged=False))
+        assert not booking_mut.istem_ack_error(SimpleNamespace(user_type=UserType.EXTERNAL, istem_portal_acknowledged=True))
+        assert not booking_mut.istem_ack_error(SimpleNamespace(user_type=UserType.STUDENT, istem_portal_acknowledged=False))
+
     def test_virtual_id_in_booked_message(self):
         msg = booking_mut._friendly_book_message(
             True, {"booking_id": "IICICPMS/MS202600001", "virtual_booking_id": "IICICPMS/MS202600001", "real_booking_id": 619}

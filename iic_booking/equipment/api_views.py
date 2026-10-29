@@ -55,6 +55,7 @@ from .models import (
     Booking,
     BookingResultFile,
     BookingStatus,
+    IstemFbrStatus,
     initial_istem_fbr_fields_for_charge_profile,
     get_equipment_istem_portal_url,
     charge_profile_requires_istem_fbr,
@@ -399,6 +400,35 @@ SLOTS_ALREADY_OCCUPIED_MESSAGE = (
     "The selected slot(s) have already been booked by another user. Please choose a different slot."
 )
 
+ISTEM_PORTAL_URL = "https://www.istem.gov.in/"
+
+def _booking_requires_istem_fbr_results_block(booking) -> bool:
+    """True when booking is in the I-STEM FBR workflow and FBR is not yet executed."""
+    st = booking.istem_fbr_status
+    if st is None:
+        return False
+    return st != IstemFbrStatus.EXECUTED
+
+def _booking_istem_portal_url(booking) -> str:
+    equipment = getattr(booking, "equipment", None)
+    return get_equipment_istem_portal_url(equipment) if equipment else ISTEM_PORTAL_URL
+
+def _ensure_istem_fbr_initialized(booking) -> None:
+    """If charge profile requires I-STEM but booking predates the flag, initialize workflow status."""
+    if getattr(booking, "istem_fbr_status", None):
+        return
+    cp = getattr(booking, "charge_profile", None)
+    if not charge_profile_requires_istem_fbr(cp):
+        return
+    if booking.status not in (
+        BookingStatus.BOOKED,
+        BookingStatus.COMPLETED,
+        BookingStatus.PENDING_PAYMENT,
+    ):
+        return
+    booking.istem_fbr_status = IstemFbrStatus.PENDING_FBR
+    booking.save(update_fields=["istem_fbr_status", "updated_at"])
+
 def _user_can_act_as_oic_for_equipment(user, equipment) -> bool:
     if not user or not getattr(user, "is_authenticated", False):
         return False
@@ -430,6 +460,55 @@ def _oic_booking_scope_denied(user, booking):
     return Response(
         {"error": "You can only manage bookings for equipment you are Officer In-charge of."},
         status=status.HTTP_403_FORBIDDEN,
+    )
+
+def _notify_oic_istem_fbr_submitted(booking) -> None:
+    """Email OIC(s) for the equipment when external user submits I-STEM FBR."""
+    from django.conf import settings as django_settings
+    from django.core.mail import send_mail
+    from iic_booking.equipment.models import EquipmentManager
+
+    equipment = booking.equipment
+    emails: set[str] = set()
+    for em in EquipmentManager.objects.filter(equipment=equipment).select_related("manager"):
+        mgr = em.manager
+        if mgr and mgr.email and mgr.is_active:
+            emails.add(mgr.email.strip())
+    if not emails:
+        return
+    vid = getattr(booking, "virtual_booking_id", None) or booking.booking_id
+    subject = f"I-STEM FBR verification required — {vid}"
+    body = (
+        f"An external user submitted an I-STEM FBR number for booking {vid} "
+        f"({equipment.name}).\n\n"
+        f"FBR number: {booking.istem_fbr_number}\n"
+        f"User: {booking.user.email}\n\n"
+        f"Please verify on the I-STEM portal and mark verified in the booking portal."
+    )
+    try:
+        send_mail(
+            subject=subject[:250],
+            message=body,
+            from_email=django_settings.DEFAULT_FROM_EMAIL,
+            recipient_list=sorted(emails),
+            fail_silently=True,
+        )
+    except Exception:
+        pass
+    from iic_booking.communication.in_app import equipment_oic_users, notify_in_app, person_label
+
+    ref = booking_display_id_for_email(booking)
+    notify_in_app(
+        equipment_oic_users(equipment),
+        title="Action needed: verify I-STEM FBR",
+        message=(
+            f"{person_label(booking.user)} submitted I-STEM FBR number {booking.istem_fbr_number} for {ref} — "
+            f"{equipment.name}. Verify it on the I-STEM portal and mark it in Booking Management."
+        ),
+        link=f"/booking-management?expand={booking.booking_id}",
+        notification_type="warning",
+        event="istem_fbr.submitted",
+        extra={"real_booking_id": booking.booking_id, "action_required": True},
     )
 
 def _to_float_or_none(value):
@@ -4092,6 +4171,8 @@ def _book_equipment_impl(request, pk):
     user_type = booking_user.user_type
     if not user_type:
         user_type = UserType.STUDENT
+    if UserType.is_external_user(user_type) and not getattr(booking_user, "istem_portal_acknowledged", False):
+        pass  # External users confirm I-STEM after payment on the next-steps page (no pre-book gate).
     # Admin and OIC (and other admin-panel users) see all slots and are not restricted by slot window; only regular users are.
     is_admin = getattr(request.user, "user_type", None) in UserType.get_admin_panel_codes()
     skip_period_limits = is_admin or staff_booking_skips_period_limits(request.user, equipment, booking_user)
@@ -6225,6 +6306,7 @@ def list_bookings(request):
         supervisor_name: Optional. Filter by Supervisor name (partial match).
         user_type_filter: Optional. "internal" (students/faculty) or "external" – filter by booking user_type_snapshot.
         rating: Optional. Filter by rating (admin/OIC/lab only). Use "unrated", "2_and_below", "3_and_below", "4_and_below", or "5".
+        istem_fbr: Optional. Filter I-STEM FBR seal status (admin/OIC only). Use "verified" or "unverified".
     
     Returns:
         Response: List of bookings with count, total_count, limit, offset
@@ -6287,6 +6369,10 @@ def list_bookings(request):
 
     total_count = queryset.count()
     page = list(queryset[offset:offset + limit])
+
+    if not list_view:
+        for booking in page:
+            _ensure_istem_fbr_initialized(booking)
 
     from .serializers import wallet_owner_display_names
 
@@ -6598,6 +6684,17 @@ def _booking_list_queryset(request, *, min_search_chars: int = 0):
             queryset = queryset.filter(rating__isnull=False, rating__lte=4)
         elif rating_filter == '5':
             queryset = queryset.filter(rating=5)
+
+    # Filter by I-STEM FBR verification (admin/OIC only)
+    istem_fbr_filter = (request.query_params.get('istem_fbr') or '').strip().lower()
+    if istem_fbr_filter in ('verified', 'unverified') and is_operator_or_manager:
+        istem_fbr_applicable = Q(charge_profile__require_istem_fbr=True) | Q(istem_fbr_status__isnull=False)
+        if istem_fbr_filter == 'verified':
+            queryset = queryset.filter(istem_fbr_status=IstemFbrStatus.EXECUTED)
+        else:
+            queryset = queryset.filter(istem_fbr_applicable).exclude(
+                istem_fbr_status=IstemFbrStatus.EXECUTED
+            )
 
     # Filter by date range if provided
     start_date_param = request.query_params.get('start_date')
@@ -14581,6 +14678,149 @@ def _schedule_notify_user_results_available(booking_id: int):
 
         threading.Thread(target=_run, daemon=True).start()
 
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def update_booking_istem_fbr(request, booking_id):
+    """External booking user submits or updates the I-STEM FBR number after booking on https://www.istem.gov.in/ ."""
+    try:
+        booking = Booking.objects.select_related("equipment", "charge_profile").get(booking_id=booking_id)
+    except Booking.DoesNotExist:
+        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+    if booking.user_id != request.user.id:
+        return Response({"error": "You can only update your own bookings."}, status=status.HTTP_403_FORBIDDEN)
+    if booking.istem_fbr_status is None and not charge_profile_requires_istem_fbr(booking.charge_profile):
+        return Response(
+            {"error": "This booking is not in the I-STEM FBR workflow."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    from iic_booking.equipment.booking_payment_service import booking_payment_fully_settled
+
+    if not booking_payment_fully_settled(booking):
+        return Response(
+            {"error": "Complete payment for this booking before submitting your I-STEM FBR number."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if booking.status not in (BookingStatus.BOOKED, BookingStatus.COMPLETED):
+        return Response(
+            {"error": "Booking must be confirmed before submitting FBR."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    st = booking.istem_fbr_status
+    if st not in (IstemFbrStatus.PENDING_FBR, IstemFbrStatus.INVALID):
+        if st is None:
+            return Response(
+                {"error": "This booking is not in the I-STEM FBR workflow."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if st == IstemFbrStatus.PENDING_OIC:
+            return Response(
+                {"error": "Your FBR is awaiting Officer in Charge verification. You cannot change it now."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(
+            {"error": "This FBR has already been marked as verified."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    raw = (request.data.get("istem_fbr_number") if isinstance(request.data, dict) else None) or ""
+    raw = str(raw).strip()
+    if not raw:
+        return Response({"error": "I-STEM FBR number is required."}, status=status.HTTP_400_BAD_REQUEST)
+    booking.istem_fbr_number = raw[:128]
+    booking.istem_fbr_status = IstemFbrStatus.PENDING_OIC
+    booking.istem_fbr_invalid_reason = None
+    booking.save(update_fields=["istem_fbr_number", "istem_fbr_status", "istem_fbr_invalid_reason", "updated_at"])
+    create_booking_event(
+        booking=booking,
+        event_type=BookingEventType.COMMENT,
+        created_by=request.user,
+        comment=f"I-STEM FBR number submitted for verification: {booking.istem_fbr_number}",
+        send_notification=True,
+    )
+    _notify_oic_istem_fbr_submitted(booking)
+    return Response({"message": "FBR submitted. An Officer in Charge will verify it on I-STEM.", "booking": BookingSerializer(booking, context={"viewer": request.user}).data})
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def review_booking_istem_fbr(request, booking_id):
+    """OIC (or admin): mark external user's FBR as executed on I-STEM or invalid."""
+    try:
+        booking = Booking.objects.select_related("equipment", "charge_profile").get(booking_id=booking_id)
+    except Booking.DoesNotExist:
+        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+    if booking.istem_fbr_status is None and not charge_profile_requires_istem_fbr(booking.charge_profile):
+        return Response(
+            {"error": "I-STEM FBR review does not apply to this booking."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    equipment = booking.equipment
+    if not _user_can_act_as_oic_for_equipment(request.user, equipment):
+        return Response(
+            {"error": "Only the Officer in Charge for this equipment (or an administrator) can verify FBR."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    if booking.istem_fbr_status != IstemFbrStatus.PENDING_OIC:
+        return Response(
+            {"error": "No FBR is pending verification for this booking."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    action = (request.data.get("action") if isinstance(request.data, dict) else None) or ""
+    action = str(action).strip().lower()
+    if action == "execute":
+        booking.istem_fbr_status = IstemFbrStatus.EXECUTED
+        booking.istem_fbr_executed_at = timezone.now()
+        booking.istem_fbr_verified_by = request.user
+        booking.istem_fbr_invalid_reason = None
+        booking.save(
+            update_fields=[
+                "istem_fbr_status",
+                "istem_fbr_executed_at",
+                "istem_fbr_verified_by_id",
+                "istem_fbr_invalid_reason",
+                "updated_at",
+            ]
+        )
+        create_booking_event(
+            booking=booking,
+            event_type=BookingEventType.COMMENT,
+            created_by=request.user,
+            comment="I-STEM FBR marked as verified. User may download results after completing other requirements (e.g. rating).",
+            send_notification=True,
+        )
+        return Response({"message": "FBR marked as verified.", "booking": BookingSerializer(booking, context={"viewer": request.user}).data})
+    if action == "invalidate":
+        reason = (request.data.get("reason") if isinstance(request.data, dict) else None) or ""
+        reason = str(reason).strip()
+        if not reason:
+            return Response(
+                {"error": "A reason is required when marking the FBR as invalid."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        booking.istem_fbr_status = IstemFbrStatus.INVALID
+        booking.istem_fbr_invalid_reason = reason[:4000]
+        booking.istem_fbr_executed_at = None
+        booking.istem_fbr_verified_by = request.user
+        booking.save(
+            update_fields=[
+                "istem_fbr_status",
+                "istem_fbr_invalid_reason",
+                "istem_fbr_executed_at",
+                "istem_fbr_verified_by_id",
+                "updated_at",
+            ]
+        )
+        create_booking_event(
+            booking=booking,
+            event_type=BookingEventType.COMMENT,
+            created_by=request.user,
+            comment=f"I-STEM FBR marked invalid. Reason: {reason}",
+            send_notification=True,
+        )
+        return Response({"message": "User has been notified to correct the FBR.", "booking": BookingSerializer(booking, context={"viewer": request.user}).data})
+    return Response(
+        {"error": 'Invalid action. Use "execute" or "invalidate".'},
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
 def _results_download_booking(request, booking_id):
     """``(booking, user, None)`` for a results download by a signed-in user or a ``t`` link token, else ``(.., error)``."""
     from iic_booking.equipment.results_download import download_user
@@ -14759,6 +14999,21 @@ def booking_results(request, booking_id):
                 {"exists": False, "virtual_booking_id": (booking.virtual_booking_id or "").strip() or None, "files": [], "error": "Rating required. Please submit your rating first, then view results."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        if _booking_requires_istem_fbr_results_block(booking):
+            return Response(
+                {
+                    "exists": False,
+                    "virtual_booking_id": (booking.virtual_booking_id or "").strip() or None,
+                    "files": [],
+                    "error": (
+                        "I-STEM FBR is not executed yet. Enter your FBR from https://www.istem.gov.in/ "
+                        "and wait for the Officer in Charge to mark it executed before results are available."
+                    ),
+                    "code": "istem_fbr_not_executed",
+                    "istem_portal_url": _booking_istem_portal_url(booking),
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
     virtual_booking_id = (booking.virtual_booking_id or "").strip() or None
     s3_files: list = []
@@ -14785,7 +15040,7 @@ def _user_may_access_booking_results(user, booking) -> bool:
     return is_active_share_recipient(user, booking)
 
 def _booking_results_gates_apply(user, booking) -> bool:
-    """Completion/rating gates apply to the owner and share recipients; booking staff bypass them."""
+    """Completion/rating/FBR gates apply to the owner and share recipients; booking staff bypass them."""
     return booking.user_id == getattr(user, "pk", None) or not check_operator_permission(user)
 
 def _booking_results_access_denied(user, booking):
@@ -14804,6 +15059,19 @@ def _booking_results_access_denied(user, booking):
         if getattr(booking.equipment, "user_rating_enabled", True) and (booking.rating is None or booking.rating_removed):
             return Response(
                 {"error": "Rating required. Please submit your rating first, then download results."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if _booking_requires_istem_fbr_results_block(booking):
+            return Response(
+                {
+                    "error": (
+                        "Your I-STEM Facility Booking Record (FBR) is not verified yet. "
+                        "Complete your booking on https://www.istem.gov.in/, enter the FBR number here, "
+                        "and wait for the Officer in Charge to verify it before downloading results."
+                    ),
+                    "code": "istem_fbr_not_executed",
+                    "istem_portal_url": _booking_istem_portal_url(booking),
+                },
                 status=status.HTTP_403_FORBIDDEN,
             )
     return None

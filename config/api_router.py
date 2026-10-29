@@ -375,6 +375,8 @@ from iic_booking.equipment.api_views import (
     booking_results_download_link,
     booking_result_attachment_download,
     booking_result_file_download,
+    update_booking_istem_fbr,
+    review_booking_istem_fbr,
     complete_booking,
     add_booking_results,
     refund_booking,
