@@ -173,6 +173,46 @@ def _search_people(user, q: str) -> list[dict[str, Any]] | None:
     ]
 
 
+LAB_STAFF_LIMIT = 6
+
+
+def _search_lab_staff(user, q: str) -> list[dict[str, Any]]:
+    """Officers in Charge and Lab In-charges (operators) whose name matches, with the instruments they look after
+    that the viewer may see. Only the contact details the equipment page already shows (name, email)."""
+    from iic_booking.users.display import name_with_honorific
+
+    from .models import EquipmentManager, EquipmentOperator
+
+    visible = _searchable_equipment_ids(user)
+    if not visible:
+        return []
+    people: dict[tuple[int, str], dict[str, Any]] = {}
+    for model, field, role in (
+        (EquipmentManager, "manager", "Officer in Charge"),
+        (EquipmentOperator, "operator", "Lab In-charge"),
+    ):
+        links = (
+            model.objects.filter(equipment_id__in=visible, **{f"{field}__is_active": True})
+            .filter(**{f"{field}__name__icontains": q})
+            .select_related(field, "equipment")
+            .order_by(f"{field}__name", "equipment__name")
+        )
+        for link in links[:60]:
+            person = getattr(link, field)
+            entry = people.setdefault((person.pk, role), {
+                "id": person.pk,
+                "name": name_with_honorific(person, getattr(link, "honorific", ""), default=person.get_display_name()),
+                "role": role,
+                "email": person.email,
+                "equipment": [],
+            })
+            if all(e["id"] != link.equipment_id for e in entry["equipment"]):
+                entry["equipment"].append({"id": link.equipment_id, "name": link.equipment.name,
+                                           "code": link.equipment.code})
+    rows = sorted(people.values(), key=lambda p: (not p["name"].lower().startswith(q.lower()), p["name"].lower()))
+    return rows[:LAB_STAFF_LIMIT]
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def global_search(request):
@@ -184,6 +224,7 @@ def global_search(request):
         "bookings": [],
         "people": [],
         "people_enabled": False,
+        "lab_staff": [],
         "suggestion": "",
     }
     if len(q) < MIN_CHARS:
@@ -200,4 +241,6 @@ def global_search(request):
         result["people_enabled"] = people is not None
         result["people"] = people or []
         result["staff_view"] = staff_view
+        # Users find the Officer in Charge and Lab In-charge of the instruments they can see, by name.
+        result["lab_staff"] = _search_lab_staff(user, q)
     return Response(result)

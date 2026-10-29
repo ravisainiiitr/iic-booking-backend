@@ -127,3 +127,25 @@ def test_admin_finds_everyone(world):
     assert body["people_enabled"] is True
     assert [p["name"] for p in body["people"]] == ["Bob Singh"]
     assert [b["virtual_booking_id"] for b in body["bookings"]] == ["IICSEM202600012"]
+
+
+# --- lab staff for users -------------------------------------------------------------------------------------------------
+
+def test_users_find_the_officer_in_charge_and_lab_in_charge_by_name(world):
+    from iic_booking.equipment.models import EquipmentOperator
+
+    dept = _department()
+    fesem = _equipment("Field Emission SEM", dept)
+    oic = UserFactory(admin_approved=True, user_type=UserType.MANAGER, name="Meera Sharma")
+    op = UserFactory(admin_approved=True, user_type=UserType.OPERATOR, name="Meenal Rawat")
+    EquipmentManager.objects.create(equipment=fesem, manager=oic)
+    EquipmentOperator.objects.create(equipment=fesem, operator=op)
+    student = UserFactory(admin_approved=True, user_type=UserType.STUDENT, name="Some Student")
+
+    staff = _get(student, "Mee")["lab_staff"]
+    by_role = {row["role"]: row for row in staff}
+    assert set(by_role) == {"Officer in Charge", "Lab In-charge"}
+    assert by_role["Officer in Charge"]["email"] == oic.email
+    assert [e["id"] for e in by_role["Lab In-charge"]["equipment"]] == [fesem.pk]
+    assert _get(student, "Nobody Here")["lab_staff"] == []
+    assert _get(None, "Mee")["lab_staff"] == []  # signed-out visitors do not get staff contacts
