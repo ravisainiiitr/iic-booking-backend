@@ -170,16 +170,19 @@ def test_exclusive_blocks_base_and_siblings_on_its_weekdays_only(family, egs_fac
     assert mode_utils.slot_mode_overlay(ups, egs_factory.slot(ups, start))["mode_overlay"] == "exclusive_sibling"
 
 
-def test_catalog_hides_base_only_on_exclusive_weekday(family):
+def test_catalog_keeps_base_when_bookable_later_in_the_window_and_hides_it_otherwise(family):
     base, depth, _ = family
-    _schedule(base, depth, MONDAY, MONDAY + timedelta(days=13), behavior=ModeScheduleBehavior.EXCLUSIVE, weekdays=[0])
     student = UserFactory(user_type=UserType.STUDENT)
     qs = Equipment.objects.filter(pk__in=[base.pk, depth.pk])
-    assert set(mode_utils.filter_queryset_for_mode_catalog(qs, student, on_date=MONDAY).values_list("pk", flat=True)) == {depth.pk}
-    tuesday = MONDAY + timedelta(days=1)
-    assert set(mode_utils.filter_queryset_for_mode_catalog(qs, student, on_date=tuesday).values_list("pk", flat=True)) == {
+    # Exclusive on Mondays only: on Monday the base is still bookable Tue-Fri, so it stays in the catalogue.
+    _schedule(base, depth, MONDAY, MONDAY + timedelta(days=13), behavior=ModeScheduleBehavior.EXCLUSIVE, weekdays=[0])
+    assert set(mode_utils.filter_queryset_for_mode_catalog(qs, student, on_date=MONDAY).values_list("pk", flat=True)) == {
         base.pk, depth.pk
     }
+    # Exclusive every day of the week (next week not open yet): hidden.
+    EquipmentModeSchedule.objects.filter(parent_equipment=base).delete()
+    _schedule(base, depth, MONDAY, MONDAY + timedelta(days=6), behavior=ModeScheduleBehavior.EXCLUSIVE)
+    assert set(mode_utils.filter_queryset_for_mode_catalog(qs, student, on_date=MONDAY).values_list("pk", flat=True)) == {depth.pk}
 
 
 def test_family_conflict_rule_still_applies_during_exclusive(family, egs_factory):

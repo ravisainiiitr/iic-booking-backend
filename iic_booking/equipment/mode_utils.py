@@ -175,6 +175,48 @@ def is_equipment_visible_on_date(equipment: Equipment, on_date: date) -> bool:
     return not schedules_covering_date(parent_id, on_date, behavior=ModeScheduleBehavior.EXCLUSIVE)
 
 
+def booking_window_end(equipment: Equipment, today: date) -> date:
+    """Last date users may book now: the end of this week, or of next week once next week has opened (the weekly
+    slot-window reference, e.g. Wednesday 21:00)."""
+    from datetime import datetime as dt_class
+
+    from .api_views import get_internal_slot_window_date_bounds
+
+    now = timezone.localtime()
+    at = None if today == now.date() else timezone.make_aware(dt_class.combine(today, now.time()))
+    _min, max_date, _before = get_internal_slot_window_date_bounds(equipment, at=at)
+    return max(max_date or today, today + timedelta(days=6 - today.weekday()))
+
+
+def active_days_in_window(equipment: Equipment, today: Optional[date] = None, *, schedules=None) -> list[date]:
+    """Working days from today to the end of the booking window on which a multi-mode base is not hidden by another
+    mode's exclusive schedule. ``schedules`` (the base's exclusive schedules) avoids a query per day."""
+    from .models import Holiday
+
+    today = today or timezone.localdate()
+    end = booking_window_end(equipment, today)
+    holidays = Holiday.get_holidays_in_range(today, end)
+    if schedules is None:
+        schedules = list(EquipmentModeSchedule.objects.filter(
+            parent_equipment_id=equipment.equipment_id, behavior=ModeScheduleBehavior.EXCLUSIVE))
+    days = []
+    for offset in range((end - today).days + 1):
+        day = today + timedelta(days=offset)
+        if day not in holidays and not any(schedule_covers_date(s, day) for s in schedules):
+            days.append(day)
+    return days
+
+
+def is_equipment_visible_in_booking_window(equipment: Equipment, today: Optional[date] = None) -> bool:
+    """Visible today, or a multi-mode base that is active on some later day users may book now (this week, and
+    next week once it has opened). Its slots on exclusive days stay blocked (``slot_mode_overlay``) and booking
+    re-checks each slot's own date (``equipment_bookable_on_date``)."""
+    today = today or timezone.localdate()
+    if is_equipment_visible_on_date(equipment, today):
+        return True
+    return bool(active_days_in_window(equipment, today))
+
+
 def equipment_bookable_on_date(
     equipment: Equipment, on_date: date, at_time: Optional[time] = None
 ) -> tuple[bool, str]:
@@ -267,7 +309,7 @@ def filter_queryset_for_mode_catalog(queryset: QuerySet, user, *, on_date: Optio
                 eq = Equipment.objects.get(pk=pid)
             except Equipment.DoesNotExist:
                 continue
-            if multimode_enabled_for_equipment(eq):
+            if multimode_enabled_for_equipment(eq) and not active_days_in_window(eq, on_date):
                 hide_parent_ids.append(pid)
 
     if hide_parent_ids:
@@ -312,6 +354,10 @@ def inactive_exclusive_bases(
             continue
         running = next((s for s in schedules if schedule_covers_date(s, on_date)), None)
         if running is None:
+            continue
+        if active_days_in_window(parent, on_date, schedules=schedules):
+            # Another mode runs today, but users may still book this base later in their window (this week, or
+            # next week once it has opened): keep it bookable; today's slots show as blocked.
             continue
         if holidays is None:
             holidays = Holiday.get_holidays_in_range(

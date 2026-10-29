@@ -69,16 +69,65 @@ def _rows(client):
 def test_helper_reports_running_mode_and_next_working_days(nmr):
     base, txi = nmr["base"], nmr["txi"]
     EquipmentModeSchedule.objects.filter(parent_equipment=base).delete()
-    _exclusive(base, txi, MONDAY, MONDAY + timedelta(days=2))
+    _exclusive(base, txi, MONDAY, MONDAY + timedelta(days=6))  # the whole week; next week not open yet
     info = mode_utils.inactive_exclusive_bases([base.pk, txi.pk, nmr["plain"].pk], on_date=MONDAY)
     assert set(info) == {base.pk}
     entry = info[base.pk]
     assert entry["label"] == "Mode not active"
     assert entry["active_mode"] == {"equipment_id": txi.pk, "code": "ZNMRTXI", "name": "NMR TXI probe"}
     assert entry["message"] == "Currently running as NMR TXI probe; booking opens when this mode is active."
-    # Thu, Fri, then Mon (weekend skipped).
-    assert entry["next_active_dates"] == ["2030-01-10", "2030-01-11", "2030-01-14"]
-    assert mode_utils.inactive_exclusive_bases([base.pk], on_date=MONDAY + timedelta(days=3)) == {}
+    # Mon, Tue, Wed of the following week.
+    assert entry["next_active_dates"] == ["2030-01-14", "2030-01-15", "2030-01-16"]
+    assert mode_utils.inactive_exclusive_bases([base.pk], on_date=MONDAY + timedelta(days=7)) == {}
+
+
+def test_base_running_another_mode_today_stays_bookable_when_free_later_this_week(nmr):
+    """APREO: another mode runs Mon-Wed; Thu and Fri of the same week are still bookable."""
+    base, txi = nmr["base"], nmr["txi"]
+    EquipmentModeSchedule.objects.filter(parent_equipment=base).delete()
+    _exclusive(base, txi, MONDAY, MONDAY + timedelta(days=2))
+    assert mode_utils.inactive_exclusive_bases([base.pk], on_date=MONDAY) == {}
+    assert mode_utils.active_days_in_window(base, MONDAY)[0] == MONDAY + timedelta(days=3)
+
+
+def _weekly_release_wednesday_2100():
+    from datetime import time
+
+    from iic_booking.equipment.models import InternalUserSlotWindowSetting
+
+    InternalUserSlotWindowSetting.objects.all().delete()
+    InternalUserSlotWindowSetting.objects.create(reference_weekday=2, reference_time=time(21, 0))
+
+
+def test_apreo_case_with_the_release_time_set_on_the_instrument(nmr):
+    """Live APREO on 2026-10-29: EBSD exclusive Mon 26 Oct - Sun 1 Nov, release Wednesday 21:00 set on the
+    instrument itself; on Thursday the base must be bookable (next week is open and free)."""
+    from datetime import time
+
+    base, txi = nmr["base"], nmr["txi"]
+    base.slot_window_reference_weekday, base.slot_window_reference_time = 2, time(21, 0)
+    base.save(update_fields=["slot_window_reference_weekday", "slot_window_reference_time"])
+    EquipmentModeSchedule.objects.filter(parent_equipment=base).delete()
+    _exclusive(base, txi, MONDAY, MONDAY + timedelta(days=6))
+    thursday = MONDAY + timedelta(days=3)
+    assert mode_utils.inactive_exclusive_bases([base.pk], on_date=thursday) == {}
+    assert mode_utils.active_days_in_window(base, thursday)[0] == MONDAY + timedelta(days=7)
+
+
+def test_from_wednesday_2100_next_week_counts_and_the_base_becomes_bookable(nmr):
+    """Another mode runs all of this week; from Wednesday 21:00 next week is open and the base is free then."""
+    base, txi = nmr["base"], nmr["txi"]
+    _weekly_release_wednesday_2100()
+    EquipmentModeSchedule.objects.filter(parent_equipment=base).delete()
+    _exclusive(base, txi, MONDAY, MONDAY + timedelta(days=6))
+    wednesday, thursday = MONDAY + timedelta(days=2), MONDAY + timedelta(days=3)
+    assert mode_utils.booking_window_end(base, thursday) == MONDAY + timedelta(days=13)
+    assert set(mode_utils.inactive_exclusive_bases([base.pk], on_date=thursday)) == set()
+    assert mode_utils.is_equipment_visible_in_booking_window(base, thursday) is True
+    # Monday of this week: next week has not opened, so the base is still not bookable.
+    assert set(mode_utils.inactive_exclusive_bases([base.pk], on_date=MONDAY)) == {base.pk}
+    assert mode_utils.is_equipment_visible_in_booking_window(base, MONDAY) is False
+    assert wednesday < thursday
 
 
 def test_helper_ignores_families_with_multi_mode_off_and_staff(nmr):

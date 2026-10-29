@@ -1539,10 +1539,10 @@ def user_can_see_equipment(user, equipment, *, mode_rules: bool = True):
     if user and user.is_authenticated and user.user_type == UserType.DEPT_ADMIN:
         dept_id = getattr(user, "department_id", None)
         if dept_id and getattr(equipment, "internal_department_id", None) == dept_id:
-            from .mode_utils import is_equipment_visible_on_date, is_staff_bypass_user
+            from .mode_utils import is_equipment_visible_in_booking_window, is_staff_bypass_user
             if is_staff_bypass_user(user) or not mode_rules:
                 return True
-            return is_equipment_visible_on_date(equipment, timezone.localdate())
+            return is_equipment_visible_in_booking_window(equipment)
         return False
 
     if user and user.is_authenticated and user.user_type == UserType.MANAGER:
@@ -1567,10 +1567,10 @@ def user_can_see_equipment(user, equipment, *, mode_rules: bool = True):
         visible = False
     if not visible:
         return False
-    from .mode_utils import is_equipment_visible_on_date, is_staff_bypass_user
+    from .mode_utils import is_equipment_visible_in_booking_window, is_staff_bypass_user
     if is_staff_bypass_user(user) or not mode_rules:
         return True
-    return is_equipment_visible_on_date(equipment, timezone.localdate())
+    return is_equipment_visible_in_booking_window(equipment)
 
 def equipment_visibility_denied_response(user):
     """
