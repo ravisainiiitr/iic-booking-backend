@@ -25,7 +25,7 @@ def state(seed):
 def test_production_like_matrix():
     m = compute_initial_matrix([IIC, TL, CHEM], PROD_TRAINING)
     assert {k: state(v) for k, v in m[33].items()} == {
-        "dsa": "on", "remote_analysis": "on", "training": "on", "courier_tracking": "on"
+        "dsa": "on", "remote_analysis": "on", "training": "on", "courier_tracking": "test-only"  # external workflow pilot
     }
     assert {k: state(v) for k, v in m[47].items()} == {
         "dsa": "off", "remote_analysis": "off", "training": "test-only", "courier_tracking": "off"

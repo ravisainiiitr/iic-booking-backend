@@ -1,4 +1,4 @@
-"""Add the Courier Tracking module switch and seed it: on for IIC, off for every other department.
+"""Add the Courier Tracking module switch and seed it: on for IIC test accounts (pilot), off for every other department.
 
 Self-contained (historical models only). Creates only missing rows; never changes an existing one. Departments created
 later start off through ``services.start_new_department_off``. Reversing removes only the rows this migration seeded
@@ -11,7 +11,7 @@ from django.utils import timezone
 COURIER_TRACKING = "courier_tracking"
 IIC_CODES = {"IIC"}
 IIC_NAMES = {"institute instrumentation centre", "institute instrumentation center"}
-SEED_NOTE_ON = "IIC (central facility): courier tracking on by default"
+SEED_NOTE_ON = "IIC (central facility): courier tracking on for test accounts (external workflow pilot)"
 SEED_NOTE_OFF = "courier tracking starts off; enable it explicitly"
 
 
@@ -34,7 +34,7 @@ def seed_courier_tracking(apps, schema_editor):
             department_id=dept.pk,
             module_key=COURIER_TRACKING,
             enabled=enabled,
-            test_users_only=False,
+            test_users_only=enabled,
             disabled_at=None if enabled else now,
             source="seed",
             seed_note=note,
@@ -46,7 +46,7 @@ def seed_courier_tracking(apps, schema_editor):
             actor=None,
             action="module.seeded",
             old_value={},
-            new_value={"enabled": enabled, "test_users_only": False, "configured": True},
+            new_value={"enabled": enabled, "test_users_only": enabled, "configured": True},
             reason=f"Initial state: {note}",
             created_at=now,
         )

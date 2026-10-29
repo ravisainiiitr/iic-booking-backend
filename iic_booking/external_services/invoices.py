@@ -311,6 +311,9 @@ def queue_completed(*, limit: int = 300) -> dict:
     )
     counts = {"queued": 0, "skipped": 0, "incomplete": 0}
     for booking in candidates:
+        if not is_external_booking_user(booking.user):  # piloted users only (see pilot.py)
+            counts["skipped"] += 1
+            continue
         pref = current_preference(booking)
         wants = (pref is not None and pref.option == InvoiceOption.AFTER_ANALYSIS) or (
             pref is None and s.auto_request_without_preference

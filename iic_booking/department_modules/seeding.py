@@ -68,7 +68,7 @@ def is_iic(facts: DepartmentFacts) -> bool:
 
 def _courier_tracking_seed(facts: DepartmentFacts) -> Seed:
     if is_iic(facts):
-        return Seed(True, False, "IIC (central facility): courier tracking on by default")
+        return Seed(True, True, "IIC (central facility): courier tracking on for test accounts (external workflow pilot)")
     return Seed(False, False, "courier tracking starts off; enable it explicitly")
 
 
