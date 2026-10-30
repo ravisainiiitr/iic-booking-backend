@@ -957,8 +957,8 @@ class PIChargeProfileWriteSerializer(serializers.Serializer):
     time_formula = serializers.CharField(
         allow_blank=True, allow_null=True, required=False
     )
-    charge_formula = serializers.CharField(allow_blank=True, required=False, default='')
-    display_text = serializers.CharField(allow_blank=True, required=False, default='')
+    charge_formula = serializers.CharField(allow_blank=True, allow_null=True, required=False, default='')  # null = none (a new form row)
+    display_text = serializers.CharField(allow_blank=True, allow_null=True, required=False, default='')
 
 
 class EquipmentSpecificationSerializer(serializers.ModelSerializer):
@@ -1436,6 +1436,7 @@ class SlotMasterSerializer(serializers.ModelSerializer):
     class Meta:
         model = SlotMaster
         fields = [
+            'id',
             'slot_number',
             'slot_name',
             'open_time',
@@ -1444,7 +1445,7 @@ class SlotMasterSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at'
         ]
-        read_only_fields = ['created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
         extra_kwargs = {'close_time': {'help_text': SLOT_MASTER_CLOSE_TIME_HELP}}
 
 
@@ -2639,8 +2640,8 @@ class ChargeProfileWriteSerializer(serializers.Serializer):
     secondary_unit_charge = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, default=0)
     breakpoint = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True, required=False)
     time_formula = serializers.CharField(allow_blank=True, allow_null=True, required=False)
-    charge_formula = serializers.CharField(allow_blank=True, required=False, default='')
-    display_text = serializers.CharField(allow_blank=True, required=False, default='')
+    charge_formula = serializers.CharField(allow_blank=True, allow_null=True, required=False, default='')  # null = none (a new form row)
+    display_text = serializers.CharField(allow_blank=True, allow_null=True, required=False, default='')
 
 
 class SlotCloseTimeField(serializers.TimeField):
@@ -2668,7 +2669,7 @@ class MultiParamDefinitionWriteSerializer(serializers.Serializer):
     param_code = serializers.CharField(max_length=50)
     unit_time_minutes = serializers.IntegerField()
     unit_charge = serializers.DecimalField(max_digits=10, decimal_places=2)
-    display_text = serializers.CharField(allow_blank=True, required=False, default='')
+    display_text = serializers.CharField(allow_blank=True, allow_null=True, required=False, default='')
     is_active = serializers.BooleanField(default=True)
 
 
@@ -2823,6 +2824,9 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         return value
 
     def validate_slot_masters(self, value):
+        numbers = [item.get("slot_number") for item in value or []]
+        if len(numbers) != len(set(numbers)):
+            raise serializers.ValidationError("Each slot needs its own slot number; two rows have the same number.")
         error = slot_masters_conflict(
             [(item.get("open_time"), item.get("close_time")) for item in value or [] if item.get("is_active", True)]
         )
@@ -3699,12 +3703,7 @@ def _sync_related(equipment, inlines, actor=None):
             if profile.user_type not in payload_user_types and profile.booking_count == 0:
                 profile.delete()
     if inlines.get('slot_masters') is not None:
-        SlotMaster.objects.filter(equipment=equipment).delete()
-        for item in inlines['slot_masters']:
-            SlotMaster.objects.create(
-                equipment=equipment, slot_number=item['slot_number'], slot_name=item.get('slot_name') or '',
-                open_time=item['open_time'], close_time=item['close_time'], is_active=item.get('is_active', True),
-            )
+        _sync_slot_masters(equipment, inlines['slot_masters'])
     if inlines.get('print_materials') is not None:
         _upsert_fabrication_materials(
             PrintMaterial,
@@ -3734,6 +3733,67 @@ def _sync_related(equipment, inlines, actor=None):
                 display_text=item.get('display_text') or '',
                 is_active=item.get('is_active', True),
             )
+
+
+def _sync_slot_masters(equipment, items) -> None:
+    """Update the equipment's slot masters in place from the form rows.
+
+    Daily slots (and so bookings) hang off slot masters with CASCADE, so masters are never deleted and recreated:
+    each row updates the master with its id (or, without an id, the one with its slot number), new rows create one.
+    A master no longer listed loses its future unbooked daily slots; it is deleted when nothing else references it,
+    otherwise kept inactive (booked and past slots stay intact) under a free slot number.
+    """
+    from django.utils import timezone
+
+    existing = {m.pk: m for m in SlotMaster.objects.select_for_update().filter(equipment=equipment)}
+    by_number = {m.slot_number: m for m in existing.values()}
+    claimed: set[int] = set()
+    plan = []
+    for item in items:
+        master = existing.get(item.get('id')) if item.get('id') else None
+        if master is None or master.pk in claimed:
+            master = by_number.get(item['slot_number'])
+            if master is not None and master.pk in claimed:
+                master = None
+        if master is not None:
+            claimed.add(master.pk)
+        plan.append((master, item))
+
+    today = timezone.localdate()
+    wanted_numbers = {item['slot_number'] for item in items}
+    spare = max([*wanted_numbers, *by_number.keys(), 0]) + 1
+    for pk, master in existing.items():
+        if pk in claimed:
+            continue
+        master.daily_slots.filter(booking__isnull=True, date__gte=today).delete()
+        if master.daily_slots.exists():
+            master.is_active = False
+            if master.slot_number in wanted_numbers:
+                master.slot_number = spare
+                spare += 1
+            master.save(update_fields=['is_active', 'slot_number', 'updated_at'])
+        else:
+            master.delete()
+
+    # Two steps so renumbering (e.g. swapping 1 and 2) never trips the (equipment, slot_number) unique constraint.
+    for master, _item in plan:
+        if master is not None:
+            master.slot_number = -master.pk
+            master.save(update_fields=['slot_number'])
+    for master, item in plan:
+        fields = {
+            'slot_number': item['slot_number'],
+            'slot_name': item.get('slot_name') or '',
+            'open_time': item['open_time'],
+            'close_time': item['close_time'],
+            'is_active': item.get('is_active', True),
+        }
+        if master is None:
+            SlotMaster.objects.create(equipment=equipment, **fields)
+        else:
+            for key, value in fields.items():
+                setattr(master, key, value)
+            master.save()
 
 
 def _booking_breakdown_suffix_start_index(stored: list) -> int:
