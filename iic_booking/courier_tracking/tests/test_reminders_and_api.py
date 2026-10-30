@@ -153,8 +153,27 @@ def test_courier_list_endpoint_and_unavailable_catalog(provider, external_user, 
     from .conftest import FakeResponse
 
     provider.couriers_response = FakeResponse(503, None)
+    response = client_for(external_user).get(f"{API}/couriers/")  # never loaded: the built-in list
+    assert response.status_code == 200 and response.data["fresh"] is False
+    assert {"slug": "speedpost", "name": "Speed Post"} in response.data["couriers"]
+
+
+def test_without_an_api_key_the_built_in_list_lets_users_register(settings, external_booking, external_user, no_queue):
+    from iic_booking.courier_tracking.models import Courier, SampleArrival
+
+    settings.TRACKCOURIER_API_KEY = ""
+    Courier.objects.all().delete()
+    CourierTrackingSettings.objects.update(catalog_refreshed_at=None)
     response = client_for(external_user).get(f"{API}/couriers/")
-    assert response.status_code == 503 and response.data["code"] == "catalog_unavailable"
+    assert response.status_code == 200 and response.data["count"] == 9
+    assert Courier.objects.filter(slug="professional", is_active=True).exists()
+    response = client_for(external_user).post(
+        f"{API}/bookings/{external_booking.pk}/arrival/",
+        {"arrival_mode": "COURIER", "courier_slug": "speedpost", "tracking_number": "EE123456789IN"},
+        format="json",
+    )
+    assert response.status_code in (200, 201), response.data
+    assert SampleArrival.objects.filter(booking=external_booking, courier_slug="speedpost").exists()
 
 
 def test_staff_search_covers_booking_equipment_user_and_number(catalog, iic, external_user, no_queue):

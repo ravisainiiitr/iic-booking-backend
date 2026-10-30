@@ -81,14 +81,41 @@ def refresh_catalog(client: TrackCourierClient | None = None) -> bool:
     return True
 
 
+# Used only while the provider's list has never been loaded (no API key yet, or TrackCourier.io unreachable), so users
+# can still register the courier and AWB number; tracking checks wait for the API key. Slugs are TrackCourier.io's,
+# so the first successful refresh keeps these rows (and marks any it does not list inactive).
+BUILT_IN_COURIERS = (
+    ("bluedart", "Blue Dart"),
+    ("delhivery", "Delhivery"),
+    ("dtdc", "DTDC"),
+    ("indiapost", "India Post"),
+    ("indiapostinternational", "India Post International"),
+    ("speedpost", "Speed Post"),
+    ("shreemaruti", "Shree Maruti"),
+    ("arccarrier", "ARC Carrier"),
+    ("professional", "Professional Courier"),
+)
+
+
+def _seed_built_in_couriers() -> None:
+    if Courier.objects.exists():
+        return
+    now = timezone.now()
+    for slug, name in BUILT_IN_COURIERS:
+        Courier.objects.get_or_create(slug=slug, defaults={"name": name, "is_active": True, "last_seen_at": now})
+
+
 def catalog(*, refresh_if_stale: bool = True) -> tuple[list[dict], bool]:
-    """(couriers, fresh). An empty list means it has never been loaded: callers must show an error, not an empty
-    selector. ``fresh`` is False when the stored list is older than a day and could not be refreshed."""
+    """(couriers, fresh). ``fresh`` is False when the stored list is older than a day and could not be refreshed.
+    When the provider's list has never been loaded, the built-in list is used (``fresh`` False); an empty result
+    then means even that could not be stored, and callers must show an error, not an empty selector."""
     cfg = CourierTrackingSettings.load()
     stale = not cfg.catalog_refreshed_at or timezone.now() - cfg.catalog_refreshed_at > CATALOG_MAX_AGE
     fresh = not stale
     if stale and refresh_if_stale:
         fresh = refresh_catalog()
+    if not fresh and not cfg.catalog_refreshed_at:
+        _seed_built_in_couriers()
     couriers = list(Courier.objects.filter(is_active=True).order_by("name").values("slug", "name"))
     return couriers, fresh
 
