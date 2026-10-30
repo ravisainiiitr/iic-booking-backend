@@ -36,7 +36,10 @@ def _dates(config):
 
 def test_external_booking_outside_the_window_is_refused_by_the_api(factory):
     eq = factory.equipment()
-    config = enable_window()
+    # The window starts two weeks out, so the day before it (a Friday) is always in the future: with a one-week
+    # offset it is this week's Friday, already started on Friday afternoons and past at weekends, and the API then
+    # refuses the slot as unavailable before the window is checked.
+    config = enable_window(first_week_offset_weeks=2)
     before, _inside, after = _dates(config)
     user = make_user()
     for d in (before, after):
