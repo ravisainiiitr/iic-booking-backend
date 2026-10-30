@@ -37,6 +37,11 @@ from iic_booking.users.repositories.wallet_repository import SubWalletRepository
 
 logger = logging.getLogger(__name__)
 
+# The institute's gateway arrangement does not support refunds to the card or bank account; every refund goes to the
+# user's wallet.
+GATEWAY_REFUNDS_SUPPORTED = False
+GATEWAY_REFUNDS_UNSUPPORTED = "Refunds through the payment gateway are not supported. Refunds are credited to the wallet."
+
 
 class RazorpayNotConfigured(Exception):
     pass
@@ -499,7 +504,11 @@ def create_refund(
     reason: str = "",
     initiated_by=None,
 ) -> PaymentRefund:
-    payment = Payment.objects.select_for_update().select_related("payment_order").get(pk=payment.pk)
+    """Refund a captured payment through Razorpay. Closed while ``GATEWAY_REFUNDS_SUPPORTED`` is False: refunds are
+    credited to the user's wallet instead (``refund_booking_internal``)."""
+    if not GATEWAY_REFUNDS_SUPPORTED:
+        raise RazorpayServiceError(GATEWAY_REFUNDS_UNSUPPORTED)
+    payment =Payment.objects.select_for_update().select_related("payment_order").get(pk=payment.pk)
     if payment.status == PaymentStatus.REFUNDED:
         existing = payment.refunds.order_by("-created_at").first()
         if existing:

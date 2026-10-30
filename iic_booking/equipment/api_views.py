@@ -12768,8 +12768,8 @@ def refund_booking_internal(booking, refund_notes, performed_by):
     Used by refund_booking API and by admin slot status change when marking booked slots as Blocked/Maintenance/Operator absent.
     Raises Exception on failure.
 
-    If the booking balance was paid via Razorpay, refunds the gateway capture and credits only the
-    wallet-applied portion (avoids double-paying the shortfall).
+    Refunds always go to the wallet, also for a balance paid through Razorpay: refunds through the payment
+    gateway are not supported (see ``razorpay_service.create_refund``).
     """
     if booking.status == BookingStatus.REFUNDED:
         raise ValueError("Booking has already been refunded.")
@@ -12792,17 +12792,8 @@ def refund_booking_internal(booking, refund_notes, performed_by):
 
     from .booking_paid_amount import booking_paid_charge, clear_pending_charge_difference
 
-    razorpay_payment = None
+    # Everything paid (wallet and gateway alike) is credited to the wallet.
     wallet_credit = booking_paid_charge(booking)
-    try:
-        from iic_booking.payments.razorpay_service import get_successful_booking_payment, create_refund
-
-        razorpay_payment = get_successful_booking_payment(booking)
-        if razorpay_payment:
-            # Gateway portion returns via Razorpay; wallet portion only to sub-wallet
-            wallet_credit = Decimal(str(getattr(booking, "wallet_amount_applied", 0) or 0))
-    except Exception:
-        razorpay_payment = None
 
     with transaction.atomic():
         previous_status = booking.status
@@ -12810,23 +12801,6 @@ def refund_booking_internal(booking, refund_notes, performed_by):
             booking=None,
             status=released_slot_status_after_booking_freed(booking.equipment),
         )
-
-        if razorpay_payment:
-            try:
-                create_refund(
-                    razorpay_payment,
-                    amount=None,
-                    reason=refund_notes or f"Booking #{booking.booking_id} refund",
-                    initiated_by=performed_by,
-                )
-            except Exception as e:
-                logger.error(
-                    "Razorpay refund failed for booking %s: %s",
-                    booking.booking_id,
-                    e,
-                    exc_info=True,
-                )
-                raise ValueError(f"Razorpay refund failed: {e}") from e
 
         refund_transaction = None
         if wallet_credit > 0:
@@ -12841,12 +12815,10 @@ def refund_booking_internal(booking, refund_notes, performed_by):
                 related_user=booking.user,
             )
         booking.status = BookingStatus.REFUNDED
-        refund_update_fields = ["status"]
-        if not razorpay_payment:
-            refund_update_fields += clear_pending_charge_difference(booking)
+        refund_update_fields = ["status"] + clear_pending_charge_difference(booking)
         booking.save(update_fields=refund_update_fields)
 
-        refunded_total = Decimal(str(booking.total_charge or 0)) if razorpay_payment else wallet_credit
+        refunded_total = wallet_credit
         create_booking_event(
             booking=booking,
             event_type=BookingEventType.REFUNDED,
