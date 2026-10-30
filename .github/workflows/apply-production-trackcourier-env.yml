@@ -1,0 +1,84 @@
+# Apply TRACKCOURIER_* from GitHub secrets into production .django env and restart django, celeryworker and celerybeat
+# (tracking checks run in Celery). Does not echo secret values; prints only whether each key is set.
+# Secrets: TRACKCOURIER_API_KEY (required), TRACKCOURIER_WEBHOOK_SECRET (optional; empty keeps the webhook refusing).
+name: Apply Production TrackCourier Env
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type TRACKCOURIER to write the keys into production and restart the backend
+        required: true
+        default: ''
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Upsert TRACKCOURIER keys into .envs/.production/.django and restart
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          TRACKCOURIER_API_KEY: ${{ secrets.TRACKCOURIER_API_KEY }}
+          TRACKCOURIER_WEBHOOK_SECRET: ${{ secrets.TRACKCOURIER_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          if [[ "${CONFIRM}" != "TRACKCOURIER" ]]; then
+            echo "Refusing: confirm must be exactly TRACKCOURIER"; exit 2
+          fi
+          if [[ -z "${TRACKCOURIER_API_KEY:-}" ]]; then
+            echo "Secret TRACKCOURIER_API_KEY is not set in this repository"; exit 1
+          fi
+          DEPLOY=""
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              DEPLOY="$d"
+              break
+            fi
+          done
+          test -n "$DEPLOY"
+          echo "deploy_path=$DEPLOY"
+          ENV_FILE="$DEPLOY/.envs/.production/.django"
+          test -f "$ENV_FILE"
+          export ENV_FILE
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          env_file = Path(os.environ["ENV_FILE"])
+          values = {
+              "TRACKCOURIER_API_KEY": (os.environ.get("TRACKCOURIER_API_KEY") or "").strip(),
+              "TRACKCOURIER_WEBHOOK_SECRET": (os.environ.get("TRACKCOURIER_WEBHOOK_SECRET") or "").strip(),
+          }
+          for k, v in values.items():
+              if any(c in v for c in "\r\n"):
+                  raise SystemExit(f"{k} contains a line break")
+          # An empty optional secret leaves an existing value alone instead of clearing it.
+          keys = [k for k, v in values.items() if v]
+          lines = env_file.read_text(encoding="utf-8", errors="replace").splitlines()
+          seen, out = set(), []
+          for line in lines:
+              stripped = line.strip()
+              key = next((k for k in keys if stripped.startswith(k + "=") or stripped.startswith(k + " =")), None)
+              if key:
+                  out.append(f"{key}={values[key]}")
+                  seen.add(key)
+              else:
+                  out.append(line)
+          for k in keys:
+              if k not in seen:
+                  out.append(f"{k}={values[k]}")
+          env_file.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+          print("upserted_keys=", ",".join(keys))
+          for k in values:
+              print(f"{k}_set=", bool(values[k]))
+          PY
+          cd "$DEPLOY"
+          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps django celeryworker celerybeat
+          sleep 10
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          echo "django_container=$CID"
+          test -n "$CID"
+          docker exec -w /app -e PYTHONPATH=/app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python -u -c "import django; django.setup(); from django.conf import settings; print('RUNTIME_TRACKCOURIER_API_KEY_SET=', bool(getattr(settings, 'TRACKCOURIER_API_KEY', ''))); print('RUNTIME_TRACKCOURIER_WEBHOOK_SECRET_SET=', bool(getattr(settings, 'TRACKCOURIER_WEBHOOK_SECRET', ''))); from iic_booking.courier_tracking.services import refresh_catalog; print('COURIER_CATALOG_REFRESHED=', refresh_catalog())"
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'django|celery' || true
