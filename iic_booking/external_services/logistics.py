@@ -15,6 +15,11 @@ Access rules (all server-side):
   3. Any later scan by them (or by the Main Administrator) shows the booking details only.
   Both steps go through the existing sample-status endpoint as the scanning user, so its rules and side effects
   (external order of steps, results folder) apply unchanged. Anyone else gets "not found".
+* Courier details by scanning (``courier_status`` / ``courier_submit``): before office receipt, whoever opens the QR
+  link without being receiving staff (normally the sender, from a phone camera, signed in or not) may give the
+  courier and tracking number once. They are recorded for the booking's owner exactly as the portal records them;
+  after that, or once the portal holds courier details, the label only shows them and changes go through the portal.
+  The owner is emailed. Nothing personal is shown to an anonymous scanner.
 """
 
 from __future__ import annotations
@@ -44,6 +49,8 @@ PHONE_RE = re.compile(r"^[0-9+\-\s()]{6,20}$")
 REFERENCE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L
 RECEIVED_STATUSES = ("HELD_AT_OFFICE", "FORWARDED_TO_LAB", "SAMPLE_ACCEPTED", "SAMPLE_REJECTED", "PROCESSING",
                      "COMPLETED", "RETURNED")
+LABEL_OPEN_BOOKING_STATUSES = ("PENDING", "PENDING_PAYMENT", "BOOKED", "HOLD")
+COURIER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .&()'-]{1,79}$")
 
 
 class LogisticsError(Exception):
@@ -354,7 +361,7 @@ def create_sample_label(user, booking_id, data: dict) -> tuple[SampleShipmentLab
     booking = _booking_for_owner(user, booking_id)
     if not is_external_booking(booking):
         raise LogisticsError("Shipment labels are for external bookings.", status=403, code="not_external")
-    if booking.status not in ("PENDING", "PENDING_PAYMENT", "BOOKED", "HOLD"):
+    if booking.status not in LABEL_OPEN_BOOKING_STATUSES:
         raise LogisticsError("This booking is no longer waiting for a sample.", code="booking_closed")
     try:
         count = int(data.get("sample_count") or 1)
@@ -634,3 +641,128 @@ def scan(user, token) -> dict:
         )
     label.refresh_from_db()
     return {**_scan_details(label), "outcome": outcome, "message": message, "role": role}
+
+
+# --- first scan: courier details from the sender ---------------------------------------------------------------------
+
+def _tracking_tail(number: str) -> str:
+    """The last four characters only: enough for the sender to recognise it, not to track the parcel."""
+    return f"…{number[-4:]}" if len(number) > 4 else number
+
+
+def _recorded_courier(booking) -> Optional[dict]:
+    """The courier details already held for the booking (from a scan or the portal), or None."""
+    from iic_booking.courier_tracking.constants import ArrivalMode
+    from iic_booking.courier_tracking.models import SampleArrival
+    from iic_booking.equipment.models import SampleTraceStatus
+
+    arrival = SampleArrival.objects.filter(booking=booking, is_active=True, arrival_mode=ArrivalMode.COURIER).first()
+    if arrival is not None:
+        return {"courier_name": arrival.courier_name, "tracking_tail": _tracking_tail(arrival.tracking_number)}
+    sent = booking.sample_trace_events.filter(status=SampleTraceStatus.SAMPLE_SENT).order_by("created_at", "id").first()
+    if sent is not None:
+        name, _, number = (sent.tracking_id or "").rpartition(":")
+        return {"courier_name": name.strip(), "tracking_tail": _tracking_tail(number.strip())}
+    return None
+
+
+def _courier_lock_reason(label: SampleShipmentLabel, booking) -> str:
+    """Why courier details can no longer be given through this label ("" when they can)."""
+    if label.courier_recorded_at is not None:
+        return ("The courier details were already given by scanning this label. They can be changed only on the "
+                "portal (My Bookings).")
+    if _recorded_courier(booking) is not None:
+        return "The courier details are already recorded on the portal. They can be changed only there."
+    if booking.sample_trace_events.filter(status__in=RECEIVED_STATUSES).exists():
+        return "IIC has already received this sample."
+    if booking.status not in LABEL_OPEN_BOOKING_STATUSES:
+        return "This booking is no longer waiting for a sample."
+    return ""
+
+
+def _courier_view(label: SampleShipmentLabel, booking) -> dict:
+    """What anyone holding the label may see: the label's own printed facts, never the user's contact details."""
+    from iic_booking.courier_tracking.eligibility import arrival_eligibility
+    from iic_booking.courier_tracking.services import catalog
+
+    equipment = booking.equipment
+    department = getattr(equipment, "internal_department", None)
+    reason = _courier_lock_reason(label, booking)
+    tracked = arrival_eligibility(booking.user, booking).courier_allowed if not reason else False
+    view = {
+        "label_reference": label.reference,
+        "booking_reference": getattr(booking, "virtual_booking_id", "") or booking.pk,
+        "equipment": equipment.name,
+        "lab": getattr(department, "name", "") or "",
+        "sample_count": label.sample_count,
+        "can_submit": not reason,
+        "reason": reason,
+        "recorded": _recorded_courier(booking),
+        # With courier tracking on for the department the courier is picked from the provider's list (so the parcel
+        # can be followed); otherwise its name is typed.
+        "courier_list": tracked,
+        "couriers": [],
+    }
+    if tracked:
+        view["couriers"], _ = catalog(refresh_if_stale=False)  # an anonymous page never spends provider calls
+    return view
+
+
+def courier_status(token: str) -> dict:
+    label = _label_by_token(token)
+    if label is None:
+        raise LogisticsError("This label was not found.", status=404, code="not_found")
+    return _courier_view(label, label.booking)
+
+
+def courier_submit(token: str, *, courier_slug: str = "", courier_name: str = "", tracking_number: str = "") -> dict:
+    """Record the courier and tracking number given by scanning the label, once, for the booking's owner."""
+    from iic_booking.courier_tracking.constants import ArrivalMode
+    from iic_booking.courier_tracking.eligibility import arrival_eligibility
+    from iic_booking.courier_tracking.parsing import normalize_tracking_number, tracking_number_problem
+    from iic_booking.courier_tracking.services import ArrivalError, ArrivalInput, register_arrival
+    from iic_booking.equipment.models import Booking, BookingSampleTrace, SampleTraceStatus
+
+    label = _label_by_token(token)
+    if label is None:
+        raise LogisticsError("This label was not found.", status=404, code="not_found")
+    with transaction.atomic():
+        booking = Booking.objects.select_for_update(of=("self",)).select_related("equipment", "user").get(pk=label.booking_id)
+        label = SampleShipmentLabel.objects.select_for_update().get(pk=label.pk)
+        if label.revoked_at is not None:
+            raise LogisticsError("This label was replaced by a newer one.", status=404, code="not_found")
+        reason = _courier_lock_reason(label, booking)
+        if reason:
+            raise LogisticsError(reason, status=409, code="courier_locked")
+        if arrival_eligibility(booking.user, booking).courier_allowed:
+            try:
+                arrival = register_arrival(booking.user, booking, ArrivalInput(
+                    arrival_mode=ArrivalMode.COURIER, courier_slug=courier_slug, tracking_number=tracking_number,
+                    notes="Given by scanning the sample label.", email_updates=True,
+                ))
+            except ArrivalError as exc:
+                raise LogisticsError(exc.message, status=exc.status, code=exc.code, field=exc.field) from exc
+            name, number = arrival.courier_name, arrival.tracking_number
+        else:
+            name = re.sub(r"\s+", " ", courier_name or "").strip()
+            if not COURIER_NAME_RE.match(name):
+                raise LogisticsError("Enter the courier company's name.", field="courier_name")
+            number = normalize_tracking_number((tracking_number or "")[:64])
+            problem = tracking_number_problem("", number)
+            if problem:
+                raise LogisticsError(problem, field="tracking_number")
+            BookingSampleTrace.objects.create(booking=booking, status=SampleTraceStatus.SAMPLE_SENT,
+                                              tracking_id=f"{name}: {number}", created_by=booking.user)
+        label.courier_recorded_at = timezone.now()
+        label.save(update_fields=["courier_recorded_at"])
+        SampleReceiptScan.objects.create(label=label, staff=None, action="courier", notes=f"{name}: {number}"[:500])
+        reference = getattr(booking, "virtual_booking_id", "") or booking.pk
+        notifications.notify(
+            f"sample:{booking.pk}:courier", [booking.user],
+            title=f"Courier details recorded for booking {reference}",
+            message=(f"The sample label of booking {reference} was scanned and these courier details were recorded: "
+                     f"{name}, tracking number {number}. If they are not right, change them under My Bookings; "
+                     "the label cannot be used to change them again."),
+            link=f"/my-bookings?booking={booking.pk}",
+        )
+    return _courier_view(label, booking)

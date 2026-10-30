@@ -79,6 +79,8 @@ urlpatterns = [
     path("staff/sample-receipt/lookup/", views.staff_sample_lookup, name="staff-sample-lookup"),
     path("staff/sample-receipt/confirm/", views.staff_sample_confirm, name="staff-sample-confirm"),
     path("staff/sample-receipt/scan/", views.staff_sample_scan, name="staff-sample-scan"),
+    path("sample-label/courier/status/", views.sample_label_courier_status, name="sample-label-courier-status"),
+    path("sample-label/courier/", views.sample_label_courier_submit, name="sample-label-courier"),
     # Accounts In Charge
     path("staff/invoice-requests/", views.staff_invoice_requests, name="staff-invoice-requests"),
     path("staff/invoice-requests/<int:request_id>/upload/", views.staff_invoice_upload, name="staff-invoice-upload"),

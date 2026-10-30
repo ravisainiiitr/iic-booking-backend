@@ -612,6 +612,11 @@ class SampleShipmentLabel(models.Model):
     created_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, related_name="+")
     created_at = models.DateTimeField(auto_now_add=True)
     revoked_at = models.DateTimeField(null=True, blank=True)
+    courier_recorded_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text=_("When the courier and tracking number were given by scanning this label (once; later changes "
+                    "only through the portal)."),
+    )
 
     class Meta:
         ordering = ["-created_at"]
