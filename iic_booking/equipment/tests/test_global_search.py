@@ -149,3 +149,22 @@ def test_users_find_the_officer_in_charge_and_lab_in_charge_by_name(world):
     assert [e["id"] for e in by_role["Lab In-charge"]["equipment"]] == [fesem.pk]
     assert _get(student, "Nobody Here")["lab_staff"] == []
     assert _get(None, "Mee")["lab_staff"] == []  # signed-out visitors do not get staff contacts
+
+
+def test_equipment_hits_list_their_officer_in_charge_and_lab_in_charge(world):
+    from iic_booking.equipment.models import EquipmentOperator
+
+    dept = _department()
+    fesem = _equipment("Field Emission SEM", dept)
+    oic = UserFactory(admin_approved=True, user_type=UserType.MANAGER, name="Meera Sharma")
+    op = UserFactory(admin_approved=True, user_type=UserType.OPERATOR, name="Meenal Rawat")
+    EquipmentManager.objects.create(equipment=fesem, manager=oic)
+    EquipmentOperator.objects.create(equipment=fesem, operator=op)
+
+    for viewer in (UserFactory(admin_approved=True, user_type=UserType.STUDENT), oic):
+        hit = next(e for e in _get(viewer, "Field Emission")["equipment"] if e["id"] == fesem.pk)
+        assert {(s["role"], s["email"]) for s in hit["lab_staff"]} == {
+            ("Officer in Charge", oic.email), ("Lab In-charge", op.email),
+        }
+    public = next(e for e in _get(None, "Field Emission")["equipment"] if e["id"] == fesem.pk)
+    assert "lab_staff" not in public  # signed-out visitors do not get staff contacts

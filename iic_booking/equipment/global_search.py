@@ -63,7 +63,42 @@ def _search_equipment(user, q: str) -> tuple[list[dict[str, Any]], str]:
     from .mode_utils import attach_mode_inactive
 
     attach_mode_inactive(out, user, id_key="id")
+    if getattr(user, "is_authenticated", False):  # signed-out visitors do not get staff contacts
+        _attach_equipment_lab_staff(out)
     return out, suggestion
+
+
+def _attach_equipment_lab_staff(rows: list[dict[str, Any]]) -> None:
+    """Each equipment hit lists its active Officers in Charge and Lab In-charges (name, role, email: what the
+    equipment page already shows), so a search for an instrument also shows who to contact."""
+    from iic_booking.users.display import name_with_honorific
+
+    from .models import EquipmentManager, EquipmentOperator
+
+    ids = [r["id"] for r in rows]
+    staff: dict[int, list[dict[str, Any]]] = {i: [] for i in ids}
+    for model, field, role in (
+        (EquipmentManager, "manager", "Officer in Charge"),
+        (EquipmentOperator, "operator", "Lab In-charge"),
+    ):
+        links = (
+            model.objects.filter(equipment_id__in=ids, **{f"{field}__is_active": True})
+            .select_related(field)
+            .order_by(f"{field}__name")
+        )
+        for link in links:
+            person = getattr(link, field)
+            entries = staff[link.equipment_id]
+            if any(e["id"] == person.pk and e["role"] == role for e in entries):
+                continue
+            entries.append({
+                "id": person.pk,
+                "name": name_with_honorific(person, getattr(link, "honorific", ""), default=person.get_display_name()),
+                "role": role,
+                "email": person.email,
+            })
+    for r in rows:
+        r["lab_staff"] = staff.get(r["id"], [])
 
 
 def _status_codes_matching(q: str) -> list[str]:

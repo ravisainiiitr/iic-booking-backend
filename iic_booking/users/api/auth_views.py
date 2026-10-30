@@ -2167,16 +2167,9 @@ def register(request):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if user_type_code in (UserType.EXTERNAL, UserType.RND) and email_domain in PUBLIC_EMAIL_DOMAINS:
-            if not documents_list:
-                return Response(
-                    {
-                        "error": "A signed and filled KYC form (scan) is required when using a public email (e.g. Gmail, Yahoo). Download the form, fill it, sign it, scan it, and upload it below—or use your institution/organization email.",
-                        "fieldErrors": {"documents": ["Upload the signed KYC form (scan) or use your institution email."]},
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            # Document type selection is optional on the frontend; treat any uploaded document as acceptable KYC scan.
+        # The KYC scan is optional for every external user type (also with a public email): each external booking
+        # already carries the equipment requisition form signed by the user's authorities. Any uploaded document is
+        # kept as the KYC scan.
 
     # Validate department if provided; for RND, allow organization_request instead
     department_id = serializer.validated_data.get("department")
@@ -2362,6 +2355,15 @@ def register(request):
         transaction.on_commit(_schedule)
     except Exception as e:
         logger.exception("Failed to schedule verification expiry cleanup for user %s: %s", user.id, e)
+    # Registered with a verified I-STEM account (registration form step): link it and fill blank billing details.
+    istem_link_token = str(request.data.get("istem_link_token") or "").strip()
+    if istem_link_token:
+        try:
+            from iic_booking.istem.registration_lookup import link_new_user
+
+            link_new_user(user, istem_link_token)
+        except Exception:
+            logger.exception("Linking the I-STEM account at registration failed for user %s", user.id)
     reg_message = "Registration successful. Please check your email to verify your registration. Click the link and choose Accept to continue, or Reject to cancel. If you accept, you may be able to log in immediately or your request will be sent for admin approval depending on your email domain."
     response_serializer = RegisterResponseSerializer(
         {
