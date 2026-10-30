@@ -105,6 +105,27 @@ def my_addresses(user) -> list[dict]:
     return [address_dict(a) for a in SavedPostalAddress.objects.filter(user=user, archived_at__isnull=True)]
 
 
+def _keep_sender_address(user, values: dict) -> Optional[SavedPostalAddress]:
+    """A new sender address typed for a label goes into the address book (an identical active one is reused), so the
+    next label offers it. None when the book is full: the label is still made from the typed address."""
+    same = {f: values[f] for f in ADDRESS_FIELDS if f != "label"}
+    existing = SavedPostalAddress.objects.filter(user=user, archived_at__isnull=True, **same).first()
+    if existing is not None:
+        return existing
+    if SavedPostalAddress.objects.filter(user=user, archived_at__isnull=True).count() >= 20:
+        return None
+    return SavedPostalAddress.objects.create(user=user, **values)
+
+
+def last_label_address_id(user) -> Optional[int]:
+    """The saved address used as sender on the user's most recent sample label, while it is still in the book."""
+    label = SampleShipmentLabel.objects.filter(created_by=user).order_by("-created_at", "-id").first()
+    source = (label.sender_snapshot or {}).get("source_address_id") if label else None
+    if source and SavedPostalAddress.objects.filter(pk=source, user=user, archived_at__isnull=True).exists():
+        return int(source)
+    return None
+
+
 def _own_address(user, address_id, *, lock=False) -> SavedPostalAddress:
     qs = SavedPostalAddress.objects.filter(user=user, archived_at__isnull=True)
     if lock:
@@ -374,7 +395,8 @@ def create_sample_label(user, booking_id, data: dict) -> tuple[SampleShipmentLab
         sender = _snapshot(_own_address(user, data["address_id"]))
     else:
         values = clean_address(data.get("sender") or {})
-        sender = {"source_address_id": None, **{k: v for k, v in values.items() if k != "label"}}
+        kept = _keep_sender_address(user, values)
+        sender = _snapshot(kept) if kept else {"source_address_id": None, **{k: v for k, v in values.items() if k != "label"}}
     token = secrets.token_urlsafe(16)  # 128 bits
     with transaction.atomic():
         SampleShipmentLabel.objects.filter(booking=booking, revoked_at__isnull=True).update(revoked_at=timezone.now())

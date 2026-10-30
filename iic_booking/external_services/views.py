@@ -442,7 +442,13 @@ def addresses_view(request):
     if request.method == "POST":
         a = logistics.save_address(request.user, _data(request))
         return Response(logistics.address_dict(a), status=status.HTTP_201_CREATED)
-    return Response({"addresses": logistics.my_addresses(request.user)})
+    from .models import ExternalServicesSettings
+
+    return Response({
+        "addresses": logistics.my_addresses(request.user),
+        "last_label_address_id": logistics.last_label_address_id(request.user),
+        "sample_labels_enabled": ExternalServicesSettings.load().sample_labels_enabled,
+    })
 
 
 @api_view(["PATCH", "DELETE"])
