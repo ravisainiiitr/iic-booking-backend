@@ -61,6 +61,11 @@ def _client_ip(request) -> str:
     return forwarded or request.META.get("REMOTE_ADDR", "")
 
 
+def _test_key(request) -> str:
+    """The I-STEM registration test key, from the ``istem_test`` query parameter or body field."""
+    return str(request.query_params.get("istem_test") or request.data.get("istem_test") or "")
+
+
 def _registration_refusal(exc) -> Response:
     return Response({"error": exc.message, "code": exc.code}, status=exc.http_status)
 
@@ -71,7 +76,7 @@ def istem_register_availability(request):
     """Whether the registration form may offer "Already registered on I-STEM?" (I-STEM API and OTP linking on)."""
     from .registration_lookup import available
 
-    return Response({"available": available()})
+    return Response({"available": available(_test_key(request))})
 
 
 @api_view(["POST"])
@@ -83,7 +88,7 @@ def istem_register_lookup(request):
 
     try:
         sent = start(str(request.data.get("email") or ""), str(request.data.get("mobile") or ""),
-                     client_ip=_client_ip(request))
+                     client_ip=_client_ip(request), test_key=_test_key(request))
     except RegistrationLookupError as exc:
         return _registration_refusal(exc)
     return Response({"message": f"OTP sent to {sent['email_masked']}.", **sent})
