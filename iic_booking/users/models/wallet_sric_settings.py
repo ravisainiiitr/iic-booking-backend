@@ -223,9 +223,9 @@ def online_gateway_recharge_enabled(department=None) -> bool:
 
 
 def peer_transfer_enabled(department=None) -> bool:
-    if not WalletSricSettings.get_singleton().peer_transfer_enabled:
-        return False
-    return _department_allows("peer_transfer", department)
+    """Wallet-to-wallet transfer between users was removed (31 Oct 2026 committee): always off, whatever the stored
+    switch says. Past transfers are kept as they are."""
+    return False
 
 
 AWAITING_APPROVAL_MESSAGE = "Awaiting Competent Authority Approval."
@@ -238,6 +238,7 @@ def wallet_mode_flags(user=None) -> dict:
     enabled master off (``{department_id: {flag: False}}``).
     """
     from iic_booking.users.wallet_credit_facility_v2 import feature_enabled as credit_feature_enabled
+    from iic_booking.users.wallet_credit_facility_v2 import new_credit_allowed
     from iic_booking.users.wallet_payment_modes import user_department_modes
 
     s = WalletSricSettings.get_singleton()
@@ -247,7 +248,7 @@ def wallet_mode_flags(user=None) -> dict:
         "project_grant": bool(s.project_grant_recharge_enabled) and not retired,
         "direct_cash": bool(s.direct_cash_recharge_enabled),
         "online_gateway": bool(s.online_gateway_recharge_enabled),
-        "peer_transfer": bool(s.peer_transfer_enabled),
+        "peer_transfer": False,  # removed 31 Oct 2026 (see peer_transfer_enabled)
     }
     return {
         "project_grant_recharge_enabled": masters["project_grant"] or exempt,
@@ -256,7 +257,8 @@ def wallet_mode_flags(user=None) -> dict:
         "peer_transfer_enabled": masters["peer_transfer"],
         "project_grant_retired": retired,
         "sric_wallet_recharge_enabled": retired,
-        "credit_facility_enabled": bool(credit_feature_enabled()),
+        # Users may no longer ask for credit (31 Oct 2026); existing credit is still shown and repaid.
+        "credit_facility_enabled": bool(credit_feature_enabled()) and new_credit_allowed(),
         "department_modes": user_department_modes(masters, project_grant_exempt=exempt),
         "disabled_message": AWAITING_APPROVAL_MESSAGE,
     }

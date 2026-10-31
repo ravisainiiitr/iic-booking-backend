@@ -172,6 +172,15 @@ class RegisterSerializer(serializers.Serializer):
             # "IITR Startups" was merged into IITR Startup.
             ut = attrs["user_type"] = UserType.STARTUP_INCUBATED_IITR
             alias = ""
+        if ut == UserType.INDIVIDUAL_STUDENT:
+            # Individual Students were retired (31 Oct 2026): fellowship holders (PMRF, CSIR, PDF, DAE, ...) register
+            # as IITR Students and book on their supervisor's wallet, so the supervisor is required.
+            ut = attrs["user_type"] = UserType.STUDENT
+            if not attrs.get("supervisor"):
+                raise serializers.ValidationError({
+                    "supervisor": "Please select your IITR Faculty supervisor. Bookings are charged to the supervisor's "
+                                  "wallet."
+                })
         if ut in (UserType.STUDENT, UserType.INDIVIDUAL_STUDENT):
             if not alias:
                 raise serializers.ValidationError({

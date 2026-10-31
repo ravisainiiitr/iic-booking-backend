@@ -720,13 +720,13 @@ def _courier_view(label: SampleShipmentLabel, booking) -> dict:
         "can_submit": not reason,
         "reason": reason,
         "recorded": _recorded_courier(booking),
-        # With courier tracking on for the department the courier is picked from the provider's list (so the parcel
-        # can be followed); otherwise its name is typed.
+        # With the department's courier details module on, the courier is picked from the built-in list; otherwise
+        # its name is typed.
         "courier_list": tracked,
         "couriers": [],
     }
     if tracked:
-        view["couriers"], _ = catalog(refresh_if_stale=False)  # an anonymous page never spends provider calls
+        view["couriers"] = catalog()
     return view
 
 
@@ -760,7 +760,7 @@ def courier_submit(token: str, *, courier_slug: str = "", courier_name: str = ""
             try:
                 arrival = register_arrival(booking.user, booking, ArrivalInput(
                     arrival_mode=ArrivalMode.COURIER, courier_slug=courier_slug, tracking_number=tracking_number,
-                    notes="Given by scanning the sample label.", email_updates=True,
+                    notes="Given by scanning the sample label.",
                 ))
             except ArrivalError as exc:
                 raise LogisticsError(exc.message, status=exc.status, code=exc.code, field=exc.field) from exc

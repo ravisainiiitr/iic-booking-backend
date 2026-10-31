@@ -742,12 +742,16 @@ def transfer_between_sub_wallets(request):
 @permission_classes([IsAuthenticated])
 def get_departments_for_recharge(request):
     """List internal departments valid for sub-wallet recharge (equipment-linked + existing sub-wallets)."""
+    from iic_booking.users.models import Department
     from iic_booking.users.student_wallet_recharge import (
+        is_individual_student,
         is_iitr_student,
         student_recharge_departments,
     )
 
-    if is_iitr_student(request.user):
+    if is_individual_student(request.user):
+        departments = Department.objects.none()  # top-ups closed (31 Oct 2026); the balance can still be used
+    elif is_iitr_student(request.user):
         departments = student_recharge_departments(request.user)
     else:
         wallet = request.user.get_accessible_wallet()

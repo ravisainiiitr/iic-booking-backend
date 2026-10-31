@@ -25,9 +25,8 @@ def fresh_throttle():
 
 @pytest.fixture
 def tracked(monkeypatch):
-    """Courier tracking switched on for the booking's department, with one courier in the list."""
+    """The courier module switched on for the booking's department, with one courier in the list."""
     monkeypatch.setattr(courier_eligibility, "department_tracking_enabled", lambda booking: True)
-    monkeypatch.setattr("iic_booking.courier_tracking.services._dispatch_lookup", lambda *a, **k: None)
     Courier.objects.create(slug="bluedart", name="Blue Dart")
 
 
@@ -49,7 +48,7 @@ def test_anonymous_first_scan_records_the_courier_once(on, booking, tracked):
     body = r.json()
     assert body["can_submit"] is False and body["recorded"] == {"courier_name": "Blue Dart", "tracking_tail": "…5678"}
     arrival = SampleArrival.objects.get(booking=booking, is_active=True)
-    assert arrival.user == booking.user and arrival.tracking_number == "AB12345678" and arrival.email_updates
+    assert arrival.user == booking.user and arrival.tracking_number == "AB12345678"
     assert _statuses(booking) == ["SAMPLE_SENT"]
     assert SampleReceiptScan.objects.get(action="courier").staff is None
     note = ExternalNotification.objects.filter(recipient=booking.user, title__icontains="Courier details recorded")

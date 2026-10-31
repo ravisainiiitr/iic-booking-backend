@@ -3,7 +3,6 @@ client), so the real client code runs; nothing ever reaches TrackCourier.io."""
 
 from __future__ import annotations
 
-import json
 import uuid
 from decimal import Decimal
 
@@ -18,8 +17,6 @@ from iic_booking.users.models.department import Department
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.tests.factories import UserFactory
 
-FAKE_KEY = "unit-test-trackcourier-key-not-real"
-WEBHOOK_SECRET = "unit-test-webhook-signing-secret"
 
 COURIERS = [
     {"slug": "bluedart", "name": "Blue Dart"},
@@ -90,70 +87,6 @@ def make_booking(user, equipment, *, status=BookingStatus.BOOKED, snapshot=None)
     )
 
 
-class FakeResponse:
-    def __init__(self, status_code=200, payload=None, text=None):
-        self.status_code = status_code
-        self._payload = payload
-        self._text = text
-
-    def json(self):
-        if self._payload is None:
-            raise ValueError("no json")
-        return self._payload
-
-
-def track_payload(state="intransit", label="In Transit", checkpoints=None, used=1, quota=100, plan="free"):
-    if checkpoints is None:
-        checkpoints = [
-            {"Activity": "Picked up", "CheckpointState": "inforeceived", "CourierName": "DTDC", "Date": "17-Sep-2026",
-             "Time": "10:00", "Location": "Jaipur"},
-            {"Activity": "On the way", "CheckpointState": "intransit", "CourierName": "DTDC", "Date": "17-Sep-2026",
-             "Time": "22:15", "Location": "Jaipur to Delhi"},
-        ]
-    return {
-        "success": True,
-        "data": {"ShipmentState": state, "MostRecentStatus": label, "Checkpoints": checkpoints,
-                 "CourierHasNoRecordOfShipment": False, "Result": "success", "PODImageUrl": ""},
-        "usage": {"used": used, "quota": quota, "plan": plan, "percent": used},
-    }
-
-
-def error_payload(code, message="error", used=None, quota=None):
-    body = {"success": False, "error": {"code": code, "message": message}}
-    if used is not None:
-        body["usage"] = {"used": used, "quota": quota, "plan": "free", "percent": 100.0}
-    return body
-
-
-class FakeProvider:
-    """Scripted responses for ``requests.get``; records each call (path, params, headers)."""
-
-    def __init__(self):
-        self.track_responses: list = []
-        self.calls: list[dict] = []
-        self.couriers_response = FakeResponse(200, {"success": True, "data": {"couriers": COURIERS, "count": len(COURIERS)}})
-
-    def queue(self, *responses):
-        self.track_responses.extend(responses)
-
-    @property
-    def track_calls(self) -> list[dict]:
-        return [c for c in self.calls if c["url"].endswith("/track")]
-
-    def __call__(self, url, params=None, headers=None, timeout=None, allow_redirects=True):
-        self.calls.append({"url": url, "params": dict(params or {}), "headers": dict(headers or {}), "timeout": timeout})
-        if url.endswith("/couriers"):
-            return self.couriers_response
-        if url.endswith("/track"):
-            if not self.track_responses:
-                raise AssertionError("unexpected tracking request")
-            item = self.track_responses.pop(0)
-            if isinstance(item, Exception):
-                raise item
-            return item
-        raise AssertionError(f"unexpected provider path {url}")
-
-
 @pytest.fixture(autouse=True)
 def courier_templates(request):
     """Transactional tests flush rows the data migrations created; put the courier email templates back.
@@ -168,28 +101,13 @@ def courier_templates(request):
 
 
 @pytest.fixture
-def provider(settings, monkeypatch):
-    settings.TRACKCOURIER_API_KEY = FAKE_KEY
-    settings.TRACKCOURIER_API_BASE_URL = "https://api.trackcourier.io/v1"
-    fake = FakeProvider()
-    monkeypatch.setattr("iic_booking.courier_tracking.client.requests.get", fake)
-    return fake
-
-
-@pytest.fixture
-def webhook_secret(settings):
-    settings.TRACKCOURIER_WEBHOOK_SECRET = WEBHOOK_SECRET
-    return WEBHOOK_SECRET
-
-
-@pytest.fixture
 def no_queue(monkeypatch):
-    """Celery is not running in tests: make .delay() fail like an unreachable broker (rows stay for the sweeps)."""
-    def _down(*args, **kwargs):
-        raise ConnectionError("broker down")
+    """Automatic tracking was removed: nothing may queue a courier task any more."""
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("courier tracking queued a task; automatic tracking was removed")
 
     for name in ("lookup_task", "send_notifications_task", "process_webhook_task"):
-        monkeypatch.setattr(f"iic_booking.courier_tracking.tasks.{name}.delay", _down)
+        monkeypatch.setattr(f"iic_booking.courier_tracking.tasks.{name}.delay", _forbidden)
 
 
 @pytest.fixture
@@ -239,11 +157,3 @@ def iic_equipment(iic):
 @pytest.fixture
 def external_booking(external_user, iic_equipment):
     return make_booking(external_user, iic_equipment)
-
-
-def signed(body: dict | bytes, secret: str = WEBHOOK_SECRET) -> tuple[bytes, str]:
-    import hashlib
-    import hmac
-
-    raw = body if isinstance(body, bytes) else json.dumps(body).encode()
-    return raw, "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()

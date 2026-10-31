@@ -1,33 +1,22 @@
-"""Pre-commit review blockers: A1 (a declaration after the lab has the sample), A2 (one user spending the shared
-quota), A3 (reminder blast at go-live, pilot mode)."""
+"""Review blockers that still apply: a declaration after the lab has the sample, limits on changing courier details."""
 
 from datetime import timedelta
 
 import pytest
 from django.utils import timezone
 
-from iic_booking.courier_tracking import reminders, services
+from iic_booking.courier_tracking import services
 from iic_booking.courier_tracking.constants import (
     MAX_COURIER_REGISTRATIONS_PER_BOOKING,
-    STAFF_REFRESH_DAILY_LIMIT,
-    LookupOutcome,
-    LookupTrigger,
 )
-from iic_booking.courier_tracking.models import CourierTrackingSettings, SampleArrival, TrackingLookup
-from iic_booking.department_modules import services as module_services
-from iic_booking.department_modules.constants import ModuleKey
-from iic_booking.equipment.models import FABRICATION_PROFILE_TYPES, Booking, BookingSampleTrace, BookingStatus, SampleTraceStatus
+from iic_booking.courier_tracking.models import SampleArrival
+from iic_booking.equipment.models import Booking, BookingSampleTrace, SampleTraceStatus
 from iic_booking.equipment.sample_trace_policy import latest_sample_trace
-from iic_booking.users.models.user_type import UserType
 
 from .conftest import (
-    FakeResponse,
     make_booking,
-    make_department,
     make_equipment,
-    make_user,
     set_tracking,
-    track_payload,
     tracking_on_since,
 )
 
@@ -113,72 +102,6 @@ def test_courier_registrations_per_user_per_day_are_limited(catalog, external_us
     _courier(external_user, bookings[5], NUMBERS[5])  # a day later it is accepted
 
 
-def test_reregistration_first_lookup_cannot_use_the_reserve(provider, catalog, external_booking, external_user, no_queue):
-    cfg = CourierTrackingSettings.load()
-    cfg.monthly_quota_fallback = 3
-    cfg.safety_reserve = 2
-    cfg.save()
-    first = _courier(external_user, external_booking, NUMBERS[0])
-    provider.queue(FakeResponse(200, track_payload(used=None, quota=None) | {"usage": {}}))
-    assert services.lookup(first.pk, LookupTrigger.INITIAL).performed  # 1 of 3 used: within the routine part
-    second = _courier(external_user, external_booking, NUMBERS[1])
-    refused = services.lookup(second.pk, LookupTrigger.INITIAL)
-    assert not refused.performed and refused.refused == "reserve"
-    other = _courier(external_user, make_booking(external_user, external_booking.equipment), NUMBERS[2])
-    provider.queue(FakeResponse(200, track_payload(used=None, quota=None) | {"usage": {}}))
-    assert services.lookup(other.pk, LookupTrigger.INITIAL).performed  # another booking's first shipment may
-
-
-@pytest.mark.parametrize("status", [BookingStatus.PENDING_PAYMENT, BookingStatus.HOLD, BookingStatus.CANCELLED,
-                                    BookingStatus.COMPLETED])
-def test_shipments_of_unconfirmed_or_closed_bookings_are_not_looked_up(provider, catalog, external_booking,
-                                                                       external_user, no_queue, status):
-    arrival = _courier(external_user, external_booking)
-    Booking.objects.filter(pk=external_booking.pk).update(status=status)
-    for trigger in (LookupTrigger.INITIAL, LookupTrigger.SCHEDULED, LookupTrigger.STAFF):
-        result = services.lookup(arrival.pk, trigger)
-        assert not result.performed and result.refused == "booking_not_confirmed"
-    services.run_scheduled_checks()
-    assert provider.track_calls == [] and not TrackingLookup.objects.exists()
-
-
-def test_staff_refreshes_have_a_daily_limit(provider, catalog, external_user, iic, no_queue):
-    admin = make_user(UserType.ADMIN, is_staff=True)
-    equipment = make_equipment(iic)
-    arrivals = []
-    for i in range(STAFF_REFRESH_DAILY_LIMIT + 1):
-        booking = make_booking(external_user, equipment)
-        arrivals.append(SampleArrival.objects.create(
-            booking=booking, user=external_user, equipment=equipment, department=iic, arrival_mode="COURIER",
-            courier_slug="dtdc", courier_name="DTDC", tracking_number=f"D30103{i:05d}", tracking_number_raw="x",
-            status="REGISTERED"))
-    for arrival in arrivals[:STAFF_REFRESH_DAILY_LIMIT]:
-        provider.queue(FakeResponse(200, track_payload()))
-        assert services.lookup(arrival.pk, LookupTrigger.STAFF, actor=admin).outcome == LookupOutcome.SUCCESS
-    refused = services.lookup(arrivals[-1].pk, LookupTrigger.STAFF, actor=admin)
-    assert not refused.performed and refused.refused == "daily_limit"
-
-
-# --- A3: reminders respect go-live, pilot mode and what the booking actually needs -----------------------------------
-
-def test_bookings_made_before_tracking_was_switched_on_get_no_arrival_reminder(catalog, external_user, no_queue):
-    from iic_booking.courier_tracking.models import ShipmentReminder
-
-    from iic_booking.department_modules.models import DepartmentModuleSetting
-
-    switched_on_now, switched_on_earlier = make_department(), make_department()
-    set_tracking(switched_on_now, True)  # switched on today: the 5-day-old booking below predates it
-    DepartmentModuleSetting.objects.create(department=switched_on_earlier, module_key=ModuleKey.COURIER_TRACKING.value,
-                                           enabled=True)
-    tracking_on_since(switched_on_earlier, timezone.now() - timedelta(days=10))
-    late = make_booking(external_user, make_equipment(switched_on_now))
-    early = make_booking(external_user, make_equipment(switched_on_earlier))
-    for booking in (late, early):
-        _age(booking, 5)
-    assert reminders.run() == {"ARRIVAL_NOT_SELECTED": 1}
-    assert list(ShipmentReminder.objects.values_list("booking_id", flat=True)) == [early.pk]
-
-
 def test_tracking_enabled_since_uses_the_latest_switch_on(other_dept):
     from iic_booking.courier_tracking.eligibility import tracking_enabled_since
 
@@ -188,61 +111,3 @@ def test_tracking_enabled_since_uses_the_latest_switch_on(other_dept):
     assert tracking_enabled_since(other_dept.pk) == earlier
     set_tracking(other_dept, True)  # switched on again now (it was off: no row)
     assert tracking_enabled_since(other_dept.pk) > earlier
-
-
-def test_seeded_iic_switch_counts_from_the_seeding(catalog, external_user, no_queue):
-    from iic_booking.department_modules.models import DepartmentModuleAuditLog, DepartmentModuleSetting
-
-    dept = make_department()
-    booking = make_booking(external_user, make_equipment(dept))
-    _age(booking, 5)
-    # What the seeding migration writes for IIC at go-live: an enabled row and a "seeded" audit entry.
-    DepartmentModuleSetting.objects.create(department=dept, module_key=ModuleKey.COURIER_TRACKING.value, enabled=True,
-                                           source="seed")
-    DepartmentModuleAuditLog.objects.create(
-        department=dept, module_key=ModuleKey.COURIER_TRACKING.value, action="module.seeded", old_value={},
-        new_value={"enabled": True, "test_users_only": False, "configured": True}, created_at=timezone.now(),
-    )
-    assert reminders.run() == {}  # booked before go-live
-    later = make_booking(external_user, make_equipment(dept))
-    Booking.objects.filter(pk=later.pk).update(created_at=timezone.now() + timedelta(seconds=1))
-    assert reminders.run() == {}  # made after go-live but too new to remind yet (the 2-day wait still applies)
-
-
-def test_pilot_mode_reminds_test_users_only(catalog, iic, no_queue):
-    module_services.set_module(make_user(UserType.ADMIN, is_staff=True), iic, ModuleKey.COURIER_TRACKING.value,
-                               test_users_only=True, reason="pilot with test users")
-    equipment = make_equipment(iic)
-    ordinary = make_booking(make_user(UserType.EXTERNAL), equipment)
-    tester = make_booking(make_user(UserType.EXTERNAL, is_test_account=True), equipment)
-    for booking in (ordinary, tester):
-        _age(booking, 3)
-    assert reminders.run() == {"ARRIVAL_NOT_SELECTED": 1}
-    from iic_booking.courier_tracking.models import ShipmentReminder
-
-    assert list(ShipmentReminder.objects.values_list("booking_id", flat=True)) == [tester.pk]
-
-
-@pytest.mark.parametrize("status", [BookingStatus.PENDING, BookingStatus.PENDING_PAYMENT, BookingStatus.HOLD])
-def test_unconfirmed_bookings_get_no_arrival_reminder(catalog, iic_equipment, external_user, no_queue, status):
-    _age(make_booking(external_user, iic_equipment, status=status), 3)
-    assert reminders.run() == {}
-
-
-def test_fabrication_and_walk_in_equipment_get_no_arrival_reminder(catalog, iic, external_user, no_queue):
-    fabrication = make_equipment(iic)
-    fabrication.profile_type = sorted(FABRICATION_PROFILE_TYPES)[0]
-    fabrication.save(update_fields=["profile_type"])
-    walk_in = make_equipment(iic)
-    walk_in.sample_submission_lead_hours = 0
-    walk_in.sample_collect_deadline_hours = 0
-    walk_in.save(update_fields=["sample_submission_lead_hours", "sample_collect_deadline_hours"])
-    for equipment in (fabrication, walk_in):
-        _age(make_booking(external_user, equipment), 3)
-    assert reminders.run() == {}
-
-
-def test_sample_already_reported_sent_gets_no_arrival_reminder(catalog, external_booking, no_queue):
-    BookingSampleTrace.objects.create(booking=external_booking, status=SampleTraceStatus.SAMPLE_SENT)
-    _age(external_booking, 3)
-    assert reminders.run() == {}

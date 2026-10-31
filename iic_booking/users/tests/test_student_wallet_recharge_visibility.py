@@ -136,7 +136,7 @@ class StudentRechargeVisibilityTests(TestCase):
             {
                 "project_grant_recharge_enabled": False,
                 "direct_cash_recharge_enabled": False,
-                "peer_transfer_enabled": False,
+                # Transfer is off everywhere since 31 Oct 2026, so no department lists it as an exception.
             },
         )
         self.assertNotIn(str(self.dept_a.id), flags["department_modes"])

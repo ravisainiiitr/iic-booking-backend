@@ -113,14 +113,16 @@ def direct_recharge_master_enabled() -> bool:
 def master_states() -> dict[str, bool]:
     from iic_booking.users.models.wallet_sric_settings import WalletSricSettings
     from iic_booking.users.wallet_credit_facility_v2 import feature_enabled as credit_feature_enabled
+    from iic_booking.users.wallet_credit_facility_v2 import new_credit_allowed
 
     s = WalletSricSettings.get_singleton()
     return {
         WalletModeOption.PROJECT_GRANT: bool(s.project_grant_recharge_enabled),
         WalletModeOption.DIRECT_CASH: bool(s.direct_cash_recharge_enabled),
         WalletModeOption.ONLINE_GATEWAY: bool(s.online_gateway_recharge_enabled),
-        WalletModeOption.PEER_TRANSFER: bool(s.peer_transfer_enabled),
-        WalletModeOption.CREDIT: bool(credit_feature_enabled()),
+        WalletModeOption.PEER_TRANSFER: False,  # removed 31 Oct 2026; cannot be switched on
+        # New credit was withdrawn (31 Oct 2026); existing credit is handled outside this switch.
+        WalletModeOption.CREDIT: bool(credit_feature_enabled()) and new_credit_allowed(),
         WalletModeOption.DIRECT_RECHARGE: direct_recharge_master_enabled(),
     }
 
@@ -680,7 +682,8 @@ def check_direct_recharge_permission(user, department, amount: Decimal, *, lock:
     did = _department_id(department)
     grants = valid_grants(user).filter(Q(department__isnull=True) | Q(department_id=did)).order_by("valid_until", "pk")
     if lock:
-        grants = grants.select_for_update()
+        # Lock only the grant rows: PostgreSQL refuses FOR UPDATE on the nullable (all-departments) department join.
+        grants = grants.select_for_update(of=("self",))
     grants = list(grants)
     if not grants:
         had_any = WalletDirectRechargeGrant.objects.filter(user=user).exists()

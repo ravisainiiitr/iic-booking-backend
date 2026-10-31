@@ -120,6 +120,26 @@ def test_a_quote_holds_nothing_and_choosing_online_payment_holds_the_slot(world)
     assert _slot_free(world["slots"][0]) and not Booking.objects.filter(user=user).exists()
 
 
+def test_the_user_is_asked_to_pay_in_5_minutes_and_the_slot_is_held_for_6(world):
+    from datetime import datetime
+
+    user = _user(world)
+    body = _start(user, world).json()
+    before = timezone.now()
+    checkout = _pay(user, body["id"], "full_gateway").json()["checkout"]
+    pay_by = datetime.fromisoformat(checkout["pay_by"])
+    expires_at = datetime.fromisoformat(checkout["expires_at"])
+    assert expires_at - pay_by == timedelta(minutes=1)  # one minute of grace after the shown deadline
+    assert timedelta(minutes=5) - timedelta(seconds=5) <= pay_by - before <= timedelta(minutes=5, seconds=5)
+    row = ExternalBookingCheckout.objects.get(public_id=body["id"])
+    # Still held in the grace minute after the shown 5 minutes ...
+    ExternalBookingCheckout.objects.filter(pk=row.pk).update(expires_at=timezone.now() + timedelta(seconds=30))
+    assert client_for(user).get(f"{CHECKOUTS}{body['id']}/").json()["slot_held"] is True
+    # ... and released once the 6 minutes are over.
+    ExternalBookingCheckout.objects.filter(pk=row.pk).update(expires_at=timezone.now() - timedelta(seconds=1))
+    assert client_for(user).get(f"{CHECKOUTS}{body['id']}/").json()["slot_held"] is False
+
+
 def test_a_held_slot_is_refused_to_everyone_else_until_the_hold_lapses(world):
     user = _user(world)
     checkout, _order = _open(user, world, "full_gateway")

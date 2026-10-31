@@ -108,6 +108,25 @@ def feature_enabled() -> bool:
     return bool(WalletCreditPolicy.get_solo().enabled)
 
 
+# New wallet credit for internal users was withdrawn after the 31 Oct 2026 committee meeting. Credit already given
+# stays as it is: outstanding amounts are shown, repaid and recovered from recharges exactly as before, and
+# ``feature_enabled`` keeps those paths working. Only new requests, approvals and postings are refused.
+NEW_CREDIT_WITHDRAWN_CODE = "CREDIT_WITHDRAWN"
+NEW_CREDIT_WITHDRAWN_MESSAGE = (
+    "Wallet credit is no longer offered. Please recharge your wallet before booking. Any credit you already have "
+    "stays visible and is repaid as before."
+)
+
+
+def new_credit_allowed() -> bool:
+    return False
+
+
+def _refuse_new_credit() -> None:
+    if not new_credit_allowed():
+        raise WalletCreditError(NEW_CREDIT_WITHDRAWN_CODE, NEW_CREDIT_WITHDRAWN_MESSAGE, status=403)
+
+
 def money(value) -> Decimal:
     return Decimal(str(value or 0)).quantize(TWO, rounding=ROUND_HALF_UP)
 
@@ -485,6 +504,7 @@ def create_and_submit_request(
     remarks: str = "",
     department_id: int | None = None,
 ) -> WalletCreditFacility:
+    _refuse_new_credit()
     if not feature_enabled():
         raise WalletCreditError(
             "FEATURE_DISABLED", "Wallet Credit Facility: Awaiting Competent Authority Approval.", status=403
@@ -591,6 +611,7 @@ def approve_facility(
 ) -> WalletCreditFacility:
     if getattr(actor, "user_type", None) != UserType.ADMIN:
         raise WalletCreditError("FORBIDDEN", "Only Main Administrator can approve credit.", status=403)
+    _refuse_new_credit()  # a pending request can still be rejected, never approved
     facility = WalletCreditFacility.objects.select_for_update().get(pk=facility.pk)
     if facility.status not in {
         WalletCreditFacilityStatus.SUBMITTED,
@@ -713,6 +734,7 @@ def post_credit(*, facility: WalletCreditFacility, actor) -> WalletCreditFacilit
     facility = WalletCreditFacility.objects.select_for_update().get(pk=facility.pk)
     if facility.status == WalletCreditFacilityStatus.CREDITED and facility.credit_posting_key:
         return facility
+    _refuse_new_credit()  # an approved but unposted facility is never credited now
     if facility.status != WalletCreditFacilityStatus.APPROVED:
         raise WalletCreditError("INVALID_STATE", "Facility must be APPROVED before credit posting.")
     if not facility.approved_amount or money(facility.approved_amount) <= 0:

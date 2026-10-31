@@ -1032,6 +1032,10 @@ def get_external_gst_percent():
         pass
     return Decimal("18")
 
+# Shown on every charge breakdown, checkout and invoice: the fee is not refunded on cancellation.
+RETURN_SHIPPING_DESCRIPTION = "Return shipping charges (non-refundable)"
+
+
 def get_external_return_shipping_fee_amount() -> Decimal:
     """
     Return the configured return-shipping fee (INR) for external sample return option.
@@ -3281,7 +3285,7 @@ def equipment_calculate(request, pk):
             if return_shipping_fee > 0:
                 base_charge = quantize_money(Decimal(str(base_charge)) + return_shipping_fee)
                 charge_breakdown = list(charge_breakdown) + [
-                    {"description": "Return shipping charges", "amount": float(return_shipping_fee)},
+                    {"description": RETURN_SHIPPING_DESCRIPTION, "amount": float(return_shipping_fee)},
                 ]
         if urgent_flag:
             base_charge, charge_breakdown, urgent_surcharge_amount = apply_urgent_booking_surcharge(
@@ -4906,7 +4910,7 @@ def _book_equipment_impl(request, pk):
                 if return_shipping_fee_amount > 0:
                     total_charge = quantize_money(Decimal(total_charge) + return_shipping_fee_amount)
                     charge_breakdown = list(charge_breakdown) + [
-                        {"description": "Return shipping charges", "amount": float(return_shipping_fee_amount)},
+                        {"description": RETURN_SHIPPING_DESCRIPTION, "amount": float(return_shipping_fee_amount)},
                     ]
             if create_as_hold and not rush_relief:
                 total_charge, charge_breakdown, _ = apply_urgent_booking_surcharge(
