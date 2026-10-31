@@ -539,7 +539,7 @@ class TimeCalculationEngine:
             formula = re.sub(r'(?<![a-zA-Z0-9_])TIME(?![a-zA-Z0-9_])', str(time_per_sample), formula)
             
             try:
-                calculated_time = int(eval(formula))
+                calculated_time = int(evaluate_formula(formula, {}))  # restricted evaluator, never eval()
                 return calculated_time
             except Exception as e:
                 # If formula fails, fall back to default calculation
@@ -646,9 +646,8 @@ class TimeCalculationEngine:
             formula = re.sub(pattern, str(value), formula)
 
         try:
-            # Evaluate the formula safely
-            # Note: In production, consider using a safer expression evaluator like 'simpleeval'
-            result = eval(formula)
+            # Restricted evaluator (no names, attributes or built-ins): the formula is admin text.
+            result = evaluate_formula(formula, {})
             return int(result)
         except Exception as e:
             raise ValidationError(f"Error evaluating time formula '{charge_profile.time_formula}': {str(e)}")
