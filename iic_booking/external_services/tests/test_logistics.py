@@ -178,6 +178,30 @@ def test_sample_label_qr_holds_only_a_random_token(on, booking):
                                         "sender": ADDRESS}, format="json").status_code == 404
 
 
+def test_sample_label_prints_booking_id_and_both_mobiles(on, booking, monkeypatch):
+    from iic_booking.external_services import documents
+
+    on.iic_postal_address = IIC_ADDRESS + "\nMobile: +91 01332 000000"
+    on.save()
+    seen = {}
+    real = documents.sample_label_pdf
+    monkeypatch.setattr(documents, "sample_label_pdf", lambda **kw: seen.update(kw) or real(**kw))
+    r = client_for(booking.user).post(f"{API}bookings/{booking.pk}/sample-label/",
+                                      {"sample_count": 2, "sender": ADDRESS}, format="json")
+    assert r.status_code == 200 and _mediabox(r.content) == (0.0, 0.0, 720.0, 324.0)
+    assert seen["sender_mobile"] == ADDRESS["phone"]
+    assert not any("Phone" in line for line in seen["sender_lines"])  # printed once, as the FROM mobile
+    assert seen["booking_reference"]
+
+
+def test_iic_mobile_is_taken_out_of_the_address_lines():
+    from iic_booking.external_services.documents import split_phone_lines
+
+    lines, mobile = split_phone_lines(["The Head", "IIT Roorkee", "Mobile No: +91 01332 000000", "Phone: 2"])
+    assert lines == ["The Head", "IIT Roorkee"] and mobile == "+91 01332 000000"
+    assert split_phone_lines(["The Head", "Roorkee 247667"]) == (["The Head", "Roorkee 247667"], "")
+
+
 # --- QR receipt -----------------------------------------------------------------------------------------------------
 
 def _label(booking):

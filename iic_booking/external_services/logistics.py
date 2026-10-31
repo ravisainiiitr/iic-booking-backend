@@ -382,7 +382,8 @@ def create_sample_label(user, booking_id, data: dict) -> tuple[SampleShipmentLab
     lab_staff = list(get_equipment_lab_incharge_users(equipment))
     department = getattr(equipment, "internal_department", None)
     pdf = sample_label_pdf(
-        sender_lines=address_lines(sender),
+        sender_lines=address_lines(sender, phone=False),
+        sender_mobile=sender.get("phone", "") or "",
         lab_name=getattr(department, "name", "") or "",
         lab_location=(equipment.location or "").strip().splitlines()[0] if (equipment.location or "").strip() else "",
         equipment_name=equipment.name,
