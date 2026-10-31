@@ -6,14 +6,12 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
-from iic_booking.equipment.models import BookingSampleTrace, EquipmentOperator
 from iic_booking.external_services import logistics
 from iic_booking.external_services.models import (
     CopyRequestStatus,
     ExternalServicesSettings,
     InvoiceRequestStatus,
     PhysicalCopyRequest,
-    SampleReceiptScan,
     SampleShipmentLabel,
     SavedPostalAddress,
     SricInvoiceRequest,
@@ -160,7 +158,7 @@ def test_labels_refuse_without_a_configured_iic_address(on, booking):
         envelope_label_pdf(recipient_lines=["A"], reference="R")
 
 
-def test_sample_label_qr_holds_only_a_random_token(on, booking):
+def test_sample_label_has_no_qr_and_a_new_label_replaces_the_old(on, booking):
     user = booking.user
     r = client_for(user).post(f"{API}bookings/{booking.pk}/sample-label/",
                               {"sample_count": 3, "sender": ADDRESS, "description": "Films"}, format="json")
@@ -169,6 +167,7 @@ def test_sample_label_qr_holds_only_a_random_token(on, booking):
     label = SampleShipmentLabel.objects.get(booking=booking)
     assert len(label.token_sha256) == 64 and re.fullmatch(r"[A-Z2-9]{8}", label.reference)
     assert user.email.encode() not in r.content  # no personal contact data on the label
+    assert b"/QrCode" not in r.content and b"sample-receipt" not in r.content  # no QR link (31 Oct 2026)
     second = client_for(user).post(f"{API}bookings/{booking.pk}/sample-label/", {"sample_count": 3, "sender": ADDRESS},
                                    format="json")
     assert second.status_code == 200
@@ -178,60 +177,33 @@ def test_sample_label_qr_holds_only_a_random_token(on, booking):
                                         "sender": ADDRESS}, format="json").status_code == 404
 
 
-# --- QR receipt -----------------------------------------------------------------------------------------------------
+def test_label_mobile_is_the_departments_accounts_in_charge(on, booking, monkeypatch):
+    from iic_booking.external_services import documents
 
-def _label(booking):
-    token = "tok-" + "x" * 20
-    label = SampleShipmentLabel.objects.create(booking=booking, token_sha256=logistics._hash(token),
-                                               reference="ABCD2345", sample_count=2)
-    return label, token
-
-
-def test_lookup_needs_authorised_staff_and_changes_nothing(on, booking):
-    label, token = _label(booking)
-    finance = make_user(UserType.FINANCE, department=booking.equipment.internal_department, is_staff=True)
-    assert client_for(booking.user).post(f"{API}staff/sample-receipt/lookup/", {"code": token},
-                                         format="json").status_code == 404
-    r = client_for(finance).post(f"{API}staff/sample-receipt/lookup/", {"code": token}, format="json")
+    dept = booking.equipment.internal_department
+    make_user(UserType.FINANCE, department=dept, is_staff=True, phone_number="9811122233")
+    seen = {}
+    real = documents.sample_label_pdf
+    monkeypatch.setattr(documents, "sample_label_pdf", lambda **kw: seen.update(kw) or real(**kw))
+    r = client_for(booking.user).post(f"{API}bookings/{booking.pk}/sample-label/",
+                                      {"sample_count": 2, "sender": ADDRESS}, format="json")
     assert r.status_code == 200, r.content
-    assert r.json()["booking_id"] == booking.pk and r.json()["already_received"] is False
-    assert not BookingSampleTrace.objects.filter(booking=booking).exists()  # scanning never marks receipt
-    assert SampleReceiptScan.objects.filter(label=label, action="looked_up").count() == 1
+    assert seen["office_mobile"] == "9811122233"
+    assert seen["sender_mobile"] == ADDRESS["phone"]
+    assert not any("Phone" in line for line in seen["sender_lines"])  # printed once, as the FROM mobile
+    assert "qr_url" not in seen
 
 
-def test_tampered_or_revoked_codes_are_not_found(on, booking):
-    label, token = _label(booking)
-    finance = make_user(UserType.FINANCE, department=booking.equipment.internal_department, is_staff=True)
-    assert client_for(finance).post(f"{API}staff/sample-receipt/lookup/", {"code": token + "a"},
-                                    format="json").status_code == 404
-    label.revoked_at = timezone.now()
-    label.save(update_fields=["revoked_at"])
-    assert client_for(finance).post(f"{API}staff/sample-receipt/lookup/", {"code": token},
-                                    format="json").status_code == 404
+def test_label_mobile_falls_back_to_the_address_setting():
+    from iic_booking.external_services.documents import department_office_mobile, split_phone_lines
+
+    assert department_office_mobile(None) == ""
+    lines, mobile = split_phone_lines(["The Head", "IIT Roorkee", "Mobile No: +91 01332 000000"])
+    assert lines == ["The Head", "IIT Roorkee"] and mobile == "+91 01332 000000"
 
 
-def test_confirm_records_receipt_once(on, booking):
-    label, token = _label(booking)
-    finance = make_user(UserType.FINANCE, department=booking.equipment.internal_department, is_staff=True)
-    url = f"{API}staff/sample-receipt/confirm/"
-    r = client_for(finance).post(url, {"code": token, "outcome": "held_at_office"}, format="json")
-    assert r.status_code == 400 and r.json()["field"] == "notes"  # a reason is required, as for the status endpoint
-    r = client_for(finance).post(url, {"code": token, "outcome": "forwarded_to_lab"}, format="json")
-    assert r.status_code == 200 and r.json()["recorded"] is True
-    trace = BookingSampleTrace.objects.get(booking=booking)
-    assert trace.status == "FORWARDED_TO_LAB" and trace.created_by == finance
-    r = client_for(finance).post(url, {"code": token, "outcome": "forwarded_to_lab"}, format="json")
-    assert r.status_code == 200 and r.json()["recorded"] is False
-    assert BookingSampleTrace.objects.filter(booking=booking).count() == 1
-    assert list(SampleReceiptScan.objects.filter(label=label).values_list("action", flat=True)) == [
-        "confirmed", "duplicate"]
+def test_qr_scan_endpoints_are_gone(on, booking):
+    for url in ("staff/sample-receipt/lookup/", "staff/sample-receipt/confirm/", "staff/sample-receipt/scan/",
+                "sample-label/courier/status/", "sample-label/courier/"):
+        assert client_for(booking.user).post(f"{API}{url}", {"code": "x"}, format="json").status_code == 404, url
 
-
-def test_operator_of_another_equipment_cannot_receive(on, booking, factory):
-    label, token = _label(booking)
-    operator = make_user(UserType.OPERATOR, department=factory.department, is_staff=True)
-    EquipmentOperator.objects.create(equipment=factory.equipment(), operator=operator)
-    r = client_for(operator).post(f"{API}staff/sample-receipt/confirm/",
-                                  {"code": token, "outcome": "forwarded_to_lab"}, format="json")
-    assert r.status_code == 404
-    assert not BookingSampleTrace.objects.filter(booking=booking).exists()
