@@ -1,25 +1,13 @@
-"""Saved postal addresses, physical invoice copies by Speed Post, and QR-coded sample labels with staff receipt.
+"""Saved postal addresses, physical invoice copies by Speed Post, and sample shipment labels.
 
 Access rules (all server-side):
 * Addresses: only their owner; another user's id is answered with 404.
 * Copy requests: the booking's owner asks; the Accounts In Charge of the department (or the Main Administrator)
   prepares and dispatches. The address is copied into the request, so editing the address book later does not
   change a dispatch.
-* Sample labels: the booking's (external) owner creates one; each new label revokes the previous ones. The QR code
-  holds a random 128-bit token (only its SHA-256 is stored).
-* Receipt by scanning (``scan``): opening the QR link is the action; nobody types a code. The step depends on who
-  scans and where the sample is, checked under a lock on the booking:
-  1. The Accounts In Charge of the booking's department, with nothing pending on the booking: Received at Office
-     (status Forwarded to Lab). With an amount pending: nothing is recorded; they may hold it at the office.
-  2. Then the equipment's Officer In Charge or lab in-charge: Sample Received at Lab (status Sample Accepted).
-  3. Any later scan by them (or by the Main Administrator) shows the booking details only.
-  Both steps go through the existing sample-status endpoint as the scanning user, so its rules and side effects
-  (external order of steps, results folder) apply unchanged. Anyone else gets "not found".
-* Courier details by scanning (``courier_status`` / ``courier_submit``): before office receipt, whoever opens the QR
-  link without being receiving staff (normally the sender, from a phone camera, signed in or not) may give the
-  courier and tracking number once. They are recorded for the booking's owner exactly as the portal records them;
-  after that, or once the portal holds courier details, the label only shows them and changes go through the portal.
-  The owner is emailed. Nothing personal is shown to an anonymous scanner.
+* Sample labels: the booking's (external) owner creates one; each new label revokes the previous ones. Since the
+  31 Oct 2026 committee meeting the label has no QR code: the receiving office reads the booking ID and records the
+  receipt on the booking as for any other sample.
 """
 
 from __future__ import annotations
@@ -38,7 +26,6 @@ from .models import (
     CopyRequestStatus,
     ExternalServicesSettings,
     PhysicalCopyRequest,
-    SampleReceiptScan,
     SampleShipmentLabel,
     SavedPostalAddress,
     SricInvoiceRequest,
@@ -370,11 +357,10 @@ def _new_reference() -> str:
 
 
 def create_sample_label(user, booking_id, data: dict) -> tuple[SampleShipmentLabel, bytes]:
-    from iic_booking.communication.utils import get_frontend_absolute_url
     from iic_booking.equipment.reports import get_equipment_oic_users
     from iic_booking.users.display import get_user_display_name
 
-    from .documents import address_lines, sample_label_pdf
+    from .documents import address_lines, department_office_mobile, sample_label_pdf
     from .invoices import _booking_for_owner, is_external_booking
 
     if not ExternalServicesSettings.load().sample_labels_enabled:
@@ -411,14 +397,15 @@ def create_sample_label(user, booking_id, data: dict) -> tuple[SampleShipmentLab
     lab_staff = list(get_equipment_lab_incharge_users(equipment))
     department = getattr(equipment, "internal_department", None)
     pdf = sample_label_pdf(
-        sender_lines=address_lines(sender),
+        sender_lines=address_lines(sender, phone=False),
+        sender_mobile=sender.get("phone", "") or "",
+        office_mobile=department_office_mobile(department),
         lab_name=getattr(department, "name", "") or "",
         lab_location=(equipment.location or "").strip().splitlines()[0] if (equipment.location or "").strip() else "",
         equipment_name=equipment.name,
         equipment_code=getattr(equipment, "code", "") or "",
         booking_reference=getattr(booking, "virtual_booking_id", "") or str(booking.pk),
         reference=label.reference,
-        qr_url=get_frontend_absolute_url(f"/staff/sample-receipt?code={token}"),
         sample_count=count,
         attention=get_user_display_name(oics[0]) if oics else None,
         lab_incharge=get_user_display_name(lab_staff[0]) if lab_staff else None,
@@ -426,12 +413,9 @@ def create_sample_label(user, booking_id, data: dict) -> tuple[SampleShipmentLab
     return label, pdf
 
 
-def _label_by_token(token: str) -> Optional[SampleShipmentLabel]:
-    token = (token or "").strip()
-    if not token or len(token) > 64:
-        return None
-    return (SampleShipmentLabel.objects.select_related("booking__equipment", "booking__user")
-            .filter(token_sha256=_hash(token), revoked_at__isnull=True).first())
+def _booking_department_id(booking):
+    return (getattr(booking.equipment, "internal_department_id", None)
+            or getattr(booking, "settlement_department_id", None))
 
 
 def staff_can_receive(user, booking) -> bool:
@@ -450,341 +434,3 @@ def staff_can_receive(user, booking) -> bool:
     if user.user_type == UserType.OPERATOR:
         return booking.equipment_id in set(api_views._get_equipment_ids_for_log_access(user) or [])
     return True
-
-
-def _receipt_view(label: SampleShipmentLabel) -> dict:
-    from iic_booking.users.display import get_user_display_name
-
-    booking = label.booking
-    latest = booking.sample_trace_events.order_by("-created_at", "-id").first()
-    return {
-        "label_reference": label.reference,
-        "booking_id": booking.pk,
-        "booking_reference": getattr(booking, "virtual_booking_id", "") or booking.pk,
-        "booking_status": booking.status,
-        "equipment": booking.equipment.name,
-        "user_name": get_user_display_name(booking.user),
-        "sample_count": label.sample_count,
-        "description": label.description,
-        "latest_sample_status": latest.status if latest else None,
-        "already_received": booking.sample_trace_events.filter(status__in=RECEIVED_STATUSES).exists(),
-        "slots": [timezone.localtime(s.start_datetime).isoformat() for s in booking.daily_slots.order_by("start_datetime")],
-    }
-
-
-def staff_lookup(user, token) -> dict:
-    label = _label_by_token(token)
-    if label is None or not staff_can_receive(user, label.booking):
-        raise LogisticsError("Label not found.", status=404, code="not_found")
-    SampleReceiptScan.objects.create(label=label, staff=user, action="looked_up")
-    return _receipt_view(label)
-
-
-def staff_confirm(user, token, *, outcome: str, notes: str = "") -> dict:
-    from iic_booking.equipment.models import Booking, BookingSampleTrace, SampleTraceStatus
-
-    label = _label_by_token(token)  # authorise before validating the caller's input
-    if label is None or not staff_can_receive(user, label.booking):
-        raise LogisticsError("Label not found.", status=404, code="not_found")
-    statuses = {"forwarded_to_lab": SampleTraceStatus.FORWARDED_TO_LAB,
-                "held_at_office": SampleTraceStatus.HELD_AT_OFFICE}
-    if outcome not in statuses:
-        raise LogisticsError("Choose Forwarded to Lab or Held at Office.", field="outcome")
-    notes = (notes or "").strip()[:500]
-    if outcome == "held_at_office" and not notes:
-        raise LogisticsError("Give the reason the sample is held at the office.", field="notes")
-    with transaction.atomic():
-        booking = Booking.objects.select_for_update().get(pk=label.booking_id)
-        if booking.sample_trace_events.filter(status=SampleTraceStatus.RETURNED).exists():
-            raise LogisticsError("The sample lifecycle is complete for this booking.", code="lifecycle_complete")
-        if booking.sample_trace_events.filter(status__in=RECEIVED_STATUSES).exists():
-            SampleReceiptScan.objects.create(label=label, staff=user, action="duplicate", notes=notes)
-            return {**_receipt_view(label), "recorded": False, "message": "Receipt was already recorded."}
-        BookingSampleTrace.objects.create(
-            booking=booking, status=statuses[outcome], reason=notes if outcome == "held_at_office" else "",
-            created_by=user,
-        )
-        SampleReceiptScan.objects.create(label=label, staff=user, action="confirmed", notes=notes,
-                                         trace_status=statuses[outcome])
-        notifications.notify(
-            f"sample:{booking.pk}:received", [booking.user],
-            title=f"Sample received for booking {getattr(booking, 'virtual_booking_id', '') or booking.pk}",
-            message="The IIC receiving office has received your sample." + (
-                " It is being held at the office: " + notes if outcome == "held_at_office" else
-                " It has been forwarded to the laboratory."),
-            link=f"/my-bookings?booking={booking.pk}",
-        )
-    return {**_receipt_view(label), "recorded": True}
-
-
-# --- scan: office receipt, then lab receipt, then details ------------------------------------------------------------
-
-OFFICE_RECEIVED = ("FORWARDED_TO_LAB",)
-LAB_RECEIVED = ("SAMPLE_ACCEPTED", "SAMPLE_REJECTED", "PROCESSING", "COMPLETED", "RETURNED")
-
-
-def _booking_department_id(booking):
-    return (getattr(booking.equipment, "internal_department_id", None)
-            or getattr(booking, "settlement_department_id", None))
-
-
-def scan_role(user, booking) -> Optional[str]:
-    """``office`` | ``lab`` | ``viewer`` | ``None`` (no access) for this booking's sample."""
-    from iic_booking.equipment import api_views
-    from iic_booking.equipment.reports import get_equipment_lab_incharge_users, get_equipment_oic_users
-    from iic_booking.users.models.user_type import UserType
-
-    if user is None or not getattr(user, "is_authenticated", False):
-        return None
-    if api_views._user_is_accounts_finance_user(user):
-        # Their own department's external bookings, whatever the payment state: an unpaid one is shown as pending
-        # (``scan`` records nothing then).
-        same_department = bool(getattr(user, "department_id", None)) and (
-            user.department_id == _booking_department_id(booking))
-        external = (booking.user_type_snapshot or "").strip() in UserType.get_external_user_codes()
-        return "office" if same_department and external else None
-    lab_people = {u.pk for u in get_equipment_oic_users(booking.equipment)}
-    lab_people |= {u.pk for u in get_equipment_lab_incharge_users(booking.equipment)}
-    if user.pk in lab_people:
-        return "lab"
-    if getattr(user, "user_type", None) == UserType.ADMIN:
-        return "viewer"
-    return None
-
-
-def _set_sample_status(user, booking, status_value: str) -> tuple[int, dict]:
-    """The existing sample-status endpoint, called as ``user`` (same rules and side effects as the booking page)."""
-    from iic_booking.equipment.api_views import set_booking_sample_status
-    from iic_booking.research_copilot.services.v2.mutations.domain_bridge import _as_data, _django_json_post
-
-    request = _django_json_post(user=user, path=f"/api/bookings/{booking.pk}/sample-status/",
-                                body={"status": status_value})
-    return _as_data(set_booking_sample_status(request, booking.pk))
-
-
-def _scan_details(label: SampleShipmentLabel) -> dict:
-    """What staff need to sort the parcel and run the experiment (no contact details beyond the user's name)."""
-    from iic_booking.equipment.booking_payment_service import booking_payment_fully_settled
-    from iic_booking.equipment.input_display import booking_display_values, booking_input_fields, readable_inputs
-    from iic_booking.equipment.reports import get_equipment_lab_incharge_users, get_equipment_oic_users
-    from iic_booking.users.display import get_user_display_name
-
-    booking = label.booking
-    equipment = booking.equipment
-    department = getattr(equipment, "internal_department", None)
-    try:
-        inputs = readable_inputs(booking_display_values(booking), booking_input_fields(booking))
-    except Exception:  # noqa: BLE001 - the details are still useful without the inputs table
-        inputs = {"sets": 0, "fields": [], "comments": ""}
-    timeline = [
-        {"status": e.status, "label": e.get_status_display(), "at": timezone.localtime(e.created_at).isoformat(),
-         "by": get_user_display_name(e.created_by) if e.created_by_id else "", "reason": e.reason or ""}
-        for e in booking.sample_trace_events.select_related("created_by").order_by("created_at", "id")
-    ]
-    return {
-        **_receipt_view(label),
-        "lab": getattr(department, "name", "") or "",
-        "equipment_code": getattr(equipment, "code", "") or "",
-        "location": (equipment.location or "").strip(),
-        "officers_in_charge": [get_user_display_name(u) for u in get_equipment_oic_users(equipment)],
-        "lab_incharge": [get_user_display_name(u) for u in get_equipment_lab_incharge_users(equipment)],
-        "slot_ranges": [
-            {"start": timezone.localtime(s.start_datetime).isoformat(),
-             "end": timezone.localtime(s.end_datetime).isoformat()}
-            for s in booking.daily_slots.order_by("start_datetime")
-        ],
-        "amount_due": f"{booking.amount_due or 0:.2f}",
-        "payment_settled": booking_payment_fully_settled(booking),
-        "notes": (booking.notes or "").strip(),
-        "inputs": inputs,
-        "timeline": timeline,
-        "received_at_office": any(e["status"] in OFFICE_RECEIVED + LAB_RECEIVED for e in timeline),
-        "received_at_lab": any(e["status"] in LAB_RECEIVED for e in timeline),
-    }
-
-
-def scan(user, token) -> dict:
-    """Process a scanned label for ``user``. Returns the details plus ``outcome``:
-    ``received_at_office`` | ``received_at_lab`` | ``payment_pending`` | ``awaiting_office`` | ``details``."""
-    from iic_booking.equipment.booking_payment_service import booking_payment_fully_settled
-    from iic_booking.equipment.models import Booking
-
-    label = _label_by_token(token)
-    ref = (token or "").strip().upper()
-    if label is None and re.fullmatch(f"[{REFERENCE_ALPHABET}]{{8}}", ref):
-        # The short reference printed under the QR code, for a damaged code (same role rules decide access).
-        label = (SampleShipmentLabel.objects.select_related("booking__equipment", "booking__user")
-                 .filter(reference=ref, revoked_at__isnull=True).first())
-    role = scan_role(user, label.booking) if label is not None else None
-    if role is None:
-        raise LogisticsError("This label was not found, or it is not for you to receive.", status=404,
-                             code="not_found")
-    with transaction.atomic():
-        booking = Booking.objects.select_for_update().get(pk=label.booking_id)  # one scan at a time per booking
-        statuses = set(booking.sample_trace_events.values_list("status", flat=True))
-        office_done = bool(statuses & set(OFFICE_RECEIVED + LAB_RECEIVED))
-        lab_done = bool(statuses & set(LAB_RECEIVED))
-        reference = getattr(booking, "virtual_booking_id", "") or booking.pk
-        outcome, message = "details", ""
-        if role == "office" and not office_done:
-            if booking.status not in ("BOOKED", "COMPLETED") or not booking_payment_fully_settled(booking):
-                outcome = "payment_pending"
-                message = (f"Payment of ₹{booking.amount_due or 0:.2f} is pending on this booking. The sample was "
-                           "not forwarded; keep it at the office until the payment is settled.")
-            else:
-                code, data = _set_sample_status(user, booking, "FORWARDED_TO_LAB")
-                if code not in (200, 201):
-                    raise LogisticsError(str(data.get("error") or "The receipt could not be recorded."),
-                                         status=409, code="not_recorded")
-                outcome, message = "received_at_office", "Received at office. Hand the sample over to the lab."
-                notifications.notify(
-                    f"sample:{booking.pk}:office", [booking.user], title=f"Sample received for booking {reference}",
-                    message="The IIC receiving office has received your sample and is forwarding it to the lab.",
-                    link=f"/my-bookings?booking={booking.pk}",
-                )
-        elif role == "lab" and not office_done:
-            outcome, message = "awaiting_office", "The receiving office has not recorded this sample yet."
-        elif role == "lab" and not lab_done:
-            code, data = _set_sample_status(user, booking, "SAMPLE_ACCEPTED")
-            if code not in (200, 201):
-                raise LogisticsError(str(data.get("error") or "The receipt could not be recorded."),
-                                     status=409, code="not_recorded")
-            outcome, message = "received_at_lab", "Sample received at the lab."
-            notifications.notify(
-                f"sample:{booking.pk}:lab", [booking.user],
-                title=f"Sample received at the lab for booking {reference}",
-                message="The laboratory has received your sample.", link=f"/my-bookings?booking={booking.pk}",
-            )
-        SampleReceiptScan.objects.create(
-            label=label, staff=user,
-            action={"received_at_office": "office", "received_at_lab": "lab"}.get(outcome, "looked_up"),
-            trace_status={"received_at_office": "FORWARDED_TO_LAB", "received_at_lab": "SAMPLE_ACCEPTED"}.get(
-                outcome, ""),
-        )
-    label.refresh_from_db()
-    return {**_scan_details(label), "outcome": outcome, "message": message, "role": role}
-
-
-# --- first scan: courier details from the sender ---------------------------------------------------------------------
-
-def _tracking_tail(number: str) -> str:
-    """The last four characters only: enough for the sender to recognise it, not to track the parcel."""
-    return f"…{number[-4:]}" if len(number) > 4 else number
-
-
-def _recorded_courier(booking) -> Optional[dict]:
-    """The courier details already held for the booking (from a scan or the portal), or None."""
-    from iic_booking.courier_tracking.constants import ArrivalMode
-    from iic_booking.courier_tracking.models import SampleArrival
-    from iic_booking.equipment.models import SampleTraceStatus
-
-    arrival = SampleArrival.objects.filter(booking=booking, is_active=True, arrival_mode=ArrivalMode.COURIER).first()
-    if arrival is not None:
-        return {"courier_name": arrival.courier_name, "tracking_tail": _tracking_tail(arrival.tracking_number)}
-    sent = booking.sample_trace_events.filter(status=SampleTraceStatus.SAMPLE_SENT).order_by("created_at", "id").first()
-    if sent is not None:
-        name, _, number = (sent.tracking_id or "").rpartition(":")
-        return {"courier_name": name.strip(), "tracking_tail": _tracking_tail(number.strip())}
-    return None
-
-
-def _courier_lock_reason(label: SampleShipmentLabel, booking) -> str:
-    """Why courier details can no longer be given through this label ("" when they can)."""
-    if label.courier_recorded_at is not None:
-        return ("The courier details were already given by scanning this label. They can be changed only on the "
-                "portal (My Bookings).")
-    if _recorded_courier(booking) is not None:
-        return "The courier details are already recorded on the portal. They can be changed only there."
-    if booking.sample_trace_events.filter(status__in=RECEIVED_STATUSES).exists():
-        return "IIC has already received this sample."
-    if booking.status not in LABEL_OPEN_BOOKING_STATUSES:
-        return "This booking is no longer waiting for a sample."
-    return ""
-
-
-def _courier_view(label: SampleShipmentLabel, booking) -> dict:
-    """What anyone holding the label may see: the label's own printed facts, never the user's contact details."""
-    from iic_booking.courier_tracking.eligibility import arrival_eligibility
-    from iic_booking.courier_tracking.services import catalog
-
-    equipment = booking.equipment
-    department = getattr(equipment, "internal_department", None)
-    reason = _courier_lock_reason(label, booking)
-    tracked = arrival_eligibility(booking.user, booking).courier_allowed if not reason else False
-    view = {
-        "label_reference": label.reference,
-        "booking_reference": getattr(booking, "virtual_booking_id", "") or booking.pk,
-        "equipment": equipment.name,
-        "lab": getattr(department, "name", "") or "",
-        "sample_count": label.sample_count,
-        "can_submit": not reason,
-        "reason": reason,
-        "recorded": _recorded_courier(booking),
-        # With the department's courier details module on, the courier is picked from the built-in list; otherwise
-        # its name is typed.
-        "courier_list": tracked,
-        "couriers": [],
-    }
-    if tracked:
-        view["couriers"] = catalog()
-    return view
-
-
-def courier_status(token: str) -> dict:
-    label = _label_by_token(token)
-    if label is None:
-        raise LogisticsError("This label was not found.", status=404, code="not_found")
-    return _courier_view(label, label.booking)
-
-
-def courier_submit(token: str, *, courier_slug: str = "", courier_name: str = "", tracking_number: str = "") -> dict:
-    """Record the courier and tracking number given by scanning the label, once, for the booking's owner."""
-    from iic_booking.courier_tracking.constants import ArrivalMode
-    from iic_booking.courier_tracking.eligibility import arrival_eligibility
-    from iic_booking.courier_tracking.parsing import normalize_tracking_number, tracking_number_problem
-    from iic_booking.courier_tracking.services import ArrivalError, ArrivalInput, register_arrival
-    from iic_booking.equipment.models import Booking, BookingSampleTrace, SampleTraceStatus
-
-    label = _label_by_token(token)
-    if label is None:
-        raise LogisticsError("This label was not found.", status=404, code="not_found")
-    with transaction.atomic():
-        booking = Booking.objects.select_for_update(of=("self",)).select_related("equipment", "user").get(pk=label.booking_id)
-        label = SampleShipmentLabel.objects.select_for_update().get(pk=label.pk)
-        if label.revoked_at is not None:
-            raise LogisticsError("This label was replaced by a newer one.", status=404, code="not_found")
-        reason = _courier_lock_reason(label, booking)
-        if reason:
-            raise LogisticsError(reason, status=409, code="courier_locked")
-        if arrival_eligibility(booking.user, booking).courier_allowed:
-            try:
-                arrival = register_arrival(booking.user, booking, ArrivalInput(
-                    arrival_mode=ArrivalMode.COURIER, courier_slug=courier_slug, tracking_number=tracking_number,
-                    notes="Given by scanning the sample label.",
-                ))
-            except ArrivalError as exc:
-                raise LogisticsError(exc.message, status=exc.status, code=exc.code, field=exc.field) from exc
-            name, number = arrival.courier_name, arrival.tracking_number
-        else:
-            name = re.sub(r"\s+", " ", courier_name or "").strip()
-            if not COURIER_NAME_RE.match(name):
-                raise LogisticsError("Enter the courier company's name.", field="courier_name")
-            number = normalize_tracking_number((tracking_number or "")[:64])
-            problem = tracking_number_problem("", number)
-            if problem:
-                raise LogisticsError(problem, field="tracking_number")
-            BookingSampleTrace.objects.create(booking=booking, status=SampleTraceStatus.SAMPLE_SENT,
-                                              tracking_id=f"{name}: {number}", created_by=booking.user)
-        label.courier_recorded_at = timezone.now()
-        label.save(update_fields=["courier_recorded_at"])
-        SampleReceiptScan.objects.create(label=label, staff=None, action="courier", notes=f"{name}: {number}"[:500])
-        reference = getattr(booking, "virtual_booking_id", "") or booking.pk
-        notifications.notify(
-            f"sample:{booking.pk}:courier", [booking.user],
-            title=f"Courier details recorded for booking {reference}",
-            message=(f"The sample label of booking {reference} was scanned and these courier details were recorded: "
-                     f"{name}, tracking number {number}. If they are not right, change them under My Bookings; "
-                     "the label cannot be used to change them again."),
-            link=f"/my-bookings?booking={booking.pk}",
-        )
-    return _courier_view(label, booking)

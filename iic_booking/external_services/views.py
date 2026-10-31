@@ -6,9 +6,8 @@ from functools import wraps
 
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes, throttle_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.throttling import AnonRateThrottle
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from . import window as window_mod
@@ -576,74 +575,6 @@ def staff_copy_envelope(request, copy_id):
 
     return _pdf(logistics.envelope_pdf(request.user, copy_id), f"envelope_{copy_id}.pdf")
 
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-@_all_errors
-def staff_sample_lookup(request):
-    from . import logistics
-
-    return Response(logistics.staff_lookup(request.user, request.data.get("code") or ""))
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-@_all_errors
-def staff_sample_confirm(request):
-    from . import logistics
-
-    return Response(logistics.staff_confirm(request.user, request.data.get("code") or "",
-                                            outcome=request.data.get("outcome") or "",
-                                            notes=request.data.get("notes") or ""))
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-@_all_errors
-def staff_sample_scan(request):
-    """Opening a scanned label: office receipt, lab receipt or details, decided by the server for this user."""
-    from . import logistics
-
-    return Response(logistics.scan(request.user, request.data.get("code") or ""))
-
-
-class SampleLabelCourierThrottle(AnonRateThrottle):
-    """Per client IP, signed in or not: the label link is opened from a phone camera, often without a session."""
-
-    scope = "sample_label_courier"
-    rate = "60/hour"
-
-    def get_cache_key(self, request, view):
-        return self.cache_format % {"scope": self.scope, "ident": self.get_ident(request)}
-
-
-@api_view(["POST"])
-@permission_classes([AllowAny])
-@throttle_classes([SampleLabelCourierThrottle])
-@_all_errors
-def sample_label_courier_status(request):
-    """What a scanned label shows its holder: the printed facts and whether courier details may still be given."""
-    from . import logistics
-
-    return Response(logistics.courier_status(request.data.get("code") or ""))
-
-
-@api_view(["POST"])
-@permission_classes([AllowAny])
-@throttle_classes([SampleLabelCourierThrottle])
-@_all_errors
-def sample_label_courier_submit(request):
-    """First scan by the sender: the courier and tracking number, accepted once per label (later only on the portal)."""
-    from . import logistics
-
-    data = request.data
-    return Response(logistics.courier_submit(
-        data.get("code") or "", courier_slug=str(data.get("courier_slug") or ""),
-        courier_name=str(data.get("courier_name") or ""), tracking_number=str(data.get("tracking_number") or ""),
-    ))
-
-
-# --- booking checkout (payment choice; nothing held before payment) --------------------------------------------------
 
 def _checkout_errors(fn):
     from .checkout import CheckoutError
