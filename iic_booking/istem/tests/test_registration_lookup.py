@@ -171,3 +171,33 @@ def test_without_a_valid_istem_token_registration_keeps_the_usual_email_step(on)
     assert "registration_confirmed" not in res.data
     user = User.objects.get(email="other@lab.example.com")
     assert not user.email_verified and not user.admin_approved
+
+
+def test_with_a_test_key_only_the_test_link_offers_istem_registration(on, mailoutbox):
+    on.ISTEM_REGISTRATION_TEST_KEY = "k3y-for-testers"
+    api = APIClient()
+    assert api.get("/api/istem/register/availability/").json() == {"available": False}
+    assert api.get("/api/istem/register/availability/?istem_test=wrong").json() == {"available": False}
+    assert api.get("/api/istem/register/availability/?istem_test=k3y-for-testers").json() == {"available": True}
+    with pytest.raises(reg.RegistrationLookupError) as exc:
+        reg.start("asha@lab.example.com", "", client_factory=_client_factory())
+    assert exc.value.code == "unavailable" and not mailoutbox
+    refused = api.post("/api/istem/register/lookup/", {"email": "asha@lab.example.com"}, format="json")
+    assert refused.status_code == 403
+
+    sent = reg.start("asha@lab.example.com", "", test_key="k3y-for-testers", client_factory=_client_factory())
+    result = reg.verify(sent["token"], _code(mailoutbox))
+    user = UserFactory(email="asha@lab.example.com", is_test_account=False)
+    assert reg.link_new_user(user, result["link_token"]) is True
+    user.refresh_from_db()
+    assert user.is_test_account  # registered through the test link
+
+
+def test_without_a_test_key_registered_users_stay_ordinary(on, mailoutbox):
+    assert APIClient().get("/api/istem/register/availability/?istem_test=anything").json() == {"available": True}
+    sent = reg.start("asha@lab.example.com", "", client_factory=_client_factory())
+    result = reg.verify(sent["token"], _code(mailoutbox))
+    user = UserFactory(email="asha@lab.example.com", is_test_account=False)
+    assert reg.link_new_user(user, result["link_token"]) is True
+    user.refresh_from_db()
+    assert not user.is_test_account

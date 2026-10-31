@@ -6,7 +6,8 @@ then links the new portal account to that I-STEM user when the registration is s
 
 There is no portal user yet, so the pending lookup lives in the cache (code hash, attempts, profile) under a random
 token; nothing about the I-STEM account is shown before the OTP is verified. Available only while the I-STEM API and
-OTP linking are switched on (``available``).
+OTP linking are switched on (``available``), and while ``ISTEM_REGISTRATION_TEST_KEY`` is set only with that key;
+accounts registered that way are test accounts.
 """
 
 from __future__ import annotations
@@ -44,8 +45,15 @@ class RegistrationLookupError(Exception):
         self.http_status = http_status
 
 
-def available() -> bool:
-    return bool(conf.istem_enabled() and conf.otp_linking_enabled())
+def _test_key() -> str:
+    return str(getattr(settings, "ISTEM_REGISTRATION_TEST_KEY", "") or "").strip()
+
+
+def available(test_key: str = "") -> bool:
+    if not (conf.istem_enabled() and conf.otp_linking_enabled()):
+        return False
+    key = _test_key()
+    return not key or constant_time_compare(key, (test_key or "").strip())
 
 
 def _digits(mobile: str) -> str:
@@ -78,13 +86,13 @@ def _send_otp(email: str, code: str) -> None:
               fail_silently=False)
 
 
-def start(email: str, mobile: str, *, client_ip: str = "", client_factory=None) -> dict:
+def start(email: str, mobile: str, *, client_ip: str = "", test_key: str = "", client_factory=None) -> dict:
     """Find the I-STEM account registered with ``email`` or ``mobile`` (both must match when both are given) and send
     an OTP to the email registered on I-STEM."""
     from .models import IstemUserLink
     from .service import default_client
 
-    if not available():
+    if not available(test_key):
         raise RegistrationLookupError("unavailable", "Registering with an I-STEM account is not available yet.", http_status=403)
     email = (email or "").strip().lower()
     mobile = _digits(mobile)
@@ -125,7 +133,7 @@ def start(email: str, mobile: str, *, client_ip: str = "", client_factory=None) 
     code = f"{secrets.randbelow(10 ** 6):06d}"
     cache.set(_KEY.format(token), {
         "public_user_id": row["user_id"], "email": email, "code_hash": _hash(token, code), "attempts": 0,
-        "profile": row["profile"],
+        "profile": row["profile"], "test_account": bool(_test_key()),
     }, timeout=int(OTP_TTL.total_seconds()))
     try:
         _send_otp(email, code)
@@ -157,7 +165,8 @@ def verify(token: str, code: str) -> dict:
     cache.delete(key)
     profile = pending["profile"]
     link_token = signing.dumps(
-        {"public_user_id": pending["public_user_id"], "email": pending["email"], "profile": profile}, salt=_SALT
+        {"public_user_id": pending["public_user_id"], "email": pending["email"], "profile": profile,
+         "test_account": bool(pending.get("test_account"))}, salt=_SALT
     )
     return {"profile": profile, "link_token": link_token}
 
@@ -185,4 +194,7 @@ def link_new_user(user, link_token: str) -> bool:
     _link_user(link, str(data["public_user_id"]), reason="existing I-STEM user registered with email OTP",
                evidence_type=EvidenceType.EMAIL_OTP, evidence_reference=f"registration OTP to {mask(user.email)}")
     apply_istem_profile(user, link.istem_profile)
+    if data.get("test_account") and not user.is_test_account:
+        user.is_test_account = True  # registered through the I-STEM test link
+        user.save(update_fields=["is_test_account"])
     return True
