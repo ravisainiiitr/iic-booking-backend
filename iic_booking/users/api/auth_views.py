@@ -2167,16 +2167,9 @@ def register(request):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if user_type_code in (UserType.EXTERNAL, UserType.RND) and email_domain in PUBLIC_EMAIL_DOMAINS:
-            if not documents_list:
-                return Response(
-                    {
-                        "error": "A signed and filled KYC form (scan) is required when using a public email (e.g. Gmail, Yahoo). Download the form, fill it, sign it, scan it, and upload it below—or use your institution/organization email.",
-                        "fieldErrors": {"documents": ["Upload the signed KYC form (scan) or use your institution email."]},
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            # Document type selection is optional on the frontend; treat any uploaded document as acceptable KYC scan.
+        # The KYC scan is optional for every external user type (also with a public email): each external booking
+        # already carries the equipment requisition form signed by the user's authorities. Any uploaded document is
+        # kept as the KYC scan.
 
     # Validate department if provided; for RND, allow organization_request instead
     department_id = serializer.validated_data.get("department")
@@ -2305,6 +2298,44 @@ def register(request):
             # Don't fail registration if document upload fails, but log it
             # User can upload documents later if needed
     
+    # Registered with a verified I-STEM account (registration form step): link it and fill blank billing details.
+    # The OTP to the email registered on I-STEM already proved the address, and I-STEM has approved the account, so
+    # an external user's registration is confirmed at once: no second verification email, no admin approval
+    # (31 Oct 2026 committee). Internal user types keep the usual steps.
+    istem_link_token = str(request.data.get("istem_link_token") or "").strip()
+    istem_linked = False
+    if istem_link_token:
+        try:
+            from iic_booking.istem.registration_lookup import link_new_user
+
+            istem_linked = link_new_user(user, istem_link_token)
+        except Exception:
+            logger.exception("Linking the I-STEM account at registration failed for user %s", user.id)
+    if istem_linked and user.user_type in UserType.get_external_user_codes():
+        from iic_booking.users import registration_approvals
+
+        user.email_verified = True
+        user.admin_approved = True
+        user.save(update_fields=["email_verified", "admin_approved"])
+        registration_approvals.on_registration_verified(user, request=request)
+        response_serializer = RegisterResponseSerializer(
+            {
+                "token": None,
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "name": user.name,
+                    "user_type": user.get_user_type_code() if user.user_type else None,
+                    "is_active": user.is_active,
+                },
+                "message": "Registration confirmed with your I-STEM account. You can sign in now.",
+            }
+        )
+        body = dict(response_serializer.data)
+        body["istem_linked"] = True
+        body["registration_confirmed"] = True
+        return Response(body, status=status.HTTP_201_CREATED)
+
     # Send verification email: user can Accept or Reject via the link. Accept completes registration
     # (immediate login for external non-public email) or submits for admin approval (others).
     token = default_token_generator.make_token(user)
