@@ -67,16 +67,6 @@ OPTION_META = [
         "description": "Instant sub-wallet recharge through Razorpay (card, UPI, net banking). Convenience fee applies.",
     },
     {
-        "key": WalletModeOption.PEER_TRANSFER,
-        "label": "Transfer within the same department",
-        "description": "Faculty move funds from their sub-wallet to another eligible wallet under the same department grant.",
-    },
-    {
-        "key": WalletModeOption.CREDIT,
-        "label": "Credit Limit",
-        "description": "Faculty request temporary wallet credit, approved by the Main Administrator within the caps.",
-    },
-    {
         "key": WalletModeOption.DIRECT_RECHARGE,
         "label": "Direct wallet recharge",
         "description": "The Main Administrator or a designated person adds funds directly to a selected wallet.",

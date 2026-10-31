@@ -206,21 +206,34 @@ class EnforcementTests(Base):
         res = self.api.post(GATEWAY_ORDER, {"purpose": "WALLET_RECHARGE", "amount": "500", "department_id": self.other.id}, format="json")
         self.assertNotEqual(res.data.get("code"), "online_gateway_recharge_disabled")
 
-    def test_peer_transfer_rejected_for_disabled_department(self):
+    def test_peer_transfer_cannot_be_started_or_confirmed(self):
+        # Wallet-to-wallet transfer was removed (31 Oct 2026), even with every switch on.
         self.masters(peer_transfer_enabled=True)
-        self.disable(self.dept, "peer_transfer")
         res = self.api.post(PEER_SEND_OTP, {"department_id": self.dept.id, "recipient_id": self.colleague.id, "amount": "10"}, format="json")
-        self.assertEqual(res.status_code, 403)
-        self.assertEqual(res.data["code"], "peer_transfer_disabled")
+        self.assertEqual(res.status_code, 404)
         transfer = WalletPeerTransfer.objects.create(
             transaction_id="W2W-TEST-1", sender=self.faculty, recipient=self.colleague, initiated_by=self.faculty,
             department=self.dept, amount=Decimal("10"), otp_code="123456",
         )
         res = self.api.post(PEER_CONFIRM, {"transfer_id": transfer.id, "otp": "123456"}, format="json")
-        self.assertEqual(res.status_code, 403)
-        self.assertEqual(res.data["code"], "peer_transfer_disabled")
+        self.assertEqual(res.status_code, 404)
+        transfer.refresh_from_db()
+        self.assertNotEqual(transfer.status, "COMPLETED")  # a transfer left pending is never executed
 
-    def test_credit_request_needs_department_credit_switch(self):
+    def test_new_credit_is_withdrawn_even_where_the_department_allowed_it(self):
+        policy = WalletCreditPolicy.get_solo()
+        policy.enabled = True
+        policy.min_request_amount = Decimal("100")
+        policy.max_credit_amount = Decimal("5000")
+        policy.save()
+        Department.objects.filter(pk=self.dept.pk).update(enable_wallet_credit=True)
+        with self.assertRaises(WalletCreditError) as ctx:
+            create_and_submit_request(user=self.faculty, requested_amount=Decimal("500"), purpose="x", department_id=self.dept.id)
+        self.assertEqual(ctx.exception.code, "CREDIT_WITHDRAWN")
+
+    @mock.patch("iic_booking.users.wallet_credit_facility_v2.new_credit_allowed", return_value=True)
+    def test_credit_request_needs_department_credit_switch(self, _legacy_credit):
+        # The department rule as it applied before new credit was withdrawn (31 Oct 2026).
         policy = WalletCreditPolicy.get_solo()
         policy.enabled = True
         policy.min_request_amount = Decimal("100")

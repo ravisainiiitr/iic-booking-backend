@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from decimal import Decimal
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -58,7 +59,7 @@ class WalletModeSwitchTests(TestCase):
         self.assertFalse(data["project_grant_recharge_enabled"])
         self.assertTrue(data["direct_cash_recharge_enabled"])
         self.assertFalse(data["online_gateway_recharge_enabled"])
-        self.assertTrue(data["peer_transfer_enabled"])
+        self.assertFalse(data["peer_transfer_enabled"])  # wallet-to-wallet transfer removed (31 Oct 2026)
         self.assertEqual(data["disabled_message"], "Awaiting Competent Authority Approval.")
 
     def test_direct_cash_blocked_when_disabled(self):
@@ -106,16 +107,16 @@ class WalletModeSwitchTests(TestCase):
             self.assertEqual(res.status_code, 403, url)
             self.assertEqual(res.data["code"], "online_gateway_recharge_disabled")
 
-    def test_peer_transfer_blocked_when_disabled(self):
-        self._set(peer_transfer_enabled=False)
+    def test_peer_transfer_is_gone_even_with_the_switch_on(self):
+        # Wallet-to-wallet transfer was removed (31 Oct 2026): the stored switch no longer turns it on.
+        self._set(peer_transfer_enabled=True)
         res = self.api.post(
             PEER_SEND_OTP, {"department_id": self.dept.id, "recipient_id": self.admin.id, "amount": "10"}, format="json"
         )
-        self.assertEqual(res.status_code, 403)
-        self.assertEqual(res.data["code"], "peer_transfer_disabled")
+        self.assertEqual(res.status_code, 404)
         res = self.api.post(PEER_CONFIRM, {"transfer_id": 1, "otp": "123456"}, format="json")
-        self.assertEqual(res.status_code, 403)
-        self.assertEqual(res.data["code"], "peer_transfer_disabled")
+        self.assertEqual(res.status_code, 404)
+        self.assertFalse(self.api.get(SETTINGS).data["peer_transfer_enabled"])
 
     def test_admin_endpoint_is_main_admin_only(self):
         self.assertEqual(self.api.get(ADMIN_MODES).status_code, 403)
@@ -151,13 +152,16 @@ class WalletModeSwitchTests(TestCase):
         self.assertEqual(policy.max_credit_duration_days, 45)
 
         data = self.api.get(SETTINGS).data
-        self.assertTrue(data["credit_facility_enabled"])
+        # The policy is stored, but users can no longer ask for new credit (withdrawn 31 Oct 2026).
+        self.assertFalse(data["credit_facility_enabled"])
         self.assertFalse(data["direct_cash_recharge_enabled"])
 
         res = admin_api.patch(f"{ADMIN_MODES}1/", {"credit_max_days": 0}, format="json")
         self.assertEqual(res.status_code, 400)
 
-    def test_credit_due_date_capped_by_max_days(self):
+    @mock.patch("iic_booking.users.wallet_credit_facility_v2.new_credit_allowed", return_value=True)
+    def test_credit_due_date_capped_by_max_days(self, _legacy_credit):
+        # The cap as it applied to credit given before new credit was withdrawn (31 Oct 2026).
         policy = WalletCreditPolicy.get_solo()
         policy.enabled = True
         policy.max_credit_amount = Decimal("5000.00")

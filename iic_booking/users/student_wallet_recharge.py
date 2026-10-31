@@ -7,6 +7,11 @@ Wallet Payment Modes exactly as for faculty, except Project Grant, which stays f
 ``Department.enable_student_wallet_recharge`` and the global
 ``WalletStudentRechargeSettings.enable_iitr_student_wallet_recharge`` are kept in the database for
 compatibility but no longer gate anything.
+
+Individual Students (fellowship holders with a wallet of their own) were retired after the 31 Oct 2026
+committee meeting: every internal student now books on the supervisor's wallet. An existing Individual Student
+can spend what is left in their wallet but can no longer top it up themselves. Staff may still record money
+that was already received (direct / manual receipt recharge); nothing here moves or changes a balance.
 """
 
 from __future__ import annotations
@@ -34,6 +39,16 @@ def is_iitr_student(user: Any) -> bool:
     if user is None:
         return False
     return str(getattr(user, "user_type", "") or "") == UserType.STUDENT
+
+
+INDIVIDUAL_STUDENT_TOPUPS_CLOSED_MESSAGE = (
+    "Individual student wallets can no longer be recharged. You can use the balance that is left; after that, "
+    "book on your supervisor's wallet (ask your supervisor to add you as a student on the Wallet page)."
+)
+
+
+def is_individual_student(user: Any) -> bool:
+    return user is not None and str(getattr(user, "user_type", "") or "") == UserType.INDIVIDUAL_STUDENT
 
 
 def student_recharge_forbidden_message() -> str:
@@ -87,8 +102,10 @@ def assert_iitr_student_may_recharge(
 ) -> Optional[str]:
     """
     Return an error message if this IITR Student must not recharge; else None.
-    Non-students always pass (None).
+    Individual Students may no longer top up their own wallet. Other non-students always pass (None).
     """
+    if is_individual_student(user):
+        return INDIVIDUAL_STUDENT_TOPUPS_CLOSED_MESSAGE
     if not is_iitr_student(user):
         return None
 
@@ -107,6 +124,8 @@ def assert_iitr_student_may_recharge(
 
 def student_has_any_recharge_department(user: Any) -> bool:
     """True if the user can recharge at least one department sub-wallet (non-students: always)."""
+    if is_individual_student(user):
+        return False
     if not is_iitr_student(user):
         return True
     return student_recharge_departments(user).exists()

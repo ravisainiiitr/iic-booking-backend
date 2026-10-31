@@ -1,7 +1,7 @@
 """Slots held for an external user while they pay.
 
 From the moment the user chooses an online payment, the checkout's slots are held for that user for
-``checkout.PAYMENT_WINDOW`` (15 minutes) or until the payment is confirmed, whichever is earlier. While held, the
+``checkout.PAYMENT_WINDOW`` (6 minutes: 5 shown to the user plus 1 of grace) or until the payment is confirmed, whichever is earlier. While held, the
 booking pipeline refuses the slots to everyone else (quote, confirm, staff bookings alike), so a payment completed in
 time always finds its slots free. The hold needs no row of its own: it is the open checkout itself, and it ends when
 the checkout is confirmed, cancelled or expires.
@@ -16,7 +16,7 @@ from typing import Iterable
 from django.db.models import Q
 from django.utils import timezone
 
-HELD_MESSAGE = ("These slots are held for another user's payment for up to 15 minutes. "
+HELD_MESSAGE = ("These slots are held for another user's payment for a few minutes. "
                 "Please choose other slots or try again shortly.")
 
 

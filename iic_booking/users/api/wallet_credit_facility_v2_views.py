@@ -21,11 +21,14 @@ from iic_booking.users.models.wallet_credit_facility import (
 from iic_booking.users.wallet_credit_facility_v2 import (
     WalletCreditError,
     approve_facility,
+    NEW_CREDIT_WITHDRAWN_CODE,
+    NEW_CREDIT_WITHDRAWN_MESSAGE,
     assert_user_may_request_credit,
     build_admin_review_context,
     build_profile_snapshot,
     create_and_submit_request,
     feature_enabled,
+    new_credit_allowed,
     list_eligible_credit_departments,
     mark_under_review,
     money,
@@ -139,7 +142,9 @@ def wallet_credit_v2_summary(request):
         "code": "FEATURE_DISABLED",
         "message": "Awaiting Competent Authority Approval.",
     }
-    if enabled:
+    if enabled and not new_credit_allowed():
+        eligibility = {"allowed": False, "code": NEW_CREDIT_WITHDRAWN_CODE, "message": NEW_CREDIT_WITHDRAWN_MESSAGE}
+    elif enabled:
         try:
             assert_user_may_request_credit(request.user)
             if blocking:
@@ -166,6 +171,7 @@ def wallet_credit_v2_summary(request):
     return Response(
         {
             "feature_enabled": enabled,
+            "new_credit_allowed": new_credit_allowed(),
             "policy": {
                 "max_credit_amount": str(money(policy.max_credit_amount)),
                 "min_request_amount": str(money(policy.min_request_amount)),
@@ -174,7 +180,9 @@ def wallet_credit_v2_summary(request):
                 "reminder_days_before_due": policy.reminder_days_before_due,
                 "overdue_reminder_interval_days": policy.overdue_reminder_interval_days,
             },
-            "eligible_departments": list_eligible_credit_departments(request.user) if enabled else [],
+            "eligible_departments": (
+                list_eligible_credit_departments(request.user) if enabled and new_credit_allowed() else []
+            ),
             "current_wallet_balance": wallet_balance,
             "existing_outstanding_credit": str(money(blocking.outstanding_amount)) if blocking else "0.00",
             "active_facility_reference": blocking.public_reference if blocking else None,
@@ -190,6 +198,8 @@ def wallet_credit_v2_list_or_create(request):
     if request.method == "GET":
         qs = WalletCreditFacility.objects.filter(user=request.user).order_by("-created_at")
         return Response({"results": [_serialize_facility(f) for f in qs[:100]]})
+    if not new_credit_allowed():
+        return Response({"error": NEW_CREDIT_WITHDRAWN_MESSAGE, "code": NEW_CREDIT_WITHDRAWN_CODE}, status=403)
     if not feature_enabled():
         return Response(
             {"error": "Wallet Credit Facility: Awaiting Competent Authority Approval.", "code": "FEATURE_DISABLED"},

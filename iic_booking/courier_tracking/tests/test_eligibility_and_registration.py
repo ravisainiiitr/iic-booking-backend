@@ -23,8 +23,7 @@ def _url(booking):
 
 
 def _courier(**extra):
-    return {"arrival_mode": "COURIER", "courier_slug": "dtdc", "tracking_number": "d 3010 377227",
-            "email_updates": True, **extra}
+    return {"arrival_mode": "COURIER", "courier_slug": "dtdc", "tracking_number": "d 3010 377227", **extra}
 
 
 # --- department enablement --------------------------------------------------------------------------------------------
@@ -72,10 +71,10 @@ def test_external_user_registers_courier_when_enabled(catalog, external_booking,
     arrival = SampleArrival.objects.get(booking=external_booking, is_active=True)
     assert arrival.arrival_mode == ArrivalMode.COURIER and arrival.courier_name == "DTDC"
     assert arrival.tracking_number_raw == "d 3010 377227" and arrival.tracking_number == "D3010377227"
-    assert arrival.status == ShipmentStatus.REGISTERED and arrival.next_lookup_at is not None
+    assert arrival.status == ShipmentStatus.REGISTERED
     trace = BookingSampleTrace.objects.get(booking=external_booking)
     assert trace.status == SampleTraceStatus.SAMPLE_SENT and "D3010377227" in trace.tracking_id
-    assert not TrackingLookup.objects.exists()  # registration never calls the provider in the request
+    assert not TrackingLookup.objects.exists()  # no provider lookups exist any more
 
 
 def test_external_user_cannot_register_courier_when_department_disabled(catalog, external_user, other_dept):
@@ -90,7 +89,7 @@ def test_external_user_cannot_register_courier_when_department_disabled(catalog,
 
 @pytest.mark.parametrize("user_type", [UserType.FACULTY, UserType.STUDENT, UserType.INDIVIDUAL_STUDENT,
                                        UserType.STARTUP_INCUBATED_IITR])
-def test_internal_users_are_manual_only_even_in_iic(catalog, iic_equipment, provider, user_type):
+def test_internal_users_are_manual_only_even_in_iic(catalog, iic_equipment, user_type):
     user = make_user(user_type)
     booking = make_booking(user, iic_equipment)
     elig = client_for(user).get(_url(booking)).data["eligibility"]
@@ -101,7 +100,7 @@ def test_internal_users_are_manual_only_even_in_iic(catalog, iic_equipment, prov
     arrival = SampleArrival.objects.get(booking=booking)
     assert arrival.arrival_mode == ArrivalMode.MANUAL and arrival.courier_slug == "" and arrival.status == ""
     assert not BookingSampleTrace.objects.filter(booking=booking).exists()  # intent, not dispatch
-    assert provider.calls == [] and not TrackingLookup.objects.exists()
+    assert not TrackingLookup.objects.exists()
 
 
 def test_snapshot_and_current_type_must_both_be_external(catalog, iic_equipment):
@@ -150,12 +149,12 @@ def test_double_submit_keeps_one_active_record(catalog, external_booking, extern
     assert BookingSampleTrace.objects.filter(booking=external_booking).count() == 1
 
 
-def test_courier_to_manual_keeps_history_and_stops_checks(catalog, external_booking, external_user, no_queue):
+def test_courier_to_manual_keeps_history(catalog, external_booking, external_user, no_queue):
     client_for(external_user).post(_url(external_booking), _courier(), format="json")
     response = client_for(external_user).post(_url(external_booking), {"arrival_mode": "MANUAL"}, format="json")
     assert response.status_code == 201
     old = SampleArrival.objects.get(booking=external_booking, arrival_mode=ArrivalMode.COURIER)
-    assert old.is_active is False and old.next_lookup_at is None and old.tracking_number == "D3010377227"
+    assert old.is_active is False and old.tracking_number == "D3010377227"
     data = client_for(external_user).get(_url(external_booking)).data
     assert data["active"]["arrival_mode"] == "MANUAL" and data["history"][0]["tracking_number"] == "D3010377227"
 

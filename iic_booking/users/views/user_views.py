@@ -4,6 +4,7 @@ import logging
 
 from rest_framework import status
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.mixins import ListModelMixin
 from rest_framework.mixins import RetrieveModelMixin
 from rest_framework.mixins import UpdateModelMixin
@@ -117,6 +118,14 @@ class UserViewSet(RetrieveModelMixin, ListModelMixin, UpdateModelMixin, GenericV
 
     def perform_update(self, serializer):
         """Save serializer data; only Admin may change other users' user_type/name via this path."""
+        if "user_type" in self.request.data:
+            raw = self.request.data.get("user_type")
+            new_type = ROLE_TO_USER_TYPE.get(raw, raw)
+            if new_type == UserType.INDIVIDUAL_STUDENT and serializer.instance.user_type != UserType.INDIVIDUAL_STUDENT:
+                # Individual Students were retired (31 Oct 2026): internal students use the supervisor's wallet.
+                raise ValidationError(
+                    {"user_type": "Individual Student is no longer available. Use Student with a supervisor."}
+                )
         serializer.save()
         if _require_admin_user(self.request):
             instance = serializer.instance

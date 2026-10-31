@@ -181,13 +181,7 @@ from iic_booking.users.api.portal_legacy_bridge_views import (
     portal_phase10m_go_no_go,
     portal_test_account_dry_run,
 )
-from iic_booking.users.api.wallet_peer_transfer_views import (
-    wallet_peer_transfer_eligible_recipients,
-    wallet_peer_transfer_send_otp,
-    wallet_peer_transfer_confirm,
-    wallet_peer_transfer_history,
-    wallet_peer_transfer_source_departments,
-)
+from iic_booking.users.api.wallet_peer_transfer_views import wallet_peer_transfer_history
 from iic_booking.users.api.department_faculty_credit_facility_views import (
     department_faculty_credit_facility_settings_view,
     department_faculty_credit_facility_faculty_list_view,
@@ -1058,26 +1052,7 @@ urlpatterns = router.urls + [
     path("wallet/bank-details/", wallet_bank_details, name="wallet-bank-details"),
     path("wallet/departments-for-recharge/", get_departments_for_recharge, name="wallet-departments-for-recharge"),
     path("wallet/transfer-between-sub-wallets/", transfer_between_sub_wallets, name="wallet-transfer-between-sub-wallets"),
-    path(
-        "wallet/peer-transfer/source-departments/",
-        wallet_peer_transfer_source_departments,
-        name="wallet-peer-transfer-source-departments",
-    ),
-    path(
-        "wallet/peer-transfer/eligible-recipients/",
-        wallet_peer_transfer_eligible_recipients,
-        name="wallet-peer-transfer-eligible-recipients",
-    ),
-    path(
-        "wallet/peer-transfer/send-otp/",
-        wallet_peer_transfer_send_otp,
-        name="wallet-peer-transfer-send-otp",
-    ),
-    path(
-        "wallet/peer-transfer/confirm/",
-        wallet_peer_transfer_confirm,
-        name="wallet-peer-transfer-confirm",
-    ),
+    # Starting a wallet-to-wallet transfer was removed (31 Oct 2026); past transfers stay readable.
     path(
         "wallet/peer-transfer/history/",
         wallet_peer_transfer_history,

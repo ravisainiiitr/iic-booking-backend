@@ -6,7 +6,7 @@ app_name = "external_services"
 
 urlpatterns = [
     path("window/", views.external_window_view, name="window"),
-    # Booking checkout: payment choice before the booking exists (nothing is held)
+    # Booking checkout: payment choice before the booking exists (slots held only while an online payment is open)
     path("checkouts/", views.checkout_create, name="checkout-create"),
     path("checkouts/<uuid:public_id>/", views.checkout_detail, name="checkout"),
     path("checkouts/<uuid:public_id>/pay/", views.checkout_pay, name="checkout-pay"),

@@ -45,7 +45,3 @@ STORAGES = {
 # Your stuff...
 # ------------------------------------------------------------------------------
 
-# Courier tracking: the ordinary test suite never talks to TrackCourier.io, whatever the environment holds.
-TRACKCOURIER_API_KEY = ""
-TRACKCOURIER_WEBHOOK_SECRET = ""
-TRACKCOURIER_WEBHOOK_PREVIOUS_SECRET = ""

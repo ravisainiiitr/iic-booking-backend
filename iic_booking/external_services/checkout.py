@@ -1,6 +1,8 @@
 """External self-booking checkout: price the booking, let the user choose how to pay, and create the booking only when
 the payment is confirmed. Once the user chooses an online payment the slots are held for them (``slot_holds``) for
-``PAYMENT_WINDOW`` or until the payment is confirmed, whichever is earlier.
+``PAYMENT_WINDOW`` or until the payment is confirmed, whichever is earlier. The user is asked to pay within
+``PAYMENT_WINDOW_SHOWN`` (5 minutes); the extra minute of hold is grace, so a payment finished a little late still
+finds its slots free.
 
 Amounts (server-side only; the client sends a choice, never an amount):
 
@@ -36,7 +38,8 @@ from .models import CheckoutChoice, CheckoutState, ExternalBookingCheckout
 
 logger = logging.getLogger(__name__)
 
-PAYMENT_WINDOW = timedelta(minutes=15)
+PAYMENT_WINDOW_SHOWN = timedelta(minutes=5)  # the countdown the user sees
+PAYMENT_WINDOW = timedelta(minutes=6)  # how long the slots are really held (one minute of grace)
 OPEN_STATES = (CheckoutState.QUOTED, CheckoutState.AWAITING_PAYMENT)
 FORWARDED_KEYS = frozenset({
     "slot_ids", "number_of_samples", "input_values", "notes", "selected_parameters", "sample_return_after_analysis",
@@ -161,6 +164,8 @@ def payload(checkout: ExternalBookingCheckout) -> dict[str, Any]:
         "wallet_amount": f"{_money(checkout.wallet_amount):.2f}",
         "gateway_amount": f"{_money(checkout.gateway_amount):.2f}",
         "expires_at": iso(checkout.expires_at),
+        # The deadline shown to the user; the slots stay held until expires_at (one minute later).
+        "pay_by": iso(checkout.expires_at - (PAYMENT_WINDOW - PAYMENT_WINDOW_SHOWN)) if checkout.expires_at else None,
         "created_at": iso(checkout.created_at),
         "confirmed_at": iso(checkout.confirmed_at),
         # Held for this user while the online payment is open (slot_holds), until expires_at.

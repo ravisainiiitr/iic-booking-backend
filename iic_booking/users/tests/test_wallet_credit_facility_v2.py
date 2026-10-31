@@ -39,11 +39,22 @@ User = get_user_model()
 
 @override_settings(WALLET_CREDIT_FACILITY_V2_ENABLED=True)
 class WalletCreditFacilityV2Tests(TestCase):
+    """The full facility life cycle, as it ran for credit given before new credit was withdrawn (31 Oct 2026): the
+    withdrawal is lifted here so existing facilities can be built and their repayment and recovery tested."""
+
     def setUp(self):
+        for target in (
+            "iic_booking.users.wallet_credit_facility_v2.new_credit_allowed",
+            "iic_booking.users.api.wallet_credit_facility_v2_views.new_credit_allowed",
+        ):
+            patcher = mock.patch(target, return_value=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.dept = Department.objects.create(
             name="IIC Credit Test",
             code="ICCT",
             department_type=DepartmentType.INTERNAL,
+            enable_wallet_credit=True,
         )
         self.faculty = User.objects.create_user(
             email="faculty.wcv2@test.iitr.ac.in",
@@ -118,6 +129,7 @@ class WalletCreditFacilityV2Tests(TestCase):
         assert_user_may_request_credit(self.faculty)
         facility = create_and_submit_request(
             user=self.faculty,
+            department_id=self.dept.pk,
             requested_amount=Decimal("10000"),
             purpose="Equipment booking buffer",
             remarks="audit test",
@@ -131,12 +143,14 @@ class WalletCreditFacilityV2Tests(TestCase):
     def test_duplicate_active_request_blocked(self):
         create_and_submit_request(
             user=self.faculty,
+            department_id=self.dept.pk,
             requested_amount=Decimal("1000"),
             purpose="first",
         )
         with self.assertRaises(WalletCreditError) as ctx:
             create_and_submit_request(
                 user=self.faculty,
+                department_id=self.dept.pk,
                 requested_amount=Decimal("2000"),
                 purpose="second",
             )
@@ -145,6 +159,7 @@ class WalletCreditFacilityV2Tests(TestCase):
     def test_admin_approve_reduce_reject_and_credit_posting(self):
         facility = create_and_submit_request(
             user=self.faculty,
+            department_id=self.dept.pk,
             requested_amount=Decimal("10000"),
             purpose="need credit",
         )
@@ -211,6 +226,7 @@ class WalletCreditFacilityV2Tests(TestCase):
     def test_reject_requires_reason(self):
         facility = create_and_submit_request(
             user=self.faculty,
+            department_id=self.dept.pk,
             requested_amount=Decimal("1000"),
             purpose="x",
         )
@@ -232,6 +248,7 @@ class WalletCreditFacilityV2Tests(TestCase):
     def test_api_idor(self):
         facility = create_and_submit_request(
             user=self.faculty,
+            department_id=self.dept.pk,
             requested_amount=Decimal("1000"),
             purpose="idor",
         )
@@ -242,6 +259,7 @@ class WalletCreditFacilityV2Tests(TestCase):
     def test_api_admin_approve_flow(self):
         facility = create_and_submit_request(
             user=self.faculty,
+            department_id=self.dept.pk,
             requested_amount=Decimal("5000"),
             purpose="admin api",
         )
@@ -272,6 +290,7 @@ class WalletCreditFacilityV2Tests(TestCase):
             with self.assertRaises(WalletCreditError) as ctx:
                 create_and_submit_request(
                     user=self.faculty,
+                    department_id=self.dept.pk,
                     requested_amount=Decimal("1000"),
                     purpose="flag off",
                 )
@@ -280,6 +299,7 @@ class WalletCreditFacilityV2Tests(TestCase):
     def test_audit_immutable(self):
         facility = create_and_submit_request(
             user=self.faculty,
+            department_id=self.dept.pk,
             requested_amount=Decimal("1000"),
             purpose="audit",
         )
@@ -287,3 +307,74 @@ class WalletCreditFacilityV2Tests(TestCase):
         with self.assertRaises(ValueError):
             ev.action = "TAMPER"
             ev.save()
+
+
+@override_settings(WALLET_CREDIT_FACILITY_V2_ENABLED=True)
+class NewCreditWithdrawnTests(TestCase):
+    """31 Oct 2026: no new credit for internal users; credit already given is still shown and repaid."""
+
+    def setUp(self):
+        self.dept = Department.objects.create(name="IIC Credit Off", code="ICCO", department_type=DepartmentType.INTERNAL,
+                                               enable_wallet_credit=True)
+        self.faculty = User.objects.create_user(
+            email="faculty.off@test.iitr.ac.in", password="pass12345", name="Faculty Off",
+            user_type=UserType.FACULTY, department=self.dept, emp_id="E2001", internal_id="CI-2001",
+            designation="Assistant Professor",
+        )
+        self.admin = User.objects.create_user(
+            email="admin.off@test.iitr.ac.in", password="pass12345", name="Admin Off", user_type=UserType.ADMIN,
+        )
+        self.wallet = Wallet.objects.create(user=self.faculty)
+        self.sub = SubWallet.objects.create(wallet=self.wallet, department=self.dept, balance=Decimal("500.00"))
+        policy = WalletCreditPolicy.get_solo()
+        policy.enabled = True
+        policy.max_credit_amount = Decimal("50000.00")
+        policy.min_request_amount = Decimal("100.00")
+        policy.max_outstanding_amount = Decimal("50000.00")
+        policy.save()
+        self.client = APIClient()
+
+    def _facility_given_before_the_change(self, amount="2000"):
+        with mock.patch("iic_booking.users.wallet_credit_facility_v2.new_credit_allowed", return_value=True):
+            facility = create_and_submit_request(user=self.faculty, requested_amount=Decimal(amount), purpose="old",
+                                                 department_id=self.dept.pk)
+            facility = approve_facility(facility=facility, actor=self.admin, approved_amount=Decimal(amount),
+                                        due_date=None)
+            return post_credit(facility=facility, actor=self.admin)
+
+    def test_new_request_is_refused_by_service_and_api(self):
+        with self.assertRaises(WalletCreditError) as ctx:
+            create_and_submit_request(user=self.faculty, requested_amount=Decimal("1000"), purpose="new",
+                                      department_id=self.dept.pk)
+        self.assertEqual(ctx.exception.code, "CREDIT_WITHDRAWN")
+        self.client.force_authenticate(user=self.faculty)
+        res = self.client.post("/api/wallet/credit-requests/", {"requested_amount": "1000", "purpose": "new",
+                                                                "department_id": self.dept.pk}, format="json")
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.data["code"], "CREDIT_WITHDRAWN")
+        self.assertFalse(WalletCreditFacility.objects.exists())
+
+    def test_pending_request_cannot_be_approved_or_posted_but_can_be_rejected(self):
+        with mock.patch("iic_booking.users.wallet_credit_facility_v2.new_credit_allowed", return_value=True):
+            pending = create_and_submit_request(user=self.faculty, requested_amount=Decimal("1000"), purpose="p",
+                                                department_id=self.dept.pk)
+        with self.assertRaises(WalletCreditError) as ctx:
+            approve_facility(facility=pending, actor=self.admin, approved_amount=Decimal("1000"), due_date=None)
+        self.assertEqual(ctx.exception.code, "CREDIT_WITHDRAWN")
+        rejected = reject_facility(facility=pending, actor=self.admin, reason="Credit withdrawn by the committee")
+        self.assertEqual(rejected.status, WalletCreditFacilityStatus.REJECTED)
+        balance_before = SubWallet.objects.get(pk=self.sub.pk).balance
+        self.assertEqual(balance_before, Decimal("500.00"))  # nothing credited
+
+    def test_existing_credit_is_still_shown_and_repaid(self):
+        facility = self._facility_given_before_the_change("2000")
+        self.client.force_authenticate(user=self.faculty)
+        summary = self.client.get("/api/wallet/credit-requests/summary/").data
+        self.assertFalse(summary["new_credit_allowed"])
+        self.assertEqual(summary["eligibility"]["code"], "CREDIT_WITHDRAWN")
+        self.assertEqual(summary["existing_outstanding_credit"], "2000.00")
+        payment = repay_from_wallet(facility=facility, actor=self.faculty, amount=Decimal("500.00"))
+        self.assertEqual(payment.amount, Decimal("500.00"))
+        facility.refresh_from_db()
+        self.assertEqual(facility.outstanding_amount, Decimal("1500.00"))
+
