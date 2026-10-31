@@ -82,7 +82,8 @@ def serialize_release(rel: MobileAppRelease) -> dict:
 @api_view(["GET", "PATCH"])
 @permission_classes([IsAuthenticated])
 def mobile_app_settings(request):
-    """Main Administrator: which user types may sign in through the IIC Booking app."""
+    """Main Administrator: which user types may sign in through the IIC Booking app. PATCH
+    ``{"audience_user_types": [...]}`` or ``{"audience_user_types": "everyone"}`` (every user type)."""
     if not _is_main_admin(request.user):
         return Response(
             {"error": "Only the Main Administrator can change mobile app settings."},
@@ -106,6 +107,7 @@ def mobile_app_settings(request):
             "audience_user_types": types,
             "choices": mobile_app.selectable_choices(),
             "default_audience_user_types": ["manager", "operator", "admin"],
+            "everyone": mobile_app.is_everyone(types),
             "refusal_message": mobile_app.audience_message(types),
             "updated_at": obj.updated_at.isoformat() if obj.updated_at else None,
             "latest_release": serialize_release(latest) if latest else None,

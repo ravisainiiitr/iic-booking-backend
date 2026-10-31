@@ -19,7 +19,8 @@ PORTAL_URL = "https://equip.iitr.ac.in"
 _CACHE_KEY = "mobile_app:audience:v1"
 _CACHE_SECONDS = 60
 
-# Types a Main Administrator can pick. Staff roles that do day-to-day lab work come first.
+# Types a Main Administrator can pick. Staff roles that do day-to-day lab work come first, then every booking user
+# (31 Oct 2026 committee: the app is opened to all users, internal and external).
 SELECTABLE_USER_TYPES: list[str] = [
     UserType.MANAGER,
     UserType.OPERATOR,
@@ -27,9 +28,20 @@ SELECTABLE_USER_TYPES: list[str] = [
     UserType.DEPT_ADMIN,
     UserType.FINANCE,
     UserType.EXTERNAL_RELATIONS,
+    UserType.HOD,
+    UserType.OC_STORES,
+    UserType.ORG_ADMIN,
     UserType.FACULTY,
     UserType.STUDENT,
+    UserType.INDIVIDUAL_STUDENT,
+    UserType.STARTUP_INCUBATED_IITR,
+    UserType.EXTERNAL,
+    UserType.RND,
+    UserType.INSTITUTE,
+    UserType.EXTERNAL_STARTUP_MSME,
+    UserType.OTHER,
 ]
+EVERYONE = "everyone"
 
 _ROLE_PHRASES = {
     UserType.MANAGER: "Officers In Charge",
@@ -38,8 +50,18 @@ _ROLE_PHRASES = {
     UserType.DEPT_ADMIN: "Department Administrators",
     UserType.FINANCE: "Accounts In Charge",
     UserType.EXTERNAL_RELATIONS: "External Relations Administrators",
+    UserType.HOD: "Heads of Department",
+    UserType.OC_STORES: "Officers In Charge Stores",
+    UserType.ORG_ADMIN: "Organization Administrators",
     UserType.FACULTY: "IITR Faculty",
     UserType.STUDENT: "IITR Students",
+    UserType.INDIVIDUAL_STUDENT: "Individual Students",
+    UserType.STARTUP_INCUBATED_IITR: "IITR Startups",
+    UserType.EXTERNAL: "Educational Institutes",
+    UserType.RND: "Govt R&D Organizations",
+    UserType.INSTITUTE: "Industry",
+    UserType.EXTERNAL_STARTUP_MSME: "External Startups/MSMEs",
+    UserType.OTHER: "other external users",
 }
 
 
@@ -49,6 +71,9 @@ def selectable_choices() -> list[dict]:
 
 
 def clean_audience(raw) -> list[str]:
+    """A list of user type codes, or ``"everyone"`` for every selectable type."""
+    if raw == EVERYONE:
+        return list(SELECTABLE_USER_TYPES)
     if not isinstance(raw, (list, tuple)):
         raise ValueError("audience_user_types must be a list of user type codes.")
     allowed = set(SELECTABLE_USER_TYPES)
@@ -88,8 +113,15 @@ def user_in_app_audience(user) -> bool:
     return getattr(user, "user_type", None) in set(audience_user_types())
 
 
+def is_everyone(types: list[str] | None = None) -> bool:
+    types = audience_user_types() if types is None else types
+    return set(SELECTABLE_USER_TYPES) <= set(types)
+
+
 def audience_message(types: list[str] | None = None) -> str:
     types = audience_user_types() if types is None else types
+    if is_everyone(types):
+        return "The IIC Booking app is available to every portal user."
     phrases = [_ROLE_PHRASES.get(t, t) for t in SELECTABLE_USER_TYPES if t in types]
     phrases = [p for p in phrases if p != "Administrators"] or phrases
     if not phrases:
