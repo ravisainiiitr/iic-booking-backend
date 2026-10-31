@@ -51,6 +51,13 @@ urlpatterns = [
         views.special_request_provisional_invoice,
         name="special-provisional-invoice",
     ),
+    # Cancellation and refunds (31 Oct 2026 policy): quote, cancel, bank accounts, the user's refunds, staff tracker
+    path("bookings/<int:booking_id>/cancellation-quote/", views.booking_cancellation_quote, name="cancellation-quote"),
+    path("bookings/<int:booking_id>/cancel/", views.booking_cancel_with_refund, name="booking-cancel"),
+    path("refund-accounts/", views.refund_bank_accounts, name="refund-accounts"),
+    path("refunds/", views.my_refunds_view, name="my-refunds"),
+    path("staff/refunds/", views.staff_refunds_view, name="staff-refunds"),
+    path("staff/refunds/<int:refund_id>/close/", views.staff_refund_close, name="staff-refund-close"),
     # Invoices (the GST invoice is issued by SRIC; the portal requests, tracks and delivers it)
     path("bookings/<int:booking_id>/invoice/", views.booking_invoice_view, name="booking-invoice"),
     path(

@@ -13699,6 +13699,48 @@ def user_cancel_booking(request, booking_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    from iic_booking.external_services import refunds as external_refunds
+
+    if external_refunds.policy_applies(request.user):
+        # 31 Oct 2026 policy for external users: the whole booking is cancelled with the fixed penalty (none for a lab
+        # disruption) and the refund computed in ``external_refunds``. Cancelling some slots only is allowed while no
+        # penalty applies, and then follows the usual rules below.
+        try:
+            cancel_plan = parse_cancellation_request(request.data, booking)
+        except CancellationValidationError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            if cancel_plan.get("mode") == "full_slots":
+                result = external_refunds.cancel(request.user, booking.pk, destination="wallet",
+                                                 notes=request.data.get("notes", ""))
+                booking.refresh_from_db()
+                refund = result["refund"]
+                message = "Booking cancelled."
+                if float(refund["refund_amount"]) > 0:
+                    message += f" ₹{refund['refund_amount']} refunded to wallet."
+                return Response(
+                    {
+                        "message": message,
+                        "booking": BookingSerializer(booking, context={"viewer": request.user}).data,
+                        "partial_cancellation": False,
+                        "free_cancellation": refund["tier"] in ("free", "disruption"),
+                        "refund_amount": refund["refund_amount"],
+                        "external_refund": refund,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            quote_now = external_refunds.cancellation_quote(booking)
+        except external_refunds.RefundPolicyError as exc:
+            return Response(exc.payload(), status=exc.status)
+        if quote_now["tier"] not in ("free", "disruption"):
+            return Response(
+                {
+                    "error": "Inside the penalty period only the whole booking can be cancelled.",
+                    "code": "PARTIAL_CANCEL_NOT_ALLOWED",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
     from .fabrication_workflow import is_rejection_active
     from .reschedule_lock import cancel_locked_for, cancel_locked_payload
 

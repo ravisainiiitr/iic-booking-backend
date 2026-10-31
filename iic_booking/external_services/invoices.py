@@ -237,7 +237,7 @@ def _create_request(booking, *, trigger, preference, actor) -> tuple[SricInvoice
     from .govt_credit import hold_for
 
     snapshot = build_snapshot(booking, trigger=trigger, preference=preference)
-    # Held out of the daily batch while the user's government credit is open, or until they ask for the consolidated
+    # Held out of the weekly batch while the user's government credit is open, or until they ask for the consolidated
     # invoice they chose; otherwise queued for the next batch.
     initial_status, group = hold_for(booking)
     try:
