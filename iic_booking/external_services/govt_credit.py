@@ -10,7 +10,7 @@ per-booking and consolidated GST invoices.
 4. Accepted: the approved amount is credited to the user's sub-wallet and the user is told they can start. Rejected:
    the user is told.
 5. While an accepted credit is not settled, no GST invoice request of the user goes to SRIC: requests are held
-   (``HELD_CREDIT``) out of the daily 09:30 batch. The Accounts In Charge records the settlement once SRIC confirms
+   (``HELD_CREDIT``) out of the weekly 09:30 batch. The Accounts In Charge records the settlement once SRIC confirms
    the payment is realised (``settle``); the held requests are then released, as one consolidated request if the
    credit asked for a consolidated invoice.
 

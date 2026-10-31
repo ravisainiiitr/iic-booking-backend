@@ -1,9 +1,11 @@
-"""Daily batch of GST invoice requests to SRIC (09:30 IST on working days).
+"""Weekly batch to SRIC: GST invoice requests and bank refunds (09:30 IST, first working day of the week).
 
-* Working days: Monday-Friday that are not an active ``Holiday`` (the calendar the results-deadline rules use).
-* ``run_batch`` is scheduled at 09:30 and every 30 minutes until 17:00 on weekdays. The first run of a working day
-  opens that day's batch (unique per date) and takes every request queued before it; later runs only retry. A
-  missed 09:30 run is covered by the next run that day; requests are never lost because they live in the database.
+* Working days: Monday-Friday that are not an active ``Holiday`` (the calendar the results-deadline rules use). The
+  batch day is the first working day of the ISO week (31 Oct 2026 committee: weekly instead of daily).
+* ``run_batch`` is scheduled at 09:30 and every 30 minutes until 17:00 on weekdays. The first run on the batch day
+  opens that week's batch (unique per date) and takes every invoice request and bank refund queued before it; later
+  runs, that day or later in the week, only retry. Requests are never lost because they live in the database.
+* Bank refunds of the batch go to the same SRIC address in one email (``sric_refunds``).
 * Each request is claimed by compare-and-swap (BATCHED/FAILED -> SENDING) before its email is sent, and the email
   is sent outside any transaction. Success -> SENT (accepted by the mail server, which is not "invoice issued").
   Failure -> FAILED with exponential backoff, at most ``MAX_ATTEMPTS`` tries, then GAVE_UP and the Accounts In
@@ -58,13 +60,21 @@ def is_working_day(d) -> bool:
     return not Holiday.objects.filter(date=d, is_active=True).exists()
 
 
+def is_batch_day(d) -> bool:
+    """The first working day of ``d``'s week (Monday, or the next working day after holidays)."""
+    if not is_working_day(d):
+        return False
+    monday = d - timedelta(days=d.weekday())
+    return not any(is_working_day(monday + timedelta(days=i)) for i in range(d.weekday()))
+
+
 def next_batch_at(now=None) -> datetime:
-    """The next 09:30 IST on a working day (for the user-facing status)."""
+    """The next weekly batch, 09:30 IST on the first working day of a week (for the user-facing status)."""
     local = timezone.localtime(now or timezone.now())
     d = local.date()
     for _ in range(60):
         candidate = timezone.make_aware(datetime.combine(d, BATCH_TIME), timezone.get_current_timezone())
-        if candidate > local and is_working_day(d):
+        if candidate > local and is_batch_day(d):
             return candidate
         d += timedelta(days=1)
     return timezone.make_aware(datetime.combine(d, BATCH_TIME), timezone.get_current_timezone())
@@ -216,7 +226,7 @@ def run_batch(now=None) -> dict:
     now = now or timezone.now()
     local = timezone.localtime(now)
     s = ExternalServicesSettings.load()
-    if not s.invoice_requests_enabled or s.sric_dispatch_mode == "off":
+    if not (s.invoice_requests_enabled or s.cancellation_policy_enabled) or s.sric_dispatch_mode == "off":
         return {"skipped": "off"}
     if not is_working_day(local.date()):
         return {"skipped": "not_working_day"}
@@ -234,15 +244,24 @@ def run_batch(now=None) -> dict:
                 status=InvoiceRequestStatus.UNCERTAIN):
             SricDispatchAttempt.objects.create(request_id=pk, outcome="uncertain", detail="worker stopped mid-send")
             result["uncertain"] += 1
-    with transaction.atomic():
-        batch, created = SricInvoiceBatch.objects.get_or_create(batch_date=local.date(), defaults={"mode": s.sric_dispatch_mode})
-        if created:
-            cutoff = batch.opened_at
-            ids = list(SricInvoiceRequest.objects.select_for_update(skip_locked=True)
-                       .filter(status=InvoiceRequestStatus.QUEUED, created_at__lte=cutoff).values_list("pk", flat=True))
-            SricInvoiceRequest.objects.filter(pk__in=ids).update(status=InvoiceRequestStatus.BATCHED, batch=batch)
-            SricInvoiceBatch.objects.filter(pk=batch.pk).update(requests_count=len(ids))
-            result["batched"] = len(ids)
+    if is_batch_day(local.date()):
+        with transaction.atomic():
+            batch, created = SricInvoiceBatch.objects.get_or_create(batch_date=local.date(), defaults={"mode": s.sric_dispatch_mode})
+            if created:
+                from .sric_refunds import queue_into_batch
+
+                cutoff = batch.opened_at
+                ids = []
+                if s.invoice_requests_enabled:
+                    ids = list(SricInvoiceRequest.objects.select_for_update(skip_locked=True)
+                               .filter(status=InvoiceRequestStatus.QUEUED, created_at__lte=cutoff).values_list("pk", flat=True))
+                    SricInvoiceRequest.objects.filter(pk__in=ids).update(status=InvoiceRequestStatus.BATCHED, batch=batch)
+                SricInvoiceBatch.objects.filter(pk=batch.pk).update(requests_count=len(ids))
+                result["batched"] = len(ids)
+                result["refunds_batched"] = queue_into_batch(batch, cutoff) if s.cancellation_policy_enabled else 0
+    from .sric_refunds import send_due
+
+    result.update(send_due(to, s.sric_dispatch_mode))
     due = list(
         SricInvoiceRequest.objects.filter(
             status__in=[InvoiceRequestStatus.BATCHED, InvoiceRequestStatus.FAILED], attempts__lt=MAX_ATTEMPTS

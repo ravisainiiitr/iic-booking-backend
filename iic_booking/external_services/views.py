@@ -846,3 +846,97 @@ def govt_credit_decide(request, token):
         "<p><label>Note (optional)<br><textarea name='note'></textarea></label></p>"
         f"<button style='background:{colour}'>{verb} this request</button></form>"
     )
+
+
+# --- cancellation and refunds (31 Oct 2026 committee) -----------------------------------------------------------------
+
+def _refund_errors(fn):
+    @wraps(fn)
+    def inner(request, *args, **kwargs):
+        from .refunds import RefundPolicyError
+
+        try:
+            return fn(request, *args, **kwargs)
+        except RefundPolicyError as exc:
+            return Response(exc.payload(), status=exc.status)
+
+    return inner
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@_refund_errors
+def booking_cancellation_quote(request, booking_id):
+    """What cancelling this booking now would refund (penalty, GST, return shipping), before the user confirms."""
+    from iic_booking.equipment.models import Booking
+
+    from . import refunds
+
+    booking = Booking.objects.filter(pk=booking_id, user=request.user).first()
+    if booking is None:
+        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not refunds.policy_applies(request.user):
+        return Response({"applies": False})
+    return Response({"applies": True, **refunds.cancellation_quote(booking), "accounts": refunds.my_accounts(request.user)})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@_refund_errors
+def booking_cancel_with_refund(request, booking_id):
+    """Cancel the whole booking under the policy. Body: destination (wallet|bank), bank_account_id, notes,
+    expected_refund (the amount shown, so a changed amount is never applied silently)."""
+    from . import refunds
+
+    data = _data(request)
+    result = refunds.cancel(
+        request.user, booking_id, destination=data.get("destination") or "wallet",
+        bank_account_id=data.get("bank_account_id"), notes=data.get("notes") or "",
+        expected_refund=data.get("expected_refund"),
+    )
+    return Response(result)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+@_refund_errors
+def refund_bank_accounts(request):
+    """The user's saved bank accounts for refunds (masked); POST adds one and makes it the default."""
+    from . import refunds
+
+    if request.method == "POST":
+        acc = refunds.save_account(request.user, _data(request))
+        return Response(refunds.account_dict(acc), status=status.HTTP_201_CREATED)
+    return Response({"accounts": refunds.my_accounts(request.user)})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@_refund_errors
+def my_refunds_view(request):
+    from . import refunds
+
+    return Response({"refunds": refunds.my_refunds(request.user)})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@_refund_errors
+def staff_refunds_view(request):
+    """Accounts In Charge: every bank refund with its SRIC and payment status."""
+    from . import refunds
+
+    rows = refunds.tracker(request.user, status=str(request.query_params.get("status") or ""),
+                           q=str(request.query_params.get("q") or "").strip()[:100])
+    return Response({"refunds": rows, "count": len(rows)})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@_refund_errors
+def staff_refund_close(request, refund_id):
+    from . import refunds
+
+    data = _data(request)
+    r = refunds.close(request.user, refund_id, utr=data.get("utr") or "", note=data.get("note") or "")
+    return Response(refunds.refund_dict(r, staff=True))

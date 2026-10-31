@@ -189,6 +189,20 @@ class ExternalServicesSettings(models.Model):
         blank=True, default="",
         help_text=_("Approved IIC address for labels, one line per row (sender for invoices, recipient for samples)."),
     )
+    # Cancellation and refunds (31 Oct 2026 committee): see ``refunds``.
+    cancellation_policy_enabled = models.BooleanField(
+        default=False,
+        help_text=_("External users cancel with the fixed penalties below; disruptions refund to the wallet or a bank."),
+    )
+    cancellation_free_hours = models.PositiveSmallIntegerField(
+        default=48, help_text=_("No penalty when cancelled more than this many hours before the booking.")
+    )
+    cancellation_half_hours = models.PositiveSmallIntegerField(
+        default=24, help_text=_("Below this many hours before the booking the whole amount is kept (100% penalty).")
+    )
+    cancellation_half_penalty_percent = models.PositiveSmallIntegerField(
+        default=50, help_text=_("Penalty between the two limits above, as a percentage of the refundable amount.")
+    )
     updated_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -431,13 +445,13 @@ class InvoiceRequestStatus(models.TextChoices):
     GAVE_UP = "gave_up", _("Sending failed (action required)")
     UNCERTAIN = "uncertain", _("Sending outcome unknown (action required)")
     INVOICE_RECEIVED = "invoice_received", _("Invoice received and uploaded")
-    # Not sent in the daily batch until released: credit not yet realised, or waiting to join a consolidated invoice.
+    # Not sent in the weekly batch until released: credit not yet realised, or waiting to join a consolidated invoice.
     HELD_CREDIT = "held_credit", _("Held until the government credit is settled")
     HELD_CONSOLIDATION = "held_consolidation", _("Held for a consolidated invoice")
 
 
 class SricInvoiceBatch(models.Model):
-    """One batch per working day (09:30 IST). Requests queued before the batch was opened go into it."""
+    """One batch per week (09:30 IST, first working day). Requests and bank refunds queued before it opened go into it."""
 
     batch_date = models.DateField(unique=True)
     opened_at = models.DateTimeField(auto_now_add=True)
@@ -796,3 +810,95 @@ class ConsolidatedProforma(models.Model):
 
     def __str__(self) -> str:
         return f"{self.reference} Rs. {self.total}"
+
+
+# --- refunds (31 Oct 2026 cancellation policy) ---------------------------------------------------------------------
+
+class RefundOrigin(models.TextChoices):
+    CANCELLATION = "cancellation", _("Cancelled by the user")
+    DISRUPTION = "disruption", _("Lab disruption")
+
+
+class RefundDestination(models.TextChoices):
+    WALLET = "wallet", _("Wallet")
+    BANK = "bank", _("Bank account (through SRIC)")
+
+
+class RefundStatus(models.TextChoices):
+    QUEUED = "queued", _("Waiting for the weekly SRIC batch")
+    SENT = "sent", _("Sent to SRIC")
+    FAILED = "failed", _("Sending to SRIC failed (will retry)")
+    CLOSED = "closed", _("Closed: amount reached the user")
+
+
+class RefundBankAccount(models.Model):
+    """A bank account an external user gave for refunds, kept for later refunds. Shown masked except to the
+    Accounts In Charge and in the SRIC request."""
+
+    user = models.ForeignKey(USER, on_delete=models.CASCADE, related_name="refund_bank_accounts")
+    account_holder_name = models.CharField(max_length=150)
+    bank_name = models.CharField(max_length=150)
+    account_number = models.CharField(max_length=18)
+    ifsc = models.CharField(max_length=11)
+    branch = models.CharField(max_length=150, blank=True, default="")
+    is_default = models.BooleanField(default=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-is_default", "-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.bank_name} ending {self.account_number[-4:]}"
+
+
+class ExternalRefund(models.Model):
+    """The one refund of a cancelled external booking: to the wallet (done at once) or to a bank account (queued for
+    the weekly SRIC batch and followed by the Accounts In Charge until closed). Amounts are as shown to the user."""
+
+    booking = models.OneToOneField("equipment.Booking", on_delete=models.PROTECT, related_name="external_refund")
+    user = models.ForeignKey(USER, on_delete=models.PROTECT, related_name="external_refunds")
+    origin = models.CharField(max_length=16, choices=RefundOrigin.choices)
+    destination = models.CharField(max_length=8, choices=RefundDestination.choices)
+    tier = models.CharField(max_length=12, help_text=_("free, half, full or disruption"))
+    penalty_percent = models.PositiveSmallIntegerField(default=0)
+    paid_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    gst_paid = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    return_shipping = models.DecimalField(max_digits=12, decimal_places=2, default=0,
+                                          help_text=_("Non-refundable return shipping, GST included."))
+    refund_base = models.DecimalField(max_digits=12, decimal_places=2)
+    refund_gst = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    refund_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    gst_refunded = models.BooleanField(default=True, help_text=_("False when a GST invoice had already been requested."))
+    bank_account = models.ForeignKey(RefundBankAccount, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    bank_snapshot = models.JSONField(default=dict, blank=True, help_text=_("Account details as given for this refund."))
+    wallet_transaction = models.ForeignKey("users.SubWalletTransaction", on_delete=models.PROTECT, null=True,
+                                           blank=True, related_name="+")
+    status = models.CharField(max_length=8, choices=RefundStatus.choices, default=RefundStatus.QUEUED, db_index=True)
+    batch = models.ForeignKey(SricInvoiceBatch, on_delete=models.PROTECT, null=True, blank=True, related_name="refunds")
+    attempts = models.PositiveSmallIntegerField(default=0)
+    last_error = models.CharField(max_length=255, blank=True, default="")
+    sent_at = models.DateTimeField(null=True, blank=True)
+    sent_to = models.CharField(max_length=254, blank=True, default="")
+    sent_in_mode = models.CharField(max_length=8, blank=True, default="")
+    utr = models.CharField(max_length=64, blank=True, default="", help_text=_("Bank reference of the payment."))
+    close_note = models.TextField(blank=True, default="")
+    closed_at = models.DateTimeField(null=True, blank=True)
+    closed_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    created_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.CheckConstraint(condition=models.Q(refund_amount__gte=0), name="external_refund_amount_not_negative"),
+            models.CheckConstraint(
+                condition=~models.Q(destination="bank") | models.Q(bank_account__isnull=False),
+                name="external_refund_bank_needs_account",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Refund {self.refund_amount} for booking {self.booking_id} ({self.destination})"

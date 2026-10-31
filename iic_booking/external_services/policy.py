@@ -22,6 +22,7 @@ BOOLEAN_SETTINGS = (
     "physical_copies_enabled",
     "sample_labels_enabled",
     "govt_credit_enabled",
+    "cancellation_policy_enabled",
 )
 SETTINGS_FIELDS = BOOLEAN_SETTINGS + (
     "max_open_special_requests",
@@ -32,6 +33,9 @@ SETTINGS_FIELDS = BOOLEAN_SETTINGS + (
     "sric_test_recipient_email",
     "iic_postal_address",
     "head_iic_emails",
+    "cancellation_free_hours",
+    "cancellation_half_hours",
+    "cancellation_half_penalty_percent",
 )
 
 
@@ -136,7 +140,9 @@ def update_settings(actor, data: dict) -> ExternalServicesSettings:
         for field in BOOLEAN_SETTINGS:
             if field in data:
                 setattr(s, field, _bool(data[field], field))
-        limits = {"max_open_special_requests": (1, 20), "short_notice_days": (1, 60), "payment_window_hours": (1, 168)}
+        limits = {"max_open_special_requests": (1, 20), "short_notice_days": (1, 60), "payment_window_hours": (1, 168),
+                  "cancellation_free_hours": (1, 720), "cancellation_half_hours": (0, 720),
+                  "cancellation_half_penalty_percent": (0, 100)}
         for field, (lo, hi) in limits.items():
             if field in data:
                 setattr(s, field, _int(data[field], field, lo, hi))
@@ -158,6 +164,9 @@ def update_settings(actor, data: dict) -> ExternalServicesSettings:
             if len(emails) > 5:
                 raise PolicyError("Give at most 5 Head IIC addresses.", field="head_iic_emails")
             s.head_iic_emails = "\n".join(_email(e, "head_iic_emails") for e in emails)
+        if s.cancellation_half_hours >= s.cancellation_free_hours:
+            raise PolicyError("The full-penalty limit must be fewer hours than the free-cancellation limit.",
+                              field="cancellation_half_hours")
         if s.govt_credit_enabled and not s.head_iic_emails:
             raise PolicyError("Set the Head IIC addresses before enabling credit requests.", field="head_iic_emails")
         if s.sric_dispatch_mode == "live" and not s.sric_recipient_email:
