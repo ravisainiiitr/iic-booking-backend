@@ -351,3 +351,26 @@ def test_publish_rejects_non_apk(media):
     zipless.write_bytes(b"MZ not a zip")
     with pytest.raises(CommandError):
         call_command("publish_mobile_app", str(zipless), version_name="1.0.0", version_code=1)
+
+
+# --- 31 Oct 2026: the app is opened to every user ----------------------------------------------------------------
+
+
+def test_main_admin_can_open_the_app_to_everyone():
+    admin = make_user(UserType.ADMIN)
+    resp = web_client(admin).patch(SETTINGS_URL, {"audience_user_types": "everyone"}, format="json")
+    assert resp.status_code == 200, resp.data
+    assert resp.data["everyone"] is True
+    assert resp.data["refusal_message"] == "The IIC Booking app is available to every portal user."
+    for user_type in (UserType.EXTERNAL, UserType.RND, UserType.INSTITUTE, UserType.EXTERNAL_STARTUP_MSME,
+                      UserType.STARTUP_INCUBATED_IITR, UserType.OTHER, UserType.FACULTY, UserType.STUDENT,
+                      UserType.DEPT_ADMIN, UserType.FINANCE):
+        cache.clear()
+        assert enroll(make_user(user_type)).status_code == 201, user_type
+
+
+def test_external_user_types_are_offered_to_the_main_admin():
+    resp = web_client(make_user(UserType.ADMIN)).get(SETTINGS_URL)
+    codes = {c["code"] for c in resp.data["choices"]}
+    assert {"external", "RND", "Industry", "external_startup_msme", "startup_incubated_iitr", "other"} <= codes
+    assert resp.data["everyone"] is False
