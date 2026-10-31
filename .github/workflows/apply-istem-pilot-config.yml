@@ -1,0 +1,132 @@
+# I-STEM pilot configuration for production (31 Oct 2026): registration with an existing I-STEM account and I-STEM
+# linking for test accounts, against I-STEM STAGING until I-STEM issues production credentials.
+#   enable  : ISTEM_ENABLED, ISTEM_MODE=live, OTP linking on, staging URL and credentials (repository secrets
+#             ISTEM_STAGING_USERNAME / ISTEM_STAGING_PASSWORD), the CA chain shipped in the code, and the
+#             registration test key (secret ISTEM_REGISTRATION_TEST_KEY): "Already registered on I-STEM?" shows only
+#             on /auth?istem_test=<key>, and accounts registered through it are test accounts. Signed-in linking is
+#             limited to test accounts by the external pilot. User creation, Confirm and FBR Execute stay off.
+#   disable : I-STEM off again (ISTEM_ENABLED=False, ISTEM_MODE=off, OTP linking off); credentials removed.
+# Only the django service is recreated. Secrets are never printed.
+name: Apply I-STEM Pilot Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "enable | disable"
+        required: true
+        type: choice
+        options: [enable, disable]
+      confirm:
+        description: "Type ISTEM to proceed"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        run: test "${{ github.event.inputs.confirm }}" = "ISTEM"
+
+      - name: Update env file and recreate django
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          ISTEM_STAGING_USERNAME: ${{ secrets.ISTEM_STAGING_USERNAME }}
+          ISTEM_STAGING_PASSWORD: ${{ secrets.ISTEM_STAGING_PASSWORD }}
+          ISTEM_REGISTRATION_TEST_KEY: ${{ secrets.ISTEM_REGISTRATION_TEST_KEY }}
+        run: |
+          set -euo pipefail
+          DEPLOY=/home/ubuntu/iic-booking-backend
+          ENV_FILE="$DEPLOY/.envs/.production/.django"
+          test -f "$ENV_FILE"
+          cp -p "$ENV_FILE" "$ENV_FILE.bak-istem-$(date -u +%Y%m%dT%H%M%SZ)"
+          export ENV_FILE
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          mode = os.environ["MODE"]
+          env_file = Path(os.environ["ENV_FILE"])
+          secret_keys = ["ISTEM_USERNAME", "ISTEM_PASSWORD", "ISTEM_REGISTRATION_TEST_KEY"]
+          upsert, remove = {}, set()
+          if mode == "enable":
+              for name in ("ISTEM_STAGING_USERNAME", "ISTEM_STAGING_PASSWORD", "ISTEM_REGISTRATION_TEST_KEY"):
+                  if not os.environ.get(name):
+                      raise SystemExit(f"repository secret {name} is not set")
+              upsert = {
+                  "ISTEM_ENABLED": "True",
+                  "ISTEM_MODE": "live",
+                  "ISTEM_BASE_URL": "https://istemstaging.iisc.ac.in/istem1",
+                  "ISTEM_USERNAME": os.environ["ISTEM_STAGING_USERNAME"],
+                  "ISTEM_PASSWORD": os.environ["ISTEM_STAGING_PASSWORD"],
+                  "ISTEM_INSTITUTE_ID": "213",
+                  "ISTEM_CA_BUNDLE": "/app/iic_booking/istem/certs/istem_ca_chain.pem",
+                  "ISTEM_CONNECT_TIMEOUT": "20",
+                  "ISTEM_OTP_LINKING_ENABLED": "True",
+                  "ISTEM_REGISTRATION_TEST_KEY": os.environ["ISTEM_REGISTRATION_TEST_KEY"],
+                  "ISTEM_USER_CREATION_ENABLED": "False",
+                  "ISTEM_CONFIRM_ENABLED": "False",
+                  "ISTEM_EXECUTE_ENABLED": "False",
+              }
+          elif mode == "disable":
+              upsert = {"ISTEM_ENABLED": "False", "ISTEM_MODE": "off", "ISTEM_OTP_LINKING_ENABLED": "False"}
+              remove = set(secret_keys)
+          else:
+              raise SystemExit("unknown mode")
+
+          out, seen = [], set()
+          for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+              key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+              if key in remove:
+                  continue
+              if key in upsert:
+                  if key not in seen:
+                      out.append(f"{key}={upsert[key]}")
+                      seen.add(key)
+                  continue
+              out.append(line)
+          for key, value in upsert.items():
+              if key not in seen:
+                  out.append(f"{key}={value}")
+          env_file.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+          print("mode=", mode, " upserted=", sorted(upsert), " removed=", sorted(remove))
+          PY
+          grep -E '^ISTEM_' "$ENV_FILE" | grep -v -E '^ISTEM_(USERNAME|PASSWORD|REGISTRATION_TEST_KEY)=' || true
+          cd "$DEPLOY"
+          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps django
+          for i in $(seq 1 30); do
+            CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+            if [ -n "$CID" ] && docker exec "$CID" true 2>/dev/null; then break; fi
+            sleep 2
+          done
+          sleep 6
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'django' || true
+
+      - name: Runtime verification
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import django
+
+          django.setup()
+
+          from iic_booking.istem import conf, registration_lookup
+
+          print("RUNTIME istem_enabled=", conf.istem_enabled(), " mode=", conf.istem_mode(),
+                " network_allowed=", conf.network_allowed(), " missing=", conf.missing_live_settings())
+          print("RUNTIME otp_linking=", conf.otp_linking_enabled(), " user_creation=", conf.user_creation_enabled(),
+                " test_key_set=", bool(registration_lookup._test_key()))
+          print("RUNTIME registration available without the key=", registration_lookup.available(""))
+          if conf.network_allowed():
+              from iic_booking.istem.service import default_client
+
+              try:
+                  default_client().lookup_public_user(user_email="nobody@iic-booking.test")
+                  print("I-STEM staging reachable: token and look-up OK")
+              except Exception as exc:  # only the class and message, never credentials
+                  print("I-STEM staging check:", type(exc).__name__, str(exc)[:200])
+          PY
