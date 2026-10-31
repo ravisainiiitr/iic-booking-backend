@@ -1260,15 +1260,27 @@ def login(request):
     
     email = serializer.validated_data["email"]
     password = serializer.validated_data["password"]
-    
+
+    from iic_booking.users import login_throttle
+
+    if login_throttle.is_blocked(request, email):
+        return Response(
+            {"error": "Too many failed sign-in attempts. Please wait 15 minutes, or sign in with an OTP."},
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
     # Check if user exists first to provide better error messages
     try:
         user = User.objects.get(email=email)
     except User.DoesNotExist:
+        login_throttle.record_failure(request, email)
         return Response(
             {"error": "Invalid email or password"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
+    # Every wrong password counts, including on the answers below that do not need it (expired programme, etc.).
+    if not user.check_password(password):
+        login_throttle.record_failure(request, email)
     
     # Check if email is verified
     if not user.email_verified:
@@ -1386,6 +1398,7 @@ def login(request):
             {"error": "Invalid email or password"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
+    login_throttle.clear(request, email)
     
     # Ensure authenticated user matches the user we found
     user = authenticated_user
