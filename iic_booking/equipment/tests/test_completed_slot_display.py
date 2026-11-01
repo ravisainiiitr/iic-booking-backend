@@ -78,6 +78,19 @@ def _get_slots(user, eq, start, end):
     return {row["id"]: row for row in res.data["slots"]}
 
 
+def _working_day(offset: int):
+    """The working day |offset| working days after (or before, when negative) today, so slots never fall on a
+    weekend or institute holiday, which ordinary users do not see."""
+    from iic_booking.equipment.models import Holiday
+
+    step, left, d = (1 if offset > 0 else -1), abs(offset), timezone.localdate()
+    while left:
+        d += timedelta(days=step)
+        if d.weekday() < 5 and not Holiday.objects.filter(date=d, is_active=True).exists():
+            left -= 1
+    return d
+
+
 def _assert_completed(row):
     assert row["status"] == SlotStatus.BOOKED
     assert row["display_status"] == "COMPLETED"
@@ -86,9 +99,9 @@ def _assert_completed(row):
     assert row["booking_status_display"] == "Completed"
 
 
-def test_past_slots_of_completed_multi_slot_booking_show_completed_to_users():
+def test_past_slots_of_completed_multi_slot_booking_show_completed_to_users(midweek):
     eq = _equipment()
-    yesterday = timezone.localdate() - timedelta(days=1)
+    yesterday = _working_day(-1)
     slots = [_slot(eq, yesterday, 10, number=1), _slot(eq, yesterday, 11, number=2)]
     owner = UserFactory(admin_approved=True, user_type=UserType.STUDENT)
     _book(owner, eq, slots, status=BookingStatus.COMPLETED)
@@ -102,7 +115,7 @@ def test_past_slots_of_completed_multi_slot_booking_show_completed_to_users():
 
 def test_completed_before_slot_date_is_shown_completed_not_booked_to_everyone():
     eq = _equipment()
-    day = timezone.localdate() + timedelta(days=3)
+    day = _working_day(3)
     slot = _slot(eq, day, 10, number=1)
     owner = UserFactory(admin_approved=True, user_type=UserType.STUDENT)
     _book(owner, eq, [slot], status=BookingStatus.COMPLETED)
@@ -115,7 +128,7 @@ def test_completed_before_slot_date_is_shown_completed_not_booked_to_everyone():
 
 def test_open_booking_slot_still_shows_booked():
     eq = _equipment()
-    day = timezone.localdate() + timedelta(days=2)
+    day = _working_day(2)
     slot = _slot(eq, day, 10, number=1)
     owner = UserFactory(admin_approved=True, user_type=UserType.STUDENT)
     _book(owner, eq, [slot], status=BookingStatus.BOOKED)
@@ -131,7 +144,7 @@ def test_open_booking_slot_still_shows_booked():
 
 def test_external_viewer_sees_completed():
     eq = _equipment()
-    day = timezone.localdate() - timedelta(days=1)
+    day = _working_day(-1)
     slot = _slot(eq, day, 10, number=1)
     owner = UserFactory(admin_approved=True, user_type=UserType.STUDENT)
     _book(owner, eq, [slot], status=BookingStatus.COMPLETED)
@@ -142,10 +155,10 @@ def test_external_viewer_sees_completed():
     _assert_completed(data)
 
 
-def test_operator_complete_marks_group_equipment_slots_completed_and_keeps_them_occupied():
+def test_operator_complete_marks_group_equipment_slots_completed_and_keeps_them_occupied(midweek):
     group = EquipmentGroup.objects.create(name=f"SEM group {uuid.uuid4().hex[:4]}", code=f"G{uuid.uuid4().hex[:6]}")
     eq = _equipment(equipment_group=group)
-    day = timezone.localdate() - timedelta(days=1)
+    day = _working_day(-1)
     slots = [_slot(eq, day, 10, number=1), _slot(eq, day, 11, number=2)]
     owner = UserFactory(admin_approved=True, user_type=UserType.STUDENT)
     booking = _book(owner, eq, slots, status=BookingStatus.BOOKED)

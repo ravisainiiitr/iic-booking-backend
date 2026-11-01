@@ -573,6 +573,7 @@ def _hold_update_logs(booking):
 
 
 def test_hold_update_under_maintenance_converts_and_emails_each_user_once(
+    midweek,
     lab, mailoutbox, django_capture_on_commit_callbacks
 ):
     eq, _oic, _day, now = lab
