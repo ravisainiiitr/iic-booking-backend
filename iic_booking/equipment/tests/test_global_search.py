@@ -149,3 +149,35 @@ def test_users_find_the_officer_in_charge_and_lab_in_charge_by_name(world):
     assert [e["id"] for e in by_role["Lab In-charge"]["equipment"]] == [fesem.pk]
     assert _get(student, "Nobody Here")["lab_staff"] == []
     assert _get(None, "Mee")["lab_staff"] == []  # signed-out visitors do not get staff contacts
+
+
+# --- people kept apart from bookings ------------------------------------------------------------------------------------
+
+def test_people_on_matching_bookings_are_listed_separately(world):
+    # Staff: a booking ID finds the booking, and its booker and Officer in Charge under People.
+    body = _get(world["oic"], "IICXRD202600011")
+    assert [b["virtual_booking_id"] for b in body["bookings"]] == ["IICXRD202600011"]
+    people = {p["name"]: p for p in body["people"]}
+    assert people["Alice Kumar"]["relation"] == "Booked IICXRD202600011"
+    assert "Dr Oic" not in people  # the viewer is never listed
+    assert set(people["Alice Kumar"]) >= {"id", "photo_url", "user_type", "department"}
+
+
+def test_users_see_the_lab_staff_of_their_bookings_and_can_open_the_card(world):
+    body = _get(world["alice"], "IICXRD")
+    assert [p["name"] for p in body["people"]] == ["Dr Oic"]
+    assert body["people"][0]["relation"] == "Officer in Charge · Xenon Ray Diffractometer"
+    assert body["people_enabled"] is False  # still no lookup of other users by name
+    client = APIClient()
+    client.force_authenticate(user=world["alice"])
+    assert client.get(f"/api/users/{world['oic'].pk}/card/").status_code == 200
+    assert client.get(f"/api/users/{world['bob'].pk}/card/").status_code == 404
+
+
+def test_users_open_the_card_of_lab_staff_found_by_name(world):
+    student = UserFactory(admin_approved=True, user_type=UserType.STUDENT, name="New Student")
+    row = _get(student, "Dr Oic")["people"][0]
+    assert row["id"] == world["oic"].pk and row["relation"].startswith("Officer in Charge")
+    client = APIClient()
+    client.force_authenticate(user=student)
+    assert client.get(f"/api/users/{world['oic'].pk}/card/").status_code == 200

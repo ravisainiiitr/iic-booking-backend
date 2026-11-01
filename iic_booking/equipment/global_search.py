@@ -2,6 +2,10 @@
 
 Equipment matching tolerates spelling mistakes and understands techniques (``search_index``); bookings and people
 match exact or contained text only, so a near-miss never reveals someone else's record.
+
+People are listed apart from bookings: those whose name matches (staff: any user; others: Officers in Charge and Lab
+In-charges), then the people on the matching bookings (staff: who booked; everyone: the equipment's Officer in Charge
+and Lab In-charge). Each opens the scoped ID card.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ MIN_CHARS = 2
 MAX_CHARS = 80
 EQUIPMENT_LIMIT = 6
 BOOKING_LIMIT = 8
-PEOPLE_LIMIT = 6
+PEOPLE_LIMIT = 10
 _DISPLAY_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]*-(\d+)$")
 # Roles whose people search covers every user (others: only users within their bookings scope).
 LOOKS_UP_ANY_USER = frozenset({"admin", "manager", "operator", "dept_admin"})
@@ -76,7 +80,8 @@ def _status_codes_matching(q: str) -> list[str]:
     return [code for code, label in BookingStatus.choices if len(needle) >= 4 and str(label).lower().startswith(needle)]
 
 
-def _search_bookings(user, q: str, *, staff_view: bool) -> list[dict[str, Any]]:
+def _search_bookings(user, q: str, *, staff_view: bool) -> tuple[list[dict[str, Any]], list]:
+    """Booking rows for the response and the matched bookings themselves (for the people on them)."""
     from .admin_insights.user_card import _slot_annotations
     from .api_views import bookings_visible_to
 
@@ -128,7 +133,7 @@ def _search_bookings(user, q: str, *, staff_view: bool) -> list[dict[str, Any]]:
                 "contacts": contacts.get(b.equipment_id),
             }
         )
-    return rows
+    return rows, hits
 
 
 def _people_scope(user):
@@ -148,9 +153,25 @@ def _people_scope(user):
     return User.objects.filter(pk__in=_scoped_bookings(user).values("user_id"))
 
 
-def _search_people(user, q: str) -> list[dict[str, Any]] | None:
+def _person_row(u, labels: dict[str, str], request, relation: str = "") -> dict[str, Any]:
+    return {
+        "id": u.pk,
+        "name": u.name or u.email,
+        "email": u.email,
+        "user_type": labels.get(u.user_type, u.user_type or ""),
+        "department": u.department.name if u.department_id else "",
+        "photo_url": u.get_profile_picture_url_or_none(request=request),
+        "relation": relation,
+    }
+
+
+def _type_labels() -> dict[str, str]:
     from iic_booking.users.models.user_type import UserType
 
+    return {code: str(label) for code, label in UserType.get_choices()}
+
+
+def _search_people(user, q: str, request=None) -> list[dict[str, Any]] | None:
     scope = _people_scope(user)
     if scope is None:
         return None
@@ -168,17 +189,76 @@ def _search_people(user, q: str) -> list[dict[str, Any]] | None:
         )
         .order_by("rank", "name")
     )
-    labels = {code: str(label) for code, label in UserType.get_choices()}
+    labels = _type_labels()
+    return [_person_row(u, labels, request) for u in qs[:PEOPLE_LIMIT]]
+
+
+def _booking_people(user, bookings, *, staff_view: bool, request=None) -> list[dict[str, Any]]:
+    """The people on the matched bookings: who booked (staff only; never the viewer) and, for everyone, the
+    equipment's Officer in Charge and Lab In-charge (a mode without its own staff uses its base equipment's)."""
+    from iic_booking.users.models import User
+
+    from .models import EquipmentManager, EquipmentOperator
+
+    relations: dict[int, list[str]] = {}
+
+    def add(uid: int, text: str):
+        if uid != user.pk and text not in relations.setdefault(uid, []):
+            relations[uid].append(text)
+
+    if staff_view:
+        for b in bookings:
+            if b.user_id:
+                add(b.user_id, f"Booked {b.virtual_booking_id or f'{b.equipment.code}-{b.booking_id}'}")
+    equipment = {b.equipment_id: b.equipment for b in bookings}
+    base_of = {eid: getattr(e, "parent_equipment_id", None) for eid, e in equipment.items()}
+    ids = set(equipment) | {b for b in base_of.values() if b}
+    staff: dict[int, list[tuple[int, str]]] = {}
+    for model, field, role in (
+        (EquipmentManager, "manager", "Officer in Charge"),
+        (EquipmentOperator, "operator", "Lab In-charge"),
+    ):
+        links = model.objects.filter(equipment_id__in=ids, **{f"{field}__is_active": True})
+        for eq_id, uid in links.values_list("equipment_id", f"{field}_id"):
+            staff.setdefault(eq_id, []).append((uid, role))
+    for eq_id, e in equipment.items():
+        for uid, role in staff.get(eq_id) or staff.get(base_of.get(eq_id), []):
+            add(uid, f"{role} · {e.name}")
+    relations = {uid: texts for uid, texts in relations.items() if texts}
+    if not relations:
+        return []
+    found = User.objects.filter(pk__in=relations, is_active=True).select_related("department").in_bulk()
+    labels = _type_labels()
     return [
-        {
-            "id": u.pk,
-            "name": u.name or u.email,
-            "email": u.email,
-            "user_type": labels.get(u.user_type, u.user_type or ""),
-            "department": u.department.name if u.department_id else "",
-        }
-        for u in qs[:PEOPLE_LIMIT]
+        _person_row(found[uid], labels, request, "; ".join(texts)) for uid, texts in relations.items() if uid in found
     ]
+
+
+def _lab_staff_people(lab_staff: list[dict[str, Any]], request=None) -> list[dict[str, Any]]:
+    """Lab staff found by name, as People rows (for users who do not search every user)."""
+    from iic_booking.users.models import User
+
+    found = User.objects.filter(pk__in={s["id"] for s in lab_staff}).select_related("department").in_bulk()
+    labels = _type_labels()
+    rows = []
+    for s in lab_staff:
+        if s["id"] in found:
+            relation = f"{s['role']} · {', '.join(e['name'] for e in s['equipment'])}"
+            rows.append({**_person_row(found[s["id"]], labels, request, relation), "name": s["name"]})
+    return rows
+
+
+def _merge_people(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One row per person, earlier groups first; a later group's relation is added to the earlier row."""
+    merged: dict[int, dict[str, Any]] = {}
+    for group in groups:
+        for row in group:
+            seen = merged.get(row["id"])
+            if seen is None:
+                merged[row["id"]] = dict(row)
+            elif row["relation"] and row["relation"] not in seen["relation"]:
+                seen["relation"] = "; ".join(filter(None, (seen["relation"], row["relation"])))
+    return list(merged.values())[:PEOPLE_LIMIT]
 
 
 LAB_STAFF_LIMIT = 6
@@ -244,11 +324,15 @@ def global_search(request):
         from iic_booking.users.models.user_type import UserType
 
         staff_view = check_operator_permission(user) or user.user_type in (UserType.DEPT_ADMIN, UserType.FINANCE)
-        result["bookings"] = _search_bookings(user, q, staff_view=staff_view)
-        people = _search_people(user, q)
+        result["bookings"], booking_hits = _search_bookings(user, q, staff_view=staff_view)
+        people = _search_people(user, q, request)
         result["people_enabled"] = people is not None
-        result["people"] = people or []
         result["staff_view"] = staff_view
         # Users find the Officer in Charge and Lab In-charge of the instruments they can see, by name.
         result["lab_staff"] = _search_lab_staff(user, q)
+        result["people"] = _merge_people(
+            people or [],
+            _lab_staff_people(result["lab_staff"], request) if people is None else [],
+            _booking_people(user, booking_hits, staff_view=staff_view, request=request),
+        )
     return Response(result)
