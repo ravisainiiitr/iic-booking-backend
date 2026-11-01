@@ -1,0 +1,90 @@
+# In-app internet calls (docs/calls.md): switch calling on for test accounts, for everyone, or off.
+#   pilot      : CALLS_ENABLED=True, CALLS_TEST_ACCOUNTS_ONLY=True (caller and callee must both be test accounts)
+#   everyone   : CALLS_ENABLED=True, CALLS_TEST_ACCOUNTS_ONLY=False
+#   off        : CALLS_ENABLED=False (call buttons disappear, the calls WebSocket refuses, no pushes)
+# Push credentials (FCM / APNs) and TURN are not set here; they are file paths / secrets added separately.
+# Only the django service is recreated. Nothing secret is printed.
+name: Apply Calls Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "pilot | everyone | off"
+        required: true
+        type: choice
+        options: [pilot, everyone, off]
+      confirm:
+        description: "Type CALLS to proceed"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        run: test "${{ github.event.inputs.confirm }}" = "CALLS"
+
+      - name: Update env file and recreate django
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          set -euo pipefail
+          DEPLOY=/home/ubuntu/iic-booking-backend
+          ENV_FILE="$DEPLOY/.envs/.production/.django"
+          test -f "$ENV_FILE"
+          cp -p "$ENV_FILE" "$ENV_FILE.bak-calls-$(date -u +%Y%m%dT%H%M%SZ)"
+          export ENV_FILE
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          mode = os.environ["MODE"]
+          env_file = Path(os.environ["ENV_FILE"])
+          upsert = {
+              "pilot": {"CALLS_ENABLED": "True", "CALLS_TEST_ACCOUNTS_ONLY": "True"},
+              "everyone": {"CALLS_ENABLED": "True", "CALLS_TEST_ACCOUNTS_ONLY": "False"},
+              "off": {"CALLS_ENABLED": "False"},
+          }[mode]
+          out, seen = [], set()
+          for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+              key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+              if key in upsert:
+                  if key not in seen:
+                      out.append(f"{key}={upsert[key]}")
+                      seen.add(key)
+                  continue
+              out.append(line)
+          for key, value in upsert.items():
+              if key not in seen:
+                  out.append(f"{key}={value}")
+          env_file.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+          print("mode=", mode, " set=", upsert)
+          PY
+          cd "$DEPLOY"
+          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps django
+          for i in $(seq 1 30); do
+            CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+            if [ -n "$CID" ] && docker exec "$CID" true 2>/dev/null; then break; fi
+            sleep 2
+          done
+          sleep 6
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'django' || true
+
+      - name: Runtime verification
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import django
+
+          django.setup()
+          from iic_booking.calls import conf, push
+
+          print("RUNTIME calls_enabled=", conf.enabled(), " test_accounts_only=", conf.test_accounts_only(),
+                " ring_seconds=", conf.ring_seconds(), " turn=", conf.turn_enabled(),
+                " fcm=", push.fcm_configured(), " apns=", push.apns_configured())
+          PY
