@@ -1,5 +1,5 @@
 """
-Booking Assistant turn handling.
+Research Assistant turn handling.
 
 Runs first in `send_message` for signed-in users. Day-to-day questions (my bookings, wallet, recharge,
 results, invoices, waitlist, tickets, staff queues, ...) are answered by the deterministic intent table in
@@ -180,6 +180,10 @@ def _dispatch_action(user, conversation, action: dict[str, Any]) -> dict[str, An
         from iic_booking.research_copilot.services.assistant import help_offer
 
         return help_offer.reply(user, conversation, p)
+    if t == A.PORTAL:
+        from iic_booking.research_copilot.services.assistant import portal
+
+        return portal.button(user, conversation, p)
     eq = _visible(user, p.get("equipment_id"))
     if eq is None:
         return _gone()
@@ -477,6 +481,11 @@ def try_assistant_turn(
         daily_out = _daily(user, conversation, text or "", st)
         if daily_out is not None:
             return daily_out
+        from iic_booking.research_copilot.services.assistant import portal
+
+        portal_out = portal.turn(user, conversation, text or "")
+        if portal_out is not None:
+            return portal_out
         return _classify(user, conversation, text or "", ba_state.load(conversation), intel_busy)
     except Exception:  # noqa: BLE001
         logger.exception("booking assistant turn failed")

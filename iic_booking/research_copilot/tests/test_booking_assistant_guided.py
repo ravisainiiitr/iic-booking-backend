@@ -1,4 +1,4 @@
-"""Booking Assistant guided flow (department -> equipment -> inputs -> slot -> summary) and its rule checks."""
+"""Research Assistant guided flow (department -> equipment -> inputs -> slot -> summary) and its rule checks."""
 
 from __future__ import annotations
 

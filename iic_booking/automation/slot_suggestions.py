@@ -2,7 +2,7 @@
 "Best slots for you" on the booking page.
 
 Free slots come from the portal's own daily-slots view run as the user (booking windows, holidays, maintenance,
-department reservations, home-department rules) via the Booking Assistant's ``find_bookable_slots``. Runs of the
+department reservations, home-department rules) via the IITR Research Assistant's ``find_bookable_slots``. Runs of the
 required number of back-to-back slots are ranked by how soon they are and how well they match the start times the
 user usually books. When nothing fits soon, similar instruments with earlier free runs are offered. Read-only.
 """

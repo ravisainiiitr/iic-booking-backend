@@ -144,9 +144,9 @@ def test_users_find_the_officer_in_charge_and_lab_in_charge_by_name(world):
 
     staff = _get(student, "Mee")["lab_staff"]
     by_role = {row["role"]: row for row in staff}
-    assert set(by_role) == {"Officer in Charge", "Lab In-charge"}
-    assert by_role["Officer in Charge"]["email"] == oic.email
-    assert [e["id"] for e in by_role["Lab In-charge"]["equipment"]] == [fesem.pk]
+    assert set(by_role) == {"Officer In Charge", "Lab Operator"}
+    assert by_role["Officer In Charge"]["email"] == oic.email
+    assert [e["id"] for e in by_role["Lab Operator"]["equipment"]] == [fesem.pk]
     assert _get(student, "Nobody Here")["lab_staff"] == []
     assert _get(None, "Mee")["lab_staff"] == []  # signed-out visitors do not get staff contacts
 
@@ -166,7 +166,7 @@ def test_people_on_matching_bookings_are_listed_separately(world):
 def test_users_see_the_lab_staff_of_their_bookings_and_can_open_the_card(world):
     body = _get(world["alice"], "IICXRD")
     assert [p["name"] for p in body["people"]] == ["Dr Oic"]
-    assert body["people"][0]["relation"] == "Officer in Charge · Xenon Ray Diffractometer"
+    assert body["people"][0]["relation"] == f"Officer In Charge · {world['xrd'].code}"
     assert body["people_enabled"] is False  # still no lookup of other users by name
     client = APIClient()
     client.force_authenticate(user=world["alice"])
@@ -177,7 +177,22 @@ def test_users_see_the_lab_staff_of_their_bookings_and_can_open_the_card(world):
 def test_users_open_the_card_of_lab_staff_found_by_name(world):
     student = UserFactory(admin_approved=True, user_type=UserType.STUDENT, name="New Student")
     row = _get(student, "Dr Oic")["people"][0]
-    assert row["id"] == world["oic"].pk and row["relation"].startswith("Officer in Charge")
+    assert row["id"] == world["oic"].pk and row["relation"].startswith("Officer In Charge")
     client = APIClient()
     client.force_authenticate(user=student)
     assert client.get(f"/api/users/{world['oic'].pk}/card/").status_code == 200
+
+
+def test_equipment_search_lists_lab_operator_and_oic_as_people_but_never_accounts(world):
+    from iic_booking.equipment.models import EquipmentOperator
+
+    op = UserFactory(admin_approved=True, user_type=UserType.OPERATOR, name="Lab Person")
+    EquipmentOperator.objects.create(equipment=world["xrd"], operator=op)
+    UserFactory(admin_approved=True, user_type=UserType.FINANCE, name="Accounts Person",
+                department=world["xrd"].internal_department)
+    student = UserFactory(admin_approved=True, user_type=UserType.STUDENT, name="Curious Student")
+    body = _get(student, "xenon")
+    assert [e["name"] for e in body["equipment"]] == ["Xenon Ray Diffractometer"]
+    people = {p["name"]: p["relation"] for p in body["people"]}
+    assert people == {"Lab Person": f"Lab Operator · {world['xrd'].code}",
+                      "Dr Oic": f"Officer In Charge · {world['xrd'].code}"}

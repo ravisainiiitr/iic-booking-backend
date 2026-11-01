@@ -518,6 +518,7 @@ from iic_booking.equipment.maintenance_views import maintenance_status_view
 from iic_booking.equipment.admin_dashboard_summary import admin_dashboard_summary
 from iic_booking.equipment.global_search import global_search
 from iic_booking.equipment.my_activity import my_activity
+from iic_booking.equipment.portal_actions import portal_action_equipment, portal_action_run, portal_actions_list
 from iic_booking.equipment.search_synonym_views import search_synonym_detail, search_synonym_list
 from iic_booking.equipment.similar_availability import similar_availability
 from iic_booking.equipment.admin_insights.views import (
@@ -1028,6 +1029,9 @@ urlpatterns = router.urls + [
     ),
     path("profiles/me/dashboard-shortcuts/", profile_me_dashboard_shortcuts, name="profile-me-dashboard-shortcuts"),
     path("profiles/me/activity/", my_activity, name="profile-me-activity"),
+    path("portal-actions/", portal_actions_list, name="portal-actions"),
+    path("portal-actions/<slug:key>/equipment/", portal_action_equipment, name="portal-action-equipment"),
+    path("portal-actions/<slug:key>/run/", portal_action_run, name="portal-action-run"),
     path(
         "profiles/me/dashboard-equipment-order/",
         profile_me_dashboard_equipment_order,
