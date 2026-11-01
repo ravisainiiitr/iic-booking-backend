@@ -817,6 +817,7 @@ class ConsolidatedProforma(models.Model):
 class RefundOrigin(models.TextChoices):
     CANCELLATION = "cancellation", _("Cancelled by the user")
     DISRUPTION = "disruption", _("Lab disruption")
+    LAB_FAILURE = "lab_failure", _("Equipment failure / analysis not possible")
 
 
 class RefundDestination(models.TextChoices):
@@ -866,7 +867,15 @@ class ExternalRefund(models.Model):
     paid_amount = models.DecimalField(max_digits=12, decimal_places=2)
     gst_paid = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     return_shipping = models.DecimalField(max_digits=12, decimal_places=2, default=0,
-                                          help_text=_("Non-refundable return shipping, GST included."))
+                                          help_text=_("Return shipping charged on the booking, GST included."))
+    shipping_refunded = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0,
+        help_text=_("Return shipping given back (lab at fault): its base, plus GST only when no invoice was requested."),
+    )
+    portion_percent = models.PositiveSmallIntegerField(
+        default=100, help_text=_("Share of the service charges refunded (partial refunds for lab failures)."),
+    )
+    reason = models.TextField(blank=True, default="", help_text=_("Why the refund was made (lab failures)."))
     refund_base = models.DecimalField(max_digits=12, decimal_places=2)
     refund_gst = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     refund_amount = models.DecimalField(max_digits=12, decimal_places=2)

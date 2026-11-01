@@ -831,6 +831,25 @@ def booking_cancel_with_refund(request, booking_id):
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 @_refund_errors
+def booking_lab_failure_refund(request, booking_id):
+    """Equipment failure / analysis not possible (OIC of the equipment, Accounts In Charge, Main Administrator).
+    GET ?portion=<1-100>: the refund that would be made, with GST and return shipping shown. POST: make it.
+    Body: kind (equipment_failure | analysis_unsuccessful), reason, portion_percent, expected_refund."""
+    from . import refunds
+
+    if request.method == "GET":
+        return Response(refunds.lab_failure_quote(request.user, booking_id,
+                                                  portion_percent=request.query_params.get("portion") or 100))
+    data = _data(request)
+    return Response(refunds.refund_lab_failure(
+        request.user, booking_id, kind=data.get("kind") or "", reason=data.get("reason") or "",
+        portion_percent=data.get("portion_percent", 100), expected_refund=data.get("expected_refund"),
+    ))
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+@_refund_errors
 def refund_bank_accounts(request):
     """The user's saved bank accounts for refunds (masked); POST adds one and makes it the default."""
     from . import refunds

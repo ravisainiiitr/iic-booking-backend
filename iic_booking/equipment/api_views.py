@@ -12738,6 +12738,15 @@ def refund_booking_internal(booking, refund_notes, performed_by):
         raise ValueError("Booking has already been refunded.")
     if booking.status == BookingStatus.BOOKING_NOT_UTILIZED:
         raise ValueError("Booking is marked as Not Utilized and cannot be refunded.")
+    from iic_booking.external_services.refunds import invoice_requested
+
+    if invoice_requested(booking):
+        # This refund credits everything paid, GST included; once a GST invoice is requested the tax is settled by
+        # SRIC (credit note), so such bookings are refunded through the lab-failure refund, which leaves GST out.
+        raise ValueError(
+            "A GST invoice has been requested for this booking: use 'Refund for lab failure', which refunds the "
+            "charges without GST."
+        )
     from iic_booking.users.repositories.wallet_repository import WalletRepository
     from django.db import transaction
 
