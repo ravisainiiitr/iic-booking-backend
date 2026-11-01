@@ -262,6 +262,12 @@ class ResearcherOfTheMonth(_ResearchRecognition):
         verbose_name=_("Department"), help_text=_("Leave empty for an institute-wide Researcher of the Month."),
     )
     created_by = models.ForeignKey("users.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    user = models.ForeignKey(
+        "users.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+        help_text=_("The researcher, when chosen automatically from approved publications."),
+    )
+    publication_count = models.PositiveIntegerField(default=0, help_text=_("Approved publications that earned it."))
+    auto = models.BooleanField(default=False, help_text=_("Chosen automatically from approved publications."))
 
     class Meta:
         ordering = ["-month", "department__name", "id"]
@@ -277,3 +283,26 @@ class ResearcherOfTheMonth(_ResearchRecognition):
         if self.month:
             self.month = self.month.replace(day=1)
         super().save(*args, **kwargs)
+
+
+class RecognitionHide(models.Model):
+    """The Main Administrator took a researcher off the home page: from the Hall of Frames (scope hall, until
+    shown again), or as one month's Researcher of the Month for a department (scope month: the next eligible
+    researcher is chosen instead). Kept as the record of who did it and why."""
+
+    class Scope(models.TextChoices):
+        HALL = "hall", _("Hall of Frames")
+        MONTH = "month", _("Researcher of the Month")
+
+    scope = models.CharField(max_length=8, choices=Scope.choices)
+    user = models.ForeignKey("users.User", on_delete=models.CASCADE, related_name="+")
+    month = models.DateField(null=True, blank=True)
+    department = models.ForeignKey("users.Department", on_delete=models.CASCADE, null=True, blank=True, related_name="+")
+    reason = models.CharField(max_length=300, blank=True, default="")
+    created_by = models.ForeignKey("users.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = _("Hidden researcher")
+        verbose_name_plural = _("Hidden researchers")

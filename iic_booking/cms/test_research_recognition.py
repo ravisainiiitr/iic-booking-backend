@@ -1,32 +1,51 @@
-"""Hall of Frames and Researcher of the Month (Module 5): only approved entries are public, only the Main
-Administrator approves, the current month replaces the previous one, history is kept, and Department Administrators
-feature researchers of their own department only."""
+"""Hall of Frames and Researcher of the Month, worked out from approved publications; the Main Administrator can take
+anyone off the home page (``cms.recognition``)."""
 
 from __future__ import annotations
 
-from datetime import date, timedelta
-from io import BytesIO
+import uuid
+from datetime import date, datetime, time, timedelta
 
 import pytest
-from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from iic_booking.cms.models import HallOfFrameEntry, ResearcherOfTheMonth
+from iic_booking.cms import recognition
+from iic_booking.cms.models import RecognitionHide, ResearcherOfTheMonth
+from iic_booking.equipment.models import Equipment, EquipmentPublicationClaim, EquipmentPublicationClaimStatus
 from iic_booking.users.models import Department
 from iic_booking.users.models.department import DepartmentType
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.tests.factories import UserFactory
 
 pytestmark = pytest.mark.django_db
-
-HOF_ADMIN = "/api/admin/cms-hall-of-frames/"
-ROTM_ADMIN = "/api/admin/cms-researchers-of-the-month/"
+THIS_MONTH = timezone.localdate().replace(day=1)
 
 
-def _dept(code):
-    return Department.objects.create(name=f"Dept {code}", code=code, department_type=DepartmentType.INTERNAL)
+def _dept(name):
+    return Department.objects.create(name=name, code=f"D{uuid.uuid4().hex[:5].upper()}",
+                                     department_type=DepartmentType.INTERNAL)
+
+
+def _equipment(name="FE-SEM"):
+    return Equipment.objects.create(name=name, code=f"E{uuid.uuid4().hex[:5].upper()}", slot_duration_minutes=60,
+                                    user_rating_enabled=False)
+
+
+def _researcher(name, dept, **extra):
+    return UserFactory(name=name, user_type=UserType.STUDENT, department=dept, admin_approved=True,
+                       email_verified=True, **extra)
+
+
+def _approved(user, *, days_ago=10, title="Paper", journal="Nature Materials", year=2026, doi="", equipment=None,
+              status=EquipmentPublicationClaimStatus.APPROVED):
+    claim = EquipmentPublicationClaim.objects.create(
+        submitted_by=user, title=title, journal=journal, year=year, doi=doi, status=status,
+        reviewed_at=timezone.make_aware(datetime.combine(THIS_MONTH, time(9))) - timedelta(days=days_ago),
+    )
+    if equipment is not None:
+        claim.equipments.add(equipment)
+    return claim
 
 
 def _client(user=None):
@@ -40,127 +59,131 @@ def _main_admin():
     return UserFactory(user_type=UserType.ADMIN, email_verified=True, admin_approved=True)
 
 
-def _dept_admin(dept, monkeypatch):
-    u = UserFactory(user_type=UserType.DEPT_ADMIN, department=dept, email_verified=True, admin_approved=True)
-    monkeypatch.setattr("iic_booking.users.rbac.user_has_admin_panel_access", lambda user: True)
-    return u
+# --- Hall of Frames -------------------------------------------------------------------------------------------------
 
+def test_hall_of_frames_ranks_researchers_by_approved_publications():
+    chem = _dept("Chemistry")
+    sem = _equipment("FE-SEM")
+    sachin = _researcher("Sachin Kumar Shrivastava", chem)
+    other = _researcher("Asha Verma", chem)
+    for i in range(8):
+        _approved(sachin, days_ago=20 + i, title=f"Paper {i}")
+    _approved(sachin, days_ago=1, title="Newest work", doi="10.1/abc", equipment=sem)
+    _approved(other, days_ago=5)
+    _approved(other, status=EquipmentPublicationClaimStatus.PENDING)  # not counted until approved
+    _approved(other, status=EquipmentPublicationClaimStatus.REJECTED)
 
-def _png(size=(1600, 900)):
-    from PIL import Image
-
-    buf = BytesIO()
-    Image.new("RGB", size, (20, 120, 200)).save(buf, format="PNG")
-    return SimpleUploadedFile("portrait.png", buf.getvalue(), content_type="image/png")
-
-
-def _this_month():
-    return timezone.localdate().replace(day=1)
-
-
-# --- Hall of Frames -----------------------------------------------------------------------------------------------
-
-def test_only_approved_hall_of_frames_entries_are_public_in_order():
-    HallOfFrameEntry.objects.create(researcher_name="Draft Person", is_approved=False)
-    HallOfFrameEntry.objects.create(researcher_name="Second", is_approved=True, order=2, year=2025)
-    HallOfFrameEntry.objects.create(researcher_name="First", is_approved=True, order=1, journal="Nature Materials",
-                                    facility="IIC FE-SEM facility")
     rows = _client().get("/api/cms/hall-of-frames/").json()["results"]
-    assert [r["researcher_name"] for r in rows] == ["First", "Second"]
-    assert rows[0]["journal"] == "Nature Materials" and rows[0]["facility"] == "IIC FE-SEM facility"
+    assert [(r["researcher_name"], r["publication_count"]) for r in rows] == [
+        ("Sachin Kumar Shrivastava", 9), ("Asha Verma", 1)]
+    top = rows[0]
+    assert (top["publication_title"], top["publication_url"], top["facility"], top["affiliation"]) == (
+        "Newest work", "https://doi.org/10.1/abc", "FE-SEM", "Chemistry")
 
 
-def test_main_admin_creates_and_approves_with_a_resized_photo(settings, tmp_path):
-    settings.STORAGES = {**settings.STORAGES, "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"}}
-    settings.MEDIA_ROOT = str(tmp_path)
+def test_inactive_researchers_are_left_out():
+    gone = _researcher("Gone User", _dept("Physics"))
+    _approved(gone)
+    type(gone).objects.filter(pk=gone.pk).update(is_active=False)
+    assert _client().get("/api/cms/hall-of-frames/").json()["results"] == []
+
+
+def test_main_admin_hides_and_shows_a_researcher_in_the_hall():
+    r = _researcher("Hidden Person", _dept("Civil"))
+    _approved(r)
     admin = _main_admin()
-    res = _client(admin).post(HOF_ADMIN, {"researcher_name": "Dr. Asha", "affiliation": "Chemistry, IIT Roorkee",
-                                          "year": 2026, "is_approved": "true", "photo": _png()}, format="multipart")
-    assert res.status_code == 201, res.content
-    entry = HallOfFrameEntry.objects.get(pk=res.json()["id"])
-    assert entry.is_approved and entry.approved_by == admin and entry.approved_at
-    from PIL import Image
-
-    with entry.photo.open("rb") as fh:
-        img = Image.open(fh)
-        assert max(img.size) <= 640 and img.format == "JPEG"
-
-
-def test_non_image_upload_is_refused():
-    res = _client(_main_admin()).post(HOF_ADMIN, {"researcher_name": "X", "photo": SimpleUploadedFile(
-        "x.png", b"not an image", content_type="image/png")}, format="multipart")
-    assert res.status_code == 400
+    assert _client(admin).post(f"/api/cms/recognition/hall/{r.pk}/", {"hidden": True, "reason": "requested"},
+                               format="json").status_code == 200
+    assert _client().get("/api/cms/hall-of-frames/").json()["results"] == []
+    listed = _client(admin).get("/api/cms/recognition/").json()["hall"]
+    assert listed[0]["user_id"] == r.pk and listed[0]["hidden"] is True
+    hide = RecognitionHide.objects.get(user=r)
+    assert hide.created_by == admin and hide.reason == "requested"
+    _client(admin).post(f"/api/cms/recognition/hall/{r.pk}/", {"hidden": False}, format="json")
+    assert len(_client().get("/api/cms/hall-of-frames/").json()["results"]) == 1
 
 
-def test_others_cannot_approve_and_their_edits_return_an_entry_to_draft(monkeypatch):
-    dept = _dept("CHM")
-    editor = _dept_admin(dept, monkeypatch)
-    entry = HallOfFrameEntry.objects.create(researcher_name="Approved", is_approved=True)
-    assert _client(editor).post(HOF_ADMIN, {"researcher_name": "Y", "is_approved": True},
-                                format="json").status_code == 403
-    res = _client(editor).patch(f"{HOF_ADMIN}{entry.pk}/", {"journal": "Edited"}, format="json")
-    assert res.status_code == 200
-    entry.refresh_from_db()
-    assert entry.journal == "Edited" and not entry.is_approved  # back to the Main Administrator for approval
-
-
-def test_students_and_visitors_cannot_manage_entries():
+def test_only_the_main_admin_can_take_anyone_off(monkeypatch):
+    r = _researcher("Someone", _dept("Maths"))
+    _approved(r)
+    dept_admin = UserFactory(user_type=UserType.DEPT_ADMIN)
+    assert _client(dept_admin).post(f"/api/cms/recognition/hall/{r.pk}/", {"hidden": True}, format="json").status_code == 403
     student = UserFactory(user_type=UserType.STUDENT)
-    assert _client(student).get(HOF_ADMIN).status_code == 403
-    assert _client().post(HOF_ADMIN, {"researcher_name": "Z"}, format="json").status_code in (401, 403)
+    assert _client(student).get("/api/cms/recognition/").status_code == 403
+    assert _client().post(f"/api/cms/recognition/hall/{r.pk}/", {"hidden": True}, format="json").status_code in (401, 403)
 
 
-# --- Researcher of the Month --------------------------------------------------------------------------------------
+# --- Researcher of the Month ----------------------------------------------------------------------------------------
 
-def test_this_months_approved_researchers_replace_last_months_and_history_is_kept():
-    chem, phy = _dept("CH2"), _dept("PH2")
-    now = _this_month()
-    last = (now - timedelta(days=1)).replace(day=1)
-    ResearcherOfTheMonth.objects.create(month=last, department=chem, researcher_name="Last Month", is_approved=True)
-    ResearcherOfTheMonth.objects.create(month=now, department=chem, researcher_name="Chem Now", is_approved=True)
-    ResearcherOfTheMonth.objects.create(month=now, department=phy, researcher_name="Phy Draft", is_approved=False)
-    ResearcherOfTheMonth.objects.create(month=now.replace(day=15), researcher_name="Institute", is_approved=True)
+def test_chosen_automatically_per_department_and_institute_wide():
+    chem, phy = _dept("Chemistry"), _dept("Physics")
+    a, b, c = _researcher("Chem Top", chem), _researcher("Chem Second", chem), _researcher("Phy Top", phy)
+    for _ in range(3):
+        _approved(a)
+    _approved(b)
+    _approved(c, days_ago=2)
+    _approved(c, days_ago=3)
+    data = _client().get("/api/cms/researcher-of-the-month/").json()
+    got = {r["department_name"]: (r["researcher_name"], r["publication_count"]) for r in data["results"]}
+    assert got == {"Institute-wide": ("Chem Top", 3), "Chemistry": ("Chem Top", 3), "Physics": ("Phy Top", 2)}
+    # Stored once: a second visit chooses nothing new.
+    _client().get("/api/cms/researcher-of-the-month/")
+    assert ResearcherOfTheMonth.objects.filter(month=THIS_MONTH).count() == 3
 
-    current = _client().get("/api/cms/researcher-of-the-month/").json()
-    assert current["month"] == now.isoformat()
-    assert sorted(r["researcher_name"] for r in current["results"]) == ["Chem Now", "Institute"]
-    assert {r["department_name"] for r in current["results"]} == {chem.name, "Institute-wide"}
-    only_chem = _client().get(f"/api/cms/researcher-of-the-month/?department={chem.pk}").json()["results"]
-    assert [r["researcher_name"] for r in only_chem] == ["Chem Now"]
+
+def test_only_the_last_twelve_months_count():
+    d = _dept("Chemistry")
+    old, recent = _researcher("Old Star", d), _researcher("Recent Author", d)
+    for _ in range(5):
+        _approved(old, days_ago=400)
+    _approved(recent)
+    rows = _client().get("/api/cms/researcher-of-the-month/").json()["results"]
+    assert {r["researcher_name"] for r in rows} == {"Recent Author"}
+
+
+def test_it_rotates_but_repeats_when_nobody_else_qualifies():
+    d = _dept("Chemistry")
+    top, next_ = _researcher("Top", d), _researcher("Next", d)
+    for _ in range(3):
+        _approved(top, days_ago=40)
+    _approved(next_, days_ago=40)
+    last = (THIS_MONTH - timedelta(days=1)).replace(day=1)
+    ResearcherOfTheMonth.objects.create(month=last, department=d, user=top, auto=True, is_approved=True,
+                                        researcher_name="Top")
+    assert recognition.choose(THIS_MONTH, d.pk).user_id == next_.pk  # featured last month: passed over
+    alone = _dept("Solo")
+    only = _researcher("Only One", alone)
+    _approved(only, days_ago=40)
+    ResearcherOfTheMonth.objects.create(month=last, department=alone, user=only, auto=True, is_approved=True,
+                                        researcher_name="Only One")
+    assert recognition.choose(THIS_MONTH, alone.pk).user_id == only.pk  # nobody else: repeats
+
+
+def test_disabling_this_months_researcher_picks_the_next_one_and_keeps_a_record():
+    d = _dept("Chemistry")
+    top, next_ = _researcher("Top", d), _researcher("Next", d)
+    for _ in range(3):
+        _approved(top)
+    _approved(next_)
+    _client().get("/api/cms/researcher-of-the-month/")
+    row = ResearcherOfTheMonth.objects.get(month=THIS_MONTH, department=d)
+    admin = _main_admin()
+    res = _client(admin).post(f"/api/cms/recognition/month/{row.pk}/disable/", {"reason": "duplicate"}, format="json")
+    assert res.status_code == 200 and res.json()["researcher_name"] == "Next"
+    assert RecognitionHide.objects.filter(scope="month", user=top, month=THIS_MONTH, department=d).exists()
+    # Nobody else left: the card is hidden.
+    row.refresh_from_db()
+    _client(admin).post(f"/api/cms/recognition/month/{row.pk}/disable/", {}, format="json")
+    row.refresh_from_db()
+    assert row.is_approved is False
+    shown = {r["department_name"] for r in _client().get("/api/cms/researcher-of-the-month/").json()["results"]}
+    assert "Chemistry" not in shown
+
+
+def test_earlier_months_stay_as_history():
+    d = _dept("Chemistry")
+    r = _researcher("Past Winner", d)
+    ResearcherOfTheMonth.objects.create(month=date(2025, 5, 1), department=d, user=r, auto=True, is_approved=True,
+                                        researcher_name="Past Winner", publication_count=4)
     history = _client().get("/api/cms/researcher-of-the-month/?history=1").json()["results"]
-    assert [r["researcher_name"] for r in history] == ["Last Month"]
-    assert ResearcherOfTheMonth.objects.get(researcher_name="Institute").month == now  # stored as the 1st
-
-
-def test_one_researcher_per_department_per_month():
-    dept = _dept("CH3")
-    month = date(2026, 12, 1)
-    ResearcherOfTheMonth.objects.create(month=month, department=dept, researcher_name="A")
-    res = _client(_main_admin()).post(ROTM_ADMIN, {"researcher_name": "B", "month": "2026-12-20",
-                                                   "department": dept.pk}, format="json")
-    assert res.status_code == 400 and "already has" in str(res.json())
-    ResearcherOfTheMonth.objects.create(month=month, researcher_name="Institute A")
-    with pytest.raises(IntegrityError), transaction.atomic():
-        ResearcherOfTheMonth.objects.create(month=month, researcher_name="Institute B")
-
-
-def test_scheduling_a_future_month_does_not_show_it_yet():
-    future = (_this_month() + timedelta(days=40)).replace(day=1)
-    ResearcherOfTheMonth.objects.create(month=future, researcher_name="Next", is_approved=True)
-    assert _client().get("/api/cms/researcher-of-the-month/").json()["results"] == []
-
-
-def test_department_admins_feature_only_their_own_department(monkeypatch):
-    own, other = _dept("OWN"), _dept("OTH")
-    admin = _dept_admin(own, monkeypatch)
-    ResearcherOfTheMonth.objects.create(month=date(2026, 12, 1), department=other, researcher_name="Theirs")
-    client = _client(admin)
-    assert client.post(ROTM_ADMIN, {"researcher_name": "Mine", "month": "2026-12-01", "department": other.pk},
-                       format="json").status_code == 403
-    created = client.post(ROTM_ADMIN, {"researcher_name": "Mine", "month": "2026-12-01", "department": own.pk},
-                          format="json")
-    assert created.status_code == 201 and created.json()["is_approved"] is False
-    listed = client.get(ROTM_ADMIN).json()
-    listed = listed.get("results", listed) if isinstance(listed, dict) else listed
-    assert [r["researcher_name"] for r in listed] == ["Mine"]
-    assert ResearcherOfTheMonth.objects.get(researcher_name="Mine").created_by == admin
+    assert [(h["researcher_name"], h["month"]) for h in history] == [("Past Winner", "2025-05-01")]
