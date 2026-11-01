@@ -3294,3 +3294,19 @@ def search_faculty_for_signup(request):
     ]
 
     return Response({"results": results}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def profile_me_onboarding(request):
+    """GET: what the signed-in user still has to complete (accounts created from I-STEM). POST ``{"step", ...}``: save
+    one step (organisation, gender, mobile, programme, password); returns the new status."""
+    from iic_booking.users import onboarding
+
+    if request.method == "POST":
+        try:
+            onboarding.save_step(request.user, str(request.data.get("step") or ""), request.data)
+        except onboarding.OnboardingError as exc:
+            return Response({"error": exc.message, "field": exc.field}, status=status.HTTP_400_BAD_REQUEST)
+        request.user.refresh_from_db()
+    return Response(onboarding.status(request.user))

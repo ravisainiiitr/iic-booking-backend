@@ -1,7 +1,7 @@
 """Portal endpoints for the signed-in user's own I-STEM link (email OTP linking of an existing I-STEM account)."""
 
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
@@ -105,3 +105,51 @@ def istem_register_verify(request):
     except RegistrationLookupError as exc:
         return _registration_refusal(exc)
     return Response({"message": "I-STEM account verified. Check the details and complete your registration.", **result})
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def istem_register_complete(request):
+    """Body: ``link_token`` (from verify) and ``user_type``. Creates the approved portal account from the I-STEM profile
+    at once (no password, no form), links it and signs the user in: returns ``token``, ``user`` and ``onboarding``
+    (what the dashboard still has to ask)."""
+    from django.conf import settings
+    from django.core.mail import send_mail
+
+    from iic_booking.communication.welcome_email import build_welcome_email, welcome_email_kwargs_from_user
+    from iic_booking.users import onboarding, registration_approvals
+    from iic_booking.users.api.auth_views import (
+        _mark_login_and_check_first,
+        _regenerate_auth_token,
+        _registration_attempt_allowed,
+        _should_send_welcome_email,
+    )
+    from iic_booking.users.api.token_auth import set_token_activity
+    from iic_booking.users.serializers import UserSerializer
+
+    from .direct_signup import DirectSignupError, create_account
+    from .registration_lookup import available
+
+    if not available(_test_key(request)):
+        return Response({"error": "Registering with an I-STEM account is not available.", "code": "unavailable"},
+                        status=status.HTTP_403_FORBIDDEN)
+    if not _registration_attempt_allowed(request):
+        return Response({"error": "Too many sign-up attempts from your network. Please wait an hour and try again.",
+                         "code": "rate_limited"}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+    try:
+        user = create_account(str(request.data.get("link_token") or ""), str(request.data.get("user_type") or ""))
+    except DirectSignupError as exc:
+        return Response({"error": exc.message, "code": exc.code}, status=exc.http_status)
+    registration_approvals.on_registration_verified(user, request=request)
+    token = _regenerate_auth_token(user)
+    set_token_activity(token.key)
+    if _mark_login_and_check_first(user) and _should_send_welcome_email(user):
+        try:
+            content = build_welcome_email(**welcome_email_kwargs_from_user(user))
+            send_mail(subject=content.subject, message=content.text_body, from_email=settings.DEFAULT_FROM_EMAIL,
+                      recipient_list=[user.email], html_message=content.html_body, fail_silently=True)
+        except Exception:  # noqa: BLE001 - the account exists; a welcome email is not worth failing for
+            pass
+    return Response({"token": token.key, "user": UserSerializer(user, context={"request": request}).data,
+                     "onboarding": onboarding.status(user)}, status=status.HTTP_201_CREATED)
