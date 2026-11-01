@@ -217,7 +217,8 @@ def _scoped_bookings(viewer):
 
 def _within_scope(viewer, user_id: int, bookings) -> bool:
     """The user booked within the viewer's scope, is the viewer's linked student, asked their equipment for help, or
-    is an OIC / Lab Operator of equipment the viewer booked or looks after."""
+    is an OIC / Lab Operator of equipment the viewer booked, looks after or can see in the catalogue (as search
+    lists them)."""
     from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
 
     if bookings.filter(user_id=user_id).exists():
@@ -233,6 +234,16 @@ def _within_scope(viewer, user_id: int, bookings) -> bool:
     if (
         EquipmentManager.objects.filter(manager_id=user_id, equipment_id__in=booked_equipment).exists()
         or EquipmentOperator.objects.filter(operator_id=user_id, equipment_id__in=booked_equipment).exists()
+    ):
+        return True
+    from iic_booking.equipment.global_search import _searchable_equipment_ids
+
+    visible = _searchable_equipment_ids(viewer)
+    if visible and (
+        EquipmentManager.objects.filter(manager_id=user_id, manager__is_active=True, equipment_id__in=visible).exists()
+        or EquipmentOperator.objects.filter(
+            operator_id=user_id, operator__is_active=True, equipment_id__in=visible
+        ).exists()
     ):
         return True
     if not check_operator_permission(viewer):
