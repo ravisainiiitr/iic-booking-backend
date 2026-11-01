@@ -23,6 +23,10 @@ on:
       confirm:
         description: "Type ISTEM to proceed"
         required: true
+      test_otp_inbox:
+        description: "enable/open only: inbox for OTPs of made-up @example.com I-STEM staging users (empty: none)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -37,6 +41,7 @@ jobs:
       - name: Update env file and recreate django
         env:
           MODE: ${{ github.event.inputs.mode }}
+          TEST_OTP_INBOX: ${{ github.event.inputs.test_otp_inbox }}
           ISTEM_STAGING_USERNAME: ${{ secrets.ISTEM_STAGING_USERNAME }}
           ISTEM_STAGING_PASSWORD: ${{ secrets.ISTEM_STAGING_PASSWORD }}
           ISTEM_REGISTRATION_TEST_KEY: ${{ secrets.ISTEM_REGISTRATION_TEST_KEY }}
@@ -77,9 +82,16 @@ jobs:
               if mode == "open":
                   del upsert["ISTEM_REGISTRATION_TEST_KEY"]
                   remove = {"ISTEM_REGISTRATION_TEST_KEY"}
+              inbox = os.environ.get("TEST_OTP_INBOX", "").strip()
+              if inbox:
+                  if "@" not in inbox:
+                      raise SystemExit("test_otp_inbox must be an email address")
+                  upsert["ISTEM_TEST_OTP_INBOX"] = inbox
+              else:
+                  remove.add("ISTEM_TEST_OTP_INBOX")
           elif mode == "disable":
               upsert = {"ISTEM_ENABLED": "False", "ISTEM_MODE": "off", "ISTEM_OTP_LINKING_ENABLED": "False"}
-              remove = set(secret_keys)
+              remove = set(secret_keys) | {"ISTEM_TEST_OTP_INBOX"}
           else:
               raise SystemExit("unknown mode")
 
@@ -127,6 +139,8 @@ jobs:
           print("RUNTIME otp_linking=", conf.otp_linking_enabled(), " user_creation=", conf.user_creation_enabled(),
                 " test_key_set=", bool(registration_lookup._test_key()))
           print("RUNTIME registration available without the key=", registration_lookup.available(""))
+          print("RUNTIME test OTP inbox for @example.com staging users set=",
+                bool(registration_lookup.test_otp_inbox("check@example.com")) if hasattr(registration_lookup, "test_otp_inbox") else "n/a")
           if conf.network_allowed():
               from iic_booking.istem.service import default_client
 
