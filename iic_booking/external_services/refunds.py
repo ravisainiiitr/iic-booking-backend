@@ -100,6 +100,7 @@ class RefundQuote:
     tier: str                     # free | half | full | disruption | lab_failure
     shipping_refunded: Decimal = ZERO  # return shipping given back (base, plus its GST only when gst_refunded)
     portion_percent: int = 100    # share of the service charges refunded
+    service_refunded: Decimal = ZERO  # service charges refunded, before GST
 
     def as_dict(self) -> dict:
         return {
@@ -108,6 +109,7 @@ class RefundQuote:
             "gst_refunded": self.gst_refunded, "refund_base": str(self.refund_base),
             "refund_gst": str(self.refund_gst), "refund": str(self.refund), "tier": self.tier,
             "shipping_refunded": str(self.shipping_refunded), "portion_percent": self.portion_percent,
+            "service_refunded": str(self.service_refunded),
         }
 
 
@@ -139,7 +141,7 @@ def quote(booking, *, penalty_percent: int, tier: str, include_shipping: bool = 
     refund = min(paid, refund_base + refund_gst)
     shipping_refunded = _money(ship_refund_base * (1 + rate)) if gst_refunded else ship_refund_base
     return RefundQuote(paid, gst, shipping, refundable_base, penalty_percent, gst_refunded, refund_base, refund_gst,
-                       refund, tier, shipping_refunded, portion_percent)
+                       refund, tier, shipping_refunded, portion_percent, service_refund)
 
 
 def cancellation_tier(start, now=None, s: ExternalServicesSettings | None = None) -> tuple[str, int]:

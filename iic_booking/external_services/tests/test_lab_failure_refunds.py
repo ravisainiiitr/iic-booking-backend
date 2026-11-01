@@ -60,6 +60,7 @@ def test_lab_failure_quote(policy, factory, user, invoice, portion, refund, gst,
     q = client_for(_oic(b)).get(f"{API}bookings/{b.pk}/lab-failure-refund/?portion={portion}").json()
     assert (q["refund"], q["refund_gst"], q["shipping_refunded"]) == (refund, gst, shipping_back)
     assert q["gst_refunded"] is (not invoice) and q["invoice_requested"] is invoice
+    assert q["service_refunded"] == ("1000.00" if portion == 100 else "500.00")
 
 
 def test_a_user_cancelling_after_a_lab_disruption_gets_shipping_back(policy, factory, user):
