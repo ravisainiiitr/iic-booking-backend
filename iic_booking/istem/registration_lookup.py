@@ -77,12 +77,30 @@ def _count(key: str, limit: int) -> bool:
     return n <= limit
 
 
+TEST_EMAIL_DOMAIN = "@example.com"
+
+
+def test_otp_inbox(email: str) -> str:
+    """Where the OTP of a made-up I-STEM *staging* user goes (``ISTEM_TEST_OTP_INBOX``), or "" to send it as usual.
+    Only for @example.com addresses (a domain that receives no mail) and only while connected to I-STEM staging."""
+    inbox = str(getattr(settings, "ISTEM_TEST_OTP_INBOX", "") or "").strip()
+    if not inbox or "@" not in inbox or not (email or "").lower().endswith(TEST_EMAIL_DOMAIN):
+        return ""
+    return inbox if "staging" in conf.base_url().lower() else ""
+
+
 def _send_otp(email: str, code: str) -> None:
     subject = "OTP to register with your I-STEM account - IIC Booking Portal, IIT Roorkee"
     body = (f"Your one-time password to register on the IIC Booking Portal with your I-STEM account is: {code}\n\n"
             f"It expires in {int(OTP_TTL.total_seconds() // 60)} minutes. Do not share it with anyone.\n\n"
             "If you did not start a registration on the IIC Booking Portal, ignore this email.")
-    send_mail(subject=subject, message=body, from_email=settings.DEFAULT_FROM_EMAIL, recipient_list=[email],
+    recipient = email
+    redirect = test_otp_inbox(email)
+    if redirect:
+        recipient = redirect
+        subject = f"[I-STEM staging test] {subject} (for {email})"
+        logger.info("I-STEM registration OTP for a test address sent to the test inbox")
+    send_mail(subject=subject, message=body, from_email=settings.DEFAULT_FROM_EMAIL, recipient_list=[recipient],
               fail_silently=False)
 
 

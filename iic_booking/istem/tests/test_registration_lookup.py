@@ -201,3 +201,29 @@ def test_without_a_test_key_registered_users_stay_ordinary(on, mailoutbox):
     assert reg.link_new_user(user, result["link_token"]) is True
     user.refresh_from_db()
     assert not user.is_test_account
+
+
+# --- test inbox for made-up I-STEM staging users ------------------------------------------------------------------
+
+def _row_for(email):
+    row = dict(ROW, user_email=email)
+    return {"status": "SUCCESS", "message": "User found", "result": row}
+
+
+def test_staging_otp_for_an_example_com_user_goes_to_the_test_inbox(on, mailoutbox):
+    on.ISTEM_BASE_URL = "https://istemstaging.iisc.ac.in/istem1"
+    on.ISTEM_TEST_OTP_INBOX = "tester@lab.example.org"
+    reg.start("made.up@example.com", "", client_factory=_client_factory(_row_for("made.up@example.com")))
+    assert mailoutbox[-1].to == ["tester@lab.example.org"]
+    assert "made.up@example.com" in mailoutbox[-1].subject and "staging test" in mailoutbox[-1].subject
+
+
+@pytest.mark.parametrize("email,base", [
+    ("real.person@lab.example.org", "https://istemstaging.iisc.ac.in/istem1"),  # real address: never redirected
+    ("made.up@example.com", "https://istem.iisc.ac.in/istem1"),  # production I-STEM: never redirected
+])
+def test_otp_is_never_redirected_otherwise(on, mailoutbox, email, base):
+    on.ISTEM_BASE_URL = base
+    on.ISTEM_TEST_OTP_INBOX = "tester@lab.example.org"
+    reg.start(email, "", client_factory=_client_factory(_row_for(email)))
+    assert mailoutbox[-1].to == [email]
