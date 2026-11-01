@@ -5,6 +5,9 @@
 #             registration test key (secret ISTEM_REGISTRATION_TEST_KEY): "Already registered on I-STEM?" shows only
 #             on /auth?istem_test=<key>, and accounts registered through it are test accounts. Signed-in linking is
 #             limited to test accounts by the external pilot. User creation, Confirm and FBR Execute stay off.
+#   open    : as enable, but without the test key: "Already registered on I-STEM?" shows for every external
+#             visitor and those sign-ups are ordinary (not test) accounts. Still I-STEM STAGING: for a temporary
+#             evaluation of the flow and screens only; switch back with enable (test link only) or disable.
 #   disable : I-STEM off again (ISTEM_ENABLED=False, ISTEM_MODE=off, OTP linking off); credentials removed.
 # Only the django service is recreated. Secrets are never printed.
 name: Apply I-STEM Pilot Config
@@ -16,7 +19,7 @@ on:
         description: "enable | disable"
         required: true
         type: choice
-        options: [enable, disable]
+        options: [enable, open, disable]
       confirm:
         description: "Type ISTEM to proceed"
         required: true
@@ -52,7 +55,7 @@ jobs:
           env_file = Path(os.environ["ENV_FILE"])
           secret_keys = ["ISTEM_USERNAME", "ISTEM_PASSWORD", "ISTEM_REGISTRATION_TEST_KEY"]
           upsert, remove = {}, set()
-          if mode == "enable":
+          if mode in ("enable", "open"):
               for name in ("ISTEM_STAGING_USERNAME", "ISTEM_STAGING_PASSWORD", "ISTEM_REGISTRATION_TEST_KEY"):
                   if not os.environ.get(name):
                       raise SystemExit(f"repository secret {name} is not set")
@@ -71,6 +74,9 @@ jobs:
                   "ISTEM_CONFIRM_ENABLED": "False",
                   "ISTEM_EXECUTE_ENABLED": "False",
               }
+              if mode == "open":
+                  del upsert["ISTEM_REGISTRATION_TEST_KEY"]
+                  remove = {"ISTEM_REGISTRATION_TEST_KEY"}
           elif mode == "disable":
               upsert = {"ISTEM_ENABLED": "False", "ISTEM_MODE": "off", "ISTEM_OTP_LINKING_ENABLED": "False"}
               remove = set(secret_keys)
