@@ -723,3 +723,54 @@ def test_maintenance_status_says_when_the_oic_must_act(lab, django_capture_on_co
         (row,) = _client(oic).get("/api/equipments/maintenance-status/").data["periods"]
         assert (row["recovery_status"], row["action_required"]) == ("DELAYED", True)
         assert "confirm the equipment's status" in row["action"]
+
+
+# --- Needs your attention: who acts, lifecycle (Module 9.5 / 9.6) ----------------------------------------------------
+
+def _delayed(eq):
+    from iic_booking.equipment.models import EquipmentMaintenancePeriod
+
+    period = EquipmentMaintenancePeriod.objects.get(equipment=eq, ended_at__isnull=True)
+    period.disruption_event.expected_recovery_at = timezone.now() - timedelta(hours=1)
+    period.disruption_event.save(update_fields=["expected_recovery_at"])
+    return period
+
+
+def test_a_lab_operator_sees_the_maintenance_but_not_the_oic_action(lab, django_capture_on_commit_callbacks):
+    from iic_booking.equipment.models import EquipmentOperator
+
+    eq, oic = lab
+    operator = _user(UserType.OPERATOR)
+    EquipmentOperator.objects.create(equipment=eq, operator=operator)
+    _mark(oic, eq, django_capture_on_commit_callbacks)
+    _delayed(eq)
+
+    (oic_row,) = _client(oic).get("/api/equipments/maintenance-status/").data["periods"]
+    assert oic_row["action_required"] is True and "confirm the equipment's status" in oic_row["action"]
+
+    rows = _client(operator).get("/api/equipments/maintenance-status/").data["periods"]
+    assert [r["equipment_id"] for r in rows] == [eq.pk]  # still informed
+    assert rows[0]["action_required"] is False and rows[0]["action"] == ""
+    assert "Officer In Charge has been asked" in rows[0]["waiting_for"]
+    # And the operator still cannot change the status themselves (unchanged rule).
+    assert _patch(operator, eq, {"status": "ACTIVE"}).status_code == 403
+
+
+def test_a_resolved_event_leaves_the_list_and_its_history_is_kept(lab, django_capture_on_commit_callbacks):
+    from iic_booking.equipment.models import EquipmentMaintenancePeriod
+
+    eq, oic = lab
+    u = _user(UserType.STUDENT)
+    _book(eq, _later_today(eq), u)
+    _mark(oic, eq, django_capture_on_commit_callbacks)
+    _delayed(eq)
+    assert _client(oic).get("/api/equipments/maintenance-status/").data["periods"][0]["action_required"] is True
+    notified = MaintenanceNotification.objects.filter(period__equipment=eq).count()
+    assert notified >= 1
+
+    _operational(oic, eq, django_capture_on_commit_callbacks)
+
+    assert _client(oic).get("/api/equipments/maintenance-status/").data["periods"] == []  # nothing left to act on
+    period = EquipmentMaintenancePeriod.objects.get(equipment=eq)
+    assert period.ended_at is not None  # history kept, not deleted
+    assert MaintenanceNotification.objects.filter(period=period).count() >= notified
