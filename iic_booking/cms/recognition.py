@@ -20,7 +20,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Optional
 
 from django.db import IntegrityError, transaction
-from django.db.models import Count, Max, Q
+from django.db.models import Count, Max
 from django.utils import timezone
 
 HALL_LIMIT = 24
