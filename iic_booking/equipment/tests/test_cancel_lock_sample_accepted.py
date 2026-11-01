@@ -196,7 +196,7 @@ def test_my_bookings_list_api_exposes_cancel_lock(egs_factory):
     assert row["cancel_block_reason"] == CANCEL_LOCKED_SAMPLE_ACCEPTED
 
 
-# --- Booking Assistant ----------------------------------------------------------------------------
+# --- Research Assistant ----------------------------------------------------------------------------
 
 
 def test_assistant_does_not_offer_cancel_after_acceptance(egs_factory):

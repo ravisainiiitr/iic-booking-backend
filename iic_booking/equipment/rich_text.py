@@ -503,7 +503,7 @@ class _PlainText(HTMLParser):
 
 
 def rich_text_to_plain(value: str | None) -> str:
-    """Plain-text rendering for emails / PDFs / the Booking Assistant (lists become • / 1. lines)."""
+    """Plain-text rendering for emails / PDFs / the IITR Research Assistant (lists become • / 1. lines)."""
     text = "" if value is None else str(value)
     if not looks_like_html(text):
         return text.strip()

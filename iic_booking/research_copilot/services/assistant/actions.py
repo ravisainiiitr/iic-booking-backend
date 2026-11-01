@@ -1,5 +1,5 @@
 """
-Whitelisted Booking Assistant button actions (`ba_*`).
+Whitelisted Research Assistant button actions (`ba_*`).
 
 Card buttons post {type, payload} back to the conversation. Every type has a fixed payload schema;
 unknown types, unknown keys or badly typed values are rejected with a 400 before anything runs, and
@@ -20,6 +20,7 @@ UPCOMING = "ba_upcoming"
 FLOW = "ba_flow"
 BOOKING = "ba_booking"
 HELP = "ba_help"
+PORTAL = "ba_portal"
 
 HELP_CODES = ("slot_taken", "no_slots", "quota_exceeded", "no_wallet", "insufficient_funds", "charge_error", "booking_failed")
 
@@ -172,6 +173,22 @@ def _labels(value: Any) -> list[str]:
     return out
 
 
+def _portal_key(value: Any) -> str:
+    from iic_booking.equipment.portal_actions import BY_KEY
+
+    if not isinstance(value, str) or value not in BY_KEY:
+        raise InvalidAssistantAction("invalid_portal_action")
+    return value
+
+
+def _on_off(value: Any) -> int | None:
+    if value is None:
+        return None
+    if value in (0, 1, True, False):
+        return int(value)
+    raise InvalidAssistantAction("invalid_switch_value")
+
+
 def _date(value: Any) -> str | None:
     if value is None:
         return None
@@ -202,6 +219,7 @@ _SCHEMAS: dict[str, dict[str, Any]] = {
     },
     BOOKING: {"booking_id": _int, "op": _booking_op},
     HELP: {"code": _help_code, "equipment_id": _optional_int, "message": _short_text, "missing_fields": _labels, "date": _date},
+    PORTAL: {"action": _portal_key, "equipment_id": _optional_int, "on": _on_off},
 }
 _REQUIRED = {
     PICK_EQUIPMENT: {"equipment_id"},
@@ -213,6 +231,7 @@ _REQUIRED = {
     FLOW: {"step"},
     BOOKING: {"booking_id", "op"},
     HELP: {"code"},
+    PORTAL: {"action"},
 }
 ACTION_TYPES = frozenset(_SCHEMAS)
 

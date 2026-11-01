@@ -3,9 +3,9 @@
 Equipment matching tolerates spelling mistakes and understands techniques (``search_index``); bookings and people
 match exact or contained text only, so a near-miss never reveals someone else's record.
 
-People are listed apart from bookings: those whose name matches (staff: any user; others: Officers in Charge and Lab
-In-charges), then the people on the matching bookings (staff: who booked; everyone: the equipment's Officer in Charge
-and Lab In-charge). Each opens the scoped ID card.
+Equipment, People and Bookings are separate sections. People: those whose name matches (staff: any user; others:
+Officers In Charge and Lab Operators), then the people on the matching bookings and equipment (staff: who booked;
+everyone: the instrument's Lab Operator and Officer In Charge; never Accounts In Charge). Each opens the ID card.
 """
 
 from __future__ import annotations
@@ -193,14 +193,16 @@ def _search_people(user, q: str, request=None) -> list[dict[str, Any]] | None:
     return [_person_row(u, labels, request) for u in qs[:PEOPLE_LIMIT]]
 
 
-def _booking_people(user, bookings, *, staff_view: bool, request=None) -> list[dict[str, Any]]:
-    """The people on the matched bookings: who booked (staff only; never the viewer) and, for everyone, the
-    equipment's Officer in Charge and Lab In-charge (a mode without its own staff uses its base equipment's)."""
+def _related_people(user, bookings, equipment_list, *, staff_view: bool, request=None) -> list[dict[str, Any]]:
+    """The people behind the matched bookings and equipment: who booked (staff only; never the viewer), and the Lab
+    Operator and Officer In Charge of each instrument (a mode without its own staff uses its base equipment's).
+    Accounts In Charge are not listed. One row per person; the relation names their instruments by code."""
     from iic_booking.users.models import User
 
     from .models import EquipmentManager, EquipmentOperator
 
     relations: dict[int, list[str]] = {}
+    roles: dict[tuple[int, str], list[str]] = {}
 
     def add(uid: int, text: str):
         if uid != user.pk and text not in relations.setdefault(uid, []):
@@ -210,20 +212,27 @@ def _booking_people(user, bookings, *, staff_view: bool, request=None) -> list[d
         for b in bookings:
             if b.user_id:
                 add(b.user_id, f"Booked {b.virtual_booking_id or f'{b.equipment.code}-{b.booking_id}'}")
-    equipment = {b.equipment_id: b.equipment for b in bookings}
+    equipment = {e.equipment_id: e for e in [*(b.equipment for b in bookings), *equipment_list] if e is not None}
     base_of = {eid: getattr(e, "parent_equipment_id", None) for eid, e in equipment.items()}
     ids = set(equipment) | {b for b in base_of.values() if b}
     staff: dict[int, list[tuple[int, str]]] = {}
     for model, field, role in (
-        (EquipmentManager, "manager", "Officer in Charge"),
-        (EquipmentOperator, "operator", "Lab In-charge"),
+        (EquipmentOperator, "operator", "Lab Operator"),
+        (EquipmentManager, "manager", "Officer In Charge"),
     ):
-        links = model.objects.filter(equipment_id__in=ids, **{f"{field}__is_active": True})
+        links = model.objects.filter(equipment_id__in=ids, **{f"{field}__is_active": True}).order_by("pk")
         for eq_id, uid in links.values_list("equipment_id", f"{field}_id"):
             staff.setdefault(eq_id, []).append((uid, role))
     for eq_id, e in equipment.items():
         for uid, role in staff.get(eq_id) or staff.get(base_of.get(eq_id), []):
-            add(uid, f"{role} · {e.name}")
+            if uid == user.pk:
+                continue
+            relations.setdefault(uid, [])
+            codes = roles.setdefault((uid, role), [])
+            if (e.code or e.name) not in codes:
+                codes.append(e.code or e.name)
+    for (uid, role), codes in roles.items():
+        relations[uid].append(f"{role} · {', '.join(codes)}")
     relations = {uid: texts for uid, texts in relations.items() if texts}
     if not relations:
         return []
@@ -276,8 +285,8 @@ def _search_lab_staff(user, q: str) -> list[dict[str, Any]]:
         return []
     people: dict[tuple[int, str], dict[str, Any]] = {}
     for model, field, role in (
-        (EquipmentManager, "manager", "Officer in Charge"),
-        (EquipmentOperator, "operator", "Lab In-charge"),
+        (EquipmentManager, "manager", "Officer In Charge"),
+        (EquipmentOperator, "operator", "Lab Operator"),
     ):
         links = (
             model.objects.filter(equipment_id__in=visible, **{f"{field}__is_active": True})
@@ -324,15 +333,22 @@ def global_search(request):
         from iic_booking.users.models.user_type import UserType
 
         staff_view = check_operator_permission(user) or user.user_type in (UserType.DEPT_ADMIN, UserType.FINANCE)
+        from .models import Equipment
+
+        equipment_hits = list(Equipment.objects.filter(pk__in=[e["id"] for e in result["equipment"]]))
         result["bookings"], booking_hits = _search_bookings(user, q, staff_view=staff_view)
         people = _search_people(user, q, request)
         result["people_enabled"] = people is not None
         result["staff_view"] = staff_view
         # Users find the Officer in Charge and Lab In-charge of the instruments they can see, by name.
         result["lab_staff"] = _search_lab_staff(user, q)
+        from .portal_actions import search_hits
+
+        # Things the user can do: pages and settings for their role, some per instrument ("enable slot exchange").
+        result["actions"] = search_hits(user, q)
         result["people"] = _merge_people(
             people or [],
             _lab_staff_people(result["lab_staff"], request) if people is None else [],
-            _booking_people(user, booking_hits, staff_view=staff_view, request=request),
+            _related_people(user, booking_hits, equipment_hits, staff_view=staff_view, request=request),
         )
     return Response(result)

@@ -1,4 +1,4 @@
-"""Booking Assistant: date parsing, fuzzy matching, availability, confirm-gated booking and scoping."""
+"""Research Assistant: date parsing, fuzzy matching, availability, confirm-gated booking and scoping."""
 
 from __future__ import annotations
 

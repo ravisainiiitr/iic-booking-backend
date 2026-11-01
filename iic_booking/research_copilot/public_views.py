@@ -33,7 +33,7 @@ def public_ask(request):
             {
                 "error": {
                     "code": "research_copilot_disabled",
-                    "message": "IIC Booking Assistant is not enabled on this environment.",
+                    "message": "IITR Research Assistant is not enabled on this environment.",
                 }
             },
             status=status.HTTP_503_SERVICE_UNAVAILABLE,

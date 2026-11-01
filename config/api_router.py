@@ -518,6 +518,7 @@ from iic_booking.equipment.maintenance_views import maintenance_status_view
 from iic_booking.equipment.admin_dashboard_summary import admin_dashboard_summary
 from iic_booking.equipment.global_search import global_search
 from iic_booking.equipment.my_activity import my_activity
+from iic_booking.equipment.portal_actions import portal_action_equipment, portal_action_run, portal_actions_list
 from iic_booking.equipment.search_synonym_views import search_synonym_detail, search_synonym_list
 from iic_booking.equipment.similar_availability import similar_availability
 from iic_booking.equipment.admin_insights.views import (
@@ -591,7 +592,7 @@ from iic_booking.support.portal_feedback_views import (
     portal_feedback_admin_list,
 )
 from iic_booking.support.notification_settings_views import support_notification_settings
-from iic_booking.cms.views import menu_list, home_page_content, hero_slides, page_by_slug, policy_pages, site_stats, analysis_charges_document, public_publications, hall_of_frames, researcher_of_the_month, recognition_admin, recognition_hall_visibility, recognition_month_disable
+from iic_booking.cms.views import menu_list, home_page_content, hero_slides, page_by_slug, policy_pages, site_stats, analysis_charges_document, public_publications, hall_of_frames, researcher_of_the_month, recognition_admin, recognition_hall_enabled, recognition_hall_visibility, recognition_month_disable
 from iic_booking.istem.api_views import (
     istem_link_find_account,
     istem_link_send_otp,
@@ -1028,6 +1029,9 @@ urlpatterns = router.urls + [
     ),
     path("profiles/me/dashboard-shortcuts/", profile_me_dashboard_shortcuts, name="profile-me-dashboard-shortcuts"),
     path("profiles/me/activity/", my_activity, name="profile-me-activity"),
+    path("portal-actions/", portal_actions_list, name="portal-actions"),
+    path("portal-actions/<slug:key>/equipment/", portal_action_equipment, name="portal-action-equipment"),
+    path("portal-actions/<slug:key>/run/", portal_action_run, name="portal-action-run"),
     path(
         "profiles/me/dashboard-equipment-order/",
         profile_me_dashboard_equipment_order,
@@ -2007,6 +2011,7 @@ urlpatterns = router.urls + [
     path("cms/hall-of-frames/", hall_of_frames, name="cms-hall-of-frames"),
     path("cms/researcher-of-the-month/", researcher_of_the_month, name="cms-researcher-of-the-month"),
     path("cms/recognition/", recognition_admin, name="cms-recognition-admin"),
+    path("cms/recognition/hall/enabled/", recognition_hall_enabled, name="cms-recognition-hall-enabled"),
     path("cms/recognition/hall/<int:user_id>/", recognition_hall_visibility, name="cms-recognition-hall"),
     path("cms/recognition/month/<int:row_id>/disable/", recognition_month_disable, name="cms-recognition-month-disable"),
     path("cms/pages/<slug:slug>/", page_by_slug, name="cms-page-by-slug"),

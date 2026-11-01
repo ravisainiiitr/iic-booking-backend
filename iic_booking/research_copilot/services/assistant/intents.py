@@ -1,5 +1,5 @@
 """
-Day-to-day intents for the Booking Assistant (pure: no database, no network).
+Day-to-day intents for the IITR Research Assistant (pure: no database, no network).
 
 `detect(text)` normalises the message (typos, simple Hinglish), then walks a priority-ordered rule
 table and returns the first intent that matches, with the parameters the handler needs (booking
@@ -308,8 +308,8 @@ _DETAILS_RE = re.compile(r"\b(details?|status|info\w*|show|open|view|track|where
 _HELP_RE = re.compile(
     r"^(help|menu|options|start|what\s+can\s+you\s+do|what\s+do\s+you\s+do|how\s+can\s+you\s+help|"
     r"what\s+can\s+i\s+(ask|do)|show\s+me\s+(the\s+)?options|"
-    r"(summari[sz]e|list|show|explain|what\s+are)\s+(me\s+)?(the\s+|your\s+)?((booking\s+)?assistant'?s?\s+|copilot'?s?\s+)?"
-    r"(capabilit\w*|features)|what\s+(all\s+)?can\s+(the\s+)?(booking\s+)?(assistant|copilot|bot)\s+do)\b"
+    r"(summari[sz]e|list|show|explain|what\s+are)\s+(me\s+)?(the\s+|your\s+)?(((booking|research|iitr\s+research)\s+)?assistant'?s?\s+|copilot'?s?\s+)?"
+    r"(capabilit\w*|features)|what\s+(all\s+)?can\s+(the\s+)?((booking|research|iitr\s+research)\s+)?(assistant|copilot|bot)\s+do)\b"
 )
 _CHARGES_GENERIC_RE = re.compile(
     r"^(and\s+)?(what\s+(are|is)\s+|what\s+about\s+|how\s+about\s+)?(the\s+)?(analysis\s+)?"

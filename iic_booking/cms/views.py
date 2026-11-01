@@ -164,10 +164,12 @@ def policy_pages(request):
 @permission_classes([AllowAny])
 def hall_of_frames(request):
     """Researchers with approved publications, most publications first (worked out automatically; researchers the
-    Main Administrator took off are left out)."""
-    from .recognition import hall_of_frames as build
+    Main Administrator took off are left out). Empty until the Main Administrator switches the Hall of Frames on."""
+    from .recognition import hall_enabled, hall_of_frames as build
 
-    return Response({"results": build(request=request)})
+    if not hall_enabled():
+        return Response({"results": [], "enabled": False})
+    return Response({"results": build(request=request), "enabled": True})
 
 
 @api_view(["GET"])
@@ -175,11 +177,11 @@ def hall_of_frames(request):
 def researcher_of_the_month(request):
     """This month's Researchers of the Month (institute-wide and per department), chosen automatically from approved
     publications on the first request of the month. ``?department=<id>`` narrows to one department; ``?history=1``
-    lists earlier months instead."""
+    lists earlier months instead. This month's list has one card per researcher, with all their ``titles``."""
     from django.utils import timezone
 
     from .models import ResearcherOfTheMonth
-    from .recognition import ensure_month, month_card
+    from .recognition import ensure_month, month_card, one_card_per_person
 
     this_month = timezone.localdate().replace(day=1)
     ensure_month(this_month)
@@ -189,8 +191,9 @@ def researcher_of_the_month(request):
         qs = qs.filter(department_id=int(dept))
     history = str(request.query_params.get("history", "")).lower() in ("1", "true", "yes")
     qs = qs.filter(month__lt=this_month)[:36] if history else qs.filter(month=this_month)
+    cards = [month_card(r, request=request) for r in qs]
     return Response({"month": this_month.isoformat(), "history": history,
-                     "results": [month_card(r, request=request) for r in qs]})
+                     "results": cards if history else one_card_per_person(cards)})
 
 
 def _main_admin_only(request):
@@ -211,7 +214,7 @@ def recognition_admin(request):
     from iic_booking.users.rbac import user_has_admin_panel_access
 
     from .models import ResearcherOfTheMonth
-    from .recognition import ensure_month, hall_of_frames as build, month_card
+    from .recognition import ensure_month, hall_enabled, hall_of_frames as build, month_card
 
     if not user_has_admin_panel_access(request.user):
         return Response({"error": "Admin panel access required."}, status=status.HTTP_403_FORBIDDEN)
@@ -219,11 +222,24 @@ def recognition_admin(request):
     ensure_month(this_month)
     rows = ResearcherOfTheMonth.objects.select_related("department", "user")
     return Response({
+        "hall_enabled": hall_enabled(),
         "hall": build(request=request, include_hidden=True, limit=200),
         "month": this_month.isoformat(),
         "current": [month_card(r, request=request) for r in rows.filter(month=this_month)],
         "history": [month_card(r, request=request) for r in rows.filter(month__lt=this_month)[:60]],
     })
+
+
+@api_view(["POST"])
+def recognition_hall_enabled(request):
+    """Main Administrator: ``{"enabled": true|false}`` shows or hides the whole Hall of Frames on the home page."""
+    from .recognition import hall_enabled, set_hall_enabled
+
+    refused = _main_admin_only(request)
+    if refused:
+        return refused
+    set_hall_enabled(request.data.get("enabled") in (True, "true", "1", 1))
+    return Response({"enabled": hall_enabled()})
 
 
 @api_view(["POST"])
