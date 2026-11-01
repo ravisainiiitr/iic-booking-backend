@@ -17,5 +17,8 @@ jobs:
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
           test -n "$CID"
-          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
-            python - < scripts/ops/e2e_slot_exchange.py
+          cd "$GITHUB_WORKSPACE"
+          echo "workspace: $(pwd) at $(git rev-parse --short HEAD)"
+          # Read the script from the checked-out commit itself, so a stale working tree cannot hide it.
+          git show HEAD:scripts/ops/e2e_slot_exchange.py | \
+            docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python -
