@@ -958,7 +958,28 @@ def active_summaries_for_user(user) -> list[dict]:
         if not ids:
             return []
         qs = qs.filter(equipment_id__in=ids)
-    return [period_summary(p) for p in qs.order_by("started_at")]
+    rows = []
+    for p in qs.order_by("started_at"):
+        row = period_summary(p)
+        if row["action_required"] and not _may_set_status(user, p.equipment):
+            # Only those who may change the equipment's status act on it (Main Administrator, Department
+            # Administrator, its Officer In Charge); for everyone else, e.g. Lab Operators, it is an update.
+            row.update(action_required=False, action="",
+                       waiting_for="The Officer In Charge has been asked to confirm the equipment's status.")
+        rows.append(row)
+    return rows
+
+
+def _may_set_status(user, equipment) -> bool:
+    """The same rule as changing an equipment's operational status (equipment update API)."""
+    from iic_booking.users.models.user_type import UserType
+
+    from .api_views import _user_can_act_as_oic_for_equipment
+
+    user_type = getattr(user, "user_type", None)
+    if getattr(user, "is_superuser", False) or user_type in (UserType.ADMIN, UserType.DEPT_ADMIN):
+        return True
+    return user_type == UserType.MANAGER and _user_can_act_as_oic_for_equipment(user, equipment)
 
 
 # --- dry run for equipment already under maintenance --------------------------------------------------------------
