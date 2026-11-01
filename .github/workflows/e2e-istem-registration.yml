@@ -1,0 +1,30 @@
+# End-to-end check of registering with an existing I-STEM account (production against I-STEM staging). Creates one
+# fictitious user on I-STEM staging; everything on the portal side is rolled back and no email is sent.
+name: E2E I-STEM Registration
+
+on:
+  workflow_dispatch:
+    inputs:
+      istem_email:
+        description: "Optional: email of a fictitious I-STEM staging user created by an earlier run (else a new one is created)"
+        required: false
+        default: ""
+
+jobs:
+  e2e:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - name: Run end-to-end test in the django container
+        env:
+          E2E_ISTEM_EMAIL: ${{ inputs.istem_email }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          cd "$GITHUB_WORKSPACE"
+          git show HEAD:scripts/ops/e2e_istem_registration.py | \
+            docker exec -i -w /app -e E2E_ISTEM_EMAIL="$E2E_ISTEM_EMAIL" \
+              -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python -
