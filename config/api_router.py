@@ -517,6 +517,7 @@ from iic_booking.equipment.results_deadline import results_overdue_view
 from iic_booking.equipment.maintenance_views import maintenance_status_view
 from iic_booking.equipment.admin_dashboard_summary import admin_dashboard_summary
 from iic_booking.equipment.global_search import global_search
+from iic_booking.equipment.my_activity import my_activity
 from iic_booking.equipment.search_synonym_views import search_synonym_detail, search_synonym_list
 from iic_booking.equipment.similar_availability import similar_availability
 from iic_booking.equipment.admin_insights.views import (
@@ -1026,6 +1027,7 @@ urlpatterns = router.urls + [
         name="profile-me-dashboard-menu-layout",
     ),
     path("profiles/me/dashboard-shortcuts/", profile_me_dashboard_shortcuts, name="profile-me-dashboard-shortcuts"),
+    path("profiles/me/activity/", my_activity, name="profile-me-activity"),
     path(
         "profiles/me/dashboard-equipment-order/",
         profile_me_dashboard_equipment_order,
