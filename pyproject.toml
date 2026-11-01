@@ -211,4 +211,5 @@ dependencies = [
     "pypdf>=6.21.4",
     "nh3==0.3.7",
     "ezdxf==1.4.4",
+    "httpx[http2]==0.28.1",
 ]

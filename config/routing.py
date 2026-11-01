@@ -2,8 +2,10 @@
 
 from django.urls import re_path
 
+from iic_booking.calls.consumers import CallConsumer
 from iic_booking.communication.consumers import NotificationConsumer
 
 websocket_urlpatterns = [
     re_path(r"ws/notifications/$", NotificationConsumer.as_asgi()),
+    re_path(r"ws/calls/$", CallConsumer.as_asgi()),
 ]
