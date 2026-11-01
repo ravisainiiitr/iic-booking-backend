@@ -89,7 +89,7 @@ def staging_user():
     payload = {
         "user_first_name": "Iic", "user_last_name": "Etoe Test", "user_email": email, "user_contactno": mobile,
         "user_organisation": "IIC Portal Test", "user_type": "Industry User", "user_gender": "Other",
-        "user_salutation": "Mr", "user_address": "IIT Roorkee", "user_city": "Roorkee", "user_district": "Haridwar",
+        "user_salutation": "Mr.", "user_address": "IIT Roorkee", "user_city": "Roorkee", "user_district": "Haridwar",
         "user_state": "Uttarakhand", "user_country": "India", "user_pin": "247667",
         "billing_user_name": "IIC Portal Test", "billing_address": "IIT Roorkee, Roorkee 247667",
         "institute_id": institute, "user_status": "1",
