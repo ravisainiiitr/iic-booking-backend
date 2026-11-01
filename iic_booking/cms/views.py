@@ -163,31 +163,94 @@ def policy_pages(request):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def hall_of_frames(request):
-    """Approved Hall of Frames entries for the home page carousel, in their set order."""
-    from .models import HallOfFrameEntry
-    from .serializers import RecognitionPublicSerializer
+    """Researchers with approved publications, most publications first (worked out automatically; researchers the
+    Main Administrator took off are left out)."""
+    from .recognition import hall_of_frames as build
 
-    rows = HallOfFrameEntry.objects.filter(is_approved=True).select_related("equipment")[:50]
-    return Response({"results": RecognitionPublicSerializer(rows, many=True, context={"request": request}).data})
+    return Response({"results": build(request=request)})
 
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def researcher_of_the_month(request):
-    """This month's approved Researchers of the Month (one per department, plus an institute-wide one). A new month
-    replaces the previous one automatically. ``?department=<id>`` narrows to one department; ``?history=1`` lists the
-    earlier months instead."""
+    """This month's Researchers of the Month (institute-wide and per department), chosen automatically from approved
+    publications on the first request of the month. ``?department=<id>`` narrows to one department; ``?history=1``
+    lists earlier months instead."""
     from django.utils import timezone
 
     from .models import ResearcherOfTheMonth
-    from .serializers import ResearcherOfTheMonthPublicSerializer
+    from .recognition import ensure_month, month_card
 
     this_month = timezone.localdate().replace(day=1)
-    qs = ResearcherOfTheMonth.objects.filter(is_approved=True).select_related("equipment", "department")
+    ensure_month(this_month)
+    qs = ResearcherOfTheMonth.objects.filter(is_approved=True).select_related("department", "user")
     dept = request.query_params.get("department")
     if dept and str(dept).isdigit():
         qs = qs.filter(department_id=int(dept))
     history = str(request.query_params.get("history", "")).lower() in ("1", "true", "yes")
     qs = qs.filter(month__lt=this_month)[:36] if history else qs.filter(month=this_month)
-    data = ResearcherOfTheMonthPublicSerializer(qs, many=True, context={"request": request}).data
-    return Response({"month": this_month.isoformat(), "history": history, "results": data})
+    return Response({"month": this_month.isoformat(), "history": history,
+                     "results": [month_card(r, request=request) for r in qs]})
+
+
+def _main_admin_only(request):
+    from iic_booking.department_modules.access import is_main_admin
+
+    if not is_main_admin(request.user):
+        return Response({"error": "Only the Main Administrator can change what the home page shows."},
+                        status=status.HTTP_403_FORBIDDEN)
+    return None
+
+
+@api_view(["GET"])
+def recognition_admin(request):
+    """Admin Panel users: the Hall of Frames (with who is hidden), this month's Researchers of the Month (shown or
+    not) and the last twelve months."""
+    from django.utils import timezone
+
+    from iic_booking.users.rbac import user_has_admin_panel_access
+
+    from .models import ResearcherOfTheMonth
+    from .recognition import ensure_month, hall_of_frames as build, month_card
+
+    if not user_has_admin_panel_access(request.user):
+        return Response({"error": "Admin panel access required."}, status=status.HTTP_403_FORBIDDEN)
+    this_month = timezone.localdate().replace(day=1)
+    ensure_month(this_month)
+    rows = ResearcherOfTheMonth.objects.select_related("department", "user")
+    return Response({
+        "hall": build(request=request, include_hidden=True, limit=200),
+        "month": this_month.isoformat(),
+        "current": [month_card(r, request=request) for r in rows.filter(month=this_month)],
+        "history": [month_card(r, request=request) for r in rows.filter(month__lt=this_month)[:60]],
+    })
+
+
+@api_view(["POST"])
+def recognition_hall_visibility(request, user_id):
+    """Main Administrator: ``{"hidden": true|false, "reason"}`` takes a researcher off the Hall of Frames, or back."""
+    from .recognition import hide_from_hall, show_in_hall
+
+    refused = _main_admin_only(request)
+    if refused:
+        return refused
+    if request.data.get("hidden") in (False, "false", "0", 0):
+        show_in_hall(int(user_id))
+    else:
+        hide_from_hall(int(user_id), actor=request.user, reason=str(request.data.get("reason") or ""))
+    return Response({"ok": True})
+
+
+@api_view(["POST"])
+def recognition_month_disable(request, row_id):
+    """Main Administrator: take this month's researcher off; the next eligible researcher is chosen automatically."""
+    from .models import ResearcherOfTheMonth
+    from .recognition import disable_month, month_card
+
+    refused = _main_admin_only(request)
+    if refused:
+        return refused
+    if not ResearcherOfTheMonth.objects.filter(pk=row_id).exists():
+        return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+    row = disable_month(int(row_id), actor=request.user, reason=str(request.data.get("reason") or ""))
+    return Response(month_card(row, request=request))
