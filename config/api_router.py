@@ -27,6 +27,7 @@ from iic_booking.users.api.auth_views import (
     profile_me,
     profile_me_avatar,
     profile_me_dashboard_menu_layout,
+    profile_me_onboarding,
     profile_me_dashboard_shortcuts,
     profile_me_dashboard_equipment_order,
     user_profile_picture_proxy,
@@ -600,6 +601,7 @@ from iic_booking.istem.api_views import (
     istem_link_verify_otp,
     istem_register_availability,
     istem_register_lookup,
+    istem_register_complete,
     istem_register_verify,
 )
 
@@ -1029,6 +1031,7 @@ urlpatterns = router.urls + [
     ),
     path("profiles/me/dashboard-shortcuts/", profile_me_dashboard_shortcuts, name="profile-me-dashboard-shortcuts"),
     path("profiles/me/activity/", my_activity, name="profile-me-activity"),
+    path("profiles/me/onboarding/", profile_me_onboarding, name="profile-me-onboarding"),
     path("portal-actions/", portal_actions_list, name="portal-actions"),
     path("portal-actions/<slug:key>/equipment/", portal_action_equipment, name="portal-action-equipment"),
     path("portal-actions/<slug:key>/run/", portal_action_run, name="portal-action-run"),
@@ -1656,6 +1659,7 @@ urlpatterns = router.urls + [
     path("istem/register/availability/", istem_register_availability, name="istem-register-availability"),
     path("istem/register/lookup/", istem_register_lookup, name="istem-register-lookup"),
     path("istem/register/verify/", istem_register_verify, name="istem-register-verify"),
+    path("istem/register/complete/", istem_register_complete, name="istem-register-complete"),
     path("bookings/<int:booking_id>/istem-fbr/", update_booking_istem_fbr, name="booking-istem-fbr-update"),
     path("bookings/<int:booking_id>/istem-fbr/review/", review_booking_istem_fbr, name="booking-istem-fbr-review"),
     path("bookings/<int:booking_id>/complete/", complete_booking, name="complete-booking"),

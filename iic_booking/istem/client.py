@@ -191,6 +191,7 @@ LOOKUP_PROFILE_KEYS = {
     "billing_name": ("billing_user_name", "billing_name"),
     "billing_address": ("billing_address",),
     "user_type": ("user_type", "user_category"),
+    "gender": ("user_gender", "gender"),
 }
 
 
