@@ -6,6 +6,7 @@ Mounted at /api/v1/sync/
 
 from django.urls import path
 
+from iic_booking.power import views as power_views
 from iic_booking.sync import views
 from iic_booking.sync.installer import views as installer_views
 from iic_booking.lab_infrastructure.views import configuration_ack as lab_configuration_ack
@@ -16,6 +17,8 @@ urlpatterns = [
     # Control plane (Milestone 4)
     path("enroll/", views.enroll, name="enroll"),
     path("heartbeat/", views.heartbeat, name="heartbeat"),
+    path("ups/devices/", power_views.agent_ups_devices, name="ups-devices"),
+    path("ups/readings/", power_views.agent_ups_readings, name="ups-readings"),
     path("bootstrap/", views.bootstrap, name="bootstrap"),
     # Operational data plane (Milestone 5)
     path("equipment/", views.equipment_list, name="equipment-list"),
