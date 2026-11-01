@@ -328,14 +328,14 @@ def global_search(request):
         return Response(result)
     user = request.user
     result["equipment"], result["suggestion"] = _search_equipment(user, q)
-    from .models import Equipment
-
-    equipment_hits = list(Equipment.objects.filter(pk__in=[e["id"] for e in result["equipment"]]))
     if getattr(user, "is_authenticated", False):
         from .api_views import check_operator_permission
         from iic_booking.users.models.user_type import UserType
 
         staff_view = check_operator_permission(user) or user.user_type in (UserType.DEPT_ADMIN, UserType.FINANCE)
+        from .models import Equipment
+
+        equipment_hits = list(Equipment.objects.filter(pk__in=[e["id"] for e in result["equipment"]]))
         result["bookings"], booking_hits = _search_bookings(user, q, staff_view=staff_view)
         people = _search_people(user, q, request)
         result["people_enabled"] = people is not None
