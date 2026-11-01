@@ -584,22 +584,12 @@ def notify_waitlist_slots_available(
                 s.id for s in slots
                 if s.start_datetime and s.start_datetime >= now
             ]
-        from django.utils import timezone as tz
-        out = []
-        for s in slots:
-            if not s.start_datetime or not s.end_datetime:
-                continue
-            if s.start_datetime < now:
-                continue
-            start_local = tz.localtime(s.start_datetime) if tz.is_aware(s.start_datetime) else s.start_datetime
-            end_local = tz.localtime(s.end_datetime) if tz.is_aware(s.end_datetime) else s.end_datetime
-            st, et = start_local.time(), end_local.time()
-            if time_from is not None and st < time_from:
-                continue
-            if time_to is not None and et > time_to:
-                continue
-            out.append(s.id)
-        return out
+        from .slot_window import slot_in_window
+
+        return [
+            s.id for s in slots
+            if s.start_datetime and s.end_datetime and s.start_datetime >= now and slot_in_window(equipment, s)
+        ]
 
     def prioritize_slots(slot_ids: list[int]) -> list[int]:
         if not preferred_slot_ids or not slot_ids:

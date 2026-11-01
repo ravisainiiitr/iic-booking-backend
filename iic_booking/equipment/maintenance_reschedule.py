@@ -6,7 +6,8 @@ Bookings on hold for equipment maintenance are moved automatically, fairly, once
 before the bookings on hold are placed; it runs again at the 08:30 check for bookings that did not fit.
 
 * Order: original slot start, then when the booking was made (then booking id).
-* Each booking gets the earliest run of consecutive Available slots with the same number of slots and the same
+* Each booking gets the earliest run of consecutive Available slots inside the slot window users see
+  (``weekly_view_time_from/to``), with the same number of slots and the same
   total length, starting at least ``min_lead_hours`` from now and never the same day, on a working day (no weekend
   or institute holiday), allowed for the equipment mode at that time, within ``horizon_days`` (weeks not yet open to
   users included; missing slots are generated first). A booking spanning several days (more slots than a day has)
@@ -94,6 +95,7 @@ def _mode_allows(equipment, slot) -> bool:
 
 def _free_slots(equipment, earliest, until_date, *, lock: bool = True):
     from .models import DailySlot, Holiday, SlotStatus
+    from .slot_window import slot_in_window
 
     holidays = set(Holiday.get_holidays_in_range(timezone.localtime(earliest).date(), until_date).keys())
     base = DailySlot.objects.select_for_update(of=("self",)) if lock else DailySlot.objects.all()
@@ -107,7 +109,9 @@ def _free_slots(equipment, earliest, until_date, *, lock: bool = True):
         )
         .order_by("start_datetime", "id")
     )
-    return [s for s in slots if s.end_datetime and s.date not in holidays]
+    # Only slots users can see and book: inside the equipment's slot window (``weekly_view_time_from/to``), never hidden
+    # night or early-morning slots of a 24-hour equipment, even when they are Available in the database.
+    return [s for s in slots if s.end_datetime and s.date not in holidays and slot_in_window(equipment, s)]
 
 
 def find_run(free: list, count: int, minutes: int, equipment, taken: set) -> Optional[list]:

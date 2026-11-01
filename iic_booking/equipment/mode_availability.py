@@ -292,15 +292,13 @@ def _local_time(dt: Optional[datetime]) -> Optional[time]:
 
 
 def _within_view_window(mode: Equipment, start_dt, end_dt) -> bool:
-    time_from, time_to = mode.weekly_view_time_from, mode.weekly_view_time_to
-    st, et = _local_time(start_dt), _local_time(end_dt)
-    if st is None or et is None:
+    from types import SimpleNamespace
+
+    from .slot_window import slot_in_window
+
+    if start_dt is None or end_dt is None:
         return False
-    if time_from is not None and st < time_from:
-        return False
-    if time_to is not None and et > time_to:
-        return False
-    return True
+    return slot_in_window(mode, SimpleNamespace(start_datetime=start_dt, end_datetime=end_dt))
 
 
 def _department_rule(mode: Equipment, viewer: Viewer, policy_active: bool, now: datetime):
