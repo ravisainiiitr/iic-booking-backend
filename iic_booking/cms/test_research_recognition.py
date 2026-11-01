@@ -62,6 +62,7 @@ def _main_admin():
 # --- Hall of Frames -------------------------------------------------------------------------------------------------
 
 def test_hall_of_frames_ranks_researchers_by_approved_publications():
+    recognition.set_hall_enabled(True)
     chem = _dept("Chemistry")
     sem = _equipment("FE-SEM")
     sachin = _researcher("Sachin Kumar Shrivastava", chem)
@@ -82,6 +83,7 @@ def test_hall_of_frames_ranks_researchers_by_approved_publications():
 
 
 def test_inactive_researchers_are_left_out():
+    recognition.set_hall_enabled(True)
     gone = _researcher("Gone User", _dept("Physics"))
     _approved(gone)
     type(gone).objects.filter(pk=gone.pk).update(is_active=False)
@@ -89,6 +91,7 @@ def test_inactive_researchers_are_left_out():
 
 
 def test_main_admin_hides_and_shows_a_researcher_in_the_hall():
+    recognition.set_hall_enabled(True)
     r = _researcher("Hidden Person", _dept("Civil"))
     _approved(r)
     admin = _main_admin()
@@ -124,8 +127,10 @@ def test_chosen_automatically_per_department_and_institute_wide():
     _approved(c, days_ago=2)
     _approved(c, days_ago=3)
     data = _client().get("/api/cms/researcher-of-the-month/").json()
-    got = {r["department_name"]: (r["researcher_name"], r["publication_count"]) for r in data["results"]}
-    assert got == {"Institute-wide": ("Chem Top", 3), "Chemistry": ("Chem Top", 3), "Physics": ("Phy Top", 2)}
+    # One card per person: Chem Top won institute-wide and for Chemistry.
+    got = {r["researcher_name"]: (r["titles"], r["publication_count"]) for r in data["results"]}
+    assert got == {"Chem Top": (["Institute-wide", "Chemistry"], 3), "Phy Top": (["Physics"], 2)}
+    assert [r["researcher_name"] for r in data["results"]] == ["Chem Top", "Phy Top"]
     # Stored once: a second visit chooses nothing new.
     _client().get("/api/cms/researcher-of-the-month/")
     assert ResearcherOfTheMonth.objects.filter(month=THIS_MONTH).count() == 3
@@ -187,3 +192,29 @@ def test_earlier_months_stay_as_history():
                                         researcher_name="Past Winner", publication_count=4)
     history = _client().get("/api/cms/researcher-of-the-month/?history=1").json()["results"]
     assert [(h["researcher_name"], h["month"]) for h in history] == [("Past Winner", "2025-05-01")]
+
+
+# --- Hall of Frames switch ------------------------------------------------------------------------------------------
+
+def test_hall_of_frames_is_off_until_the_main_admin_switches_it_on():
+    r = _researcher("Prolific Person", _dept("Physics"))
+    _approved(r)
+    off = _client().get("/api/cms/hall-of-frames/").json()
+    assert off == {"results": [], "enabled": False}
+    admin = _main_admin()
+    assert _client(admin).get("/api/cms/recognition/").json()["hall_enabled"] is False
+    assert _client(admin).post("/api/cms/recognition/hall/enabled/", {"enabled": True}, format="json").json() == {
+        "enabled": True}
+    on = _client().get("/api/cms/hall-of-frames/").json()
+    assert on["enabled"] is True and [x["researcher_name"] for x in on["results"]] == ["Prolific Person"]
+    _client(admin).post("/api/cms/recognition/hall/enabled/", {"enabled": False}, format="json")
+    assert _client().get("/api/cms/hall-of-frames/").json()["results"] == []
+
+
+def test_only_the_main_admin_switches_the_hall_of_frames():
+    dept_admin = UserFactory(user_type=UserType.DEPT_ADMIN)
+    assert _client(dept_admin).post("/api/cms/recognition/hall/enabled/", {"enabled": True},
+                                    format="json").status_code == 403
+    assert _client().post("/api/cms/recognition/hall/enabled/", {"enabled": True}, format="json").status_code in (
+        401, 403)
+    assert recognition.hall_enabled() is False

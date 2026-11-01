@@ -224,6 +224,37 @@ def month_card(row, *, request=None) -> dict:
     return out
 
 
+def one_card_per_person(cards: list[dict]) -> list[dict]:
+    """The same researcher can win institute-wide and for their department: one card, with every title (institute-wide
+    first), so the home page never shows the same person twice."""
+    ordered = sorted(cards, key=lambda c: (c["department_id"] is not None, c["department_name"]))
+    merged: dict = {}
+    for card in ordered:
+        key = card["user_id"] or f"row-{card['id']}"
+        seen = merged.get(key)
+        if seen is None:
+            merged[key] = {**card, "titles": [card["department_name"]]}
+        elif card["department_name"] not in seen["titles"]:
+            seen["titles"].append(card["department_name"])
+    return list(merged.values())
+
+
+HALL_ENABLED_KEY = "hall_of_frames_enabled"
+
+
+def hall_enabled() -> bool:
+    """The Hall of Frames stays off the home page until the Main Administrator switches it on."""
+    from .models import HomePageContent
+
+    return HomePageContent.objects.filter(key=HALL_ENABLED_KEY, value="1").exists()
+
+
+def set_hall_enabled(enabled: bool) -> None:
+    from .models import HomePageContent
+
+    HomePageContent.objects.update_or_create(key=HALL_ENABLED_KEY, defaults={"value": "1" if enabled else "0"})
+
+
 # --- Main Administrator: take off / put back ----------------------------------------------------------------------
 
 def hide_from_hall(user_id: int, *, actor, reason: str = "") -> None:
