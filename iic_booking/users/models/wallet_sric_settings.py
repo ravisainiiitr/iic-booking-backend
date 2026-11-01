@@ -222,6 +222,26 @@ def online_gateway_recharge_enabled(department=None) -> bool:
     return _department_allows("online_gateway", department)
 
 
+def approved_peer_transfer_category_pairs() -> frozenset[tuple[str, str]]:
+    """(sender user_type, recipient user_type) pairs the Institute has approved for wallet-to-wallet transfers.
+
+    From settings.WALLET_TRANSFER_APPROVED_CATEGORY_PAIRS, e.g. ["faculty>faculty"]. Empty (the default) means no
+    combination is approved, so every transfer is refused whatever the admin switch says.
+    """
+    from django.conf import settings
+
+    pairs = set()
+    for raw in getattr(settings, "WALLET_TRANSFER_APPROVED_CATEGORY_PAIRS", ()) or ():
+        sender, sep, recipient = str(raw).strip().partition(">")
+        if sep and sender.strip() and recipient.strip():
+            pairs.add((sender.strip(), recipient.strip()))
+    return frozenset(pairs)
+
+
+def peer_transfer_category_pair_approved(sender_type, recipient_type) -> bool:
+    return (str(sender_type or ""), str(recipient_type or "")) in approved_peer_transfer_category_pairs()
+
+
 def peer_transfer_enabled(department=None) -> bool:
     """Wallet-to-wallet transfer between users was removed (31 Oct 2026 committee): always off, whatever the stored
     switch says. Past transfers are kept as they are."""
@@ -254,7 +274,8 @@ def wallet_mode_flags(user=None) -> dict:
         "project_grant_recharge_enabled": masters["project_grant"] or exempt,
         "direct_cash_recharge_enabled": masters["direct_cash"],
         "online_gateway_recharge_enabled": masters["online_gateway"],
-        "peer_transfer_enabled": masters["peer_transfer"],
+        # Off for users until the Institute approves at least one category combination (see peer_transfer_enabled).
+        "peer_transfer_enabled": masters["peer_transfer"] and bool(approved_peer_transfer_category_pairs()),
         "project_grant_retired": retired,
         "sric_wallet_recharge_enabled": retired,
         # Users may no longer ask for credit (31 Oct 2026); existing credit is still shown and repaid.

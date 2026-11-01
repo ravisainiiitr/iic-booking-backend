@@ -135,8 +135,8 @@ class RegisterSerializer(serializers.Serializer):
     # They are not validated by the serializer but processed directly from request.FILES
 
     def validate_email(self, value):
-        """Validate that email is unique."""
-        if User.objects.filter(email=value).exists():
+        """Validate that email is unique, ignoring letter case (A@x.org and a@x.org are the same mailbox)."""
+        if User.objects.filter(email__iexact=(value or "").strip()).exists():
             raise serializers.ValidationError("A user with this email already exists.")
         return value
 

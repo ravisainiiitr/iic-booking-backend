@@ -1483,15 +1483,64 @@ def _normalize_phone_india(raw):
 LOGIN_OTP_CACHE_PREFIX = "login_otp:"
 LOGIN_OTP_REQUESTS_PREFIX = "login_otp_requests:"
 FORGOT_OTP_CACHE_PREFIX = "forgot_otp:"
+FORGOT_OTP_REQUESTS_PREFIX = "forgot_otp_requests:"
 OTP_EXPIRY_SECONDS = 600  # 10 minutes
 LOGIN_OTP_MAX_REQUESTS = 5
 LOGIN_OTP_REQUEST_WINDOW_SECONDS = 15 * 60
 LOGIN_OTP_MAX_ATTEMPTS = 5
 
 
-def _login_otp_request_allowed(email: str) -> bool:
-    """At most LOGIN_OTP_MAX_REQUESTS login OTP emails per address in a rolling-ish 15 minute window."""
-    key = f"{LOGIN_OTP_REQUESTS_PREFIX}{email}"
+REGISTRATION_ATTEMPTS_PREFIX = "register_attempts_ip:"
+REGISTRATION_ATTEMPT_WINDOW_SECONDS = 60 * 60
+
+
+def _registration_client_ip(request) -> str | None:
+    """Client address for the sign-up limit, trusting X-Forwarded-For only as far as our own proxies.
+
+    settings.REGISTRATION_TRUSTED_PROXY_HOPS is the number of proxies in front of Django that append to
+    X-Forwarded-For. 0 ignores the header and uses REMOTE_ADDR. With N hops the address N places from the right
+    of [X-Forwarded-For entries..., REMOTE_ADDR] is used, so entries a client prepends are never trusted.
+    """
+    meta = getattr(request, "META", {}) or {}
+    remote = str(meta.get("REMOTE_ADDR") or "").strip()
+    hops = max(0, int(getattr(settings, "REGISTRATION_TRUSTED_PROXY_HOPS", 0) or 0))
+    if hops == 0:
+        return remote or None
+    chain = [part.strip() for part in str(meta.get("HTTP_X_FORWARDED_FOR") or "").split(",") if part.strip()]
+    if remote:
+        chain.append(remote)
+    index = len(chain) - 1 - hops
+    if index < 0:
+        return remote or None  # fewer entries than our proxies add: the header can't be relied on
+    return chain[index] or None
+
+
+def _registration_attempt_allowed(request) -> bool:
+    """At most settings.REGISTRATION_MAX_ATTEMPTS_PER_IP_PER_HOUR sign-up attempts per client IP (0 = no limit).
+
+    Counts attempts, not successes, so scripted sign-ups are slowed whether or not they validate."""
+    limit = int(getattr(settings, "REGISTRATION_MAX_ATTEMPTS_PER_IP_PER_HOUR", 0) or 0)
+    if limit <= 0:
+        return True
+    ip = _registration_client_ip(request)
+    if not ip:
+        return True
+    key = f"{REGISTRATION_ATTEMPTS_PREFIX}{ip}"
+    if cache.add(key, 1, timeout=REGISTRATION_ATTEMPT_WINDOW_SECONDS):
+        return True
+    try:
+        count = cache.incr(key)
+    except ValueError:
+        cache.set(key, 1, timeout=REGISTRATION_ATTEMPT_WINDOW_SECONDS)
+        return True
+    return count <= limit
+
+
+def _login_otp_request_allowed(email: str, prefix: str = LOGIN_OTP_REQUESTS_PREFIX) -> bool:
+    """At most LOGIN_OTP_MAX_REQUESTS OTP emails per address in a rolling-ish 15 minute window.
+
+    ``prefix`` keeps separate counters for login and forgot-password OTPs."""
+    key = f"{prefix}{email}"
     if cache.add(key, 1, timeout=LOGIN_OTP_REQUEST_WINDOW_SECONDS):
         return True
     try:
@@ -1794,9 +1843,21 @@ def request_forgot_password_otp(request):
         return _email_login_disabled_response()
     if _requires_channel_i_first_login(user):
         return Response({"error": CHANNEL_I_FIRST_LOGIN_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
+    if not _login_otp_request_allowed(email, prefix=FORGOT_OTP_REQUESTS_PREFIX):
+        return Response(
+            {
+                "error": "Too many OTP requests for this email. Please wait 15 minutes and try again.",
+                "code": "OTP_RATE_LIMITED",
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
     otp = "".join([str(secrets.randbelow(10)) for _ in range(6)])
     cache_key = f"{FORGOT_OTP_CACHE_PREFIX}{email}"
-    cache.set(cache_key, {"otp": otp, "user_id": user.id}, timeout=OTP_EXPIRY_SECONDS)
+    cache.set(
+        cache_key,
+        {"otp": otp, "user_id": user.id, "attempts": 0, "expires_at": time.time() + OTP_EXPIRY_SECONDS},
+        timeout=OTP_EXPIRY_SECONDS,
+    )
     try:
         subject = "Your IIT Roorkee password reset OTP"
         body_plain = f"Your one-time password (OTP) for resetting your password is: {otp}\n\nThis OTP expires in 10 minutes. Do not share it with anyone."
@@ -1856,7 +1917,22 @@ def verify_forgot_password_otp_and_set_password(request):
         )
     cache_key = f"{FORGOT_OTP_CACHE_PREFIX}{email}"
     data = cache.get(cache_key)
-    if not data or data.get("otp") != otp:
+    if data and not constant_time_compare(str(data.get("otp") or ""), otp):
+        attempts = int(data.get("attempts") or 0) + 1
+        if attempts >= LOGIN_OTP_MAX_ATTEMPTS:
+            cache.delete(cache_key)
+            return Response(
+                {
+                    "error": "Too many incorrect codes. Please request a new OTP.",
+                    "code": "OTP_ATTEMPTS_EXCEEDED",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        remaining = int(float(data.get("expires_at") or 0) - time.time()) if data.get("expires_at") else OTP_EXPIRY_SECONDS
+        if remaining > 0:
+            cache.set(cache_key, {**data, "attempts": attempts}, timeout=remaining)
+        data = None
+    if not data:
         return Response(
             {"error": "Invalid or expired OTP. Please request a new one."},
             status=status.HTTP_400_BAD_REQUEST,
@@ -2074,6 +2150,14 @@ def register(request):
         - user: User information
         - message: Success message
     """
+    if not _registration_attempt_allowed(request):
+        return Response(
+            {
+                "error": "Too many sign-up attempts from your network. Please wait an hour and try again.",
+                "code": "REGISTRATION_RATE_LIMITED",
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
     # Handle both JSON and multipart/form-data
     # Extract documents from request.FILES first (before serializer validation)
     # Files can be sent as 'documents[]' or 'documents' with multiple files

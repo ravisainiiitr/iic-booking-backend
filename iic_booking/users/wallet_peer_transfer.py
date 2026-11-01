@@ -54,6 +54,19 @@ def _as_money(value) -> Decimal:
     return amount
 
 
+def assert_category_pair_approved(sender, recipient) -> None:
+    """Refuse unless the Institute approved this (sender user type, recipient user type) combination.
+
+    Enforced at creation and again at confirmation, independently of the admin switch and the UI."""
+    from iic_booking.users.models.wallet_sric_settings import (
+        AWAITING_APPROVAL_MESSAGE,
+        peer_transfer_category_pair_approved,
+    )
+
+    if not peer_transfer_category_pair_approved(getattr(sender, "user_type", None), getattr(recipient, "user_type", None)):
+        raise PeerTransferError(AWAITING_APPROVAL_MESSAGE, "peer_transfer_category_not_approved")
+
+
 def assert_faculty_initiator(user) -> None:
     if getattr(user, "user_type", None) != UserType.FACULTY:
         raise PeerTransferError(
@@ -170,6 +183,7 @@ def create_pending_transfer(
     """Create PENDING_OTP transfer and generate OTP. Returns (transfer, otp)."""
     assert_faculty_initiator(sender)
     assert_eligible_recipient(sender, recipient)
+    assert_category_pair_approved(sender, recipient)
     amount_dec = _as_money(amount)
     grant = assert_same_grant(department, recipient)
 
@@ -276,6 +290,7 @@ def confirm_transfer_with_otp(*, transfer_id: int, sender, otp: str) -> WalletPe
     # Re-validate eligibility under lock
     assert_faculty_initiator(sender)
     assert_eligible_recipient(sender, locked.recipient)
+    assert_category_pair_approved(sender, locked.recipient)
     assert_same_grant(locked.department, locked.recipient)
 
     sender_wallet = sender.get_accessible_wallet()

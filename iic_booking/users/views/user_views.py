@@ -42,6 +42,22 @@ def _require_admin_user(request):
     return getattr(request.user, "user_type", None) == UserType.ADMIN
 
 
+# Fields a user may change on their own account through PATCH /api/users/<own id>/ (the Profile page).
+# Everything else (user type, approval, activation, department, employee ID, pricing eligibility, email
+# verification, ...) is server-controlled and changes only through Admin or dedicated workflows.
+SELF_EDITABLE_FIELDS = frozenset({
+    "name",
+    "gender",
+    "phone_number",
+    "secondary_phone_number",
+    "wallet_low_balance_alert_enabled",
+    "wallet_low_balance_alert_threshold",
+    "istem_portal_acknowledged",
+    "auto_slot_selection",
+    "user_guide_viewed",
+})
+
+
 class UserViewSet(RetrieveModelMixin, ListModelMixin, UpdateModelMixin, GenericViewSet):
     """ViewSet for User model."""
 
@@ -115,6 +131,27 @@ class UserViewSet(RetrieveModelMixin, ListModelMixin, UpdateModelMixin, GenericV
         user.save(update_fields=["admin_approved"])
         serializer = UserSerializer(user)
         return Response({"message": "User rejected successfully.", "user": serializer.data}, status=status.HTTP_200_OK)
+
+    def update(self, request, *args, **kwargs):
+        """Admin may edit any user. Everyone else may edit only their own account, and only SELF_EDITABLE_FIELDS."""
+        if not _require_admin_user(request):
+            instance = self.get_object()
+            if instance.pk != request.user.pk:
+                return Response(
+                    {"error": "Only Admin users can edit other users."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            refused = sorted(set(request.data.keys()) - SELF_EDITABLE_FIELDS)
+            if refused:
+                return Response(
+                    {
+                        "error": "These fields cannot be changed from your profile: " + ", ".join(refused) + ".",
+                        "fields": refused,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            kwargs["partial"] = True
+        return super().update(request, *args, **kwargs)
 
     def perform_update(self, serializer):
         """Save serializer data; only Admin may change other users' user_type/name via this path."""

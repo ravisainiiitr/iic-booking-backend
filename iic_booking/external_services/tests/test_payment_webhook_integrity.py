@@ -119,7 +119,7 @@ def test_matching_event_settles_an_internal_booking_shortfall(internal_booking):
 def test_mismatched_or_missing_amount_is_rejected_and_changes_nothing(internal_booking, override):
     order = _order(internal_booking.user, booking=internal_booking)
     r = _post(_event(order, **override))
-    assert r.status_code == 400 and "does not match the order" in r.json()["error"]
+    assert r.status_code == 200 and "does not match the order" in r.json()["ignored"]
     assert _unchanged(order, internal_booking)
 
 
@@ -127,7 +127,7 @@ def test_mismatched_or_missing_amount_is_rejected_and_changes_nothing(internal_b
 def test_mismatched_or_missing_currency_is_rejected(internal_booking, currency):
     order = _order(internal_booking.user, booking=internal_booking)
     r = _post(_event(order, currency=currency))
-    assert r.status_code == 400
+    assert r.status_code == 200 and r.json()["ignored"]
     assert _unchanged(order, internal_booking)
 
 
@@ -170,7 +170,8 @@ def test_unknown_order_is_rejected():
     r = _post({"event": "payment.captured", "payload": {"payment": {"entity": {
         "id": "pay_Tunknown1", "order_id": "order_Tdoesnotexist", "amount": 100, "currency": "INR",
         "status": "captured"}}}})
-    assert r.status_code == 400 and not Payment.objects.filter(razorpay_payment_id="pay_Tunknown1").exists()
+    assert r.status_code == 200 and r.json()["ignored"] == "unknown order"
+    assert not Payment.objects.filter(razorpay_payment_id="pay_Tunknown1").exists()
 
 
 def test_event_settles_only_its_own_order_whatever_its_notes_say(internal_booking, factory):
@@ -184,7 +185,7 @@ def test_event_settles_only_its_own_order_whatever_its_notes_say(internal_bookin
     assert internal_booking.status == BookingStatus.BOOKED and other.status == BookingStatus.PENDING_PAYMENT
 
 
-def test_checkout_verify_by_another_user_is_forbidden(internal_booking):
+def test_checkout_verify_by_another_user_is_forbidden(internal_booking, captured_by_razorpay):
     order = _order(internal_booking.user, booking=internal_booking)
     payment_id = "pay_Tcheckout1"
     signature = hmac.new(b"test-checkout-secret", f"{order.razorpay_order_id}|{payment_id}".encode(),
@@ -230,7 +231,8 @@ def test_late_callback_is_recorded_and_does_not_revive_the_booking(world):
 def test_late_callback_with_a_wrong_amount_is_rejected_before_anything_changes(world):
     a, _slot, booking, order = _special_order(world)
     _move_deadline(a, -timedelta(minutes=20))
-    assert _post(_event(order, amount=100)).status_code == 400
+    r = _post(_event(order, amount=100))
+    assert r.status_code == 200 and r.json()["ignored"]
     a.refresh_from_db()
     assert a.state == AllocationState.AWAITING_PAYMENT and a.late_payment_at is None
 
@@ -242,7 +244,7 @@ def test_wallet_recharge_event_still_credits_the_internal_wallet(factory):
     wallet, _ = Wallet.objects.get_or_create(user=faculty)
     order = _order(faculty, purpose="WALLET_RECHARGE", base="1000.00", total="1023.60", wallet=wallet,
                    department=factory.department)
-    assert _post(_event(order, amount=99999)).status_code == 400  # wrong amount: nothing credited
+    assert _post(_event(order, amount=99999)).json()["ignored"]  # wrong amount: answered 200, nothing credited
     assert not SubWallet.objects.filter(wallet=wallet, department=factory.department, balance__gt=0).exists()
     assert _post(_event(order)).status_code == 200
     sub = SubWallet.objects.get(wallet=wallet, department=factory.department)
@@ -250,3 +252,115 @@ def test_wallet_recharge_event_still_credits_the_internal_wallet(factory):
     assert _post(_event(order)).status_code == 200  # replay: no second credit
     sub.refresh_from_db()
     assert sub.balance == Decimal("1000.00")
+
+
+# --- checkout verification asks Razorpay before settling -------------------------------------------------------------
+
+class _FakeGateway:
+    def __init__(self, entity, capture_to=None):
+        self.entity = dict(entity)
+        self.capture_to = capture_to
+        self.captured = []
+
+    def fetch(self, payment_id):
+        return dict(self.entity, id=payment_id)
+
+    def capture(self, payment_id, amount, data=None):
+        self.captured.append((payment_id, amount))
+        return dict(self.entity, id=payment_id, status=self.capture_to or "captured")
+
+
+def _gateway(monkeypatch, entity, capture_to=None):
+    from types import SimpleNamespace
+
+    from iic_booking.payments import razorpay_service
+
+    fake = _FakeGateway(entity, capture_to)
+    monkeypatch.setattr(razorpay_service, "get_razorpay_client", lambda: SimpleNamespace(payment=fake))
+    return fake
+
+
+@pytest.fixture
+def captured_by_razorpay(monkeypatch):
+    """Razorpay reports every fetched payment as captured for its order's amount."""
+    from iic_booking.payments import razorpay_service
+
+    def confirm(order, payment_id):
+        return {"id": payment_id, "order_id": order.razorpay_order_id, "status": "captured", "method": "upi",
+                "amount": int(order.total_amount * 100), "currency": order.currency}
+
+    monkeypatch.setattr(razorpay_service, "confirm_gateway_payment", confirm)
+    monkeypatch.setattr("iic_booking.payments.views.confirm_gateway_payment", confirm)
+
+
+def _verify(order, payment_id="pay_Tverify01"):
+    signature = hmac.new(b"test-checkout-secret", f"{order.razorpay_order_id}|{payment_id}".encode(),
+                         hashlib.sha256).hexdigest()
+    return client_for(order.user).post("/api/payments/razorpay/verify/", {
+        "razorpay_order_id": order.razorpay_order_id, "razorpay_payment_id": payment_id,
+        "razorpay_signature": signature}, format="json")
+
+
+@pytest.mark.parametrize("override", [
+    {"status": "failed"}, {"status": "created"}, {"amount": 100}, {"currency": "USD"}, {"order_id": "order_Tother"},
+])
+def test_a_valid_signature_is_not_enough_razorpay_must_confirm_the_capture(internal_booking, monkeypatch, override):
+    order = _order(internal_booking.user, booking=internal_booking)
+    entity = {"order_id": order.razorpay_order_id, "amount": int(order.total_amount * 100), "currency": "INR",
+              "status": "captured", "method": "card"}
+    _gateway(monkeypatch, {**entity, **override})
+    r = _verify(order)
+    assert r.status_code == 409 and r.json()["code"] == "payment_not_confirmed"
+    assert _unchanged(order, internal_booking)
+
+
+def test_an_authorised_payment_is_captured_for_the_order_amount_then_settled(internal_booking, monkeypatch):
+    order = _order(internal_booking.user, booking=internal_booking)
+    fake = _gateway(monkeypatch, {"order_id": order.razorpay_order_id, "amount": 59000, "currency": "INR",
+                                  "status": "authorized", "method": "card"})
+    r = _verify(order)
+    assert r.status_code == 200, r.content
+    assert fake.captured == [("pay_Tverify01", 59000)]
+    order.refresh_from_db()
+    assert order.status == "PAID" and Payment.objects.get(payment_order=order).method == "card"
+
+
+def test_razorpay_unreachable_leaves_the_order_for_the_webhook(internal_booking, monkeypatch):
+    from types import SimpleNamespace
+
+    from iic_booking.payments import razorpay_service
+
+    def boom(payment_id):
+        raise ConnectionError("down")
+
+    order = _order(internal_booking.user, booking=internal_booking)
+    monkeypatch.setattr(razorpay_service, "get_razorpay_client",
+                        lambda: SimpleNamespace(payment=SimpleNamespace(fetch=boom)))
+    assert _verify(order).status_code == 409
+    assert _unchanged(order, internal_booking)
+    assert _post(_event(order, payment_id="pay_Tverify01")).status_code == 200  # the captured webhook settles it
+    order.refresh_from_db()
+    assert order.status == "PAID"
+
+
+def test_authorised_webhook_captures_before_settling(internal_booking, monkeypatch):
+    order = _order(internal_booking.user, booking=internal_booking)
+    fake = _gateway(monkeypatch, {"order_id": order.razorpay_order_id, "amount": 59000, "currency": "INR",
+                                  "status": "authorized", "method": "upi"})
+    event = _event(order, payment_id="pay_Tauth0001", status="authorized")
+    event["event"] = "payment.authorized"
+    assert _post(event).status_code == 200
+    assert fake.captured == [("pay_Tauth0001", 59000)]
+    order.refresh_from_db()
+    assert order.status == "PAID"
+
+
+def test_authorised_webhook_that_cannot_be_captured_settles_nothing(internal_booking, monkeypatch):
+    order = _order(internal_booking.user, booking=internal_booking)
+    _gateway(monkeypatch, {"order_id": order.razorpay_order_id, "amount": 59000, "currency": "INR",
+                           "status": "authorized"}, capture_to="failed")
+    event = _event(order, payment_id="pay_Tauth0002", status="authorized")
+    event["event"] = "payment.authorized"
+    r = _post(event)
+    assert r.status_code == 200 and r.json()["ignored"]
+    assert _unchanged(order, internal_booking)

@@ -44,4 +44,6 @@ STORAGES = {
 }
 # Your stuff...
 # ------------------------------------------------------------------------------
-
+# The sign-up limit shares the in-process cache across the whole test run; tests that exercise it enable it
+# explicitly with the ``settings`` fixture.
+REGISTRATION_MAX_ATTEMPTS_PER_IP_PER_HOUR = 0

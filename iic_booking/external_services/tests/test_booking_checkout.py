@@ -335,7 +335,7 @@ def test_gateway_amount_is_checked_against_the_online_part_not_the_total(world):
     checkout, order = _open(user, world, "wallet_plus_gateway")
     full_total_paise = int(checkout.total_amount * 100)
     r = _post(_event(order, amount=full_total_paise))
-    assert r.status_code == 400
+    assert r.status_code == 200 and r.json()["ignored"]  # signed but wrong amount: answered 200, nothing applied
     checkout.refresh_from_db()
     assert checkout.state == CheckoutState.AWAITING_PAYMENT and not Payment.objects.filter(payment_order=order).exists()
     assert _balance(user, world) == Decimal("50.00")

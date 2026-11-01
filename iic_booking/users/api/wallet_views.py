@@ -5,7 +5,6 @@ import hmac
 import re
 from decimal import Decimal
 
-import razorpay
 from django.conf import settings
 from django.core import signing
 from django.db import IntegrityError
@@ -57,7 +56,6 @@ from ..serializers.wallet_serializer import (
     WalletJoinRequestSerializer,
     WalletJoinRequestCreateSerializer,
     WalletJoinRequestResponseSerializer,
-    WalletCreditSerializer,
     WalletRechargeRequestSerializer,
     WalletRechargeRequestCreateSerializer,
     WalletRechargeRequestVerifyUserOtpSerializer,
@@ -1578,113 +1576,48 @@ def resend_wallet_join_request_notification(request, request_id):
 # Razorpay Payment API Views
 # ============================================================================
 
+LEGACY_RAZORPAY_RECHARGE_GONE_MESSAGE = (
+    "This recharge endpoint has been retired. Use POST /api/payments/razorpay/create-order/ "
+    "with purpose WALLET_RECHARGE."
+)
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_razorpay_order(request):
-    """Create a Razorpay order for sub-wallet recharge.
-    Request Body: amount (required), department_id (required, internal department).
+    """Retired legacy recharge order endpoint (the portal uses /api/payments/razorpay/create-order/).
+
+    Never creates an order: answers like the trusted endpoint when online recharge is switched off, otherwise
+    410 Gone. verify_razorpay_payment below still settles legacy orders that were paid before retirement.
     """
     if not online_gateway_recharge_enabled(department=request.data.get("department_id")):
         return online_gateway_recharge_disabled_response()
-    serializer = WalletCreditSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
-    amount = serializer.validated_data['amount']
-    department_id = request.data.get('department_id')
-    if not department_id:
-        return Response(
-            {"error": "department_id is required. Recharge credits a department sub-wallet."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    wallet = request.user.get_accessible_wallet()
-    if not wallet:
-        if request.user.can_have_wallet():
-            wallet, _ = WalletRepository.get_or_create(request.user)
-        if not wallet:
-            return Response(
-                {"error": "You don't have access to any wallet."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-    department = resolve_internal_department_for_wallet_recharge(wallet, int(department_id))
-    if not department:
-        return Response(
-            {"error": "Invalid department. Choose a department from the recharge list or one that already has a sub-wallet."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    from iic_booking.users.student_wallet_recharge import assert_iitr_student_may_recharge
-
-    forbidden = assert_iitr_student_may_recharge(request.user, department=department)
-    if forbidden:
-        return Response({"error": forbidden}, status=status.HTTP_403_FORBIDDEN)
-    razorpay_key_id = getattr(settings, 'RAZORPAY_KEY_ID', None)
-    razorpay_key_secret = getattr(settings, 'RAZORPAY_KEY_SECRET', None)
-    if not razorpay_key_id or not razorpay_key_secret:
-        return Response(
-            {"error": "Razorpay credentials are not configured. Please contact administrator."},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
-    client = razorpay.Client(auth=(razorpay_key_id, razorpay_key_secret))
-    amount_in_paise = int(float(amount) * 100)
-    try:
-        order_data = {
-            'amount': amount_in_paise,
-            'currency': 'INR',
-            'receipt': f'subwallet_recharge_{request.user.id}_{wallet.id}_{department.id}',
-            'notes': {
-                'user_id': str(request.user.id),
-                'wallet_id': str(wallet.id),
-                'department_id': str(department.id),
-            }
-        }
-        razorpay_order = client.order.create(data=order_data)
-        WalletRazorpayOrder.objects.create(
-            wallet=wallet,
-            department=department,
-            amount_paise=amount_in_paise,
-            order_id=razorpay_order['id'],
-        )
-        return Response({
-            'order_id': razorpay_order['id'],
-            'amount': razorpay_order['amount'],
-            'currency': razorpay_order['currency'],
-            'key': razorpay_key_id,
-            'wallet_id': wallet.id,
-            'department_id': department.id,
-        }, status=status.HTTP_201_CREATED)
-    except Exception as e:
-        return Response(
-            {"error": f"Failed to create payment order: {str(e)}"},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
+    return Response({"error": LEGACY_RAZORPAY_RECHARGE_GONE_MESSAGE}, status=status.HTTP_410_GONE)
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def verify_razorpay_payment(request):
-    """Verify Razorpay payment and credit wallet.
-    
-    Request Body:
-        - razorpay_order_id: Razorpay order ID
-        - razorpay_payment_id: Razorpay payment ID
-        - razorpay_signature: Razorpay payment signature
-        - amount: Amount that was paid (for verification)
-    
-    Returns:
-        - wallet: Updated wallet information
-        - transaction: Created transaction
-        - message: Success message
+    """Settle a legacy sub-wallet recharge order created before the endpoint was retired.
+
+    Request Body: razorpay_order_id, razorpay_payment_id, razorpay_signature; ``amount`` (paise) is optional and,
+    when sent, must equal the order amount. The credit is always the amount stored on the order when it was
+    created, never a client-supplied value. The order row is locked and deleted in the same transaction, so a
+    payment is credited at most once even under concurrent requests.
     """
+    from django.db import transaction as db_transaction
+
     razorpay_order_id = request.data.get('razorpay_order_id')
     razorpay_payment_id = request.data.get('razorpay_payment_id')
     razorpay_signature = request.data.get('razorpay_signature')
-    amount = request.data.get('amount')
-    
-    if not all([razorpay_order_id, razorpay_payment_id, razorpay_signature, amount]):
+    client_amount = request.data.get('amount')
+
+    if not all([razorpay_order_id, razorpay_payment_id, razorpay_signature]):
         return Response(
             {"error": "Missing required payment verification parameters."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    
-    # Get user's accessible wallet
+
     wallet = request.user.get_accessible_wallet()
     if not wallet:
         if request.user.can_have_wallet():
@@ -1694,71 +1627,68 @@ def verify_razorpay_payment(request):
                 {"error": "You don't have access to any wallet."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-    
-    # Verify payment signature
+
     razorpay_key_secret = getattr(settings, 'RAZORPAY_KEY_SECRET', None)
     if not razorpay_key_secret:
         return Response(
             {"error": "Razorpay credentials are not configured."},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-    
-    # Verify signature
     message = f"{razorpay_order_id}|{razorpay_payment_id}"
     generated_signature = hmac.new(
         razorpay_key_secret.encode('utf-8'),
         message.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
-    
-    if generated_signature != razorpay_signature:
+    if not hmac.compare_digest(generated_signature, str(razorpay_signature)):
         return Response(
             {"error": "Invalid payment signature. Payment verification failed."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    
-    # Convert amount from paise to rupees
-    try:
-        amount_in_rupees = Decimal(str(float(amount) / 100))
-    except (ValueError, TypeError):
-        return Response(
-            {"error": "Invalid amount format."},
-            status=status.HTTP_400_BAD_REQUEST,
+
+    with db_transaction.atomic():
+        razorpay_order_record = (
+            WalletRazorpayOrder.objects.select_for_update()
+            .select_related("department")
+            .filter(order_id=razorpay_order_id)
+            .first()
         )
-    
-    # Look up which sub-wallet to credit
-    try:
-        razorpay_order_record = WalletRazorpayOrder.objects.get(order_id=razorpay_order_id)
-    except WalletRazorpayOrder.DoesNotExist:
-        return Response(
-            {"error": "Invalid or expired order. Please create a new recharge."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    if razorpay_order_record.wallet_id != wallet.id:
-        return Response(
-            {"error": "Order does not belong to your wallet."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    department = razorpay_order_record.department
-    sub_wallet = SubWalletRepository.get_or_create(wallet, department)
-    try:
+        if razorpay_order_record is None:
+            return Response(
+                {"error": "Invalid or already settled order. Please create a new recharge."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if razorpay_order_record.wallet_id != wallet.id:
+            return Response(
+                {"error": "Order does not belong to your wallet."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if client_amount not in (None, ""):
+            try:
+                matches = Decimal(str(client_amount)) == Decimal(int(razorpay_order_record.amount_paise))
+            except (ArithmeticError, ValueError, TypeError):
+                matches = False
+            if not matches:
+                return Response(
+                    {"error": "Amount does not match the recharge order."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        if int(razorpay_order_record.amount_paise or 0) <= 0:
+            return Response({"error": "Invalid recharge order amount."}, status=status.HTTP_400_BAD_REQUEST)
+        amount_in_rupees = (Decimal(int(razorpay_order_record.amount_paise)) / Decimal(100)).quantize(Decimal("0.01"))
+        department = razorpay_order_record.department
+        sub_wallet = SubWalletRepository.get_or_create(wallet, department)
         description = f"Recharge via Razorpay - Order: {razorpay_order_id}, Payment: {razorpay_payment_id}"
-        transaction = sub_wallet.credit(amount_in_rupees, description, related_user=wallet.user)
+        try:
+            credit_txn = sub_wallet.credit(amount_in_rupees, description, related_user=wallet.user)
+        except ValueError as e:
+            db_transaction.set_rollback(True)  # never keep a partial credit when refusing
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         razorpay_order_record.delete()
-    except ValueError as e:
-        return Response(
-            {"error": str(e)},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    except Exception as e:
-        return Response(
-            {"error": f"Failed to credit sub-wallet: {str(e)}"},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
     sub_wallet.refresh_from_db()
     return Response({
         'wallet': {"balance": str(wallet.total_balance), "transactions": []},
-        'transaction': SubWalletTransactionSerializer(transaction).data,
+        'transaction': SubWalletTransactionSerializer(credit_txn).data,
         'message': f'Successfully recharged {department.name} sub-wallet with ₹{amount_in_rupees:.2f}',
     }, status=status.HTTP_200_OK)
 
