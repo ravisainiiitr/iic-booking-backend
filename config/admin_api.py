@@ -283,8 +283,18 @@ def admin_api_router():
     )
     from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 
-    from iic_booking.cms.models import MenuItem, HomePageContent, HeroSlide, CmsPage, SiteDocument
+    from iic_booking.cms.models import (
+        CmsPage,
+        HallOfFrameEntry,
+        HeroSlide,
+        HomePageContent,
+        MenuItem,
+        ResearcherOfTheMonth,
+        SiteDocument,
+    )
     from iic_booking.cms.serializers import (
+        HallOfFrameEntryAdminSerializer,
+        ResearcherOfTheMonthAdminSerializer,
         MenuItemSerializer,
         MenuItemListSerializer,
         HomePageContentSerializer,
@@ -4586,6 +4596,68 @@ def admin_api_router():
         serializer_class = HeroSlideSerializer
         parser_classes = [JSONParser, FormParser, MultiPartParser]
 
+    class _RecognitionViewSet(ModelViewSet):
+        """Hall of Frames / Researcher of the Month. Admin Panel users draft and edit; only the Main Administrator
+        approves (``is_approved``), and an edited entry goes back to unapproved unless a Main Administrator saves it."""
+
+        permission_classes = [IsAdminPanelUser]
+        parser_classes = [JSONParser, FormParser, MultiPartParser]
+
+        def _approval(self, serializer, instance=None):
+            from django.utils import timezone
+
+            from iic_booking.department_modules.access import is_main_admin
+
+            wants = serializer.validated_data.get("is_approved")
+            if is_main_admin(self.request.user):
+                if wants and not (instance and instance.is_approved):
+                    return {"is_approved": True, "approved_by": self.request.user, "approved_at": timezone.now()}
+                if wants is False:
+                    return {"is_approved": False, "approved_by": None, "approved_at": None}
+                return {}
+            if wants:
+                from rest_framework.exceptions import PermissionDenied
+
+                raise PermissionDenied("Only the Main Administrator can approve entries for the home page.")
+            return {"is_approved": False, "approved_by": None, "approved_at": None}
+
+        def perform_create(self, serializer):
+            serializer.save(**self._extra_create(), **self._approval(serializer))
+
+        def perform_update(self, serializer):
+            serializer.save(**self._approval(serializer, serializer.instance))
+
+        def _extra_create(self):
+            return {}
+
+    class HallOfFrameEntryViewSet(_RecognitionViewSet):
+        serializer_class = HallOfFrameEntryAdminSerializer
+
+        def get_queryset(self):
+            return HallOfFrameEntry.objects.select_related("equipment", "approved_by").order_by("order", "-year", "id")
+
+    class ResearcherOfTheMonthViewSet(_RecognitionViewSet):
+        """Department Administrators manage their own department's Researcher of the Month only."""
+
+        serializer_class = ResearcherOfTheMonthAdminSerializer
+
+        def _own_department_only(self):
+            from iic_booking.department_modules.access import is_main_admin
+
+            user = self.request.user
+            return None if is_main_admin(user) else getattr(user, "department_id", None) or -1
+
+        def get_queryset(self):
+            qs = ResearcherOfTheMonth.objects.select_related("equipment", "department", "approved_by")
+            dept = self._own_department_only()
+            return qs if dept is None else qs.filter(department_id=dept)
+
+        def get_serializer_context(self):
+            return {**super().get_serializer_context(), "own_department_only": self._own_department_only()}
+
+        def _extra_create(self):
+            return {"created_by": self.request.user}
+
     class SiteDocumentViewSet(ModelViewSet):
         """Admin CRUD for named public site documents (Analysis Charges PDF, etc.)."""
 
@@ -4896,6 +4968,9 @@ def admin_api_router():
     router.register(r"cms-pages", CmsPageViewSet, basename="admin-cms-pages")
     router.register(r"cms-home", HomePageContentViewSet, basename="admin-cms-home")
     router.register(r"cms-hero-slides", HeroSlideViewSet, basename="admin-cms-hero-slides")
+    router.register(r"cms-hall-of-frames", HallOfFrameEntryViewSet, basename="admin-cms-hall-of-frames")
+    router.register(r"cms-researchers-of-the-month", ResearcherOfTheMonthViewSet,
+                    basename="admin-cms-researchers-of-the-month")
     router.register(r"cms-site-documents", SiteDocumentViewSet, basename="admin-cms-site-documents")
     router.register(r"communication-templates", CommunicationTemplateViewSet, basename="admin-communication-template")
     router.register(r"communication-logs", CommunicationLogViewSet, basename="admin-communication-log")

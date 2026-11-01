@@ -589,7 +589,7 @@ from iic_booking.support.portal_feedback_views import (
     portal_feedback_admin_list,
 )
 from iic_booking.support.notification_settings_views import support_notification_settings
-from iic_booking.cms.views import menu_list, home_page_content, hero_slides, page_by_slug, policy_pages, site_stats, analysis_charges_document, public_publications
+from iic_booking.cms.views import menu_list, home_page_content, hero_slides, page_by_slug, policy_pages, site_stats, analysis_charges_document, public_publications, hall_of_frames, researcher_of_the_month
 from iic_booking.istem.api_views import (
     istem_link_find_account,
     istem_link_send_otp,
@@ -2000,6 +2000,8 @@ urlpatterns = router.urls + [
     path("cms/hero-slides/", hero_slides, name="cms-hero-slides"),
     path("cms/documents/analysis-charges/", analysis_charges_document, name="cms-analysis-charges"),
     path("cms/policy-pages/", policy_pages, name="cms-policy-pages"),
+    path("cms/hall-of-frames/", hall_of_frames, name="cms-hall-of-frames"),
+    path("cms/researcher-of-the-month/", researcher_of_the_month, name="cms-researcher-of-the-month"),
     path("cms/pages/<slug:slug>/", page_by_slug, name="cms-page-by-slug"),
 
     # Admin-only CRUD API for frontend admin dashboard (no Django Admin login required)

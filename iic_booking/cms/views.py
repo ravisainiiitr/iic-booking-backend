@@ -158,3 +158,36 @@ def policy_pages(request):
 
     published = {p.slug: p.title for p in CmsPage.objects.filter(slug__in=POLICY_SLUGS, is_published=True)}
     return Response({"pages": [{"slug": s, "title": published[s]} for s in POLICY_SLUGS if s in published]})
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def hall_of_frames(request):
+    """Approved Hall of Frames entries for the home page carousel, in their set order."""
+    from .models import HallOfFrameEntry
+    from .serializers import RecognitionPublicSerializer
+
+    rows = HallOfFrameEntry.objects.filter(is_approved=True).select_related("equipment")[:50]
+    return Response({"results": RecognitionPublicSerializer(rows, many=True, context={"request": request}).data})
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def researcher_of_the_month(request):
+    """This month's approved Researchers of the Month (one per department, plus an institute-wide one). A new month
+    replaces the previous one automatically. ``?department=<id>`` narrows to one department; ``?history=1`` lists the
+    earlier months instead."""
+    from django.utils import timezone
+
+    from .models import ResearcherOfTheMonth
+    from .serializers import ResearcherOfTheMonthPublicSerializer
+
+    this_month = timezone.localdate().replace(day=1)
+    qs = ResearcherOfTheMonth.objects.filter(is_approved=True).select_related("equipment", "department")
+    dept = request.query_params.get("department")
+    if dept and str(dept).isdigit():
+        qs = qs.filter(department_id=int(dept))
+    history = str(request.query_params.get("history", "")).lower() in ("1", "true", "yes")
+    qs = qs.filter(month__lt=this_month)[:36] if history else qs.filter(month=this_month)
+    data = ResearcherOfTheMonthPublicSerializer(qs, many=True, context={"request": request}).data
+    return Response({"month": this_month.isoformat(), "history": history, "results": data})
