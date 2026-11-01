@@ -532,19 +532,9 @@ def slots_needed(equipment, minutes: int) -> int:
 
 
 def _slot_in_time_window(equipment, slot) -> bool:
-    time_from = getattr(equipment, "weekly_view_time_from", None)
-    time_to = getattr(equipment, "weekly_view_time_to", None)
-    if time_from is None and time_to is None:
-        return True
-    if not slot.start_datetime or not slot.end_datetime:
-        return False
-    st = timezone.localtime(slot.start_datetime).time() if timezone.is_aware(slot.start_datetime) else slot.start_datetime.time()
-    et = timezone.localtime(slot.end_datetime).time() if timezone.is_aware(slot.end_datetime) else slot.end_datetime.time()
-    if time_from is not None and st < time_from:
-        return False
-    if time_to is not None and et > time_to:
-        return False
-    return True
+    from .slot_window import slot_in_window
+
+    return slot_in_window(equipment, slot)
 
 
 def slot_passes_booking_rules(equipment, slot, *, booking_user, actor, user_type: str, is_admin: bool,

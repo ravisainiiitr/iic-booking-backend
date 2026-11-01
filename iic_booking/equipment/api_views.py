@@ -3832,17 +3832,9 @@ def equipment_daily_slots(request, pk):
     should_time_filter = (force_time_filter or (not is_admin)) and (not for_external_user) and has_view_window
 
     def slot_within_window(slot):
-        from django.utils import timezone as tz
-        if not slot.start_datetime or not slot.end_datetime:
-            return False
-        start_local = tz.localtime(slot.start_datetime) if tz.is_aware(slot.start_datetime) else slot.start_datetime
-        end_local = tz.localtime(slot.end_datetime) if tz.is_aware(slot.end_datetime) else slot.end_datetime
-        st, et = start_local.time(), end_local.time()
-        if time_from is not None and st < time_from:
-            return False
-        if time_to is not None and et > time_to:
-            return False
-        return True
+        from .slot_window import slot_in_window
+
+        return slot_in_window(equipment, slot)
 
     if should_time_filter:
         filtered_slots = [s for s in filtered_slots if slot_within_window(s)]
@@ -4723,19 +4715,9 @@ def _book_equipment_impl(request, pk):
             time_from = getattr(equipment, 'weekly_view_time_from', None)
             time_to = getattr(equipment, 'weekly_view_time_to', None)
             if time_from is not None or time_to is not None:
-                from django.utils import timezone as tz
-                out_of_window = []
-                for s in daily_slots:
-                    if not s.start_datetime or not s.end_datetime:
-                        out_of_window.append(s.id)
-                        continue
-                    start_local = tz.localtime(s.start_datetime) if tz.is_aware(s.start_datetime) else s.start_datetime
-                    end_local = tz.localtime(s.end_datetime) if tz.is_aware(s.end_datetime) else s.end_datetime
-                    st, et = start_local.time(), end_local.time()
-                    if time_from is not None and st < time_from:
-                        out_of_window.append(s.id)
-                    elif time_to is not None and et > time_to:
-                        out_of_window.append(s.id)
+                from .slot_window import slot_in_window
+
+                out_of_window = [s.id for s in daily_slots if not slot_in_window(equipment, s)]
                 if out_of_window:
                     _create_booking_attempt_log(
                         request, equipment, BookingAttemptOutcome.FAILED,
@@ -5113,13 +5095,9 @@ def _book_equipment_impl(request, pk):
                         total_minutes_alt = 0
                         for slot in alt_qs:
                             if (time_from is not None or time_to is not None) and slot.start_datetime and slot.end_datetime:
-                                from django.utils import timezone as tz
-                                start_local = tz.localtime(slot.start_datetime) if tz.is_aware(slot.start_datetime) else slot.start_datetime
-                                end_local = tz.localtime(slot.end_datetime) if tz.is_aware(slot.end_datetime) else slot.end_datetime
-                                st, et = start_local.time(), end_local.time()
-                                if time_from is not None and st < time_from:
-                                    continue
-                                if time_to is not None and et > time_to:
+                                from .slot_window import slot_in_window
+
+                                if not slot_in_window(equipment, slot):
                                     continue
                             delta = (slot.end_datetime - slot.start_datetime) if slot.start_datetime and slot.end_datetime else None
                             if not delta:
@@ -5193,13 +5171,9 @@ def _book_equipment_impl(request, pk):
                                     one_slot = None
                                     for slot in one_slot_qs:
                                         if (time_from_inner is not None or time_to_inner is not None) and slot.start_datetime and slot.end_datetime:
-                                            from django.utils import timezone as tz
-                                            start_local = tz.localtime(slot.start_datetime) if tz.is_aware(slot.start_datetime) else slot.start_datetime
-                                            end_local = tz.localtime(slot.end_datetime) if tz.is_aware(slot.end_datetime) else slot.end_datetime
-                                            st, et = start_local.time(), end_local.time()
-                                            if time_from_inner is not None and st < time_from_inner:
-                                                continue
-                                            if time_to_inner is not None and et > time_to_inner:
+                                            from .slot_window import slot_in_window
+
+                                            if not slot_in_window(equipment, slot):
                                                 continue
                                         one_slot = slot
                                         break
@@ -9362,14 +9336,9 @@ def create_urgent_booking_request(request):
         else:
             has_available_this_week = False
             for slot in available_this_week_qs.only("id", "start_datetime", "end_datetime"):
-                if not slot.start_datetime or not slot.end_datetime:
-                    continue
-                start_local = tz.localtime(slot.start_datetime) if tz.is_aware(slot.start_datetime) else slot.start_datetime
-                end_local = tz.localtime(slot.end_datetime) if tz.is_aware(slot.end_datetime) else slot.end_datetime
-                st, et = start_local.time(), end_local.time()
-                if time_from is not None and st < time_from:
-                    continue
-                if time_to is not None and et > time_to:
+                from .slot_window import slot_in_window
+
+                if not slot_in_window(equip, slot):
                     continue
                 has_available_this_week = True
                 break
@@ -11529,13 +11498,9 @@ def _find_one_available_slot_in_window(
     time_to = getattr(equipment, "weekly_view_time_to", None)
     for slot in candidates:
         if (time_from is not None or time_to is not None) and slot.start_datetime and slot.end_datetime:
-            from django.utils import timezone as tz
-            start_local = tz.localtime(slot.start_datetime) if tz.is_aware(slot.start_datetime) else slot.start_datetime
-            end_local = tz.localtime(slot.end_datetime) if tz.is_aware(slot.end_datetime) else slot.end_datetime
-            st, et = start_local.time(), end_local.time()
-            if time_from is not None and st < time_from:
-                continue
-            if time_to is not None and et > time_to:
+            from .slot_window import slot_in_window
+
+            if not slot_in_window(equipment, slot):
                 continue
         return (slot.id, slot)
     return None
@@ -11574,15 +11539,9 @@ def _find_alternative_available_slots(
     total_minutes = 0
     for slot in qs:
         if time_from is not None or time_to is not None:
-            if not slot.start_datetime or not slot.end_datetime:
-                continue
-            from django.utils import timezone as tz
-            start_local = tz.localtime(slot.start_datetime) if tz.is_aware(slot.start_datetime) else slot.start_datetime
-            end_local = tz.localtime(slot.end_datetime) if tz.is_aware(slot.end_datetime) else slot.end_datetime
-            st, et = start_local.time(), end_local.time()
-            if time_from is not None and st < time_from:
-                continue
-            if time_to is not None and et > time_to:
+            from .slot_window import slot_in_window
+
+            if not slot_in_window(equipment, slot):
                 continue
         delta = (slot.end_datetime - slot.start_datetime) if slot.start_datetime and slot.end_datetime else None
         if not delta:

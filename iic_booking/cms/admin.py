@@ -2,7 +2,7 @@
 
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import MenuItem, HomePageContent, HeroSlide, CmsPage, SiteDocument
+from .models import CmsPage, HallOfFrameEntry, HeroSlide, HomePageContent, MenuItem, ResearcherOfTheMonth, SiteDocument
 
 
 @admin.register(MenuItem)
@@ -84,3 +84,22 @@ class SiteDocumentAdmin(admin.ModelAdmin):
         return "—"
 
     document_link.short_description = "Document"
+
+
+@admin.register(HallOfFrameEntry)
+class HallOfFrameEntryAdmin(admin.ModelAdmin):
+    list_display = ["order", "researcher_name", "affiliation", "year", "is_approved", "updated_at"]
+    list_filter = ["is_approved", "year"]
+    search_fields = ["researcher_name", "affiliation", "publication_title", "journal"]
+    raw_id_fields = ["equipment", "publication", "approved_by"]
+    readonly_fields = ["approved_by", "approved_at", "created_at", "updated_at"]
+
+
+@admin.register(ResearcherOfTheMonth)
+class ResearcherOfTheMonthAdmin(admin.ModelAdmin):
+    list_display = ["month", "department", "researcher_name", "is_approved", "updated_at"]
+    list_filter = ["is_approved", "department"]
+    search_fields = ["researcher_name", "affiliation", "publication_title"]
+    raw_id_fields = ["equipment", "department", "approved_by", "created_by"]
+    readonly_fields = ["approved_by", "approved_at", "created_by", "created_at", "updated_at"]
+    date_hierarchy = "month"

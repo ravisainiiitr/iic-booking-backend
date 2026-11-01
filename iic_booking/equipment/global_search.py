@@ -38,11 +38,13 @@ def _searchable_equipment_ids(user) -> set[int]:
 
 def _search_equipment(user, q: str) -> tuple[list[dict[str, Any]], str]:
     """Ranked equipment hits (each with ``match`` kind and hint) and a "did you mean" query or ``""``."""
+    from .contacts import contacts_for_equipment
     from .models import Equipment
     from .search_index import rank
 
     ranked, suggestion = rank(q, _searchable_equipment_ids(user), EQUIPMENT_LIMIT)
     rows = Equipment.objects.select_related("category", "internal_department").in_bulk([r["id"] for r in ranked])
+    contacts = contacts_for_equipment(rows.values(), with_phone=bool(getattr(user, "is_authenticated", False)))
     out = []
     for r in ranked:
         e = rows.get(r["id"])
@@ -58,6 +60,7 @@ def _search_equipment(user, q: str) -> tuple[list[dict[str, Any]], str]:
                 "status": e.status or "",
                 "match": r["kind"],
                 "hint": r["hint"],
+                "contacts": contacts.get(e.equipment_id),
             }
         )
     from .mode_utils import attach_mode_inactive
@@ -104,8 +107,12 @@ def _search_bookings(user, q: str, *, staff_view: bool) -> list[dict[str, Any]]:
         .annotate(**_slot_annotations())
         .order_by("-created_at", "-pk")
     )
+    from .contacts import contacts_for_equipment
+
+    hits = list(qs[:BOOKING_LIMIT])
+    contacts = contacts_for_equipment({b.equipment_id: b.equipment for b in hits}.values(), with_phone=True)
     rows = []
-    for b in qs[:BOOKING_LIMIT]:
+    for b in hits:
         rows.append(
             {
                 "id": b.booking_id,
@@ -118,6 +125,7 @@ def _search_bookings(user, q: str, *, staff_view: bool) -> list[dict[str, Any]]:
                 "slot_start": b.slot_start.isoformat() if b.slot_start else None,
                 "created_at": b.created_at.isoformat() if b.created_at else None,
                 "own": b.user_id == user.pk,
+                "contacts": contacts.get(b.equipment_id),
             }
         )
     return rows

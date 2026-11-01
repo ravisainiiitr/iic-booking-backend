@@ -196,3 +196,84 @@ class SiteDocument(models.Model):
 
     def __str__(self):
         return self.title or self.get_key_display()
+
+
+class _ResearchRecognition(models.Model):
+    """Fields shared by Hall of Frames entries and Researchers of the Month: who, what was published, and which IIC
+    facility the publication acknowledges. Nothing appears on the home page until a Main Administrator approves it."""
+
+    researcher_name = models.CharField(_("Researcher name"), max_length=200)
+    photo = models.ImageField(
+        _("Photo"), upload_to="cms/researchers/%Y/%m/", blank=True,
+        help_text=_("Portrait, resized to at most 640 px on upload."),
+    )
+    affiliation = models.CharField(_("Department / institution"), max_length=255, blank=True)
+    publication_title = models.CharField(_("Publication title"), max_length=500, blank=True)
+    research_summary = models.TextField(_("Brief research description"), blank=True)
+    journal = models.CharField(_("Journal / conference"), max_length=300, blank=True)
+    year = models.PositiveSmallIntegerField(_("Publication year"), null=True, blank=True)
+    publication_url = models.URLField(_("Publication link (DOI or URL)"), max_length=500, blank=True)
+    equipment = models.ForeignKey(
+        "equipment.Equipment", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+        verbose_name=_("Acknowledged equipment"),
+    )
+    facility = models.CharField(
+        _("Acknowledged facility"), max_length=300, blank=True,
+        help_text=_("Shown when no equipment is chosen, or in addition to it (e.g. 'IIC FE-SEM facility')."),
+    )
+    is_approved = models.BooleanField(_("Approved"), default=False)
+    approved_by = models.ForeignKey(
+        "users.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        abstract = True
+
+    def __str__(self):
+        return self.researcher_name
+
+
+class HallOfFrameEntry(_ResearchRecognition):
+    """Researchers who acknowledged IIC facilities in a publication, shown in the home page carousel (approved only,
+    by ``order``)."""
+
+    publication = models.ForeignKey(
+        "equipment.EquipmentPublication", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+        verbose_name=_("Linked equipment publication"),
+    )
+    order = models.PositiveIntegerField(_("Order"), default=0, help_text=_("Lower number = shown first."))
+
+    class Meta:
+        ordering = ["order", "-year", "id"]
+        verbose_name = _("Hall of Frames entry")
+        verbose_name_plural = _("Hall of Frames entries")
+
+
+class ResearcherOfTheMonth(_ResearchRecognition):
+    """The researcher featured for one month, per department (or institute-wide when no department). The home page
+    shows the current month's approved entries; earlier months stay as history."""
+
+    month = models.DateField(_("Month"), help_text=_("Any day of the month; stored as its first day."))
+    department = models.ForeignKey(
+        "users.Department", on_delete=models.CASCADE, null=True, blank=True, related_name="+",
+        verbose_name=_("Department"), help_text=_("Leave empty for an institute-wide Researcher of the Month."),
+    )
+    created_by = models.ForeignKey("users.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    class Meta:
+        ordering = ["-month", "department__name", "id"]
+        verbose_name = _("Researcher of the Month")
+        verbose_name_plural = _("Researchers of the Month")
+        constraints = [
+            models.UniqueConstraint(fields=["month", "department"], name="cms_rotm_one_per_department_month"),
+            models.UniqueConstraint(fields=["month"], condition=models.Q(department__isnull=True),
+                                    name="cms_rotm_one_institute_wide_per_month"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.month:
+            self.month = self.month.replace(day=1)
+        super().save(*args, **kwargs)

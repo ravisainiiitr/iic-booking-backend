@@ -2677,10 +2677,13 @@ def profile_me_dashboard_menu_layout(request):
     layout, err = _clean_dashboard_menu_layout(request.data)
     if err:
         return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+    from iic_booking.users.dashboard_shortcuts import SHORTCUTS_KEY
+
     stored = dict(layout)
-    equipment_order = (getattr(user, "dashboard_menu_layout", None) or {}).get(DASHBOARD_EQUIPMENT_ORDER_KEY)
-    if equipment_order:
-        stored[DASHBOARD_EQUIPMENT_ORDER_KEY] = equipment_order
+    previous = getattr(user, "dashboard_menu_layout", None) or {}
+    for key in (DASHBOARD_EQUIPMENT_ORDER_KEY, SHORTCUTS_KEY):  # kept: saved by their own endpoints
+        if previous.get(key):
+            stored[key] = previous[key]
     user.dashboard_menu_layout = stored
     user.save(update_fields=["dashboard_menu_layout"])
     return Response(layout, status=status.HTTP_200_OK)
@@ -2688,6 +2691,29 @@ def profile_me_dashboard_menu_layout(request):
 
 DASHBOARD_EQUIPMENT_ORDER_KEY = "equipment_order"
 DASHBOARD_EQUIPMENT_ORDER_MAX = 500
+
+
+@api_view(["GET", "PUT", "DELETE"])
+@permission_classes([IsAuthenticated])
+def profile_me_dashboard_shortcuts(request):
+    """
+    The signed-in user's own groups of dashboard buttons ("My shortcuts" in the main content area).
+    GET: {"groups": [...]}. PUT: save {"groups": [{"id", "name", "icon", "items", "collapsed"}]} (list order is the
+    group order). DELETE: restore the default (no custom groups).
+    """
+    from iic_booking.users.dashboard_shortcuts import clean_shortcut_groups, save_shortcut_groups, shortcut_groups_of
+
+    user = request.user
+    if request.method == "GET":
+        return Response({"groups": shortcut_groups_of(user)}, status=status.HTTP_200_OK)
+    if request.method == "DELETE":
+        save_shortcut_groups(user, [])
+        return Response({"groups": []}, status=status.HTTP_200_OK)
+    groups, err = clean_shortcut_groups(request.data)
+    if err:
+        return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+    save_shortcut_groups(user, groups)
+    return Response({"groups": groups}, status=status.HTTP_200_OK)
 
 
 def _clean_dashboard_equipment_order(raw):
