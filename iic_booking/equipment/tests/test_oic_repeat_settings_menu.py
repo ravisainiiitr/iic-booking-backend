@@ -466,9 +466,17 @@ def test_dashboard_menu_layout_saved_per_user():
     assert _client(oic).put(url, {"groups": [{"id": "g1", "name": "", "items": []}]}, format="json").status_code == 400
     assert _client(oic).put(url, {"groups": "nope"}, format="json").status_code == 400
 
+    # Every user type customises their own menu; one user's layout never changes another's.
     student = _user(user_type=UserType.STUDENT)
-    assert _client(student).put(url, layout, format="json").status_code == 403
     assert _client(student).get(url).data == {"groups": [], "order": []}
+    mine = {"groups": [{"id": "r1", "name": "Rarely used", "items": ["publications"]}], "order": ["book_equipment", "group:r1"]}
+    res = _client(student).put(url, mine, format="json")
+    assert res.status_code == 200, res.data
+    assert _client(student).get(url).data == res.data
+    assert _client(oic).get(url).data["groups"][0]["id"] == "g1"
+    for user_type in (UserType.FACULTY, UserType.EXTERNAL, UserType.OPERATOR):
+        assert _client(_user(user_type=user_type)).put(url, mine, format="json").status_code == 200
+    assert _client().put(url, mine, format="json").status_code in (401, 403)
 
 
 def test_dashboard_menu_priority_order_saved_for_admin():

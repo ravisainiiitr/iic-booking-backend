@@ -2663,17 +2663,12 @@ def _clean_dashboard_menu_layout(raw):
 def profile_me_dashboard_menu_layout(request):
     """
     GET: the current user's custom dashboard menu groups.
-    PUT: save them (OIC and Main Administrator only). Body: {"groups": [{"id", "name", "items"}], "order": [...]}.
+    PUT: save them (any signed-in user, for their own menu). Body: {"groups": [{"id", "name", "items"}], "order": [...]}.
     """
     user = request.user
     if request.method == "GET":
         layout, _err = _clean_dashboard_menu_layout(getattr(user, "dashboard_menu_layout", None) or {})
         return Response(layout or {"groups": [], "order": []}, status=status.HTTP_200_OK)
-    if not (getattr(user, "is_superuser", False) or getattr(user, "user_type", None) in (UserType.ADMIN, UserType.MANAGER)):
-        return Response(
-            {"error": "Only an Officer In Charge or the Main Administrator can customise the dashboard menu."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
     layout, err = _clean_dashboard_menu_layout(request.data)
     if err:
         return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
