@@ -90,14 +90,16 @@ def invoice_requested(booking) -> bool:
 class RefundQuote:
     paid: Decimal                 # what the user paid towards the booking (GST included)
     gst_paid: Decimal             # GST inside ``paid``
-    shipping: Decimal             # non-refundable return shipping, GST included
-    refundable_base: Decimal      # paid - GST - shipping (before GST)
+    shipping: Decimal             # return shipping charged, GST included
+    refundable_base: Decimal      # paid - GST - shipping (before GST): the service charges
     penalty_percent: int
     gst_refunded: bool            # False once a GST invoice has been requested
-    refund_base: Decimal          # refundable_base after the penalty
+    refund_base: Decimal          # service charges refunded (after penalty and portion) + shipping base refunded
     refund_gst: Decimal           # GST returned with it (0 when gst_refunded is False)
     refund: Decimal               # refund_base + refund_gst
-    tier: str                     # free | half | full | disruption
+    tier: str                     # free | half | full | disruption | lab_failure
+    shipping_refunded: Decimal = ZERO  # return shipping given back (base, plus its GST only when gst_refunded)
+    portion_percent: int = 100    # share of the service charges refunded
 
     def as_dict(self) -> dict:
         return {
@@ -105,12 +107,22 @@ class RefundQuote:
             "refundable_base": str(self.refundable_base), "penalty_percent": self.penalty_percent,
             "gst_refunded": self.gst_refunded, "refund_base": str(self.refund_base),
             "refund_gst": str(self.refund_gst), "refund": str(self.refund), "tier": self.tier,
+            "shipping_refunded": str(self.shipping_refunded), "portion_percent": self.portion_percent,
         }
 
 
-def quote(booking, *, penalty_percent: int, tier: str) -> RefundQuote:
+def quote(booking, *, penalty_percent: int, tier: str, include_shipping: bool = False,
+          portion_percent: int = 100) -> RefundQuote:
+    """The refund, computed on the server from what was paid.
+
+    * Service charges: ``paid - GST - return shipping``, less the cancellation penalty, times ``portion_percent``.
+    * Return shipping (``include_shipping``: the lab is at fault): its base is refunded.
+    * GST on the refunded amounts is refunded only while no GST invoice has been requested; once SRIC is asked for an
+      invoice, the tax is settled there (credit note), so only base amounts come back (Module 4.2).
+    """
     from iic_booking.equipment.booking_paid_amount import booking_paid_charge
 
+    portion_percent = max(0, min(100, int(portion_percent)))
     paid = _money(booking_paid_charge(booking))
     gst = min(_gst_in_breakdown(booking), paid)
     taxable = paid - gst
@@ -118,13 +130,16 @@ def quote(booking, *, penalty_percent: int, tier: str) -> RefundQuote:
     ship_base = min(_money(getattr(booking, "return_shipping_fee_amount", None)), taxable)
     shipping = _money(ship_base * (1 + rate))
     refundable_base = max(ZERO, taxable - ship_base)
-    keep = Decimal(100 - penalty_percent) / Decimal(100)
-    refund_base = _money(refundable_base * keep)
+    keep = Decimal(100 - penalty_percent) / Decimal(100) * Decimal(portion_percent) / Decimal(100)
+    service_refund = _money(refundable_base * keep)
+    ship_refund_base = ship_base if include_shipping else ZERO
     gst_refunded = not invoice_requested(booking)
+    refund_base = service_refund + ship_refund_base
     refund_gst = _money(refund_base * rate) if gst_refunded else ZERO
     refund = min(paid, refund_base + refund_gst)
+    shipping_refunded = _money(ship_refund_base * (1 + rate)) if gst_refunded else ship_refund_base
     return RefundQuote(paid, gst, shipping, refundable_base, penalty_percent, gst_refunded, refund_base, refund_gst,
-                       refund, tier)
+                       refund, tier, shipping_refunded, portion_percent)
 
 
 def cancellation_tier(start, now=None, s: ExternalServicesSettings | None = None) -> tuple[str, int]:
@@ -155,7 +170,7 @@ def cancellation_quote(booking, *, now=None) -> dict:
     s = _settings()
     start = first_slot_start(booking)
     if is_disrupted(booking):
-        q = quote(booking, penalty_percent=0, tier="disruption")
+        q = quote(booking, penalty_percent=0, tier="disruption", include_shipping=True)
         return {"disruption": True, "bank_refund_allowed": True, **q.as_dict(), "first_slot_start": _iso(start)}
     if start is None:
         raise RefundPolicyError("Start time is not available.", code="no_start_time")
@@ -237,7 +252,8 @@ def my_accounts(user) -> list[dict]:
 
 # --- cancelling --------------------------------------------------------------------------------------------------------
 
-def _record(booking, user, *, origin, destination, q: RefundQuote, account=None, txn=None, actor=None) -> ExternalRefund:
+def _record(booking, user, *, origin, destination, q: RefundQuote, account=None, txn=None, actor=None,
+            reason: str = "") -> ExternalRefund:
     snapshot = account_dict(account, full=True) if account is not None else {}
     status = RefundStatus.QUEUED if destination == RefundDestination.BANK else RefundStatus.CLOSED
     try:
@@ -247,6 +263,7 @@ def _record(booking, user, *, origin, destination, q: RefundQuote, account=None,
                 penalty_percent=q.penalty_percent, paid_amount=q.paid, gst_paid=q.gst_paid,
                 return_shipping=q.shipping, refund_base=q.refund_base, refund_gst=q.refund_gst,
                 refund_amount=q.refund, gst_refunded=q.gst_refunded, bank_account=account,
+                shipping_refunded=q.shipping_refunded, portion_percent=q.portion_percent, reason=reason,
                 bank_snapshot=snapshot, wallet_transaction=txn, status=status, created_by=actor or user,
                 closed_at=timezone.now() if status == RefundStatus.CLOSED else None,
             )
@@ -298,7 +315,8 @@ def cancel(user, booking_id, *, destination: str = "wallet", bank_account_id=Non
             account = RefundBankAccount.objects.filter(pk=bank_account_id, user=user, is_active=True).first()
             if account is None:
                 raise RefundPolicyError("Choose or add the bank account for the refund.", code="account_required")
-        q = quote(booking, penalty_percent=int(info["penalty_percent"]), tier=info["tier"])
+        q = quote(booking, penalty_percent=int(info["penalty_percent"]), tier=info["tier"],
+                  include_shipping=info["tier"] == "disruption")
         ref = booking_display_id_for_email(booking)
         eq_name = getattr(booking.equipment, "name", "")
         if q.tier == "disruption":
@@ -350,7 +368,131 @@ def cancel(user, booking_id, *, destination: str = "wallet", bank_account_id=Non
     return {"refund": refund_dict(refund), "booking_status": booking.status}
 
 
+LAB_FAILURE_KINDS = {
+    "equipment_failure": "Equipment failure",
+    "analysis_unsuccessful": "Analysis not possible (laboratory or equipment issue)",
+}
+LAB_FAILURE_BLOCKED = ("CANCELLED", "REFUNDED", "BOOKING_NOT_UTILIZED")
+
+
+def may_refund_lab_failure(actor, booking) -> bool:
+    """The equipment's Officer In Charge, the department's Accounts In Charge, or the Main Administrator."""
+    from iic_booking.equipment.models import EquipmentManager
+
+    from .invoices import staff_may_handle
+
+    if staff_may_handle(actor, booking):
+        return True
+    return EquipmentManager.objects.filter(equipment_id=booking.equipment_id, manager_id=actor.pk,
+                                           manager__is_active=True).exists()
+
+
+def _lab_failure_booking(actor, booking_id, *, lock: bool):
+    from iic_booking.equipment.models import Booking
+
+    qs = Booking.objects.select_related("equipment", "user").filter(pk=booking_id)
+    booking = (qs.select_for_update(of=("self",)) if lock else qs).first()
+    if booking is None:
+        raise RefundPolicyError("Booking not found.", status=404, code="not_found")
+    if not may_refund_lab_failure(actor, booking):
+        raise RefundPolicyError("Only the equipment's Officer In Charge, the Accounts In Charge or the Main "
+                                "Administrator can refund a lab failure.", status=403, code="forbidden")
+    if not policy_applies(booking.user):
+        raise RefundPolicyError("This refund is available for external bookings under the refund policy.",
+                                status=403, code="not_available")
+    if booking.status in LAB_FAILURE_BLOCKED:
+        raise RefundPolicyError("This booking is already cancelled or refunded.", code="not_active")
+    if ExternalRefund.objects.filter(booking=booking).exists():
+        raise RefundPolicyError("This booking has already been refunded.", status=409, code="already_refunded")
+    return booking
+
+
+def _portion(value) -> int:
+    try:
+        portion = int(str(value if value not in (None, "") else 100))
+    except (TypeError, ValueError):
+        raise RefundPolicyError("Enter the share of the service charges to refund (1 to 100%).", code="invalid_portion")
+    if not 1 <= portion <= 100:
+        raise RefundPolicyError("Enter the share of the service charges to refund (1 to 100%).", code="invalid_portion")
+    return portion
+
+
+def lab_failure_quote(actor, booking_id, *, portion_percent=100) -> dict:
+    """What a lab-failure refund would give back (shown to the OIC / Accounts In Charge before confirming). A full
+    refund (100%) also returns the return shipping; a partial one refunds that share of the service charges only."""
+    booking = _lab_failure_booking(actor, booking_id, lock=False)
+    portion = _portion(portion_percent)
+    q = quote(booking, penalty_percent=0, tier="lab_failure", include_shipping=portion == 100, portion_percent=portion)
+    return {**q.as_dict(), "invoice_requested": not q.gst_refunded, "kinds": LAB_FAILURE_KINDS}
+
+
+def refund_lab_failure(actor, booking_id, *, kind: str, reason: str, portion_percent=100,
+                       expected_refund=None) -> dict:
+    """Refund an external booking the lab could not serve (equipment failure, analysis not possible) to the user's
+    wallet. Full (100%): the booking is closed and its remaining slots released; partial: that share of the service
+    charges, the booking stays. One refund per booking; amounts as shown (``expected_refund``)."""
+    from iic_booking.communication.utils import booking_display_id_for_email
+    from iic_booking.equipment.booking_cancellation import perform_booking_cancellation
+    from iic_booking.equipment.booking_events import create_booking_event
+    from iic_booking.equipment.models import BookingEventType, BookingStatus
+    from iic_booking.users.repositories.wallet_repository import WalletRepository
+
+    kind = str(kind or "").strip()
+    if kind not in LAB_FAILURE_KINDS:
+        raise RefundPolicyError("Choose what went wrong: equipment failure or analysis not possible.", code="invalid_kind")
+    reason = " ".join(str(reason or "").split())[:2000]
+    if len(reason) < 10:
+        raise RefundPolicyError("Describe what happened (at least 10 characters); the user sees it.", code="reason_required")
+    portion = _portion(portion_percent)
+    with transaction.atomic():
+        booking = _lab_failure_booking(actor, booking_id, lock=True)
+        q = quote(booking, penalty_percent=0, tier="lab_failure", include_shipping=portion == 100,
+                  portion_percent=portion)
+        if expected_refund is not None and _money(expected_refund) != _money(q.refund):
+            raise RefundPolicyError("The refund amount has changed since it was shown. Please check it again.",
+                                    status=409, code="quote_changed", extra={"quote": q.as_dict()})
+        if q.refund <= 0:
+            raise RefundPolicyError("Nothing was paid for this booking, so there is nothing to refund.", code="nothing_paid")
+        ref = booking_display_id_for_email(booking)
+        eq_name = getattr(booking.equipment, "name", "")
+        full_reason = f"{LAB_FAILURE_KINDS[kind]}: {reason}"
+        previous = booking.status
+        if portion == 100:
+            perform_booking_cancellation(
+                booking, slot_ids=list(booking.daily_slots.values_list("id", flat=True)), should_refund=False,
+                cancel_notes=f"Refunded in full by the lab. {full_reason}", actor=actor, allow_started_slots=True,
+                cancelled_by_label="admin",
+            )
+        target, _ = WalletRepository.get_booking_wallet_target(booking.user, getattr(booking.equipment, "internal_department", None))
+        if target is None:
+            raise RefundPolicyError("No wallet was found for this department to refund to.", status=409, code="no_wallet")
+        txn = target.credit(
+            amount=q.refund,
+            description=f"Refund for Booking {ref}- {eq_name} ({_refund_label(q)})",
+            related_user=booking.user,
+        )
+        refund = _record(booking, booking.user, origin=RefundOrigin.LAB_FAILURE, destination=RefundDestination.WALLET,
+                         q=q, txn=txn, actor=actor, reason=full_reason)
+        booking.refresh_from_db()
+        if portion == 100:
+            booking.status = BookingStatus.REFUNDED
+            booking.save(update_fields=["status"])
+        message = f"{_user_message(q, RefundDestination.WALLET, ref)} Reason: {full_reason}"
+        create_booking_event(
+            booking=booking, event_type=BookingEventType.REFUNDED, created_by=actor, previous_status=previous,
+            new_status=booking.status, comment=message,
+            metadata={"external_refund_id": refund.pk, **q.as_dict(), "destination": "wallet", "reason": full_reason},
+            send_notification=False,
+        )
+        notify(f"refund:{refund.pk}:created", [booking.user], title=f"Refund for booking {ref}", message=message,
+               link=f"/my-bookings?booking={booking.pk}")
+    return {"refund": refund_dict(refund), "booking_status": booking.status}
+
+
 def _refund_label(q: RefundQuote) -> str:
+    if q.tier == "lab_failure":
+        part = "" if q.portion_percent == 100 else f", {q.portion_percent}% of the service charges"
+        return f"equipment failure / analysis not possible{part}"
     if q.tier == "disruption":
         return "lab disruption, no penalty"
     if q.penalty_percent:
@@ -363,7 +505,12 @@ def _user_message(q: RefundQuote, destination: str, ref) -> str:
         return (f"Booking {ref} was cancelled less than the minimum notice before it started, so no refund is due "
                 f"({q.penalty_percent}% cancellation penalty).")
     gst = "" if q.gst_refunded else " GST is not included because a GST invoice was already requested; SRIC settles it."
-    ship = f" The return shipping charge (₹{q.shipping}) is not refundable." if q.shipping > 0 else ""
+    if q.shipping_refunded > 0:
+        ship = f" It includes the return shipping charge (₹{q.shipping_refunded})."
+    elif q.shipping > 0:
+        ship = f" The return shipping charge (₹{q.shipping}) is not refundable."
+    else:
+        ship = ""
     where = ("has been credited to your wallet" if destination == RefundDestination.WALLET
              else "will be paid to your bank account through SRIC; you will be told when it is paid")
     return f"₹{q.refund} for booking {ref} {where} ({_refund_label(q)}).{ship}{gst}"
@@ -377,6 +524,8 @@ def refund_dict(r: ExternalRefund, *, staff: bool = False) -> dict:
         "booking_reference": getattr(r.booking, "virtual_booking_id", "") or str(r.booking_id),
         "origin": r.origin, "destination": r.destination, "tier": r.tier, "penalty_percent": r.penalty_percent,
         "paid_amount": str(r.paid_amount), "return_shipping": str(r.return_shipping),
+        "shipping_refunded": str(r.shipping_refunded), "portion_percent": r.portion_percent, "reason": r.reason,
+        "origin_label": r.get_origin_display(),
         "refund_base": str(r.refund_base), "refund_gst": str(r.refund_gst), "refund_amount": str(r.refund_amount),
         "gst_refunded": r.gst_refunded, "status": r.status, "status_label": r.get_status_display(),
         "created_at": r.created_at.isoformat(), "sent_at": r.sent_at.isoformat() if r.sent_at else None,

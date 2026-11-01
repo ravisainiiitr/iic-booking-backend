@@ -54,6 +54,7 @@ urlpatterns = [
     # Cancellation and refunds (31 Oct 2026 policy): quote, cancel, bank accounts, the user's refunds, staff tracker
     path("bookings/<int:booking_id>/cancellation-quote/", views.booking_cancellation_quote, name="cancellation-quote"),
     path("bookings/<int:booking_id>/cancel/", views.booking_cancel_with_refund, name="booking-cancel"),
+    path("bookings/<int:booking_id>/lab-failure-refund/", views.booking_lab_failure_refund, name="lab-failure-refund"),
     path("refund-accounts/", views.refund_bank_accounts, name="refund-accounts"),
     path("refunds/", views.my_refunds_view, name="my-refunds"),
     path("staff/refunds/", views.staff_refunds_view, name="staff-refunds"),
