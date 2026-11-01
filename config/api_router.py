@@ -27,6 +27,7 @@ from iic_booking.users.api.auth_views import (
     profile_me,
     profile_me_avatar,
     profile_me_dashboard_menu_layout,
+    profile_me_dashboard_shortcuts,
     profile_me_dashboard_equipment_order,
     user_profile_picture_proxy,
     get_register_user_types,
@@ -1024,6 +1025,7 @@ urlpatterns = router.urls + [
         profile_me_dashboard_menu_layout,
         name="profile-me-dashboard-menu-layout",
     ),
+    path("profiles/me/dashboard-shortcuts/", profile_me_dashboard_shortcuts, name="profile-me-dashboard-shortcuts"),
     path(
         "profiles/me/dashboard-equipment-order/",
         profile_me_dashboard_equipment_order,
