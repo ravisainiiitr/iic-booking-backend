@@ -519,6 +519,7 @@ from iic_booking.equipment.maintenance_views import maintenance_status_view
 from iic_booking.equipment.admin_dashboard_summary import admin_dashboard_summary
 from iic_booking.equipment.global_search import global_search
 from iic_booking.equipment.my_activity import my_activity
+from iic_booking.power.views import ups_history, ups_list
 from iic_booking.calls.views import call_action, call_config, call_decline_from_device, call_detail, call_devices, call_options, calls
 from iic_booking.equipment.portal_actions import portal_action_equipment, portal_action_run, portal_actions_list
 from iic_booking.equipment.search_synonym_views import search_synonym_detail, search_synonym_list
@@ -1032,6 +1033,8 @@ urlpatterns = router.urls + [
     ),
     path("profiles/me/dashboard-shortcuts/", profile_me_dashboard_shortcuts, name="profile-me-dashboard-shortcuts"),
     path("profiles/me/activity/", my_activity, name="profile-me-activity"),
+    path("power/ups/", ups_list, name="power-ups"),
+    path("power/ups/<int:device_id>/history/", ups_history, name="power-ups-history"),
     path("calls/", calls, name="calls"),
     path("calls/config/", call_config, name="calls-config"),
     path("calls/options/", call_options, name="calls-options"),
