@@ -9,8 +9,9 @@ End-to-end check of Slot Exchange on production, through the real endpoints:
   5. refusals: charge mismatch, instrument with Slot Exchange off, and an external user.
 
 Acts as test.student@iic-booking.test and test.faculty@iic-booking.test on a temporary instrument in the IIC
-department. Every row it creates or changes lives inside one database transaction that is rolled back at the end;
-emails go to the in-memory backend and nothing is queued. Read-only summary at the end: how many IIC instruments
+department. Every row it creates or changes lives inside one database transaction that is rolled back at the end.
+Nothing leaves the server: email, SMS and push sending are switched off for the run, Slot Exchange notifications are
+only recorded (and checked), and nothing is queued. Read-only summary at the end: how many IIC instruments
 have Slot Exchange on.
 
 Usage (inside the django container): python - < scripts/ops/e2e_slot_exchange.py
@@ -46,6 +47,8 @@ from iic_booking.equipment.models import (  # noqa: E402
     EquipmentProfileType,
     SlotMaster,
 )
+from iic_booking.communication.service import CommunicationService  # noqa: E402
+from iic_booking.equipment import slot_exchange as sx  # noqa: E402
 from iic_booking.equipment.slot_exchange_models import SlotExchangeRequest  # noqa: E402
 from iic_booking.users.models import Department, UserType  # noqa: E402
 
@@ -54,6 +57,7 @@ FACULTY_EMAIL = "test.faculty@iic-booking.test"
 EXTERNAL_EMAILS = ("test.external@iic-booking.test", "test.industry@iic-booking.test")
 TAG = "ZZSX" + uuid.uuid4().hex[:4].upper()
 RESULTS = []
+NOTIFIED = []  # (request id, kind) the app would have sent
 
 
 def check(name, ok, detail=""):
@@ -182,6 +186,10 @@ def run():
     code, data = _call(stu, "post", f"/api/slot-exchanges/{wid}/cancel/")
     check("a proposal can be withdrawn", code == 200 and data.get("status") in ("CANCELLED", "WITHDRAWN"),
           f"status={code} body_status={data.get('status')}")
+    # Decline and withdraw notify at once (and are recorded here, not sent); "requested" and "accepted" are sent
+    # after the transaction commits, which a rolled-back run never does.
+    check("decline and withdraw notify the other user (recorded, not sent)",
+          (back_id, "declined") in NOTIFIED and (wid, "cancelled") in NOTIFIED, f"notifications={NOTIFIED}")
 
     # Refusals.
     c, (c1,) = book(faculty, eq, aware(day + timedelta(days=2), 10), 1, "150.00")
@@ -206,9 +214,14 @@ def run():
 
 def main():
     print("TAG", TAG)
+    silent = lambda *a, **k: None  # noqa: E731
     with override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend"), \
-            patch.object(Task, "apply_async", lambda *a, **k: None), \
-            patch("iic_booking.communication.service.CommunicationService.send_push_notification", lambda *a, **k: None):
+            patch.object(Task, "apply_async", silent), \
+            patch.object(sx, "notify", lambda req, kind: NOTIFIED.append((req.pk, kind))), \
+            patch.object(CommunicationService, "send_email", silent), \
+            patch.object(CommunicationService, "send_email_with_attachments", silent), \
+            patch.object(CommunicationService, "send_sms", silent), \
+            patch.object(CommunicationService, "send_push_notification", silent):
         try:
             with transaction.atomic():
                 try:
@@ -228,6 +241,7 @@ def main():
         "exchange_requests": SlotExchangeRequest.objects.filter(requester_booking__equipment__code__startswith=TAG).count(),
     }
     check("cleanup: nothing left behind", not any(leftovers.values()), str(leftovers))
+    print("INFO | notifications recorded, not sent:", NOTIFIED)
     dept = _iic_department()
     if dept is not None:
         iic = Equipment.objects.filter(internal_department=dept).exclude(status="DISPOSED")
