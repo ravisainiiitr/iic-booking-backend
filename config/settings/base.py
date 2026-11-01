@@ -122,6 +122,7 @@ THIRD_PARTY_APPS = [
 ]
 
 LOCAL_APPS = [
+    "iic_booking.calls",
     "iic_booking.users",
     "iic_booking.communication",
     "iic_booking.equipment",
@@ -937,6 +938,27 @@ CHANNEL_LAYERS = {
         },
     },
 }
+
+
+# In-app internet voice calls (WebRTC peer to peer; signalling over the Channels WebSocket ws/calls/).
+# Off until CALLS_ENABLED; while CALLS_TEST_ACCOUNTS_ONLY both caller and callee must be test accounts.
+CALLS_ENABLED = env.bool("CALLS_ENABLED", default=False)
+CALLS_TEST_ACCOUNTS_ONLY = env.bool("CALLS_TEST_ACCOUNTS_ONLY", default=True)
+CALLS_RING_SECONDS = env.int("CALLS_RING_SECONDS", default=45)
+# Free public STUN only by default. TURN is optional: set URLs and the coturn static-auth secret to hand out
+# short-lived (use-auth-secret / REST API) credentials; the secret itself never leaves the server.
+CALLS_STUN_URLS = env.list("CALLS_STUN_URLS", default=["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"])
+CALLS_TURN_URLS = env.list("CALLS_TURN_URLS", default=[])
+CALLS_TURN_SECRET = env("CALLS_TURN_SECRET", default="")
+CALLS_TURN_TTL_SECONDS = env.int("CALLS_TURN_TTL_SECONDS", default=600)
+# Android: Firebase Cloud Messaging HTTP v1 (path to the service-account JSON, kept outside the repository).
+CALLS_FCM_SERVICE_ACCOUNT_FILE = env("CALLS_FCM_SERVICE_ACCOUNT_FILE", default="")
+# iOS: APNs VoIP pushes with a token-based (.p8) key (path kept outside the repository).
+CALLS_APNS_KEY_FILE = env("CALLS_APNS_KEY_FILE", default="")
+CALLS_APNS_KEY_ID = env("CALLS_APNS_KEY_ID", default="")
+CALLS_APNS_TEAM_ID = env("CALLS_APNS_TEAM_ID", default="")
+CALLS_APNS_BUNDLE_ID = env("CALLS_APNS_BUNDLE_ID", default="ac.in.iitr.iicbooking")
+CALLS_APNS_USE_SANDBOX = env.bool("CALLS_APNS_USE_SANDBOX", default=True)
 
 
 RAZORPAY_KEY_ID = env("RAZORPAY_KEY_ID", default="")
