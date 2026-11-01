@@ -879,6 +879,9 @@ ISTEM_OTP_LINKING_ENABLED = env.bool("ISTEM_OTP_LINKING_ENABLED", default=False)
 # While set, "Already registered on I-STEM?" on the registration form works only with this key (the test link
 # /auth?istem_test=<key>), and accounts registered through it are test accounts. Empty: open to every external user.
 ISTEM_REGISTRATION_TEST_KEY = env("ISTEM_REGISTRATION_TEST_KEY", default="")
+# Testing against I-STEM STAGING only: OTPs for made-up @example.com I-STEM users go to this inbox instead (that domain
+# receives no mail). Ignored when empty or when ISTEM_BASE_URL is not a staging address; real addresses are never redirected.
+ISTEM_TEST_OTP_INBOX = env("ISTEM_TEST_OTP_INBOX", default="")
 # Silent-mode flag requested from I-STEM (no I-STEM emails for API bookings); empty until I-STEM names the field.
 ISTEM_SILENT_MODE_FIELD = env("ISTEM_SILENT_MODE_FIELD", default="")
 ISTEM_SILENT_MODE_VALUE = env("ISTEM_SILENT_MODE_VALUE", default="1")
