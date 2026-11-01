@@ -167,7 +167,7 @@ class TestGuidedFlow:
             meta = _meta(_post(lab, _new_conv(lab), text))
             assert meta["intent"] in ("assistant:flow_departments", "assistant:flow_equipment"), text
 
-    def test_full_flow_to_confirm_token_and_navigation(self, lab, settings):
+    def test_full_flow_to_confirm_token_and_navigation(self, midweek, lab, settings):
         from iic_booking.equipment.models import Booking
 
         settings.COPILOT_BOOKING_CREATE = True

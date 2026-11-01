@@ -164,8 +164,9 @@ def _queue(on, paid):
 
 
 def _working_day_at(hour, minute=0):
+    """The next weekly batch day (first working day of a week) after today, whatever day the tests run on."""
     d = timezone.localdate() + timedelta(days=1)
-    while d.weekday() >= 5 or Holiday.objects.filter(date=d, is_active=True).exists():
+    while not sric_dispatch.is_batch_day(d):
         d += timedelta(days=1)
     return datetime(d.year, d.month, d.day, hour, minute, tzinfo=IST)
 

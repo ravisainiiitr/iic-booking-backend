@@ -144,7 +144,7 @@ def test_booking_create_query_budget(hot, no_portal_lock):
     assert n <= 75
 
 
-def test_slot_payload_fields_after_serializer_fast_paths(hot, no_portal_lock):
+def test_slot_payload_fields_after_serializer_fast_paths(midweek, hot, no_portal_lock):
     eq, slots, _student, client = hot
     target = slots[30]
     resp = client.post(
