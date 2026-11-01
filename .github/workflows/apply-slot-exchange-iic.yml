@@ -1,0 +1,54 @@
+# Turns Slot Exchange on (or off) for every instrument of the Institute Instrumentation Centre.
+# "list" only prints the instruments and their current setting. Test and disposed instruments are left alone.
+name: Apply Slot Exchange for IIC
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "list | enable | disable"
+        required: true
+        default: "list"
+      confirm:
+        description: "Type APPLY for enable or disable"
+        required: false
+        default: ""
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Guard
+        if: ${{ inputs.mode != 'list' && inputs.confirm != 'APPLY' }}
+        run: |
+          echo "confirm must be APPLY to change production"
+          exit 1
+      - name: Apply
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -i -e MODE="$MODE" -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import os
+          import django
+          django.setup()
+          from iic_booking.equipment.models import Equipment
+          from iic_booking.equipment.testdata import exclude_test_equipment
+          from iic_booking.users.models import Department
+
+          mode = os.environ["MODE"].strip().lower()
+          assert mode in ("list", "enable", "disable"), mode
+          dept = Department.objects.filter(name__icontains="Institute Instrumentation Centre").order_by("pk").first()
+          assert dept is not None, "IIC department not found"
+          qs = exclude_test_equipment(Equipment.objects.filter(internal_department=dept)).exclude(status="DISPOSED")
+          print("Department:", dept.pk, dept.name, "| instruments:", qs.count(),
+                "| Slot Exchange on:", qs.filter(slot_exchange_enabled=True).count())
+          for e in qs.order_by("name"):
+              print(f"  {e.pk:>5} {e.code:<22} {'ON ' if e.slot_exchange_enabled else 'off'} {e.name}")
+          if mode != "list":
+              target = mode == "enable"
+              changed = qs.exclude(slot_exchange_enabled=target).update(slot_exchange_enabled=target)
+              print("Changed:", changed, "| Slot Exchange on now:", qs.filter(slot_exchange_enabled=True).count(), "of", qs.count())
+          PY
