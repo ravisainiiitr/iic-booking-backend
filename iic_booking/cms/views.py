@@ -148,3 +148,13 @@ def page_by_slug(request, slug):
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
     serializer = CmsPagePublicSerializer(page)
     return Response(serializer.data)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def policy_pages(request):
+    """The website policy pages that are published (for the footer), in a fixed order: [{slug, title}]."""
+    from .policy_pages import POLICY_SLUGS
+
+    published = {p.slug: p.title for p in CmsPage.objects.filter(slug__in=POLICY_SLUGS, is_published=True)}
+    return Response({"pages": [{"slug": s, "title": published[s]} for s in POLICY_SLUGS if s in published]})
