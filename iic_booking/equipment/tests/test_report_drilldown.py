@@ -242,7 +242,9 @@ def test_user_card_access_by_role(world):
     assert card(world.finance, world.ind).status_code == 200
     assert card(world.s1, world.oic).status_code == 200
     assert card(world.operator, world.oic).status_code == 200
-    assert card(world.outsider, world.oic).status_code == 404
+    # Lab staff of equipment in the catalogue are listed in search, so their card opens; other users' cards do not.
+    assert card(world.outsider, world.oic).status_code == 200
+    assert card(world.outsider, world.s1).status_code == 404
     full = card(world.admin, world.ind)
     assert full.status_code == 200 and full.data["access"] == "full"
     assert world.f.client_for(world.admin).get("/api/users/999999999/card/").status_code == 404
