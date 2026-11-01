@@ -920,6 +920,29 @@ def period_summary(period) -> dict:
         "users_notified": len(users),
         "results_paused": paused,
         "adopted": period.adopted,
+        **_recovery_fields(period),
+    }
+
+
+def _recovery_fields(period, now=None) -> dict:
+    """Expected recovery of the equipment, and whether the OIC must act: once the expected time has passed the
+    equipment's status needs confirming (mark it Operational, or set a new expected time). Without an expected time,
+    or before it, the period is informational: the daily 08:30 handling runs on its own."""
+    from .disruption_service import recovery_status, recovery_text
+
+    event = getattr(period, "disruption_event", None)
+    expected = getattr(event, "expected_recovery_at", None)
+    state = recovery_status(expected, now)
+    return {
+        "expected_recovery_at": expected.isoformat() if expected else None,
+        "recovery_status": state,
+        "recovery_text": recovery_text(expected, now),
+        "action_required": state == "DELAYED",
+        "action": (
+            "The expected recovery time has passed: confirm the equipment's status (mark it Operational, or set a "
+            "new expected time)."
+            if state == "DELAYED" else ""
+        ),
     }
 
 
@@ -929,7 +952,7 @@ def active_summaries_for_user(user) -> list[dict]:
     from .completion_reminders import awaiting_completion_equipment_ids
     from .models import EquipmentMaintenancePeriod
 
-    qs = EquipmentMaintenancePeriod.objects.filter(ended_at__isnull=True).select_related("equipment")
+    qs = EquipmentMaintenancePeriod.objects.filter(ended_at__isnull=True).select_related("equipment", "disruption_event")
     if not (getattr(user, "is_superuser", False) or getattr(user, "user_type", None) == UserType.ADMIN):
         ids = awaiting_completion_equipment_ids(user)
         if not ids:

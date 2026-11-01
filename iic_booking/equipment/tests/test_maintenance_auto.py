@@ -697,3 +697,29 @@ def test_cleanup_closes_weekend_slots_reopened_by_maintenance_and_keeps_booked_a
     assert statuses[weekday.pk] == SlotStatus.AVAILABLE
     assert statuses[staff_opened.pk] == SlotStatus.AVAILABLE
     assert DailySlot.objects.get(pk=booked.pk).booking_id is not None
+
+
+def test_maintenance_status_says_when_the_oic_must_act(lab, django_capture_on_commit_callbacks):
+    """Informational while the expected recovery is unknown or ahead; action required once it has passed."""
+    from iic_booking.equipment.models import EquipmentMaintenancePeriod
+
+    eq, oic, *_ = lab
+    _mark(oic, eq, django_capture_on_commit_callbacks)
+    period = EquipmentMaintenancePeriod.objects.get(equipment=eq, ended_at__isnull=True)
+    event = period.disruption_event
+
+    (row,) = _client(oic).get("/api/equipments/maintenance-status/").data["periods"]
+    assert (row["recovery_status"], row["action_required"], row["action"]) == ("UNKNOWN", False, "")
+
+    if event is not None:
+        event.expected_recovery_at = timezone.now() + timedelta(hours=6)
+        event.save(update_fields=["expected_recovery_at"])
+        (row,) = _client(oic).get("/api/equipments/maintenance-status/").data["periods"]
+        assert (row["recovery_status"], row["action_required"]) == ("EXPECTED", False)
+        assert row["expected_recovery_at"]
+
+        event.expected_recovery_at = timezone.now() - timedelta(hours=1)
+        event.save(update_fields=["expected_recovery_at"])
+        (row,) = _client(oic).get("/api/equipments/maintenance-status/").data["periods"]
+        assert (row["recovery_status"], row["action_required"]) == ("DELAYED", True)
+        assert "confirm the equipment's status" in row["action"]
