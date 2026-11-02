@@ -406,6 +406,13 @@ SLOTS_ALREADY_OCCUPIED_MESSAGE = (
 
 ISTEM_PORTAL_URL = "https://www.istem.gov.in/"
 
+def _istem_automatic_status(booking):
+    """The portal's own I-STEM record for this booking when automatic FBR is on (see iic_booking.istem.booking_status)."""
+    from iic_booking.istem.booking_status import automatic_status
+
+    return automatic_status(booking)
+
+
 def _booking_requires_istem_fbr_results_block(booking) -> bool:
     """True when booking is in the I-STEM FBR workflow and FBR is not yet executed."""
     st = booking.istem_fbr_status
@@ -5512,6 +5519,7 @@ def _book_equipment_impl(request, pk):
                 "require_istem_fbr": charge_profile_requires_istem_fbr(charge_profile),
                 "istem_portal_url": get_equipment_istem_portal_url(equipment),
                 "istem_fbr_status": booking.istem_fbr_status,
+                "istem_automatic": _istem_automatic_status(booking),
             }
             if input_values_adjusted_for_single_slot[0]:
                 resp_data["input_values_adjusted"] = True
@@ -14711,6 +14719,11 @@ def update_booking_istem_fbr(request, booking_id):
             )
         return Response(
             {"error": "This FBR has already been marked as verified."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if _istem_automatic_status(booking) is not None:
+        return Response(
+            {"error": "This booking is registered on I-STEM by the portal; no FBR number needs to be entered."},
             status=status.HTTP_400_BAD_REQUEST,
         )
     raw = (request.data.get("istem_fbr_number") if isinstance(request.data, dict) else None) or ""
