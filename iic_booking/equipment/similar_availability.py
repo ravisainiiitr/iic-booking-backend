@@ -58,16 +58,13 @@ def earliest_open_slot(equipment, user, *, now=None) -> dict[str, Any] | None:
             is_admin=False,
             is_external=UserType.is_external_user(getattr(user, "user_type", None)),
         )
-    time_from = getattr(equipment, "weekly_view_time_from", None)
-    time_to = getattr(equipment, "weekly_view_time_to", None)
+    from .slot_window import slot_in_window
+
     mode_schedules = None
     if not bypasses_multimode_restrictions(user) and multimode_enabled_for_equipment(equipment):
         mode_schedules = _family_schedules(equipment)
     for slot in qs[:40]:
-        start, end = timezone.localtime(slot.start_datetime), timezone.localtime(slot.end_datetime)
-        if time_from is not None and start.time() < time_from:
-            continue
-        if time_to is not None and end.time() > time_to and end.date() == start.date():
+        if not slot_in_window(equipment, slot):
             continue
         if mode_schedules is not None and slot_mode_overlay(equipment, slot, mode_schedules) is not None:
             continue
