@@ -21,7 +21,12 @@ def run_istem_sync(limit: int = 50) -> dict:
         return {"skipped": True}
     queued = enqueue_eligible(limit=limit)
     executions = enqueue_eligible_executions(limit=limit)
-    results = process_due_jobs(limit=limit)
-    summary = {"queued": queued, "queued_executions": executions, "processed": len(results)}
+    processed = 0
+    for _ in range(3):  # a job can queue the next one (Confirm Booking follows Create Booking)
+        results = process_due_jobs(limit=limit)
+        processed += len(results)
+        if not results:
+            break
+    summary = {"queued": queued, "queued_executions": executions, "processed": processed}
     logger.info("istem sync: %s", summary)
     return summary
