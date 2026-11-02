@@ -191,6 +191,21 @@ def _estimate_confidence(*, escalate: bool, provider: str, text: str, retrieval_
     return min(0.92, 0.7 + 0.04 * min(hit_count, 5))
 
 
+def _refined_title(current: str, hint: str) -> str | None:
+    """A provisional title ("FESEM") followed by a concrete step about it ("Zeiss Gemini FESEM booking"): keep the
+    user's short name and add the step ("FESEM booking"). None when the hint is not about the current title."""
+    cur, words = (current or "").split(), (hint or "").split()
+    if not cur or len(cur) > 3 or len(words) <= len(cur):
+        return None
+    low = [w.lower() for w in words]
+    target = [w.lower() for w in cur]
+    for i in range(len(low) - len(target)):
+        if low[i:i + len(target)] == target:
+            rest = words[i + len(target):]
+            return " ".join([*cur, *rest]) if rest else None
+    return None
+
+
 def create_conversation(*, user, title: str = "") -> Conversation:
     ctx = build_context(user)
     conv = Conversation.objects.create(
@@ -301,8 +316,11 @@ def _reply_deterministic(*, user, conversation: Conversation, text: str, det: di
             },
         )
         untitled = not conversation.title or conversation.title == "New conversation"
+        refined = _refined_title(conversation.title, title_hint) if title_hint and not untitled else None
         if title_hint and replace_title and conversation.title == replace_title:
             conversation.title = title_hint[:80]
+        elif refined:
+            conversation.title = refined[:80]
         elif untitled and not title_defer:
             conversation.title = (title_hint or text)[:80]
         conversation.updated_at = timezone.now()

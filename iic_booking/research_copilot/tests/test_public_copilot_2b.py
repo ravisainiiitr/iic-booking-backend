@@ -115,7 +115,7 @@ class PublicFlagDefaultOffTests(SimpleTestCase):
 
 class EstimateToolTests(SimpleTestCase):
     def test_estimate_returns_numeric(self):
-        eq = SimpleNamespace(id=1, name="FESEM", slot_duration_minutes=30, profile_type="SAMPLE")
+        eq = SimpleNamespace(id=1, pk=1, name="FESEM", slot_duration_minutes=30, profile_type="SAMPLE")
         cp = SimpleNamespace(profile_type="SAMPLE")
         qs = MagicMock()
         qs.first.return_value = cp
