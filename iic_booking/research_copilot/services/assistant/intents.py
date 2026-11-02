@@ -297,6 +297,8 @@ _STAFF_APPROVALS_RE = re.compile(
     r"\b(approval|approvals)\s+(queue|pending|list)\b|\bto\s+approve\b"
 )
 _STAFF_QUEUE_RE = re.compile(r"\b(waitlist|waiting\s+list|urgent(\s+request)?s?)\s+(queue|requests?\s+(for|on)\s+my)\b|\b(queue)\s+(on|for)\s+my\b")
+_EXCHANGE_RE = re.compile(r"\b(exchange|exchanges|exchanging|swap|swaps|swapping|trade|transfer)\b")
+_FAILED_RE = re.compile(r"\b(fail|fails|failed|failing|didn'?t\s+go\s+through|did\s+not\s+go\s+through|could\s*n[o']t\s+book|unable\s+to\s+book)\b")
 _LIST_RE = re.compile(
     rf"\b(my|mine|show|list|view|see|display|check|get|give|all|recent|latest|last|upcoming|future|next|past|previous|old|"
     rf"history|pending|completed|cancelled|canceled|confirmed|booked|refunded|processing|waitlisted|current|active|scheduled)\b"
@@ -441,6 +443,11 @@ def detect(text: str) -> Detected | None:
         return Detected("my_research", {"howto": howto})
     if _REPORTS_RE.search(norm) and not _RESULTS_RE.search(norm):
         return Detected("reports")
+
+    # Swapping a booked slot with another user is the Slot exchanges page, and "why did my booking fail" is My booking
+    # attempts (portal actions), not a booking list.
+    if (_EXCHANGE_RE.search(norm) or _FAILED_RE.search(norm)) and not ref:
+        return None
 
     # Bookings: details for a reference, otherwise a list.
     if ref and (not howto or _DETAILS_RE.search(norm)):
