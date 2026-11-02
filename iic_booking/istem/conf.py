@@ -90,6 +90,11 @@ def confirm_enabled() -> bool:
     return bool(_setting("ISTEM_CONFIRM_ENABLED", False))
 
 
+def automatic_fbr_enabled() -> bool:
+    """The portal itself creates, confirms and executes the I-STEM booking (no FBR number typed in by the user)."""
+    return istem_mode() == MODE_LIVE and bool(_setting("ISTEM_AUTOMATIC_FBR", False))
+
+
 def auto_confirm_enabled() -> bool:
     """Queue Confirm Booking automatically after Create Booking (bookings need no manual confirmation on the portal)."""
     return confirm_enabled() and bool(_setting("ISTEM_AUTO_CONFIRM", True))

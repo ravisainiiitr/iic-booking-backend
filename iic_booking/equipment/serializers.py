@@ -3904,6 +3904,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     cancel_block_reason = serializers.SerializerMethodField()
     cancel_block_message = serializers.SerializerMethodField()
     istem_fbr_status_display = serializers.SerializerMethodField()
+    istem_automatic = serializers.SerializerMethodField()
     istem_portal_url = serializers.SerializerMethodField()
     istem_fbr_status_url = serializers.SerializerMethodField()
     require_istem_fbr = serializers.SerializerMethodField()
@@ -4210,6 +4211,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'istem_fbr_status_display',
             'istem_fbr_invalid_reason',
             'istem_fbr_executed_at',
+            'istem_automatic',
             'istem_portal_url',
             'istem_fbr_status_url',
             'require_istem_fbr',
@@ -4249,6 +4251,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'istem_fbr_status_display',
             'istem_fbr_invalid_reason',
             'istem_fbr_executed_at',
+            'istem_automatic',
         ]
 
     def get_istem_fbr_status_display(self, obj):
@@ -4256,6 +4259,12 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
         if not st:
             return None
         return dict(IstemFbrStatus.choices).get(st, st)
+
+    def get_istem_automatic(self, obj):
+        """The I-STEM record the portal keeps for this booking when automatic FBR is on (else None)."""
+        from iic_booking.istem.booking_status import automatic_status
+
+        return automatic_status(obj)
 
     def get_istem_portal_url(self, obj):
         from .models import get_equipment_istem_portal_url
@@ -4716,6 +4725,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
     disruption_kind = serializers.CharField(read_only=True, allow_null=True)
     disruption_release_slot_status = serializers.CharField(read_only=True, allow_null=True)
     istem_fbr_status_display = serializers.SerializerMethodField()
+    istem_automatic = serializers.SerializerMethodField()
     istem_portal_url = serializers.SerializerMethodField()
     istem_fbr_status_url = serializers.SerializerMethodField()
     require_istem_fbr = serializers.SerializerMethodField()
@@ -4824,6 +4834,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
             'istem_fbr_status_display',
             'istem_fbr_invalid_reason',
             'istem_fbr_executed_at',
+            'istem_automatic',
             'oic_contacts',
         ]
 
@@ -4832,6 +4843,12 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
         if not st:
             return None
         return dict(IstemFbrStatus.choices).get(st, st)
+
+    def get_istem_automatic(self, obj):
+        """The I-STEM record the portal keeps for this booking when automatic FBR is on (else None)."""
+        from iic_booking.istem.booking_status import automatic_status
+
+        return automatic_status(obj)
 
     def get_istem_portal_url(self, obj):
         from .models import get_equipment_istem_portal_url

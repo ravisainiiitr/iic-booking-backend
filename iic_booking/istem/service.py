@@ -777,8 +777,21 @@ def _run_execute_fbr(job: IstemOutboxJob, client_factory) -> str:
         _set_link(link, SyncState.EXECUTED, reason=reason, attempt=attempt, review="", payment_id=response.payment_id,
                   executed_at=link.executed_at or timezone.now(), remote_status=RemoteStatus.EXECUTED,
                   remote_status_raw="Executed", remote_status_checked_at=timezone.now())
+        _record_executed_fbr_on_booking(link)
         finish_job(job, JobState.DONE)
     return JobState.DONE
+
+
+def _record_executed_fbr_on_booking(link) -> None:
+    """An FBR executed by the portal is a verified FBR: the booking's FBR fields say so, which also releases results that
+    wait for a verified FBR (the same fields the manual FBR workflow sets when the Officer in Charge verifies)."""
+    from iic_booking.equipment.models import Booking, IstemFbrStatus
+
+    if not conf.automatic_fbr_enabled():
+        return  # the manual FBR workflow keeps its own fields
+    Booking.objects.filter(pk=link.booking_id).update(
+        istem_fbr_number=(link.fbr_no or "")[:128], istem_fbr_status=IstemFbrStatus.EXECUTED,
+        istem_fbr_executed_at=timezone.now(), istem_fbr_invalid_reason="", updated_at=timezone.now())
 
 
 # --- read-only verification -----------------------------------------------------------------------------------------
