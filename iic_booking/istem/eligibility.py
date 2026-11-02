@@ -61,17 +61,22 @@ def evaluate(booking) -> tuple[bool, str]:
 
 
 def evaluate_execute(booking, link) -> tuple[bool, str]:
-    """(eligible, reason) for FBR Execute: the local booking is genuinely completed and paid, and the I-STEM booking
-    was created and confirmed (request_id and confirmation_id known)."""
+    """(eligible, reason) for FBR Execute: the local booking is genuinely completed and paid (or cancelled with a
+    retained amount recorded on the link), and the I-STEM booking was created and confirmed (request_id and
+    confirmation_id known)."""
     from iic_booking.equipment.booking_payment_service import booking_payment_fully_settled
 
     if conf.istem_mode() == conf.MODE_OFF:
         return False, "integration off"
     if not conf.execute_enabled():
         return False, "FBR Execute disabled"
-    if booking.status != "COMPLETED" or not booking.completed_at:
+    if link is not None and link.retained_amount is not None:
+        # A late cancellation closed for the fee it kept; the payment was settled before the booking was cancelled.
+        if booking.status != "CANCELLED":
+            return False, f"retained amount recorded but booking status is {booking.status}"
+    elif booking.status != "COMPLETED" or not booking.completed_at:
         return False, f"booking status is {booking.status}"
-    if not booking_payment_fully_settled(booking):
+    elif not booking_payment_fully_settled(booking):
         return False, "payment not settled"
     if link is None or not link.request_id:
         return False, "no I-STEM request_id"

@@ -79,10 +79,22 @@ def otp_linking_enabled() -> bool:
 
 
 def silent_fields() -> dict:
-    """``{ISTEM_SILENT_MODE_FIELD: ISTEM_SILENT_MODE_VALUE}`` sent with every booking call so I-STEM emails nobody,
-    or {} while the field is unset. I-STEM has been asked for this flag; its name is set once they publish it."""
-    name = str(_setting("ISTEM_SILENT_MODE_FIELD", "") or "").strip()
-    return {name: str(_setting("ISTEM_SILENT_MODE_VALUE", "1"))} if name else {}
+    """``{ISTEM_SILENT_MODE_FIELD: ISTEM_SILENT_MODE_VALUE}`` sent with the booking calls I-STEM would otherwise email
+    the user and lab in charge about, or {} when the field is set empty. [TEAM 2026-10-30] ``silent`` = true; the body
+    is form-encoded, so the value travels as the text "true"."""
+    name = str(_setting("ISTEM_SILENT_MODE_FIELD", "silent") or "").strip()
+    return {name: str(_setting("ISTEM_SILENT_MODE_VALUE", "true"))} if name else {}
+
+
+def internal_billing() -> dict:
+    """The institute's billing identity for internal bookings ([TEAM 2026-10-30]: billing_user_name "IIT Roorkee" with
+    the institute address; the actual user is still recorded through public_user_id). The GSTIN may be empty."""
+    return {
+        "billing_user_name": str(_setting("ISTEM_INTERNAL_BILLING_NAME", "") or "").strip(),
+        "billing_address": str(_setting("ISTEM_INTERNAL_BILLING_ADDRESS", "") or "").strip(),
+        "billing_state": str(_setting("ISTEM_INTERNAL_BILLING_STATE", "") or "").strip(),
+        "gstin": str(_setting("ISTEM_INTERNAL_GSTIN", "") or "").strip().upper(),
+    }
 
 
 def confirm_enabled() -> bool:

@@ -150,6 +150,58 @@ def test_charge_profile_without_a_single_rate_blocks_eq_rate():
     assert "eq_rate" in _payload(booking).errors
 
 
+def test_empty_gstin_is_sent_as_the_placeholder_istem_accepts():
+    # [TEAM 2026-10-30] booking_gstn is mandatory but only needs to be non-empty.
+    p = _payload(ready_booking(gstin="")).payload
+    assert p["booking_gstn"] == p["gstin"] == "NA"
+
+
+def test_empty_gstin_is_blocked_when_the_placeholder_is_switched_off(settings):
+    settings.ISTEM_GSTIN_PLACEHOLDER = ""
+    assert "booking_gstn" in _payload(ready_booking(gstin="")).errors
+
+
+def _internal_booking(**kwargs):
+    from iic_booking.users.models.user_type import UserType
+    from iic_booking.users.tests.factories import UserFactory
+
+    user = UserFactory(user_type=UserType.FACULTY, name="Ravi Kumar", admin_approved=True)
+    booking = make_booking(user=user, **kwargs)
+    booking.user_type_snapshot = UserType.FACULTY
+    booking.save(update_fields=["user_type_snapshot"])
+    map_equipment(booking.equipment)
+    map_codes(booking.equipment, user_type=UserType.FACULTY)
+    link_user(user)
+    return booking
+
+
+def test_internal_booking_is_billed_to_the_institute_with_the_user_still_recorded():
+    booking = _internal_booking(with_billing=False, total=Decimal("0.00"))
+    result = _payload(booking)
+    assert result.ok, result.errors
+    p = result.payload
+    assert (p["billing_user_name"], p["billing_state"], p["booking_gstn"]) == ("IIT Roorkee", "Uttarakhand", "NA")
+    assert "Roorkee" in p["billing_address"]
+    assert p["public_user_id"] == IstemUserLink.objects.get(user=booking.user).public_user_id
+    assert p["total_est_amt"] == "0"  # fully grant-funded bookings may be zero
+
+
+def test_internal_billing_uses_the_configured_gstin(settings):
+    settings.ISTEM_INTERNAL_GSTIN = "05aaaai0000a1z5"
+    assert _payload(_internal_booking(with_billing=False)).payload["booking_gstn"] == "05AAAAI0000A1Z5"
+
+
+def test_internal_billing_needs_its_settings(settings):
+    settings.ISTEM_INTERNAL_BILLING_ADDRESS = ""
+    settings.ISTEM_INTERNAL_BILLING_NAME = "IIT-R"
+    errors = _payload(_internal_booking(with_billing=False)).errors
+    assert {"billing_address", "billing_user_name"} <= set(errors)
+
+
+def test_internal_user_with_own_billing_profile_is_billed_to_it():
+    assert _payload(_internal_booking()).payload["billing_user_name"] == "Asha Labs"
+
+
 def test_missing_billing_profile_blocks_billing_fields():
     booking = ready_booking(with_billing=False)
     errors = _payload(booking).errors

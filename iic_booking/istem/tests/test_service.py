@@ -191,7 +191,7 @@ def test_create_booking_success_records_ids_attempt_and_events(live):
     attempt = IstemApiAttempt.objects.get()
     assert attempt.outcome == AttemptOutcome.SUCCESS
     assert set(transport.calls[1]["data"]) == (
-        set(contract.CREATE_BOOKING_MANDATORY_FIELDS) | set(contract.CREATE_BOOKING_DESCRIPTIVE_FIELDS)
+        set(contract.CREATE_BOOKING_MANDATORY_FIELDS) | set(contract.CREATE_BOOKING_DESCRIPTIVE_FIELDS) | {"silent"}
     )
     states = list(IstemSyncEvent.objects.filter(booking_link=link).order_by("pk").values_list("to_state", flat=True))
     assert states[-2:] == [SyncState.CREATE_IN_FLIGHT, SyncState.CREATED]

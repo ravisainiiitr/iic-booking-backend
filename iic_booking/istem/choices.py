@@ -87,6 +87,7 @@ class Operation(models.TextChoices):
     CREATE_BOOKING = "CREATE_BOOKING", _("Create booking")
     CONFIRM_BOOKING = "CONFIRM_BOOKING", _("Confirm booking")
     EXECUTE_FBR = "EXECUTE_FBR", _("FBR execute")
+    RESCHEDULE_BOOKING = "RESCHEDULE_BOOKING", _("Reschedule booking")
     GET_BOOKINGS = "GET_BOOKINGS", _("Get bookings")
     GET_FBR_DETAILS = "GET_FBR_DETAILS", _("Get FBR details")
     REFRESH_STATUS = "REFRESH_STATUS", _("Refresh status")

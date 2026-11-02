@@ -1,7 +1,8 @@
 """Builds I-STEM request payloads from local data. Pure validation and formatting: no network, no writes.
 
 Every mandatory value comes from real local data or an administrator-maintained mapping. When a value cannot be
-established the field is reported in ``errors`` and nothing is substituted.
+established the field is reported in ``errors`` and nothing is substituted (the one exception is the GSTIN
+placeholder I-STEM accepts where no GSTIN applies).
 """
 
 from __future__ import annotations
@@ -222,6 +223,46 @@ def _add_descriptive_fields(booking, p: dict, minutes: int) -> None:
     p["sample_rows"] = "[]"
 
 
+def is_internal_booking(booking) -> bool:
+    """Booked under an internal (IIT Roorkee) user type, as recorded on the booking, else the user's current type."""
+    from iic_booking.users.models.user_type import UserType
+
+    user_type = booking.user_type_snapshot or getattr(booking.user, "user_type", "") or ""
+    return UserType.is_internal_user(user_type)
+
+
+def _add_gstin(p: dict, errors: dict, raw) -> None:
+    """booking_gstn: a valid GSTIN, or the placeholder when none applies ([TEAM 2026-10-30]: only non-empty is
+    required). A malformed GSTIN is still refused rather than replaced."""
+    gstin = (raw or "").strip().upper()
+    if not gstin:
+        placeholder = conf.gstin_placeholder()
+        if placeholder:
+            p["booking_gstn"] = placeholder
+        else:
+            errors["booking_gstn"] = "GSTIN is empty and ISTEM_GSTIN_PLACEHOLDER is not set"
+    elif not GSTIN.match(gstin):
+        errors["booking_gstn"] = "GSTIN must be 15 letters/digits"
+    else:
+        p["booking_gstn"] = gstin
+
+
+def _add_internal_billing(p: dict, errors: dict) -> None:
+    """Internal bookings are billed to the institute ([TEAM 2026-10-30]); the user stays the public_user_id."""
+    institute = conf.internal_billing()
+    name = institute["billing_user_name"]
+    if not name or not ALPHA_SPACES.match(name):
+        errors["billing_user_name"] = "ISTEM_INTERNAL_BILLING_NAME must be set (alphabets and spaces only)"
+    else:
+        p["billing_user_name"] = name
+    for key, setting in (("billing_address", "ISTEM_INTERNAL_BILLING_ADDRESS"), ("billing_state", "ISTEM_INTERNAL_BILLING_STATE")):
+        if institute[key]:
+            p[key] = institute[key]
+        else:
+            errors[key] = f"{setting} is not set"
+    _add_gstin(p, errors, institute["gstin"])
+
+
 def build_create_booking_payload(booking, user_link) -> MappingResult:
     """The 19 fields I-STEM confirmed as mandatory. Optional fields are omitted (permitted by I-STEM)."""
     result = MappingResult()
@@ -270,7 +311,10 @@ def build_create_booking_payload(booking, user_link) -> MappingResult:
         p["analysis_type"] = value
 
     billing = getattr(booking.user, "external_billing_profile", None)
-    if billing is None:
+    if billing is None and is_internal_booking(booking):
+        # An internal user with a billing profile of their own (e.g. an incubated startup) is billed to it instead.
+        _add_internal_billing(p, result.errors)
+    elif billing is None:
         for key in ("billing_user_name", "billing_address", "billing_state"):
             result.errors[key] = "the booking user has no billing profile"
         if conf.gstin_placeholder():
@@ -296,16 +340,7 @@ def build_create_booking_payload(booking, user_link) -> MappingResult:
             result.errors["billing_state"] = "billing state is empty"
         else:
             p["billing_state"] = state
-        gstin = (billing.gstin or "").strip().upper()
-        if not gstin:
-            if conf.gstin_placeholder():
-                p["booking_gstn"] = conf.gstin_placeholder()
-            else:
-                result.errors["booking_gstn"] = "GSTIN is empty and ISTEM_GSTIN_PLACEHOLDER is not set"
-        elif not GSTIN.match(gstin):
-            result.errors["booking_gstn"] = "GSTIN must be 15 letters/digits"
-        else:
-            p["booking_gstn"] = gstin
+        _add_gstin(p, result.errors, billing.gstin)
 
     p["request_date"] = format_booking_datetime(booking.created_at)
     vid = (booking.virtual_booking_id or "").strip()
@@ -414,20 +449,26 @@ def build_confirm_payload(booking, link, *, approved_on, booking_payload: dict |
 
 # --- FBR Execute ----------------------------------------------------------------------------------------------------
 
+def _money(value) -> tuple[str | None, str | None]:
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, TypeError):
+        return None, "the amount is not a number"
+    if amount < 0 or amount != amount.quantize(Decimal("0.01")):
+        return None, "the amount is negative or has more than two decimal places"
+    return format(amount.quantize(Decimal("0.01")), "f"), None
+
+
 def _final_amount(booking) -> tuple[str | None, str | None]:
     """(amount, error). ``Booking.total_charge`` of the completed booking exactly as recorded locally (net of reward
     discount, including any return-shipping fee), never recalculated, estimated or rounded. Refused while a charge
-    recalculation is pending. Whether this is the amount I-STEM expects is a business decision still to be confirmed."""
+    recalculation is pending. ₹0 is valid ([TEAM 2026-10-30]: fully grant-funded bookings)."""
     pending = booking.charge_recalculation_pending_amount
     if pending is not None and Decimal(pending) != 0:
         return None, "a charge recalculation is still pending, so the final amount is not settled"
-    try:
-        amount = Decimal(str(booking.total_charge))
-    except (InvalidOperation, TypeError):
+    if booking.total_charge is None:
         return None, "the booking has no total charge"
-    if amount < 0 or amount != amount.quantize(Decimal("0.01")):
-        return None, "the total charge is negative or has more than two decimal places"
-    return format(amount.quantize(Decimal("0.01")), "f"), None
+    return _money(booking.total_charge)
 
 
 def build_execute_payload(booking, link) -> MappingResult:
@@ -437,7 +478,12 @@ def build_execute_payload(booking, link) -> MappingResult:
     to the user" [SPEC]: the IST date of the first allocated local slot (the slot sent as allocated_timings_from).
     completion_date is the IST date of ``Booking.completed_at``. Neither may be in the future, and the service cannot
     have completed before its slot date.
+
+    A late cancellation that kept part of the fee (``link.retained_amount`` set) is closed instead of cancelled
+    ([TEAM 2026-10-30]); see ``_build_retention_payload``.
     """
+    if link.retained_amount is not None:
+        return _build_retention_payload(booking, link)
     result = MappingResult()
     p = result.payload
     request_id = str(link.request_id or "").strip()
@@ -473,10 +519,50 @@ def build_execute_payload(booking, link) -> MappingResult:
         result.errors["final_amount"] = error
     else:
         p["final_amount"] = amount
+    _add_updated_by(p, result.errors)
+    return result
+
+
+def _add_updated_by(p: dict, errors: dict) -> None:
     updated_by = conf.execute_updated_by()
     if updated_by:
         if re.fullmatch(r"[A-Za-z0-9_ ]+", updated_by):
             p["updated_by"] = updated_by
         else:
-            result.errors["updated_by"] = "ISTEM_EXECUTE_UPDATED_BY has unsupported characters"
+            errors["updated_by"] = "ISTEM_EXECUTE_UPDATED_BY has unsupported characters"
+
+
+def _build_retention_payload(booking, link) -> MappingResult:
+    """FBR Execute closing a cancelled booking for the fee it kept. final_amount is ``link.retained_amount`` as an
+    administrator recorded it (the portal does not compute deductions yet); completion_date is the cancellation date
+    (``link.retained_on``); allocation_date is the slot date, or the cancellation date when the slot was still ahead
+    (I-STEM refuses future allocation dates and a completion before allocation)."""
+    result = MappingResult()
+    p = result.payload
+    if booking.status != "CANCELLED":
+        result.errors["final_amount"] = f"a retained amount is recorded but the booking is {booking.status}, not cancelled"
+    for key in ("request_id", "confirmation_id"):
+        value = str(getattr(link, key) or "").strip()
+        if value.isdigit():
+            p[key] = value
+        else:
+            result.errors[key] = f"no {key} on the link"
+    cancelled = link.retained_on
+    if cancelled is None:
+        result.errors["completion_date"] = "the cancellation date is not recorded"
+    elif cancelled > ist_today():
+        result.errors["completion_date"] = "the cancellation date is in the future"
+    else:
+        p["completion_date"] = cancelled.strftime(contract.FBR_EXECUTE_DATE_FORMAT)
+        start, _ = booking_slot_window(booking)
+        allocated = min(ist(start).date(), cancelled) if start else cancelled
+        p["allocation_date"] = allocated.strftime(contract.FBR_EXECUTE_DATE_FORMAT)
+    amount, error = _money(link.retained_amount)
+    if error:
+        result.errors["final_amount"] = error
+    elif Decimal(amount) == 0:
+        result.errors["final_amount"] = "nothing was retained: a full refund is cancelled on I-STEM, not executed"
+    else:
+        p["final_amount"] = amount
+    _add_updated_by(p, result.errors)
     return result

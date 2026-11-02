@@ -888,9 +888,14 @@ ISTEM_REGISTRATION_TEST_KEY = env("ISTEM_REGISTRATION_TEST_KEY", default="")
 # Testing against I-STEM STAGING only: OTPs for made-up @example.com I-STEM users go to this inbox instead (that domain
 # receives no mail). Ignored when empty or when ISTEM_BASE_URL is not a staging address; real addresses are never redirected.
 ISTEM_TEST_OTP_INBOX = env("ISTEM_TEST_OTP_INBOX", default="")
-# Silent-mode flag requested from I-STEM (no I-STEM emails for API bookings); empty until I-STEM names the field.
-ISTEM_SILENT_MODE_FIELD = env("ISTEM_SILENT_MODE_FIELD", default="")
-ISTEM_SILENT_MODE_VALUE = env("ISTEM_SILENT_MODE_VALUE", default="1")
+# I-STEM's silent mode (no I-STEM emails for API bookings): "silent=true" on Create/Confirm/Cancel. Empty field = off.
+ISTEM_SILENT_MODE_FIELD = env("ISTEM_SILENT_MODE_FIELD", default="silent")
+ISTEM_SILENT_MODE_VALUE = env("ISTEM_SILENT_MODE_VALUE", default="true")
+# Internal bookings are billed to the institute on I-STEM; the actual user is still the booking's public_user_id.
+ISTEM_INTERNAL_BILLING_NAME = env("ISTEM_INTERNAL_BILLING_NAME", default="IIT Roorkee")
+ISTEM_INTERNAL_BILLING_ADDRESS = env("ISTEM_INTERNAL_BILLING_ADDRESS", default="Indian Institute of Technology Roorkee, Roorkee, 247667, India")
+ISTEM_INTERNAL_BILLING_STATE = env("ISTEM_INTERNAL_BILLING_STATE", default="Uttarakhand")
+ISTEM_INTERNAL_GSTIN = env("ISTEM_INTERNAL_GSTIN", default="")
 ISTEM_CONFIRM_ENABLED = env.bool("ISTEM_CONFIRM_ENABLED", default=False)
 ISTEM_CONFIRM_APPROVED_BY = env("ISTEM_CONFIRM_APPROVED_BY", default="")
 # With confirmation on, Confirm Booking is queued right after a successful Create Booking: the user picks an open slot
