@@ -82,8 +82,9 @@ urlpatterns = [
     path("bookings/<int:booking_id>/invoice/copy/", views.booking_copy_request, name="booking-invoice-copy"),
     path("invoice-copies/", views.my_copies_view, name="my-invoice-copies"),
     path("invoice-copies/<int:copy_id>/cancel/", views.copy_cancel_view, name="invoice-copy-cancel"),
-    # Sample shipment label (no QR code since 31 Oct 2026: staff record receipt against the booking ID)
+    # Sample shipment label (QR code scanned once at the receiving office, 2 Nov 2026)
     path("bookings/<int:booking_id>/sample-label/", views.booking_sample_label, name="booking-sample-label"),
+    path("staff/sample-receipt/scan/", views.staff_sample_scan, name="staff-sample-scan"),
     # Accounts In Charge
     path("staff/invoice-requests/", views.staff_invoice_requests, name="staff-invoice-requests"),
     path("staff/invoice-requests/<int:request_id>/upload/", views.staff_invoice_upload, name="staff-invoice-upload"),
