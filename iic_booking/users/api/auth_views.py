@@ -3307,6 +3307,7 @@ def profile_me_onboarding(request):
         try:
             onboarding.save_step(request.user, str(request.data.get("step") or ""), request.data)
         except onboarding.OnboardingError as exc:
-            return Response({"error": exc.message, "field": exc.field}, status=status.HTTP_400_BAD_REQUEST)
+            # ``error_field`` (not ``field``): the website shows ``error`` as is and would print other keys as fields.
+            return Response({"error": exc.message, "error_field": exc.field}, status=status.HTTP_400_BAD_REQUEST)
         request.user.refresh_from_db()
     return Response(onboarding.status(request.user))

@@ -126,11 +126,44 @@ def test_onboarding_steps_one_by_one_then_password_sign_in(on, mailoutbox):
     end = (timezone.localdate() + timedelta(days=200)).isoformat()
     assert api.post(url, {"step": "programme", "program_end_date": end}, format="json").data["steps"] == ["password"]
     bad = api.post(url, {"step": "password", "password": "Str0ng-pass!", "password_confirm": "other"}, format="json")
-    assert bad.status_code == 400 and bad.data["field"] == "password_confirm"
+    assert bad.status_code == 400 and bad.data["error_field"] == "password_confirm" and "field" not in bad.data
     done = api.post(url, {"step": "password", "password": "Str0ng-pass!x", "password_confirm": "Str0ng-pass!x"}, format="json")
     assert done.data == {**done.data, "required": False, "steps": []}
     login = APIClient().post("/api/auth/login/", {"email": "neha@lab.example.org", "password": "Str0ng-pass!x"}, format="json")
     assert login.status_code == 200, login.data
+
+
+def test_unlisted_organisation_is_requested_and_joined_on_approval(on, mailoutbox):
+    from iic_booking.users.models import OrganizationRequest
+
+    link_token = _verified(mailoutbox)
+    token = APIClient().post("/api/istem/register/complete/", {"link_token": link_token, "user_type": UserType.EXTERNAL},
+                             format="json").data["token"]
+    api = APIClient(HTTP_AUTHORIZATION=f"Token {token}")
+    url = "/api/profiles/me/onboarding/"
+    short = api.post(url, {"step": "organisation", "request_organisation": True, "organisation_name": "AI",
+                           "state": "uttarakhand"}, format="json")
+    assert short.status_code == 400 and short.data["error_field"] == "organisation_name"
+    res = api.post(url, {"step": "organisation", "request_organisation": True,
+                         "organisation_name": "  Asha  Institute of Science ", "state": "uttarakhand"}, format="json")
+    assert res.status_code == 200, res.data
+    assert "organisation" not in res.data["steps"] and res.data["organisation_requested"] == "Asha Institute of Science"
+    req = OrganizationRequest.objects.get()
+    assert (req.name, req.state, req.external_subcategory, req.email) == (
+        "Asha Institute of Science", "uttarakhand", "educational_institute", "neha@lab.example.org")
+    # A second user from the same organisation joins the same pending request.
+    other = User.objects.create_user(email="other@lab.example.org", password=None, user_type=UserType.EXTERNAL)
+    from iic_booking.users import onboarding
+
+    onboarding.save_step(other, "organisation", {"request_organisation": True, "organisation_name": "asha institute of science",
+                                                 "state": "uttarakhand"})
+    assert OrganizationRequest.objects.count() == 1
+    # The IIC office approves it: both users move to the new organisation.
+    org = _org()
+    req.status, req.created_department = OrganizationRequest.Status.APPROVED, org
+    req.save()
+    assert set(User.objects.filter(department=org).values_list("email", flat=True)) == {
+        "neha@lab.example.org", "other@lab.example.org"}
 
 
 def test_internal_users_are_never_asked(on):
