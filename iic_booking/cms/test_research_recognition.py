@@ -218,3 +218,18 @@ def test_only_the_main_admin_switches_the_hall_of_frames():
     assert _client().post("/api/cms/recognition/hall/enabled/", {"enabled": True}, format="json").status_code in (
         401, 403)
     assert recognition.hall_enabled() is False
+
+
+def test_acknowledgers_for_the_hero_list_everyone_approved_even_with_the_hall_off():
+    recognition.set_hall_enabled(False)
+    chem = _dept("Chemistry")
+    a, b, hidden = _researcher("Asha Verma", chem), _researcher("Bala Iyer", chem), _researcher("Hidden One", chem)
+    _approved(a, days_ago=3)
+    _approved(a, days_ago=4, title="Second")
+    _approved(b, days_ago=2)
+    _approved(hidden)
+    _approved(_researcher("Pending Person", chem), status=EquipmentPublicationClaimStatus.PENDING)
+    RecognitionHide.objects.create(user=hidden, scope=RecognitionHide.Scope.HALL)
+    assert _client().get("/api/cms/hall-of-frames/").json()["results"] == []  # the Hall switch is unchanged
+    rows = _client().get("/api/cms/acknowledgers/").json()["results"]
+    assert [(r["researcher_name"], r["publication_count"]) for r in rows] == [("Asha Verma", 2), ("Bala Iyer", 1)]

@@ -7,9 +7,10 @@ external users under the external workflow, test accounts only while piloted):
   more than ``cancellation_free_hours`` (48) before -> no penalty; from then until ``cancellation_half_hours`` (24)
   before -> ``cancellation_half_penalty_percent`` (50) % penalty; less than that -> 100 % penalty (no refund).
   The refund goes to the wallet at once.
-* A lab disruption (equipment down, operator absent, other) carries no penalty. The user chooses the wallet (at
-  once) or a bank account; a bank refund is queued for SRIC and sent with the invoice requests on the first working
-  day of the week. The account is saved for next time.
+* A lab disruption (equipment down, operator absent, other) carries no penalty. When the instrument itself is
+  non-functional (equipment down / maintenance) the user chooses the wallet (at once) or a bank account; a bank
+  refund is queued for SRIC and sent with the invoice requests on the first working day of the week, and the
+  account is saved for next time. Other disruptions are refunded to the wallet.
 * What is refunded: the amount paid minus the non-refundable return shipping charge (and its GST). If a GST invoice
   has already been requested for the booking, the GST is not refunded here (SRIC settles the tax with the invoice);
   otherwise the GST on the refunded part is returned too. The user sees the figures before confirming.
@@ -167,13 +168,23 @@ def is_disrupted(booking) -> bool:
     )
 
 
+def instrument_non_functional(booking) -> bool:
+    """The disruption is the instrument itself (down or under maintenance): the only case refunded to a bank account.
+    Operator unavailable, analysis not possible or rejected files are refunded to the wallet (2 Nov 2026 policy)."""
+    from iic_booking.equipment.models import BookingDisruptionKind
+
+    return bool(getattr(booking, "maintenance_disruption_flag", False)) or (
+        getattr(booking, "disruption_kind", "") == BookingDisruptionKind.MAINTENANCE)
+
+
 def cancellation_quote(booking, *, now=None) -> dict:
     """What the owner would get back by cancelling now (shown before they confirm)."""
     s = _settings()
     start = first_slot_start(booking)
     if is_disrupted(booking):
         q = quote(booking, penalty_percent=0, tier="disruption", include_shipping=True)
-        return {"disruption": True, "bank_refund_allowed": True, **q.as_dict(), "first_slot_start": _iso(start)}
+        return {"disruption": True, "bank_refund_allowed": instrument_non_functional(booking), **q.as_dict(),
+                "first_slot_start": _iso(start)}
     if start is None:
         raise RefundPolicyError("Start time is not available.", code="no_start_time")
     now = now or timezone.now()
@@ -307,7 +318,7 @@ def cancel(user, booking_id, *, destination: str = "wallet", bank_account_id=Non
             raise RefundPolicyError("This booking has already been refunded.", status=409, code="already_refunded")
         info = cancellation_quote(booking)
         if destination == RefundDestination.BANK and not info["bank_refund_allowed"]:
-            raise RefundPolicyError("A refund to a bank account is offered only when the lab disrupts the booking.",
+            raise RefundPolicyError("A refund to a bank account is offered only when the instrument is non-functional.",
                                     code="bank_not_allowed")
         if expected_refund is not None and _money(expected_refund) != _money(info["refund"]):
             raise RefundPolicyError("The refund amount has changed since it was shown. Please check it again.",

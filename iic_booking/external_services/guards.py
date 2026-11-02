@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 
 from django.utils import timezone
 
@@ -49,19 +49,24 @@ def reschedule_window_refusal(actor, equipment, booking_user, dates):
     return None
 
 
-# External users reschedule a week's slots until Wednesday 20:30 of the week before, so the slots they release are open
-# when internal booking for that week opens at 21:00 on Wednesday. Later, only the Officer in Charge or the Main
-# Administrator reschedules (the user can message the lab from the booking details page).
-EXTERNAL_RESCHEDULE_CUTOFF_WEEKDAY = 2  # Wednesday
-EXTERNAL_RESCHEDULE_CUTOFF_TIME = time(20, 30)
+# External users reschedule or cancel without penalty up to 48 hours before the first slot (2 Nov 2026; the hours follow
+# ``ExternalServicesSettings.cancellation_free_hours``). Later, only the Officer in Charge or the Main Administrator
+# reschedules (the user can message the lab from the booking details page).
+EXTERNAL_CUTOFF_HOURS = 48
+
+
+def _cutoff_hours() -> int:
+    try:
+        from .models import ExternalServicesSettings
+
+        return int(ExternalServicesSettings.load().cancellation_free_hours or EXTERNAL_CUTOFF_HOURS)
+    except Exception:  # noqa: BLE001 - settings unavailable: the policy default
+        return EXTERNAL_CUTOFF_HOURS
 
 
 def external_reschedule_cutoff(first_slot_start) -> datetime:
-    """Wednesday 20:30 (local time) of the week before the week of ``first_slot_start``."""
-    local = timezone.localtime(first_slot_start)
-    monday = local.date() - timedelta(days=local.weekday())
-    cutoff_day = monday - timedelta(days=7) + timedelta(days=EXTERNAL_RESCHEDULE_CUTOFF_WEEKDAY)
-    return timezone.make_aware(datetime.combine(cutoff_day, EXTERNAL_RESCHEDULE_CUTOFF_TIME))
+    """48 hours (the free-cancellation hours) before ``first_slot_start``."""
+    return first_slot_start - timedelta(hours=_cutoff_hours())
 
 
 def external_reschedule_refusal(booking_user, first_slot_start, *, now=None):
@@ -73,9 +78,9 @@ def external_reschedule_refusal(booking_user, first_slot_start, *, now=None):
         return None
     return {
         "error": (
-            f"Slots of this week could be rescheduled until {timezone.localtime(cutoff):%A %d %b %Y, %H:%M}, so that "
-            "the released slots open to internal users at 21:00 that Wednesday. Please send a message to the lab "
-            "from the booking details page; the Officer in Charge or the Main Administrator can reschedule it."
+            f"This booking could be rescheduled by you until {timezone.localtime(cutoff):%A %d %b %Y, %H:%M} "
+            f"({_cutoff_hours()} hours before the slot). Please send a message to the lab from the booking details "
+            "page; the Officer in Charge or the Main Administrator can reschedule it."
         ),
         "code": "EXTERNAL_RESCHEDULE_CUTOFF",
         "cutoff": timezone.localtime(cutoff).isoformat(),
@@ -83,8 +88,7 @@ def external_reschedule_refusal(booking_user, first_slot_start, *, now=None):
 
 
 def external_free_cancellation(booking_user, first_slot_start, *, now=None) -> bool:
-    """External users cancel a week's slots without any penalty (full refund to the wallet) until the same Wednesday
-    20:30 cut-off, so the released slots are open when internal booking for that week opens at 21:00."""
+    """External users cancel without any penalty (full refund to the wallet) up to 48 hours before the first slot."""
     if first_slot_start is None or not is_external_booking_user(booking_user):
         return False
     return (now or timezone.now()) <= external_reschedule_cutoff(first_slot_start)
