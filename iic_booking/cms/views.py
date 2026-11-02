@@ -174,6 +174,20 @@ def hall_of_frames(request):
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
+def acknowledgers(request):
+    """Everyone whose publication acknowledging IIC has been approved, for the scrolling list in the home page hero
+    (most publications first). Independent of the Hall of Frames switch; researchers the Main Administrator took off
+    the home page are left out."""
+    from .recognition import hall_of_frames as build
+
+    return Response({"results": build(request=request, limit=ACKNOWLEDGERS_LIMIT)})
+
+
+ACKNOWLEDGERS_LIMIT = 200
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
 def researcher_of_the_month(request):
     """This month's Researchers of the Month (institute-wide and per department), chosen automatically from approved
     publications on the first request of the month. ``?department=<id>`` narrows to one department; ``?history=1``
