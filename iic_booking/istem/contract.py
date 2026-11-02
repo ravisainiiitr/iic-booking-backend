@@ -28,11 +28,19 @@ FBR_EXECUTE_PATH = "api/fbr-execute"  # POST, form
 # bookings for one status, newest request first; rows carry book_req_id, confirmation_id and fbc_no (the FBR number).
 GET_ALL_BOOKINGS_PATH = "api/get-all-bookings"
 # POST, form: request_id, cancelled_date, remarks, cancelled ("true"), cancelled_by. [STAGING] verified (by request_id).
+# [TEAM 2026-10-30] Only for a full refund. When part of the fee is kept (late cancellation), the booking is not
+# cancelled: FBR Execute closes it with the retained amount as final_amount. Neither call has a refund field, so the
+# retained share is kept in our own records against the FBR number.
 CANCEL_BOOKING_PATH = "api/cancel-booking"
+# POST, form: request_id, rescheduled_date (YYYY-MM-DD), rescheduled_from_time / rescheduled_to_time (booking datetime
+# format), reschedule_by, reschedule_count. [TEAM 2026-10-30] Fixed on I-STEM's side; only request_id identifies the
+# booking (confirmation_id / FBR number are refused); reschedule_count is required but I-STEM computes it itself.
+RESCHEDULE_BOOKING_PATH = "api/reschedule-booking"
+RESCHEDULE_COUNT_PLACEHOLDER = "1"
+RESCHEDULE_DATE_FORMAT = "%Y-%m-%d"
 
-# [STAGING] Not available there: public-user-lookup answers HTTP 404 (HTML), get-fbr-details answers "booking not
-# found" for every FBR (including bookings it has just created), reschedule-booking crashes with HTTP 500 once its
-# validation passes. The client falls back to Get Bookings / Get All Bookings where it can.
+# [STAGING] get-fbr-details answers "booking not found" for every FBR (including bookings it has just created); the
+# client falls back to Get Bookings / Get All Bookings.
 
 # [SPEC] securitySchemes.TokenAuth: apiKey in header "Token".
 TOKEN_HEADER = "Token"
@@ -137,11 +145,14 @@ NOT_APPLICABLE = "NA"
 # I-STEM reserves one-hour slots on a 24-hour grid starting at 00:00 IST; IIC slot lengths vary by instrument, so the
 # hourly slots covering a booking are sent (mapping.istem_hour_window).
 ISTEM_SLOT_HOURS = 1
-# [ASSUMED] Words in a Confirm Booking refusal meaning the hourly slot is already taken; I-STEM has not documented the
-# message yet (asked in the email to the I-STEM team). Such a refusal moves the booking to the next free hour.
+# [TEAM 2026-10-30] One Confirm Booking may cover several hours (allocated_timings_from/_to). Pending requests do not
+# block an hour; a confirmed booking does. A taken hour is HTTP 200 {"status": false, "message": "This slot is already
+# booked."} (the check is being added to Confirm Booking). Such a refusal moves the booking to the next free hour; the
+# other markers are kept in case the wording changes.
 SLOT_OCCUPIED_MARKERS = ("occupied", "already booked", "already allocated", "not available", "clash", "overlap")
-# Booking calls that carry the silent-mode flag when ISTEM_SILENT_MODE_FIELD is set (requested from I-STEM).
-SILENT_OPERATIONS = frozenset({"create_booking", "confirm_booking", "fbr_execute", "cancel_booking"})
+# [TEAM 2026-10-30] Calls that take ``silent`` (no I-STEM emails to the user and lab in charge). FBR Execute sends no
+# emails and needs no flag.
+SILENT_OPERATIONS = frozenset({"create_booking", "confirm_booking", "cancel_booking"})
 
 
 def slot_occupied(message: str) -> bool:

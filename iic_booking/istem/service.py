@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from decimal import Decimal, InvalidOperation
 from typing import Callable
 
 from django.contrib.auth import get_user_model
@@ -34,7 +35,7 @@ from .eligibility import evaluate, evaluate_execute
 from .errors import IstemConfigError, IstemError
 from .mapping import (
     booking_slot_window, build_confirm_payload, build_create_booking_payload, build_execute_payload,
-    build_public_user_payload, collect_public_user_profile, istem_window_fits_day,
+    build_public_user_payload, collect_public_user_profile, format_booking_datetime, ist_today, istem_window_fits_day,
 )
 from .models import IstemApiAttempt, IstemBookingLink, IstemEquipmentMapping, IstemOutboxJob, IstemUserLink
 from .outbox import (
@@ -145,6 +146,48 @@ def enqueue_eligible_executions(limit: int = 200) -> int:
     return queued
 
 
+CANCELLABLE_STATES = (SyncState.CREATED, SyncState.CONFIRM_READY, SyncState.CONFIRMED)
+
+
+def enqueue_cancellations(limit: int = 200) -> int:
+    """Close on I-STEM the bookings cancelled on the portal after they reached I-STEM ([TEAM 2026-10-30]): a full refund
+    (or nothing paid) is cancelled with Cancel Booking; a cancellation that kept the fee is closed by FBR Execute for
+    the amount kept, which needs the slot confirmed on I-STEM. Off unless ISTEM_CANCEL_ENABLED."""
+    from iic_booking.equipment.booking_paid_amount import booking_paid_charge
+
+    if conf.istem_mode() == conf.MODE_OFF or not conf.cancel_enabled():
+        return 0
+    link_ids = list(
+        IstemBookingLink.objects.filter(sync_state__in=CANCELLABLE_STATES, booking__status__in=("CANCELLED", "REFUNDED"))
+        .order_by("pk").values_list("pk", flat=True)[:limit]
+    )
+    queued = 0
+    for link_id in link_ids:
+        with transaction.atomic():
+            link = IstemBookingLink.objects.select_for_update(of=("self",)).select_related("booking").get(pk=link_id)
+            booking = link.booking
+            if link.sync_state not in CANCELLABLE_STATES or booking.status not in ("CANCELLED", "REFUNDED"):
+                continue
+            kept = booking_paid_charge(booking) if booking.status == "CANCELLED" else Decimal("0")
+            if kept <= 0:
+                if not link.request_id:
+                    continue
+                _set_link(link, SyncState.CANCEL_READY, reason=f"portal booking {booking.status.lower()}: Cancel Booking queued", review="")
+                add_job(Operation.CANCEL_BOOKING, dedupe_key=f"CANCEL_BOOKING:{booking.pk}", trigger="portal cancellation", booking_link=link)
+            elif link.sync_state == SyncState.CONFIRMED and link.confirmation_id and conf.execute_enabled():
+                link.retained_amount, link.retained_on = kept.quantize(Decimal("0.01")), ist_today()
+                _set_link(link, SyncState.EXECUTE_READY, reason=f"portal booking cancelled, Rs {link.retained_amount} kept: FBR Execute queued", review="")
+                add_job(Operation.EXECUTE_FBR, dedupe_key=f"EXECUTE_FBR:{booking.pk}", trigger="portal cancellation", booking_link=link)
+            else:
+                _set_link(link, SyncState.MANUAL_REVIEW, reason="portal booking cancelled with the fee kept",
+                          review=f"Cancelled on the portal keeping Rs {kept}, but the slot is not confirmed on I-STEM (or FBR "
+                                 "Execute is off), so it cannot be closed for that amount. Confirm it, then use "
+                                 "'record-retained-cancellation'.")
+                continue
+            queued += 1
+    return queued
+
+
 # --- processing -----------------------------------------------------------------------------------------------------
 
 def process_due_jobs(limit: int = 20, client_factory: ClientFactory = default_client) -> dict:
@@ -167,6 +210,7 @@ def process_job(job_id: int, client_factory: ClientFactory = default_client) -> 
         Operation.ENSURE_USER: _run_ensure_user,
         Operation.CONFIRM_BOOKING: _run_confirm_booking,
         Operation.EXECUTE_FBR: _run_execute_fbr,
+        Operation.CANCEL_BOOKING: _run_cancel_booking,
     }.get(job.operation)
     if runner is None:
         finish_job(job, JobState.BLOCKED, category=ErrorCategory.CONFIG, message=f"operation {job.operation} is not processed in Stage 2")
@@ -547,6 +591,101 @@ def request_confirmation(link: IstemBookingLink, *, actor, reason: str) -> Istem
         return add_job(Operation.CONFIRM_BOOKING, dedupe_key=f"CONFIRM_BOOKING:{link.booking_id}", trigger="admin", booking_link=link)
 
 
+def record_retained_cancellation(link: IstemBookingLink, *, retained_amount, cancelled_on, actor, evidence_type: str,
+                                 evidence_reference: str, reason: str) -> IstemOutboxJob:
+    """Close a late-cancelled booking on I-STEM for the fee it kept: queue FBR Execute with ``retained_amount`` as
+    final_amount ([TEAM 2026-10-30]: a booking that kept part of the fee is executed, not cancelled). Explicit
+    administrator action: the portal does not compute cancellation deductions yet, so the amount is entered here."""
+    if not conf.execute_enabled():
+        raise IstemConfigError("FBR Execute is disabled (ISTEM_EXECUTE_ENABLED).")
+    _require_perm(actor, "istem.request_execute")
+    _require_evidence(evidence_type, evidence_reference, reason)
+    try:
+        amount = Decimal(str(retained_amount))
+    except (InvalidOperation, TypeError):
+        raise ValueError("the retained amount is not a number") from None
+    if amount <= 0 or amount != amount.quantize(Decimal("0.01")):
+        raise ValueError("the retained amount must be positive with at most two decimals (a full refund is cancelled, not executed)")
+    if cancelled_on > ist_today():
+        raise ValueError("the cancellation date is in the future")
+    with transaction.atomic():
+        link = IstemBookingLink.objects.select_for_update(of=("self",)).select_related("booking").get(pk=link.pk)
+        booking = link.booking
+        if booking.status != "CANCELLED":
+            raise ValueError(f"the booking is {booking.status}, not cancelled")
+        if link.sync_state != SyncState.CONFIRMED or not link.confirmation_id:
+            raise ValueError(f"FBR Execute needs a confirmed I-STEM booking (link is {link.sync_state})")
+        if booking.total_charge is not None and amount > Decimal(str(booking.total_charge)):
+            raise ValueError("the retained amount is more than the booking's charge")
+        link.retained_amount, link.retained_on = amount, cancelled_on
+        _set_link(link, SyncState.EXECUTE_READY, reason=f"late cancellation, Rs {amount} retained: {reason}"[:4000], actor=actor)
+        return add_job(Operation.EXECUTE_FBR, dedupe_key=f"EXECUTE_FBR:{booking.pk}", trigger="retained cancellation", booking_link=link)
+
+
+RESCHEDULE_TIMING_FIELDS = frozenset({"preferred_timings_from", "preferred_timings_to"})
+
+
+def reschedule_on_istem(link: IstemBookingLink, *, actor, reason: str, client_factory: ClientFactory = default_client) -> str:
+    """Move a created (not yet confirmed) I-STEM booking to the hours covering its current local slots with Reschedule
+    Booking, then record the new window as the Create Booking baseline. Sent at once (administrator action); returns
+    I-STEM's message. When fields other than the timings changed too, those stay recorded as drift."""
+    _require_perm(actor, "istem.reconcile")
+    if not reason:
+        raise ValueError("a reason is required")
+    with transaction.atomic():
+        link = IstemBookingLink.objects.select_for_update(of=("self",)).select_related("booking__user", "booking__equipment", "booking__charge_profile", "user_link").get(pk=link.pk)
+        if link.sync_state != SyncState.CREATED or not link.request_id:
+            raise ValueError(f"only a created, unconfirmed I-STEM booking can be rescheduled (link is {link.sync_state})")
+        booking = link.booking
+        result = build_create_booking_payload(booking, link.user_link)
+        if not result.ok:
+            raise ValueError("the current booking cannot produce a complete payload: " + ", ".join(result.missing_fields()))
+        payload = result.payload
+        changed = set(create_drift(booking, link, payload))
+        if not changed & RESCHEDULE_TIMING_FIELDS:
+            raise ValueError("the booking's I-STEM hours have not changed; nothing to reschedule")
+        rescheduled_by = conf.confirm_approved_by() or conf.execute_updated_by()
+        if not rescheduled_by:
+            raise IstemConfigError("ISTEM_CONFIRM_APPROVED_BY is not set (sent as reschedule_by).")
+        data = {"timings_from": payload["preferred_timings_from"], "timings_to": payload["preferred_timings_to"]}
+        attempt = _start_attempt(None, Operation.RESCHEDULE_BOOKING, booking_link=link,
+                                 payload={"request_id": link.request_id, **data}, endpoint="reschedule-booking")
+    client = client_factory()
+    try:
+        message = client.reschedule_booking(link.request_id, rescheduled_by=rescheduled_by, remarks=f"IIC booking {booking.virtual_booking_id}", **data)
+    except IstemError as exc:
+        with transaction.atomic():
+            _finish_attempt(attempt, _outcome_for(exc), error=exc)
+            if exc.possibly_processed:
+                # [STAGING 2026-10-30] Reschedule answers HTTP 500 after applying the new timings.
+                link = IstemBookingLink.objects.select_for_update().get(pk=link.pk)
+                link.needs_review = True
+                link.review_reason = (f"Reschedule Booking may have been applied on I-STEM ({exc.message}). Check the "
+                                      f"booking's timings on I-STEM (Get Bookings by FBR number) before rescheduling "
+                                      f"again; the local baseline still holds the old window.")[:4000]
+                link.save(update_fields=["needs_review", "review_reason", "updated_at"])
+                record_event(booking_link=link, from_state=link.sync_state, to_state=link.sync_state, attempt=attempt,
+                             actor=actor, reason=link.review_reason)
+        raise
+    with transaction.atomic():
+        _finish_attempt(attempt, AttemptOutcome.SUCCESS, response={"message": message[:200]})
+        link = IstemBookingLink.objects.select_for_update().get(pk=link.pk)
+        rest = sorted(changed - RESCHEDULE_TIMING_FIELDS)
+        if rest:
+            stored = dict(link.create_payload or {})
+            stored.update({k: payload[k] for k in RESCHEDULE_TIMING_FIELDS})
+            link.create_payload = stored
+            link.local_drift, link.drift_reason = True, ("still differs after rescheduling: " + ", ".join(rest))[:4000]
+        else:
+            link.create_payload, link.create_payload_hash = redact(payload), _fingerprint(payload)
+            link.local_drift, link.drift_reason = False, ""
+        link.istem_slot_shift_hours = 0
+        link.save()
+        record_event(booking_link=link, from_state=link.sync_state, to_state=link.sync_state, attempt=attempt, actor=actor,
+                     reason=f"rescheduled on I-STEM to {data['timings_from']} - {data['timings_to']}: {reason}"[:4000])
+    return message
+
+
 # Shown to administrators when Confirm Booking is held back because the local booking changed after Create Booking.
 DRIFT_HINT = (
     "Confirm Booking was not sent. The I-STEM booking still holds the values from Create Booking. Bring it in line "
@@ -782,6 +921,65 @@ def _run_execute_fbr(job: IstemOutboxJob, client_factory) -> str:
                   executed_at=link.executed_at or timezone.now(), remote_status=RemoteStatus.EXECUTED,
                   remote_status_raw="Executed", remote_status_checked_at=timezone.now())
         _record_executed_fbr_on_booking(link)
+        finish_job(job, JobState.DONE)
+    return JobState.DONE
+
+
+CANCEL_MANUAL_STEP = "Check the booking on I-STEM (Get Bookings / the I-STEM portal) before cancelling it again."
+
+
+def _run_cancel_booking(job: IstemOutboxJob, client_factory) -> str:
+    """Cancel Booking for a portal booking cancelled with a full refund. Sent once: an uncertain or refused cancel is
+    left for an administrator, never repeated automatically."""
+    if not conf.cancel_enabled():
+        finish_job(job, JobState.BLOCKED, category=ErrorCategory.CONFIG, message="Cancel Booking disabled (ISTEM_CANCEL_ENABLED)")
+        return JobState.BLOCKED
+    with transaction.atomic():
+        link = IstemBookingLink.objects.select_for_update(of=("self",)).select_related("booking").get(pk=job.booking_link_id)
+        if link.sync_state != SyncState.CANCEL_READY:
+            finish_job(job, JobState.DONE, message=f"skipped: link is {link.sync_state}")
+            return JobState.DONE
+        if link.booking.status not in ("CANCELLED", "REFUNDED"):
+            _set_link(link, SyncState.CONFIRMED if link.confirmation_id else SyncState.CREATED,
+                      reason=f"not cancelled: the portal booking is {link.booking.status}")
+            finish_job(job, JobState.CANCELLED, message="booking no longer cancelled")
+            return JobState.CANCELLED
+        client = _client_or_block(job, client_factory)
+        if client is SHADOW:
+            finish_job(job, JobState.DONE, message="shadow: Cancel Booking not sent")
+            return JobState.DONE
+        if client is None:
+            return JobState.BLOCKED
+        payload = {"request_id": link.request_id, "cancelled_on": format_booking_datetime(timezone.now()),
+                   "remarks": f"Cancelled on the IIT Roorkee booking portal ({link.booking.virtual_booking_id or link.booking_id})",
+                   "cancelled_by": conf.cancelled_by()}
+        attempt = _start_attempt(job, Operation.CANCEL_BOOKING, booking_link=link, payload=payload, endpoint="cancel-booking")
+        _set_link(link, SyncState.CANCEL_IN_FLIGHT, reason="sending Cancel Booking", attempt=attempt)
+
+    try:
+        message = client.cancel_booking(payload["request_id"], cancelled_on=payload["cancelled_on"],
+                                        remarks=payload["remarks"], cancelled_by=payload["cancelled_by"])
+    except IstemError as exc:
+        with transaction.atomic():
+            link = IstemBookingLink.objects.select_for_update().get(pk=link.pk)
+            _finish_attempt(attempt, _outcome_for(exc), error=exc)
+            if exc.not_sent or exc.auth_failure:
+                _set_link(link, SyncState.CANCEL_READY, reason=f"not accepted ({exc.category}); safe to send again", attempt=attempt)
+                return retry_or_block(job, category=exc.category, message=exc.message)
+            if exc.definite_failure:
+                _set_link(link, SyncState.CANCEL_FAILED, reason=exc.message, attempt=attempt,
+                          review=f"I-STEM refused Cancel Booking: {exc.message}")
+            else:
+                _set_link(link, SyncState.CANCEL_UNCERTAIN, reason=exc.message, attempt=attempt,
+                          review=f"Cancel Booking may have been applied on I-STEM. {CANCEL_MANUAL_STEP}")
+            finish_job(job, JobState.BLOCKED, category=exc.category, message=exc.message)
+            return JobState.BLOCKED
+
+    with transaction.atomic():
+        _finish_attempt(attempt, AttemptOutcome.SUCCESS, response={"message": message})
+        link = IstemBookingLink.objects.select_for_update().get(pk=link.pk)
+        _set_link(link, SyncState.REMOTE_CANCELLED, reason="Cancel Booking succeeded", attempt=attempt, review="",
+                  remote_status=RemoteStatus.CANCELLED, remote_status_raw="Cancelled", remote_status_checked_at=timezone.now())
         finish_job(job, JobState.DONE)
     return JobState.DONE
 
@@ -1176,6 +1374,7 @@ def sweep_stale_in_flight() -> int:
                     SyncState.CREATE_IN_FLIGHT: SyncState.CREATE_UNCERTAIN,
                     SyncState.CONFIRM_IN_FLIGHT: SyncState.CONFIRM_UNCERTAIN,
                     SyncState.EXECUTE_IN_FLIGHT: SyncState.EXECUTE_UNCERTAIN,
+                    SyncState.CANCEL_IN_FLIGHT: SyncState.CANCEL_UNCERTAIN,
                 }.get(link.sync_state)
                 if target:
                     review = ("The request may have reached I-STEM; it will be repeated with identical parameters (idempotent)."

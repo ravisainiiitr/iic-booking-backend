@@ -9,7 +9,7 @@ Nothing schedules this command. In shadow mode payloads are validated and record
 from django.core.management.base import BaseCommand, CommandError
 
 from iic_booking.istem import conf
-from iic_booking.istem.service import enqueue_eligible, enqueue_eligible_executions, process_due_jobs
+from iic_booking.istem.service import enqueue_cancellations, enqueue_eligible, enqueue_eligible_executions, process_due_jobs
 
 
 class Command(BaseCommand):
@@ -33,6 +33,7 @@ class Command(BaseCommand):
         if options["enqueue"]:
             self.stdout.write(f"Queued: {enqueue_eligible(limit=options['limit'])}")
             self.stdout.write(f"Queued FBR Execute: {enqueue_eligible_executions(limit=options['limit'])}")
+            self.stdout.write(f"Queued cancellations: {enqueue_cancellations(limit=options['limit'])}")
         if options["process"]:
             results = process_due_jobs(limit=options["limit"])
             summary = {}

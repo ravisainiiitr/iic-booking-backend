@@ -19,12 +19,15 @@ _STEP_BY_STATE = {
     SyncState.EXECUTE_IN_FLIGHT: "confirmed",
     SyncState.EXECUTED_PENDING_VERIFY: "executed",
     SyncState.EXECUTED: "executed",
+    SyncState.CANCEL_READY: "cancelled",
+    SyncState.CANCEL_IN_FLIGHT: "cancelled",
     SyncState.REMOTE_CANCELLED: "cancelled",
 }
 _ATTENTION = {
     SyncState.CREATE_FAILED, SyncState.CREATE_UNCERTAIN, SyncState.CONFIRM_FAILED, SyncState.CONFIRM_UNCERTAIN,
     SyncState.CONFIRMED_ID_MISSING, SyncState.EXECUTE_FAILED, SyncState.EXECUTE_UNCERTAIN, SyncState.MANUAL_REVIEW,
-    SyncState.BLOCKED_CONFIG, SyncState.REMOTE_REJECTED, SyncState.LOCAL_CLOSED_REMOTE_OPEN,
+    SyncState.BLOCKED_CONFIG, SyncState.REMOTE_REJECTED, SyncState.LOCAL_CLOSED_REMOTE_OPEN, SyncState.CANCEL_FAILED,
+    SyncState.CANCEL_UNCERTAIN,
 }
 LABELS = {
     "queued": "Being registered on I-STEM",

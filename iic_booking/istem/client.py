@@ -667,9 +667,33 @@ class IstemClient:
             raise IstemError(ErrorCategory.INVALID_RESPONSE, "Get FBR Details returned an unexpected structure.")
         return [row for row in body["result"] if isinstance(row, dict)]
 
+    def reschedule_booking(self, request_id: str, *, timings_from: str, timings_to: str, rescheduled_by: str,
+                           remarks: str = "") -> str:
+        """POST api/reschedule-booking: move booking ``request_id`` to a new I-STEM hour window (booking datetime format,
+        whole hours). [SPEC] success {"status": "SUCCESS", "message": "Updated"}; I-STEM recomputes the amount for the
+        new timings. Returns the message."""
+        request = _as_remote_id(request_id)
+        if not request:
+            raise IstemConfigError("Reschedule Booking needs a numeric request_id.")
+        data = {
+            "request_id": request, "rescheduled_date": timings_from[:10], "rescheduled_from_time": timings_from,
+            "rescheduled_to_time": timings_to, "reschedule_by": rescheduled_by,
+            "reschedule_count": contract.RESCHEDULE_COUNT_PLACEHOLDER,
+        }
+        if remarks:
+            data["remarks"] = remarks
+        body = self._call("reschedule_booking", "POST", contract.RESCHEDULE_BOOKING_PATH, data=data)
+        success = _is_success(body)
+        if success is False:
+            raise IstemError(ErrorCategory.BUSINESS_ERROR, f"I-STEM refused Reschedule Booking: {_safe_message(body) or 'no message'}")
+        if success is not True:
+            raise IstemError(ErrorCategory.INVALID_RESPONSE, "Reschedule Booking returned an unrecognised response; it may have been applied.")
+        return _safe_message(body)
+
     def cancel_booking(self, request_id: str, *, cancelled_on: str, remarks: str, cancelled_by: str) -> str:
-        """POST api/cancel-booking. [STAGING] verified: {"status": "Sucess", "message": "Done", "file_path": "cancelled
-        Sucessfully"}. Not called by the service yet (booking-app hooks still need approval). Returns the message."""
+        """POST api/cancel-booking (full refunds only; see contract). [STAGING] verified: {"status": "Sucess",
+        "message": "Done", "file_path": "cancelled Sucessfully"}. Sent by the service for portal bookings cancelled with
+        a full refund (ISTEM_CANCEL_ENABLED). Returns the message."""
         body = self._call("cancel_booking", "POST", contract.CANCEL_BOOKING_PATH, data={
             "request_id": str(request_id), "cancelled_date": cancelled_on, "remarks": remarks,
             "cancelled": "true", "cancelled_by": cancelled_by,

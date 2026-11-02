@@ -230,6 +230,14 @@ class IstemBookingLink(models.Model):
     executed_at = models.DateTimeField(
         null=True, blank=True, help_text=_("When I-STEM reported the FBR as executed (FBR Execute or Get FBR Details).")
     )
+    retained_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        help_text=_("Fee kept after a late cancellation. I-STEM closes such a booking by FBR Execute for this amount "
+                    "instead of cancelling it."),
+    )
+    retained_on = models.DateField(
+        null=True, blank=True, help_text=_("Cancellation date sent as completion_date with the retained amount.")
+    )
     sync_state = models.CharField(max_length=32, choices=SyncState.choices, default=SyncState.NOT_ELIGIBLE)
     remote_status = models.CharField(max_length=20, choices=RemoteStatus.choices, blank=True, default="")
     remote_status_raw = models.CharField(max_length=64, blank=True, default="")

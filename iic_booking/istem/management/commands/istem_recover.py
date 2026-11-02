@@ -4,6 +4,8 @@ Each action names the acting administrator (``--actor`` email), who must hold th
 Recovery never sends Create Booking directly; ``mark-not-created`` only re-queues it after a second approver agrees.
 """
 
+from datetime import date
+
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 
@@ -14,7 +16,7 @@ from iic_booking.istem.models import IstemBookingLink
 ACTIONS = (
     "recover-from-attempt", "adopt-ids", "mark-not-created", "link-user", "verify-confirmation",
     "refresh-status", "request-confirmation", "approve-execute-resubmission", "approve-confirm-resubmission",
-    "acknowledge-drift", "verify-equipment", "verify-user",
+    "acknowledge-drift", "verify-equipment", "verify-user", "record-retained-cancellation", "reschedule",
 )
 
 
@@ -34,6 +36,8 @@ class Command(BaseCommand):
         parser.add_argument("--evidence-type", default="")
         parser.add_argument("--evidence-reference", default="")
         parser.add_argument("--reason", default="")
+        parser.add_argument("--retained-amount", help="Fee kept after a late cancellation, in rupees (record-retained-cancellation).")
+        parser.add_argument("--cancelled-on", help="Cancellation date YYYY-MM-DD (record-retained-cancellation).")
 
     def _user(self, email):
         try:
@@ -88,6 +92,19 @@ class Command(BaseCommand):
                 user_link = service.link_user_manually(self._user(options["user"]), public_user_id=options["public_user_id"] or "",
                                                        actor=actor, **evidence)
                 self.stdout.write(f"User link: {user_link.state}")
+            elif action == "record-retained-cancellation":
+                if not options["retained_amount"] or not options["cancelled_on"]:
+                    raise CommandError("--retained-amount and --cancelled-on are required")
+                try:
+                    cancelled_on = date.fromisoformat(options["cancelled_on"])
+                except ValueError as exc:
+                    raise CommandError("--cancelled-on must be YYYY-MM-DD") from exc
+                job = service.record_retained_cancellation(self._link(options), retained_amount=options["retained_amount"],
+                                                           cancelled_on=cancelled_on, actor=actor, **evidence)
+                self.stdout.write(f"FBR Execute for the retained amount queued as job {job.pk}")
+            elif action == "reschedule":
+                message = service.reschedule_on_istem(self._link(options), actor=actor, reason=options["reason"])
+                self.stdout.write(f"Rescheduled on I-STEM: {message or 'no message'}")
             elif action == "request-confirmation":
                 job = service.request_confirmation(self._link(options), actor=actor, reason=options["reason"])
                 self.stdout.write(f"Confirm Booking queued as job {job.pk}")

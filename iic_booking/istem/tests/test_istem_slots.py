@@ -76,15 +76,40 @@ def test_no_free_hour_left_that_day_holds_for_staff(live):
     assert link.sync_state == SyncState.CONFIRM_FAILED and "hourly slot" in link.review_reason
 
 
-def test_silent_mode_flag_rides_on_booking_calls_only(live):
-    live.ISTEM_SILENT_MODE_FIELD = "silent"
+EXECUTED = {"status": "SUCCESS", "message": "ok", "payment_id": 1, "request_id": "1", "confirmation_id": "2"}
+
+
+def test_silent_mode_is_on_by_default_for_create_confirm_and_cancel_only(live):
+    # [TEAM 2026-10-30] "silent": true on Create, Confirm and Cancel; FBR Execute sends no emails.
     transport = FakeTransport(token_response(), json_response({"status": "Sucess", "message": "Done", "new_service_id": 1, "fbr_no": "19761"}),
-                              json_response({"status": "SUCCESS", "message": "ok", "user_id": 5}))
+                              json_response({"status": "SUCCESS", "result": {"request_id": "1"}, "confirmation_id": "2"}),
+                              json_response({"status": "Sucess", "message": "Done"}),
+                              json_response(EXECUTED),
+                              json_response({"status": "SUCCESS", "message": "ok", "user_id": 5}),
+                              json_response({"status": "SUCCESS", "message": "Updated"}))
     client = IstemClient(transport)
     client.create_booking({"booking_remark": "x"})
+    client.confirm_booking({"request_id": "1"}, "1")
+    client.cancel_booking("1", cancelled_on="2026-10-30 10:00:00", remarks="r", cancelled_by="OP")
+    client.execute_fbr({"request_id": "1", "confirmation_id": "2"})
     client.create_user({"user_email": "a@example.com"})
-    assert transport.calls[1]["data"]["silent"] == "1"
-    assert "silent" not in transport.calls[2]["data"]
+    client.reschedule_booking("1", timings_from="2026-11-02 10:00:00", timings_to="2026-11-02 12:00:00", rescheduled_by="OP")
+    assert [c["data"].get("silent") for c in transport.calls[1:]] == ["true", "true", "true", None, None, None]
+
+
+def test_silent_mode_can_be_switched_off(live):
+    live.ISTEM_SILENT_MODE_FIELD = ""
+    transport = FakeTransport(token_response(), json_response({"status": "Sucess", "message": "Done", "new_service_id": 1, "fbr_no": "19761"}))
+    IstemClient(transport).create_booking({"booking_remark": "x"})
+    assert "silent" not in transport.calls[1]["data"]
+
+
+def test_istem_already_booked_answer_counts_as_occupied(live):
+    # [TEAM 2026-10-30] HTTP 200 {"status": false, "message": "This slot is already booked."}
+    link = _created(_booking_at(10, 30, 90))
+    refused = json_response({"status": False, "message": "This slot is already booked."})
+    assert _confirm(link, FakeTransport(refused)) == JobState.RETRY_WAIT
+    assert (link.sync_state, link.istem_slot_shift_hours) == (SyncState.CONFIRM_READY, 1)
 
 
 # --- full-profile user lookup ----------------------------------------------------------------------------------------
