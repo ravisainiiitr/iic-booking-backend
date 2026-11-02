@@ -44,6 +44,12 @@ def ca_bundle() -> str:
     return str(_setting("ISTEM_CA_BUNDLE", "") or "").strip()
 
 
+def gstin_placeholder() -> str:
+    """Sent as booking_gstn when the user has no GSTIN ([TEAM 2026-10-30]: booking_gstn is mandatory but only needs to
+    be non-empty). Empty disables the placeholder."""
+    return str(_setting("ISTEM_GSTIN_PLACEHOLDER", "NA") or "").strip()
+
+
 def configured_institute_id() -> str:
     """``ISTEM_INSTITUTE_ID`` (IIT Roorkee: 213), used only when the token response names no institute ([STAGING]
     tokens carry none). When the token names one, that wins and a different configured value is refused."""

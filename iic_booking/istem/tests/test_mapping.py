@@ -136,7 +136,6 @@ def test_analysis_type_requires_an_equipment_specific_mapping():
     ("eq_rate", {"rate": Decimal("499.99")}),
     ("booking_no_sample", {"samples": ""}),
     ("booking_no_sample", {"samples": "2.5"}),
-    ("booking_gstn", {"gstin": ""}),
     ("booking_gstn", {"gstin": "SHORT"}),
 ])
 def test_values_that_would_need_inventing_or_rounding_are_blocked(field, kwargs):
@@ -154,7 +153,25 @@ def test_charge_profile_without_a_single_rate_blocks_eq_rate():
 def test_missing_billing_profile_blocks_billing_fields():
     booking = ready_booking(with_billing=False)
     errors = _payload(booking).errors
-    assert {"billing_user_name", "billing_address", "billing_state", "booking_gstn"} <= set(errors)
+    assert {"billing_user_name", "billing_address", "billing_state"} <= set(errors)
+    assert "booking_gstn" not in errors
+
+
+def test_empty_gstin_is_sent_as_the_placeholder():
+    result = _payload(ready_booking(gstin=""))
+    assert "booking_gstn" not in result.errors
+    assert result.payload["booking_gstn"] == "NA"
+
+
+def test_placeholder_follows_the_setting(settings):
+    settings.ISTEM_GSTIN_PLACEHOLDER = "URP"
+    assert _payload(ready_booking(gstin="")).payload["booking_gstn"] == "URP"
+
+
+def test_empty_gstin_is_blocked_without_a_placeholder(settings):
+    settings.ISTEM_GSTIN_PLACEHOLDER = ""
+    result = _payload(ready_booking(gstin=""))
+    assert "booking_gstn" in result.errors and "booking_gstn" not in result.payload
 
 
 def test_billing_name_must_be_alphabetic():
