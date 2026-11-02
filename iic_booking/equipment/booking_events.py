@@ -455,6 +455,10 @@ def create_booking_event(
         else:
             _safe_queue_notification()
 
+        from iic_booking.whatsapp.hooks import booking_event as whatsapp_booking_event
+
+        whatsapp_booking_event(event)  # nothing unless WhatsApp is on and the user opted in; never raises
+
         from .print_3d_notifications import maybe_dispatch_print_3d_stl_notification
 
         maybe_dispatch_print_3d_stl_notification(
