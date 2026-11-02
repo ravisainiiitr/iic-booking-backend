@@ -112,8 +112,6 @@ def my_research_settings(settings):
     settings.MY_RESEARCH_ENABLED = True
     settings.MY_RESEARCH_PILOT_EMAILS = ""
     settings.MY_RESEARCH_S3_BUCKET = "test-research-bucket"
-    settings.MY_RESEARCH_USER_STORAGE_QUOTA = 0
-    settings.MY_RESEARCH_WORKSPACE_STORAGE_QUOTA = 0
     return settings
 
 

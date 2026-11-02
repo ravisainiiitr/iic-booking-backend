@@ -250,3 +250,35 @@ class ResearchActivity(models.Model):
 
 
 from .group_models import *  # noqa: E402,F401,F403
+
+
+class StorageQuotaSettings(models.Model):
+    """Storage limits set by the Main Administrator (one row). 0 = no limit."""
+
+    user_quota_gb = models.PositiveIntegerField(default=100, help_text="Storage per user across their workspaces (GB)")
+    workspace_quota_gb = models.PositiveIntegerField(default=0, help_text="Storage per workspace (GB); 0 = no limit")
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name="+")
+
+    class Meta:
+        verbose_name = "My Research storage quota"
+
+    @classmethod
+    def get_solo(cls) -> "StorageQuotaSettings":
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+
+class UserStorageQuota(models.Model):
+    """A different storage quota for one user (more for a large project, or less). 0 = no limit."""
+
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="research_quota")
+    quota_gb = models.PositiveIntegerField()
+    note = models.CharField(max_length=200, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name="+")
+
+    class Meta:
+        verbose_name = "My Research quota for a user"

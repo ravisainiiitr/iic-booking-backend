@@ -1,7 +1,14 @@
 from django.contrib import admin
 from django.db.models import Q, Sum
 
-from .models import FileStatus, ResearchActivity, ResearchFile, ResearchWorkspace
+from .models import (
+    FileStatus,
+    ResearchActivity,
+    ResearchFile,
+    ResearchWorkspace,
+    StorageQuotaSettings,
+    UserStorageQuota,
+)
 
 
 class ReadOnlyAdmin(admin.ModelAdmin):
@@ -49,3 +56,15 @@ class ResearchActivityAdmin(ReadOnlyAdmin):
     list_display = ("workspace", "action", "actor", "target_label", "created_at")
     list_filter = ("action",)
     search_fields = ("workspace__name", "target_label", "actor__email")
+
+
+@admin.register(StorageQuotaSettings)
+class StorageQuotaSettingsAdmin(admin.ModelAdmin):
+    list_display = ("user_quota_gb", "workspace_quota_gb", "updated_at", "updated_by")
+
+
+@admin.register(UserStorageQuota)
+class UserStorageQuotaAdmin(admin.ModelAdmin):
+    list_display = ("user", "quota_gb", "note", "updated_at")
+    search_fields = ("user__email", "user__name")
+    raw_id_fields = ("user",)

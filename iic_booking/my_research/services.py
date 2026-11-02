@@ -194,8 +194,10 @@ def workspace_usage_bytes(workspace: ResearchWorkspace) -> int:
 
 
 def quota_error(workspace: ResearchWorkspace, size_bytes: int) -> str | None:
-    user_quota = int(getattr(settings, "MY_RESEARCH_USER_STORAGE_QUOTA", 0) or 0)
-    workspace_quota = int(getattr(settings, "MY_RESEARCH_WORKSPACE_STORAGE_QUOTA", 0) or 0)
+    from .quotas import user_quota_bytes, workspace_quota_bytes
+
+    user_quota = user_quota_bytes(workspace.owner)
+    workspace_quota = workspace_quota_bytes()
     if user_quota and owner_usage_bytes(workspace.owner) + size_bytes > user_quota:
         return "This upload would exceed your My Research storage quota."
     if workspace_quota and workspace_usage_bytes(workspace) + size_bytes > workspace_quota:
