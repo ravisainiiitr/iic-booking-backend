@@ -444,9 +444,15 @@ class TestAssistantTurns:
         assert card["estimate"] is None or "charge" in card["estimate"] or card["estimate"]
 
     def test_fully_booked_offers_alternatives(self, lab):
+        from iic_booking.equipment.models import DailySlot
+
         start = lab.future(days=3, hour=10)
-        lab.slot(lab.fesem, start, status="BOOKED")
-        lab.slot(lab.fesem, lab.future(days=5, hour=10))
+        _, (taken,) = lab.booking(lab.other, lab.fesem, start, slot_count=1)
+        # The same 10:00 timetable row two days later (the portal fills a missing day from each row of the timetable,
+        # so a separate row would also open 10:00 on the asked day).
+        later = lab.future(days=5, hour=10)
+        DailySlot.objects.create(slot_master=taken.slot_master, date=later.date(), start_datetime=later,
+                                 end_datetime=later + timedelta(minutes=60), status="AVAILABLE")
         lab.slot(lab.sem, start)
         conv = _new_conv(lab)
         with patch(LOCK, return_value=(False, "")):

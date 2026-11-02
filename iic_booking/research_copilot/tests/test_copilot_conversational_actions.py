@@ -315,7 +315,12 @@ class TestMatrix:
         faculty, wallet, _s = _faculty_with_wallet(world)
         _join(world.student, faculty, wallet)
         conv = world.conversation()
+        # Since 7 Oct 2026 every IITR student on a supervisor's wallet may recharge it (as on the Wallet page) ...
         out = _act(world, conv, A.RECHARGE_WALLET)
+        assert out["content"].startswith("Sure. I'll help you recharge your wallet.")
+        # ... and one the Wallet page would not let recharge is still refused here.
+        with patch("iic_booking.users.student_wallet_recharge.student_has_any_recharge_department", return_value=False):
+            out = _act(world, world.conversation(), A.RECHARGE_WALLET)
         assert "isn't available from your account" in out["content"]
         out = _act(world, conv, A.REQUEST_WALLET_CREDIT)
         assert out["content"].startswith("You can't request wallet credit right now.")
@@ -401,7 +406,9 @@ class TestConversationLayer:
         conv = world.conversation()
         self._send(world, conv, "fesem")
         assert conv.title == "FESEM"
-        self._send(world, conv, "Book FESEM", {"type": "BOOK_EQUIPMENT", "payload": {"technique": "fesem"}})
+        # The portal's booking lock (on in the migrated test database) would stop the booking flow before any title.
+        with patch("iic_booking.users.legacy_ledger.booking_lock.booking_is_locked", return_value=(False, "")):
+            self._send(world, conv, "Book FESEM", {"type": "BOOK_EQUIPMENT", "payload": {"technique": "fesem"}})
         assert conv.title == "FESEM booking"
 
     def test_greeting_defers_title(self, world):
