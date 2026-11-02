@@ -28,6 +28,13 @@ logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0.00")
 
+# Credit for internal faculty was withdrawn (31 Oct 2026 committee). Post-pay credit exists only for government and
+# R&D organisations booking as external users, who pay against the invoice (external_services GovtCreditRequest).
+CREDIT_NOT_OFFERED = (
+    "Credit is not offered to internal faculty. Please recharge your wallet before booking. Post-pay credit is "
+    "available only to government and R&D organisations, against an invoice."
+)
+
 
 def get_or_create_settings(department_id: int) -> DepartmentFacultyCreditFacilitySettings:
     obj, _ = DepartmentFacultyCreditFacilitySettings.objects.get_or_create(
@@ -317,10 +324,7 @@ def avail_faculty_department_credit(
     RETIRED: automatic department overdraft is disabled. Historical facility rows remain.
     Use administrator-approved Wallet Credit Facility V2 instead.
     """
-    raise ValueError(
-        "Department faculty automatic credit facility has been retired. "
-        "Please request credit via Wallet Credit Facility (Main Administrator approval)."
-    )
+    raise ValueError(CREDIT_NOT_OFFERED)
     from iic_booking.users.models import Department
 
     if str(getattr(user, "user_type", "") or "").lower() != UserType.FACULTY:

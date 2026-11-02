@@ -12,6 +12,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from iic_booking.users.department_faculty_credit_facility import (
+    CREDIT_NOT_OFFERED,
     avail_faculty_department_credit,
     faculty_credit_status_for_user,
     get_or_create_settings,
@@ -92,6 +93,9 @@ def department_faculty_credit_facility_settings_view(request):
         enabled = get_or_create_settings(dept.id).enabled
     else:
         enabled = bool(enabled)
+    if enabled:
+        # Credit for internal faculty is not offered (31 Oct 2026 committee); only switching it off is accepted.
+        return Response({"error": CREDIT_NOT_OFFERED}, status=status.HTTP_400_BAD_REQUEST)
 
     cutoff_raw = request.data.get("joining_date_cutoff", ...)
     settings = get_or_create_settings(dept.id)

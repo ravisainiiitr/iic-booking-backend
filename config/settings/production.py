@@ -272,10 +272,11 @@ CHANNEL_I_STAGING_FIXTURE_MODE = False
 LEGACY_MYSQL_STAGING_FIXTURE_MODE = False
 LOCAL_STAGING_ACCEPTED = False
 
-# Wallet Credit Facility (admin-approved) — enabled for IIC production.
-# Env can still force OFF with WALLET_CREDIT_FACILITY_V2_ENABLED=false.
-WALLET_CREDIT_FACILITY_V2_ENABLED = env.bool("WALLET_CREDIT_FACILITY_V2_ENABLED", default=True)
-WALLET_CREDIT_ENABLED = env.bool("WALLET_CREDIT_ENABLED", default=True)
+# Wallet Credit Facility for internal users: withdrawn (31 Oct 2026 committee; never used in production), so it is
+# off regardless of the env file. Government and R&D post-pay credit is separate (external_services
+# GovtCreditRequest) and unaffected.
+WALLET_CREDIT_FACILITY_V2_ENABLED = False
+WALLET_CREDIT_ENABLED = False
 
 if not (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY):
     logging.getLogger(__name__).warning(
