@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.core.exceptions import ValidationError
 from django import forms
 
-from .models import UpsDevice, UpsReading
+from .models import UpsDevice, UpsHealthAssessment, UpsPowerEvent, UpsReading
 from .register_maps import validate_points
 
 
@@ -34,3 +34,18 @@ class UpsReadingAdmin(admin.ModelAdmin):
     list_display = ("device", "read_at", "reachable", "load_percent", "battery_percent", "on_battery", "fault")
     list_filter = ("reachable", "on_battery", "device")
     date_hierarchy = "read_at"
+
+
+@admin.register(UpsPowerEvent)
+class UpsPowerEventAdmin(admin.ModelAdmin):
+    list_display = ("device", "kind", "started_at", "ended_at", "start_battery_percent", "end_battery_percent")
+    list_filter = ("kind", "device")
+    date_hierarchy = "started_at"
+
+
+@admin.register(UpsHealthAssessment)
+class UpsHealthAssessmentAdmin(admin.ModelAdmin):
+    list_display = ("device", "created_at", "level", "risk_score", "summary_source", "notified_at")
+    list_filter = ("level", "summary_source", "device")
+    date_hierarchy = "created_at"
+    readonly_fields = [f.name for f in UpsHealthAssessment._meta.fields]

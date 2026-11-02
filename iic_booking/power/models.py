@@ -28,6 +28,13 @@ class UpsDevice(models.Model):
     poll_seconds = models.PositiveIntegerField(default=30)
     low_battery_percent = models.PositiveSmallIntegerField(default=30)
     high_load_percent = models.PositiveSmallIntegerField(default=90)
+    nominal_input_voltage = models.PositiveSmallIntegerField(default=230, help_text="Mains voltage the UPS expects")
+    min_runtime_minutes = models.PositiveSmallIntegerField(
+        default=10, help_text="Backup time the instruments need to shut down safely; less is flagged")
+    battery_installed_on = models.DateField(null=True, blank=True,
+                                            help_text="When the current batteries were fitted (for battery age)")
+    notify_officers = models.BooleanField(
+        default=True, help_text="Tell the Officers in Charge of the instruments on this UPS about problems")
     enabled = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -66,3 +73,53 @@ class UpsReading(models.Model):
     class Meta:
         ordering = ["-read_at"]
         indexes = [models.Index(fields=["device", "-read_at"])]
+
+
+class UpsPowerEvent(models.Model):
+    """A spell on battery (mains cut), on bypass or in fault, kept for the health analysis (outage frequency and how
+    fast the battery really drains compared with the UPS's own runtime estimate)."""
+
+    KINDS = (("on_battery", "On battery"), ("on_bypass", "On bypass"), ("fault", "Fault"))
+
+    device = models.ForeignKey(UpsDevice, on_delete=models.CASCADE, related_name="power_events")
+    kind = models.CharField(max_length=20, choices=KINDS)
+    started_at = models.DateTimeField(db_index=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    last_seen_at = models.DateTimeField()
+    start_battery_percent = models.FloatField(null=True, blank=True)
+    end_battery_percent = models.FloatField(null=True, blank=True)
+    start_runtime_minutes = models.FloatField(null=True, blank=True)
+    end_runtime_minutes = models.FloatField(null=True, blank=True)
+    max_load_percent = models.FloatField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-started_at"]
+
+    @property
+    def minutes(self) -> float:
+        end = self.ended_at or self.last_seen_at
+        return max(0.0, (end - self.started_at).total_seconds() / 60)
+
+
+class UpsHealthAssessment(models.Model):
+    """The periodic AI health check of one UPS: rule- and trend-based findings, a plain-language summary (written by
+    the portal's language model when it is reachable, otherwise composed from the findings) and who was told."""
+
+    LEVELS = (("ok", "Healthy"), ("watch", "Keep an eye on"), ("attention", "Needs attention"), ("urgent", "Urgent"))
+
+    device = models.ForeignKey(UpsDevice, on_delete=models.CASCADE, related_name="assessments")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    level = models.CharField(max_length=12, choices=LEVELS, default="ok")
+    risk_score = models.PositiveSmallIntegerField(default=0)
+    findings = models.JSONField(default=list, blank=True)
+    metrics = models.JSONField(default=dict, blank=True)
+    summary = models.TextField(blank=True)
+    summary_source = models.CharField(max_length=20, blank=True, help_text="ai or rules")
+    summary_model = models.CharField(max_length=80, blank=True)
+    notified_codes = models.JSONField(default=list, blank=True, help_text="Findings the officers were told about")
+    notified_at = models.DateTimeField(null=True, blank=True)
+    notified_to = models.JSONField(default=list, blank=True, help_text="User ids")
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["device", "-created_at"])]
