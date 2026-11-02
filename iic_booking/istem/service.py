@@ -19,6 +19,7 @@ import json
 import logging
 from typing import Callable
 
+from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -410,6 +411,9 @@ def _link_user(user_link, public_user_id: str, *, reason: str, actor=None, attem
     record_event(user_link=user_link, from_state=previous, to_state=user_link.state, reason=reason, actor=actor,
                  attempt=attempt, evidence_type=evidence_type, evidence_reference=evidence_reference)
     if user_link.state == UserLinkState.LINKED:
+        # A verified I-STEM account is the registration the booking page asks external users to confirm by hand.
+        get_user_model().objects.filter(pk=user_link.user_id, istem_portal_acknowledged=False).update(
+            istem_portal_acknowledged=True)
         transaction.on_commit(lambda: _requeue_user_bookings(user_link.user_id))
 
 
