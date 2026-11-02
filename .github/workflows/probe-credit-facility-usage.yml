@@ -1,0 +1,57 @@
+# Read-only: how much the internal faculty credit facilities are used (counts and totals only, no names).
+# Covers the admin-approved Wallet Credit Facility and the per-department faculty credit facility, and the
+# government / R&D post-pay credit requests of the external workflow for comparison. Writes nothing.
+name: Probe Credit Facility Usage
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Counts and totals
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import django
+
+          django.setup()
+          from django.apps import apps
+          from django.conf import settings
+          from django.db.models import Count, Sum
+
+          print("WALLET_CREDIT_FACILITY_V2_ENABLED=", settings.WALLET_CREDIT_FACILITY_V2_ENABLED,
+                " WALLET_CREDIT_ENABLED=", settings.WALLET_CREDIT_ENABLED)
+
+          def summary(label, app, model, group=None, amount=None, test_field=None):
+              try:
+                  M = apps.get_model(app, model)
+              except LookupError:
+                  print(label, "model not found")
+                  return
+              qs = M.objects.all()
+              print(f"== {label}: total rows {qs.count()}")
+              if group:
+                  extra = {"amount": Sum(amount)} if amount else {}
+                  for r in qs.values(group).annotate(n=Count("pk"), **extra).order_by(group):
+                      print("  ", group, "=", r[group], " count=", r["n"], (" amount=" + str(r.get("amount"))) if amount else "")
+              if test_field:
+                  try:
+                      print("   of which test accounts:", qs.filter(**{test_field: True}).count())
+                  except Exception as exc:  # noqa: BLE001
+                      print("   test split unavailable:", type(exc).__name__)
+
+          summary("WalletCreditFacility", "users", "WalletCreditFacility", "status", "outstanding_amount", "user__is_test_account")
+          summary("WalletCreditLedgerEntry", "users", "WalletCreditLedgerEntry")
+          summary("WalletCreditInvoice", "users", "WalletCreditInvoice")
+          summary("WalletCreditPayment", "users", "WalletCreditPayment")
+          summary("WalletCreditPolicy", "users", "WalletCreditPolicy")
+          summary("DepartmentFacultyCreditFacilitySettings", "users", "DepartmentFacultyCreditFacilitySettings", "enabled")
+          summary("FacultyDepartmentCreditFacility", "users", "FacultyDepartmentCreditFacility")
+          summary("GovtCreditRequest (external, stays)", "external_services", "GovtCreditRequest", "status")
+          PY
