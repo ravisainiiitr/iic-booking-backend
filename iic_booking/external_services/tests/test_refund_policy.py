@@ -9,7 +9,7 @@ import pytest
 from django.core import mail
 from django.utils import timezone
 
-from iic_booking.equipment.models import Booking, BookingStatus, DailySlot
+from iic_booking.equipment.models import Booking, BookingDisruptionKind, BookingStatus, DailySlot
 from iic_booking.external_services import refunds, sric_dispatch
 from iic_booking.external_services.models import (
     ExternalRefund,
@@ -124,6 +124,8 @@ def test_bank_refund_only_for_a_lab_disruption(policy, factory, user):
 
 def test_disruption_refunds_in_full_to_a_saved_bank_account_and_waits_for_sric(policy, factory, user):
     b = _booking(factory, user, 2, status=BookingStatus.DISRUPTION_PENDING)
+    b.disruption_kind = BookingDisruptionKind.MAINTENANCE  # instrument non-functional: bank refund allowed
+    b.save(update_fields=["disruption_kind"])
     added = client_for(user).post(f"{API}refund-accounts/", ACCOUNT, format="json")
     assert added.status_code == 201 and added.json()["account_number"] == "XXXXXXXX9012"
     quote = client_for(user).get(f"{API}bookings/{b.pk}/cancellation-quote/").json()
@@ -153,6 +155,8 @@ def test_weekly_batch_sends_bank_refunds_and_staff_close_them(policy, factory, u
     s.sric_dispatch_mode, s.sric_test_recipient_email = "test", "sric.test@example.org"
     s.save()
     b = _booking(factory, user, 2, status=BookingStatus.DISRUPTION_PENDING)
+    b.disruption_kind = BookingDisruptionKind.MAINTENANCE  # instrument non-functional: bank refund allowed
+    b.save(update_fields=["disruption_kind"])
     acc = refunds.save_account(user, ACCOUNT)
     refunds.cancel(user, b.pk, destination="bank", bank_account_id=acc.pk)
     refund = ExternalRefund.objects.get(booking=b)
@@ -205,3 +209,14 @@ def test_old_cancel_endpoint_follows_the_policy(policy, factory, user):
     assert r.status_code == 200, r.content
     assert r.json()["refund_amount"] == "590.00"
     assert _wallet(user, factory) == Decimal("590.00")
+
+
+def test_bank_refund_only_when_the_instrument_is_non_functional(policy, factory, user):
+    b = _booking(factory, user, 2, status=BookingStatus.DISRUPTION_PENDING)
+    b.disruption_kind = BookingDisruptionKind.OPERATOR_ABSENT
+    b.save(update_fields=["disruption_kind"])
+    quote = refunds.cancellation_quote(b)
+    assert quote["tier"] == "disruption" and quote["bank_refund_allowed"] is False
+    with pytest.raises(refunds.RefundPolicyError) as exc:
+        refunds.cancel(user, b.pk, destination="bank")
+    assert "non-functional" in exc.value.message

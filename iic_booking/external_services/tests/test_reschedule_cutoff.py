@@ -1,4 +1,4 @@
-"""External users reschedule a week's slots until Wednesday 20:30 of the week before (internal booking opens 21:00)."""
+"""External users reschedule their own bookings up to 48 hours before the first slot (2 Nov 2026 policy)."""
 
 from __future__ import annotations
 
@@ -20,20 +20,21 @@ def _local(y, m, d, hh, mm=0):
 
 
 @pytest.mark.parametrize("slot", [
-    _local(2026, 11, 9, 9),    # Monday of the week
-    _local(2026, 11, 13, 17),  # Friday of the same week
-    _local(2026, 11, 15, 10),  # Sunday of the same week
+    _local(2026, 11, 9, 9),
+    _local(2026, 11, 13, 17),
+    _local(2026, 11, 15, 10),
 ])
-def test_cutoff_is_wednesday_2030_of_the_week_before(slot):
-    assert external_reschedule_cutoff(slot) == _local(2026, 11, 4, 20, 30)
+def test_cutoff_is_48_hours_before_the_slot(slot):
+    assert external_reschedule_cutoff(slot) == slot - timedelta(hours=48)
 
 
 def test_external_user_is_refused_after_the_cutoff_and_allowed_before():
     user = make_user(UserType.EXTERNAL)
     slot = _local(2026, 11, 10, 9)
-    assert external_reschedule_refusal(user, slot, now=_local(2026, 11, 4, 20, 30)) is None
-    refusal = external_reschedule_refusal(user, slot, now=_local(2026, 11, 4, 20, 31))
+    assert external_reschedule_refusal(user, slot, now=_local(2026, 11, 8, 9)) is None
+    refusal = external_reschedule_refusal(user, slot, now=_local(2026, 11, 8, 9, 1))
     assert refusal["code"] == "EXTERNAL_RESCHEDULE_CUTOFF" and "booking details page" in refusal["error"]
+    assert "48 hours before the slot" in refusal["error"]
 
 
 def test_internal_users_are_not_bound_by_the_weekly_cutoff():
