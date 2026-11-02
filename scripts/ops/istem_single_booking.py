@@ -150,8 +150,16 @@ def show_booking(booking):
 
 
 def run_jobs(link):
-    for job in IstemOutboxJob.objects.filter(booking_link=link).exclude(state__in=["DONE", "CANCELLED"]).order_by("pk"):
-        out("process job", job.pk, job.operation, "->", service.process_job(job.pk))
+    """This booking's open jobs, including one queued by an earlier job (Confirm Booking follows Create Booking)."""
+    seen = set()
+    for _ in range(5):
+        jobs = list(IstemOutboxJob.objects.filter(booking_link=link).exclude(state__in=["DONE", "CANCELLED"])
+                    .exclude(pk__in=seen).order_by("pk"))
+        if not jobs:
+            return
+        for job in jobs:
+            seen.add(job.pk)
+            out("process job", job.pk, job.operation, "->", service.process_job(job.pk))
 
 
 def main():
@@ -245,7 +253,8 @@ def main():
     booking.refresh_from_db()
     show_booking(booking)
     link = IstemBookingLink.objects.filter(booking=booking).first()
-    expected = {"create": (SyncState.CREATED,), "confirm": (SyncState.CONFIRMED,),
+    # With confirmation on, Confirm Booking follows Create Booking automatically.
+    expected = {"create": (SyncState.CREATED, SyncState.CONFIRMED), "confirm": (SyncState.CONFIRMED,),
                 "execute": (SyncState.EXECUTED, SyncState.EXECUTED_PENDING_VERIFY)}.get(ACTION)
     if expected and (link is None or link.sync_state not in expected):
         fail(f"link is {link.sync_state if link else 'missing'}, expected {expected}")
