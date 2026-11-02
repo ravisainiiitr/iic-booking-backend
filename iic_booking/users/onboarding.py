@@ -62,10 +62,12 @@ def status(user) -> dict:
             "organisation": str(profile.get("organisation") or ""),
             "subcategory": SUBCATEGORY_BY_USER_TYPE.get(str(user.user_type or ""), ""),
         }
+    requested = getattr(user, "organization_request", None) if not user.department_id else None
     return {
         "required": bool(steps),
         "steps": steps,
         "hints": hints,
+        "organisation_requested": requested.name if requested is not None else "",
         "values": {
             "gender": user.gender or "",
             "mobile": user.phone_number or "",
@@ -82,6 +84,33 @@ def _parse_date(value, field: str) -> date:
         raise OnboardingError("Enter a valid date.", field)
 
 
+def _request_organisation(user, data: dict) -> None:
+    """The organisation is not in the portal's list (common for I-STEM accounts): ask the IIC office to add it, as
+    registration does. The user is moved to the organisation when the office approves the request
+    (``OrganizationRequest.save``); a pending request for the same name, State/UT and kind is reused."""
+    from iic_booking.istem.direct_signup import SUBCATEGORY_BY_USER_TYPE
+    from iic_booking.users.models import OrganizationRequest
+    from iic_booking.users.models.department import IndianState
+
+    name = " ".join(str(data.get("organisation_name") or "").split())[:255]
+    state = str(data.get("state") or "").strip()
+    if len(name) < 3:
+        raise OnboardingError("Enter your organisation's full name.", "organisation_name")
+    if state not in {c for c, _ in IndianState.get_choices()}:
+        raise OnboardingError("Choose your State / Union Territory.", "state")
+    subcategory = SUBCATEGORY_BY_USER_TYPE.get(str(user.user_type or ""), "")
+    pending = OrganizationRequest.objects.filter(
+        name__iexact=name, state=state, external_subcategory=subcategory, status=OrganizationRequest.Status.PENDING,
+    ).first()
+    if pending is None:
+        pending = OrganizationRequest.objects.create(
+            name=name, state=state, external_subcategory=subcategory, email=user.email,
+            requester_name=(user.name or "")[:255], notes="Asked for while completing a profile created from I-STEM.",
+        )
+    user.organization_request = pending
+    user.save(update_fields=["organization_request"])
+
+
 def save_step(user, step: str, data: dict) -> None:
     from iic_booking.users.models import Department
     from iic_booking.users.models.department import DepartmentType
@@ -90,10 +119,14 @@ def save_step(user, step: str, data: dict) -> None:
     if step not in STEPS or not _applies(user):
         raise OnboardingError("Unknown step.")
     if step == "organisation":
+        if data.get("request_organisation"):
+            _request_organisation(user, data)
+            return
         try:
             dept = Department.objects.get(pk=int(data.get("department")), department_type=DepartmentType.EXTERNAL)
         except (Department.DoesNotExist, TypeError, ValueError):
-            raise OnboardingError("Choose your organisation from the list.", "department")
+            raise OnboardingError(
+                "Choose your organisation from the list, or ask for it to be added if it is not listed.", "department")
         user.department = dept
         user.save(update_fields=["department"])
     elif step == "gender":
