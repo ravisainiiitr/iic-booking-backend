@@ -69,6 +69,29 @@ def latest_publication(user_id: int, claims=None):
             .order_by("-reviewed_at", "-claim_id").first())
 
 
+PUBLICATIONS_SHOWN = 10
+
+
+def publication_entry(claim) -> dict:
+    """One approved publication as the home page shows it (title, venue, link, facility)."""
+    link = (claim.url or "").strip() or (f"https://doi.org/{claim.doi.strip()}" if (claim.doi or "").strip() else "")
+    equipment = list(claim.equipments.all())
+    return {"title": claim.title, "journal": claim.journal or "", "year": claim.year, "url": link,
+            "facility": ", ".join(e.name for e in equipment)}
+
+
+def publications_of(user_ids, *, limit: int = PUBLICATIONS_SHOWN) -> dict[int, list[dict]]:
+    """Each researcher's approved publications, most recently approved first (at most ``limit`` each)."""
+    out: dict[int, list[dict]] = {}
+    claims = (_approved_claims().filter(submitted_by_id__in=[u for u in user_ids if u])
+              .prefetch_related("equipments").order_by("submitted_by_id", "-reviewed_at", "-claim_id"))
+    for claim in claims:
+        rows = out.setdefault(claim.submitted_by_id, [])
+        if len(rows) < limit:
+            rows.append(publication_entry(claim))
+    return out
+
+
 def card(user, *, count: int, claim, request=None) -> dict:
     """What the home page shows for one researcher (same shape for both features)."""
     from iic_booking.users.display import get_user_display_name

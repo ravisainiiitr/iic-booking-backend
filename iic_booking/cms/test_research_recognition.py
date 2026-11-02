@@ -233,3 +233,25 @@ def test_acknowledgers_for_the_hero_list_everyone_approved_even_with_the_hall_of
     assert _client().get("/api/cms/hall-of-frames/").json()["results"] == []  # the Hall switch is unchanged
     rows = _client().get("/api/cms/acknowledgers/").json()["results"]
     assert [(r["researcher_name"], r["publication_count"]) for r in rows] == [("Asha Verma", 2), ("Bala Iyer", 1)]
+
+
+def test_this_months_card_lists_every_approved_publication_newest_first():
+    chem = _dept("Chemistry")
+    sem = _equipment("FE-SEM")
+    a = _researcher("Chem Top", chem)
+    _approved(a, days_ago=30, title="Older paper", doi="10.1/old")
+    _approved(a, days_ago=2, title="Newest paper", equipment=sem)
+    _approved(a, status=EquipmentPublicationClaimStatus.PENDING, title="Not yet approved")
+    (row,) = _client().get("/api/cms/researcher-of-the-month/").json()["results"]
+    assert [p["title"] for p in row["publications"]] == ["Newest paper", "Older paper"]
+    assert row["publications"][0]["facility"] == "FE-SEM"
+    assert row["publications"][1]["url"] == "https://doi.org/10.1/old"
+
+
+def test_publications_shown_per_researcher_are_capped():
+    a = _researcher("Prolific", _dept("Chemistry"))
+    for i in range(recognition.PUBLICATIONS_SHOWN + 3):
+        _approved(a, days_ago=5 + i, title=f"Paper {i}")
+    (row,) = _client().get("/api/cms/researcher-of-the-month/").json()["results"]
+    assert len(row["publications"]) == recognition.PUBLICATIONS_SHOWN
+    assert row["publications"][0]["title"] == "Paper 0"

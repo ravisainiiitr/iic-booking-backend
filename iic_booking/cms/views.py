@@ -195,7 +195,7 @@ def researcher_of_the_month(request):
     from django.utils import timezone
 
     from .models import ResearcherOfTheMonth
-    from .recognition import ensure_month, month_card, one_card_per_person
+    from .recognition import ensure_month, month_card, one_card_per_person, publications_of
 
     this_month = timezone.localdate().replace(day=1)
     ensure_month(this_month)
@@ -206,8 +206,13 @@ def researcher_of_the_month(request):
     history = str(request.query_params.get("history", "")).lower() in ("1", "true", "yes")
     qs = qs.filter(month__lt=this_month)[:36] if history else qs.filter(month=this_month)
     cards = [month_card(r, request=request) for r in qs]
-    return Response({"month": this_month.isoformat(), "history": history,
-                     "results": cards if history else one_card_per_person(cards)})
+    if not history:
+        cards = one_card_per_person(cards)
+        # Every approved publication of each researcher (most recent first), for the card to page through.
+        papers = publications_of({c["user_id"] for c in cards})
+        for c in cards:
+            c["publications"] = papers.get(c["user_id"], [])
+    return Response({"month": this_month.isoformat(), "history": history, "results": cards})
 
 
 def _main_admin_only(request):
