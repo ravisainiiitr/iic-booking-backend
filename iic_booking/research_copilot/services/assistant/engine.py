@@ -478,15 +478,24 @@ def try_assistant_turn(
             intel_busy = False
         if st.get("step") == "confirm" and resolve_confirm(text or ""):
             return None
+        from iic_booking.research_copilot.services.assistant import portal
+
+        staff_out = portal.staff_turn(user, conversation, text or "")
+        if staff_out is not None:
+            return staff_out
         daily_out = _daily(user, conversation, text or "", st)
         if daily_out is not None:
             return daily_out
-        from iic_booking.research_copilot.services.assistant import portal
 
         portal_out = portal.turn(user, conversation, text or "")
         if portal_out is not None:
             return portal_out
         classified = _classify(user, conversation, text or "", ba_state.load(conversation), intel_busy)
+        if classified is not None and (classified.get("metadata") or {}).get("intent") == "assistant:not_found":
+            # No instrument by that name: a short query may still name a portal page or setting ("exchange").
+            clarified = portal.clarify(user, conversation, text or "")
+            if clarified is not None:
+                return clarified
         if classified is not None:
             return classified
         # A short query nothing above recognised ("exchange"): offer what it may mean for this user's role.

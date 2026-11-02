@@ -231,3 +231,35 @@ def test_unique_cache_key_per_department():
     assert picked.department_id == a.department_id and picked.is_institute
     assert picked.cache_key not in (a.cache_key, _Scope(admin).cache_key)
     assert _Scope(UserFactory(user_type=UserType.ADMIN)).cache_key.endswith(":institute")
+
+
+def test_experience_ratings_count_submitted_ratings_with_their_average(two_departments):
+    """Portal ratings (Rate your experience) are counted institute-wide only; booking ratings follow the department
+    filter and the 90-day window; test accounts are left out."""
+    from iic_booking.support.models import PortalFeedback
+
+    a_today, b_future = two_departments["bookings"]["a_today"], two_departments["bookings"]["b_future"]
+    now = timezone.now()
+    for booking, stars in ((a_today, 5), (b_future, 2)):
+        booking.rating, booking.rated_at = stars, now
+        booking.save(update_fields=["rating", "rated_at"])
+    old = two_departments["bookings"]["a_cancelled"]
+    old.rating, old.rated_at = 1, now - timedelta(days=200)  # outside the window
+    old.save(update_fields=["rating", "rated_at"])
+    scores = {"ease_of_booking": 4, "website_usability": 4, "equipment_booking_experience": 4}
+    PortalFeedback.objects.create(user=UserFactory(), overall_rating=5, **scores)
+    PortalFeedback.objects.create(user=UserFactory(), overall_rating=4, **scores)
+    PortalFeedback.objects.create(user=UserFactory(is_test_account=True), overall_rating=1, **scores)
+
+    institute = _summary(_admin())["ratings"]
+    assert (institute["portal_count"], institute["portal_average"]) == (2, 4.5)
+    assert (institute["booking_count"], institute["booking_average"]) == (2, 3.5)
+
+    dept_a = _summary(_admin(), dept=two_departments["a"].department.pk, refresh=1)["ratings"]
+    assert (dept_a["booking_count"], dept_a["booking_average"]) == (1, 5.0)
+    assert (dept_a["portal_count"], dept_a["portal_average"]) == (0, None)
+
+
+def test_experience_ratings_are_empty_not_zero_without_ratings(two_departments):
+    ratings = _summary(_admin())["ratings"]
+    assert ratings == {"days": 90, "booking_average": None, "booking_count": 0, "portal_average": None, "portal_count": 0}

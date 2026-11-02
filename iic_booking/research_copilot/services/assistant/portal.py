@@ -17,14 +17,20 @@ from iic_booking.research_copilot.services.assistant import state as ba_state
 from iic_booking.research_copilot.services.assistant.actions import PORTAL
 
 # Answered better by the assistant itself (live slots, prices, the guided booking flow).
-NATIVE = frozenset({"book_equipment", "equipment_details", "availability", "find_instrument", "analysis_charges",
-                    "booking_calendar"})
+NATIVE = frozenset({"book_equipment", "equipment_details", "availability", "find_instrument", "analysis_charges"})
+# Roles of people who book for themselves: their wording ("recharge", "templates") means their own wallet or bookings.
+_SELF_SERVICE = frozenset({P.USER, P.STUDENT, P.FACULTY, P.EXTERNAL, P.ANY})
 STRONG = 14  # a whole keyword phrase, not just a shared word
 CHOICES = 8
 
 
+def _lower(text: str) -> str:
+    """Lower-case for running text, keeping acronyms ("I-STEM", "SRIC", "OIC") and proper names after the first word."""
+    return " ".join(w if any(c.isupper() for c in w[1:]) else w.lower() for w in text.split(" "))
+
+
 def _label(action: P.PortalAction) -> str:
-    return action.title[:1].lower() + action.title[1:]
+    return _lower(action.title)
 
 
 def _state_word(on: bool) -> str:
@@ -64,7 +70,7 @@ def _for_equipment(user, action: P.PortalAction, equipment_id: int, on: bool | N
         return C.reply("That instrument is not one you can change.", intent="portal:gone")
     if not action.switch:
         return C.reply(f"Here is **{action.title}** for **{eq.name}**.",
-                       actions=[C.link(f"Open {action.title.lower()}", action.target(eq.pk), primary=True)],
+                       actions=[C.link(f"Open {_lower(action.title)}", action.target(eq.pk), primary=True)],
                        intent=f"portal:{action.key}", title_hint=action.title)
     current = bool(getattr(eq, action.switch))
     want = (not current) if on is None or on == current else on
@@ -100,7 +106,7 @@ def button(user, conversation, payload: dict[str, Any]) -> dict[str, Any]:
         return C.reply("That option is not available to you.", intent="portal:refused")
     ba_state.save(conversation, portal_pending="")
     if not action.equipment:
-        return C.reply(f"Here is **{action.title}**.", actions=[C.link(f"Open {action.title.lower()}", action.path, primary=True)],
+        return C.reply(f"Here is **{action.title}**.", actions=[C.link(f"Open {_lower(action.title)}", action.path, primary=True)],
                        intent=f"portal:{action.key}")
     if payload.get("equipment_id") is None:
         return _choose(user, conversation, action, "", None)
@@ -130,20 +136,34 @@ def clarify(user, conversation, text: str) -> dict[str, Any] | None:
     if not options:
         return None
     q = " ".join(words)
-    find = C.prompt_action(f"Find equipment for “{q}”", f"equipment for {q}")
+    # Offer an equipment search only when the words could name an instrument ("flash"), not portal words ("slot").
+    find = [] if set(words) & P._GENERIC else [C.prompt_action(f"Find equipment for “{q}”", f"equipment for {q}")]
     first = options[0]
     if len(options) == 1 and first.equipment:
         verb = "change" if first.switch else "open"
         return _choose(user, conversation, first, text, None,
                        intro=f"I can help you {verb} **{_subject(first)}**. Which instrument do you want to configure?",
-                       extra=[find])
+                       extra=find)
     if len(options) == 1:
-        return C.reply(f"I can help with **{first.title}** — {first.hint.lower()}.",
-                       actions=[C.link(f"Open {first.title.lower()}", first.path, primary=True), find],
+        return C.reply(f"I can help with **{first.title}** — {_lower(first.hint)}.",
+                       actions=[C.link(f"Open {_lower(first.title)}", first.path, primary=True), *find],
                        intent=f"portal:{first.key}", title_hint=first.title)
     buttons = [C.assistant_action(a.title, PORTAL, {"action": a.key}) for a in options]
-    return C.reply(f"I can help with “{q}” in a few ways. Which do you mean?", actions=[*buttons, find],
+    return C.reply(f"I can help with “{q}” in a few ways. Which do you mean?", actions=[*buttons, *find],
                    intent="portal:clarify")
+
+
+def staff_turn(user, conversation, text: str) -> dict[str, Any] | None:
+    """Staff asking for one of their own pages by name ("approve recharge requests", "wallet ledger", "email
+    templates"): answered before the everyday shortcuts, which would otherwise read it as the staff member's own
+    wallet or bookings. Only a strong match on a page that booking users do not have."""
+    hits = [a for a in P.match(user, text, min_score=STRONG) if a.key not in NATIVE]
+    staff = [a for a in hits if not a.roles & _SELF_SERVICE]
+    # A staff page named by a whole keyword phrase wins even when a self-service page shares more title words
+    # ("failed booking attempts": the institute's attempt log, not the admin's own attempts).
+    if not staff or (hits[0] is not staff[0] and P.score(staff[0], text) < STRONG + 4):
+        return None
+    return _answer(user, conversation, text, staff[0], [a for a in hits if a is not staff[0]])
 
 
 def turn(user, conversation, text: str) -> dict[str, Any] | None:
@@ -162,11 +182,15 @@ def turn(user, conversation, text: str) -> dict[str, Any] | None:
     hits = [a for a in P.match(user, text, min_score=STRONG) if a.key not in NATIVE]
     if not hits:
         return None
-    action = hits[0]
+    return _answer(user, conversation, text, hits[0], hits[1:])
+
+
+def _answer(user, conversation, text: str, action: P.PortalAction, alternatives: list[P.PortalAction]) -> dict[str, Any]:
+    hits = [action, *alternatives]
     if not action.equipment:
         others = [C.assistant_action(a.title, PORTAL, {"action": a.key}) for a in hits[1:4]]
-        return C.reply(f"**{action.title}** — {action.hint.lower()}.",
-                       actions=[C.link(f"Open {action.title.lower()}", action.path, primary=True), *others],
+        return C.reply(f"**{action.title}** — {_lower(action.hint)}.",
+                       actions=[C.link(f"Open {_lower(action.title)}", action.path, primary=True), *others],
                        intent=f"portal:{action.key}", title_hint=action.title)
     on = P.desired_state(text) if action.switch else None
     named = P.equipment_named_in(user, action, text)
