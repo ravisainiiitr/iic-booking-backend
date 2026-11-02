@@ -276,14 +276,18 @@ def _address_box(c, x, y_top, width, height, tag, lines, mobile, accent, *, max_
 def sample_label_pdf(*, sender_lines: list[str], lab_name: str, lab_location: str = "", equipment_name: str,
                      equipment_code: str = "", booking_reference: str, reference: str, sample_count: int,
                      attention: Optional[str] = None, lab_incharge: Optional[str] = None, sender_mobile: str = "",
-                     office_mobile: str = "") -> bytes:
-    """Sample shipment label, laid out for sorting by hand at the receiving office (no QR code, 31 Oct 2026).
+                     office_mobile: str = "", qr_url: str = "") -> bytes:
+    """Sample shipment label, laid out for sorting at the receiving office.
 
     Top: the IIT Roorkee masthead and the BOOKING ID, the largest text on the label, which staff use to record the
     receipt. Left: a TO box (IIC address, Officer In Charge, lab and equipment, the department office mobile) and a
     FROM box (the sender with their mobile number). Right: the booking ID again, the label reference and the number of
     samples. ``office_mobile`` is the mobile of the department's Accounts In Charge; without one, a "Mobile:" line of
     the configured IIC address is used.
+
+    With qr_url (2 Nov 2026: one scan, at the receiving office) the right side carries the QR code instead of the
+    second booking ID box: the office scans it once to record the receipt; the code is a link with a random token to a
+    staff-only page and holds no personal data.
     """
     from reportlab.lib import colors
 
@@ -331,8 +335,14 @@ def sample_label_pdf(*, sender_lines: list[str], lab_name: str, lab_location: st
     _address_box(c, MARGIN_PT, body_top - to_h - gap, left_w, body_h - to_h - gap, "FROM", from_lines,
                  sender_mobile, LABEL_BRICK, max_size=11, min_size=6)
 
-    # Booking panel: the booking ID in a heavy box (what the office writes in the register), reference, count
     px = right_edge - right_w
+    if qr_url:
+        _label_qr_panel(c, qr_url, px, body_top, right_w, reference, sample_count)
+        c.showPage()
+        c.save()
+        return buffer.getvalue()
+
+    # Booking panel: the booking ID in a heavy box (what the office writes in the register), reference, count
     c.setStrokeColor(colors.black)
     c.setLineWidth(2.5)
     box_h = 92.0
@@ -356,6 +366,31 @@ def sample_label_pdf(*, sender_lines: list[str], lab_name: str, lab_location: st
     c.showPage()
     c.save()
     return buffer.getvalue()
+
+
+def _label_qr_panel(c, qr_url: str, px: float, body_top: float, width: float, reference: str, sample_count: int):
+    """QR code for the receiving office's single scan, with the label reference and the number of samples."""
+    from reportlab.graphics import renderPDF
+    from reportlab.graphics.barcode.qr import QrCodeWidget
+    from reportlab.graphics.shapes import Drawing
+    from reportlab.lib import colors
+
+    size = 132.0
+    widget = QrCodeWidget(qr_url)
+    x0, y0, x1, y1 = widget.getBounds()
+    drawing = Drawing(size, size, transform=[size / (x1 - x0), 0, 0, size / (y1 - y0), 0, 0])
+    drawing.add(widget)
+    cx = px + width / 2
+    renderPDF.draw(drawing, c, cx - size / 2, body_top - size)
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 13)
+    c.drawCentredString(cx, body_top - size - 14, f"Label {reference}")
+    c.setFont("Helvetica-Bold", 12)
+    c.drawCentredString(cx, body_top - size - 30, f"{sample_count} sample" + ("" if sample_count == 1 else "s"))
+    c.setFont("Helvetica", 7.5)
+    for i, text in enumerate(("Receiving office: scan once on receipt", "(or enter the label code on the portal).",
+                              "Write the booking ID on every sample.")):
+        c.drawCentredString(cx, body_top - size - 44 - i * 10, text)
 
 
 def department_office_mobile(department) -> str:

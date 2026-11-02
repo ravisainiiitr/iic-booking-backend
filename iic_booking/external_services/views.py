@@ -576,6 +576,18 @@ def staff_copy_envelope(request, copy_id):
     return _pdf(logistics.envelope_pdf(request.user, copy_id), f"envelope_{copy_id}.pdf")
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@_all_errors
+def staff_sample_scan(request):
+    """Opening a scanned label: the receiving office records the receipt once; everyone else sees the details."""
+    from . import logistics
+
+    return Response(logistics.scan(request.user, request.data.get("code") or ""))
+
+
+# --- booking checkout (payment choice; nothing held before payment) --------------------------------------------------
+
 def _checkout_errors(fn):
     from .checkout import CheckoutError
 

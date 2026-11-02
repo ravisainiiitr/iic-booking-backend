@@ -5,9 +5,10 @@ Access rules (all server-side):
 * Copy requests: the booking's owner asks; the Accounts In Charge of the department (or the Main Administrator)
   prepares and dispatches. The address is copied into the request, so editing the address book later does not
   change a dispatch.
-* Sample labels: the booking's (external) owner creates one; each new label revokes the previous ones. Since the
-  31 Oct 2026 committee meeting the label has no QR code: the receiving office reads the booking ID and records the
-  receipt on the booking as for any other sample.
+* Sample labels: the booking's (external) owner creates one; each new label revokes the previous ones. The QR code
+  holds a random 128-bit token (only its SHA-256 is stored). Since 2 Nov 2026 it is scanned once, at the receiving
+  office (``scan``): the Accounts In Charge of the booking's department records Received at Office; later scans
+  only show the details, and the lab records its own steps on the booking page.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from .models import (
     CopyRequestStatus,
     ExternalServicesSettings,
     PhysicalCopyRequest,
+    SampleReceiptScan,
     SampleShipmentLabel,
     SavedPostalAddress,
     SricInvoiceRequest,
@@ -357,6 +359,7 @@ def _new_reference() -> str:
 
 
 def create_sample_label(user, booking_id, data: dict) -> tuple[SampleShipmentLabel, bytes]:
+    from iic_booking.communication.utils import get_frontend_absolute_url
     from iic_booking.equipment.reports import get_equipment_oic_users
     from iic_booking.users.display import get_user_display_name
 
@@ -406,6 +409,7 @@ def create_sample_label(user, booking_id, data: dict) -> tuple[SampleShipmentLab
         equipment_code=getattr(equipment, "code", "") or "",
         booking_reference=getattr(booking, "virtual_booking_id", "") or str(booking.pk),
         reference=label.reference,
+        qr_url=get_frontend_absolute_url(f"/staff/sample-receipt?code={token}"),
         sample_count=count,
         attention=get_user_display_name(oics[0]) if oics else None,
         lab_incharge=get_user_display_name(lab_staff[0]) if lab_staff else None,
@@ -434,3 +438,134 @@ def staff_can_receive(user, booking) -> bool:
     if user.user_type == UserType.OPERATOR:
         return booking.equipment_id in set(api_views._get_equipment_ids_for_log_access(user) or [])
     return True
+
+
+# --- single office scan (2 Nov 2026) -----------------------------------------------------------------------------------
+# The QR code is scanned once, at the receiving office: the Accounts In Charge of the booking's department records
+# Received at Office (status Forwarded to Lab) through the existing sample-status endpoint. Every later scan, and any
+# scan by the lab or the Main Administrator, only shows the booking details; the lab records its own steps on the
+# booking page as for any sample.
+
+OFFICE_RECEIVED = ("FORWARDED_TO_LAB", "HELD_AT_OFFICE", "SAMPLE_ACCEPTED", "SAMPLE_REJECTED", "PROCESSING",
+                   "COMPLETED", "RETURNED")
+
+
+def _label_by_token(token: str) -> Optional[SampleShipmentLabel]:
+    token = (token or "").strip()
+    if not token or len(token) > 64:
+        return None
+    label = (SampleShipmentLabel.objects.select_related("booking__equipment", "booking__user")
+             .filter(token_sha256=_hash(token), revoked_at__isnull=True).first())
+    ref = token.upper()
+    if label is None and re.fullmatch(f"[{REFERENCE_ALPHABET}]{{8}}", ref):
+        # The label code printed under the QR code, for a damaged code (the same role rules decide access).
+        label = (SampleShipmentLabel.objects.select_related("booking__equipment", "booking__user")
+                 .filter(reference=ref, revoked_at__isnull=True).first())
+    return label
+
+
+def scan_role(user, booking) -> Optional[str]:
+    """``office`` (records the receipt) | ``viewer`` (details only) | ``None`` (no access) for this booking."""
+    from iic_booking.equipment import api_views
+    from iic_booking.equipment.reports import get_equipment_lab_incharge_users, get_equipment_oic_users
+    from iic_booking.users.models.user_type import UserType
+
+    if user is None or not getattr(user, "is_authenticated", False):
+        return None
+    if api_views._user_is_accounts_finance_user(user):
+        same_department = bool(getattr(user, "department_id", None)) and (
+            user.department_id == _booking_department_id(booking))
+        external = (booking.user_type_snapshot or "").strip() in UserType.get_external_user_codes()
+        return "office" if same_department and external else None
+    lab_people = {u.pk for u in get_equipment_oic_users(booking.equipment)}
+    lab_people |= {u.pk for u in get_equipment_lab_incharge_users(booking.equipment)}
+    if user.pk in lab_people or getattr(user, "user_type", None) == UserType.ADMIN:
+        return "viewer"
+    return None
+
+
+def _set_sample_status(user, booking, status_value: str) -> tuple[int, dict]:
+    """The existing sample-status endpoint, called as ``user`` (same rules and side effects as the booking page)."""
+    from iic_booking.equipment.api_views import set_booking_sample_status
+    from iic_booking.research_copilot.services.v2.mutations.domain_bridge import _as_data, _django_json_post
+
+    request = _django_json_post(user=user, path=f"/api/bookings/{booking.pk}/sample-status/",
+                                body={"status": status_value})
+    return _as_data(set_booking_sample_status(request, booking.pk))
+
+
+def _scan_details(label: SampleShipmentLabel) -> dict:
+    """What staff need to sort the parcel (no contact details beyond the user's name)."""
+    from iic_booking.equipment.booking_payment_service import booking_payment_fully_settled
+    from iic_booking.users.display import get_user_display_name
+
+    booking = label.booking
+    equipment = booking.equipment
+    department = getattr(equipment, "internal_department", None)
+    timeline = [
+        {"status": e.status, "label": e.get_status_display(), "at": timezone.localtime(e.created_at).isoformat(),
+         "by": get_user_display_name(e.created_by) if e.created_by_id else "", "reason": e.reason or ""}
+        for e in booking.sample_trace_events.select_related("created_by").order_by("created_at", "id")
+    ]
+    return {
+        "label_reference": label.reference,
+        "booking_id": booking.pk,
+        "booking_reference": getattr(booking, "virtual_booking_id", "") or booking.pk,
+        "booking_status": booking.status,
+        "equipment": equipment.name,
+        "equipment_code": getattr(equipment, "code", "") or "",
+        "lab": getattr(department, "name", "") or "",
+        "user_name": get_user_display_name(booking.user),
+        "sample_count": label.sample_count,
+        "description": label.description,
+        "slot_ranges": [
+            {"start": timezone.localtime(s.start_datetime).isoformat(),
+             "end": timezone.localtime(s.end_datetime).isoformat()}
+            for s in booking.daily_slots.order_by("start_datetime")
+        ],
+        "amount_due": f"{booking.amount_due or 0:.2f}",
+        "payment_settled": booking_payment_fully_settled(booking),
+        "timeline": timeline,
+        "received_at_office": any(e["status"] in OFFICE_RECEIVED for e in timeline),
+    }
+
+
+def scan(user, token) -> dict:
+    """Process a scanned label for ``user``. Returns the details plus ``outcome``:
+    ``received_at_office`` | ``payment_pending`` | ``already_received`` | ``details``."""
+    from iic_booking.equipment.booking_payment_service import booking_payment_fully_settled
+    from iic_booking.equipment.models import Booking
+
+    label = _label_by_token(token)
+    role = scan_role(user, label.booking) if label is not None else None
+    if role is None:
+        raise LogisticsError("This label was not found, or it is not for you to receive.", status=404,
+                             code="not_found")
+    with transaction.atomic():
+        booking = Booking.objects.select_for_update().get(pk=label.booking_id)  # one scan at a time per booking
+        received = booking.sample_trace_events.filter(status__in=OFFICE_RECEIVED).exists()
+        reference = getattr(booking, "virtual_booking_id", "") or booking.pk
+        outcome, message = ("already_received", "The receipt was already recorded. Nothing more is recorded by "
+                            "scanning; the lab records its steps on the booking.") if received else ("details", "")
+        if role == "office" and not received:
+            if booking.status not in ("BOOKED", "COMPLETED") or not booking_payment_fully_settled(booking):
+                outcome = "payment_pending"
+                message = (f"Payment of ₹{booking.amount_due or 0:.2f} is pending on this booking. The receipt was not "
+                           "recorded; keep the sample at the office until the payment is settled.")
+            else:
+                code, data = _set_sample_status(user, booking, "FORWARDED_TO_LAB")
+                if code not in (200, 201):
+                    raise LogisticsError(str(data.get("error") or "The receipt could not be recorded."),
+                                         status=409, code="not_recorded")
+                outcome, message = "received_at_office", "Received at office. Hand the sample over to the lab."
+                notifications.notify(
+                    f"sample:{booking.pk}:office", [booking.user], title=f"Sample received for booking {reference}",
+                    message="The receiving office has received your sample and is forwarding it to the lab.",
+                    link=f"/my-bookings?booking={booking.pk}",
+                )
+        SampleReceiptScan.objects.create(
+            label=label, staff=user, action="office" if outcome == "received_at_office" else "looked_up",
+            trace_status="FORWARDED_TO_LAB" if outcome == "received_at_office" else "",
+        )
+    label.refresh_from_db()
+    return {**_scan_details(label), "outcome": outcome, "message": message, "role": role}

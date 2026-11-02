@@ -1,4 +1,4 @@
-"""Saved addresses, printed invoice copies, 10 x 4.5 in labels and QR sample receipt."""
+"""Saved addresses, printed invoice copies, 10 x 4.5 in labels and the sample label QR."""
 
 import re
 from datetime import timedelta
@@ -158,7 +158,7 @@ def test_labels_refuse_without_a_configured_iic_address(on, booking):
         envelope_label_pdf(recipient_lines=["A"], reference="R")
 
 
-def test_sample_label_has_no_qr_and_a_new_label_replaces_the_old(on, booking):
+def test_sample_label_and_a_new_label_replaces_the_old(on, booking):
     user = booking.user
     r = client_for(user).post(f"{API}bookings/{booking.pk}/sample-label/",
                               {"sample_count": 3, "sender": ADDRESS, "description": "Films"}, format="json")
@@ -167,7 +167,6 @@ def test_sample_label_has_no_qr_and_a_new_label_replaces_the_old(on, booking):
     label = SampleShipmentLabel.objects.get(booking=booking)
     assert len(label.token_sha256) == 64 and re.fullmatch(r"[A-Z2-9]{8}", label.reference)
     assert user.email.encode() not in r.content  # no personal contact data on the label
-    assert b"/QrCode" not in r.content and b"sample-receipt" not in r.content  # no QR link (31 Oct 2026)
     second = client_for(user).post(f"{API}bookings/{booking.pk}/sample-label/", {"sample_count": 3, "sender": ADDRESS},
                                    format="json")
     assert second.status_code == 200
@@ -191,7 +190,7 @@ def test_label_mobile_is_the_departments_accounts_in_charge(on, booking, monkeyp
     assert seen["office_mobile"] == "9811122233"
     assert seen["sender_mobile"] == ADDRESS["phone"]
     assert not any("Phone" in line for line in seen["sender_lines"])  # printed once, as the FROM mobile
-    assert "qr_url" not in seen
+    assert "/staff/sample-receipt?code=" in seen["qr_url"]  # scanned once at the office (2 Nov 2026)
 
 
 def test_label_mobile_falls_back_to_the_address_setting():
@@ -202,8 +201,9 @@ def test_label_mobile_falls_back_to_the_address_setting():
     assert lines == ["The Head", "IIT Roorkee"] and mobile == "+91 01332 000000"
 
 
-def test_qr_scan_endpoints_are_gone(on, booking):
-    for url in ("staff/sample-receipt/lookup/", "staff/sample-receipt/confirm/", "staff/sample-receipt/scan/",
-                "sample-label/courier/status/", "sample-label/courier/"):
+def test_retired_label_endpoints_stay_gone(on, booking):
+    # Only the office scan came back (2 Nov 2026); manual look-up/confirm and the sender's courier page did not.
+    for url in ("staff/sample-receipt/lookup/", "staff/sample-receipt/confirm/", "sample-label/courier/status/",
+                "sample-label/courier/"):
         assert client_for(booking.user).post(f"{API}{url}", {"code": "x"}, format="json").status_code == 404, url
 
