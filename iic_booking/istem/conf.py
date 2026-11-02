@@ -123,6 +123,18 @@ def execute_enabled() -> bool:
     return bool(_setting("ISTEM_EXECUTE_ENABLED", False))
 
 
+def cancel_enabled() -> bool:
+    """Close I-STEM bookings whose portal booking was cancelled (off by default; switched on at go-live). A full refund
+    is cancelled on I-STEM; a cancellation that kept the fee is closed by FBR Execute for the amount kept (I-STEM,
+    30 Oct 2026). The FBR Execute half also needs ISTEM_EXECUTE_ENABLED."""
+    return bool(_setting("ISTEM_CANCEL_ENABLED", False))
+
+
+def cancelled_by() -> str:
+    """``cancelled_by`` on Cancel Booking: the portal, as on Confirm Booking."""
+    return confirm_approved_by() or "IIT Roorkee Booking Portal"
+
+
 def execute_updated_by() -> str:
     """Optional ``updated_by`` for FBR Execute; empty means the field is omitted (I-STEM then uses a default)."""
     return str(_setting("ISTEM_EXECUTE_UPDATED_BY", "") or "").strip()

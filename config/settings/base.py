@@ -907,6 +907,9 @@ ISTEM_AUTOMATIC_FBR = env.bool("ISTEM_AUTOMATIC_FBR", default=False)
 # FBR Execute after local completion; also needs a confirmation_id, so it does nothing while Confirm is off.
 ISTEM_EXECUTE_ENABLED = env.bool("ISTEM_EXECUTE_ENABLED", default=False)
 ISTEM_EXECUTE_UPDATED_BY = env("ISTEM_EXECUTE_UPDATED_BY", default="")
+# A portal booking cancelled after it reached I-STEM is closed there too: a full refund by Cancel Booking, a fee kept
+# by FBR Execute for that amount (I-STEM, 30 Oct 2026). Off until go-live.
+ISTEM_CANCEL_ENABLED = env.bool("ISTEM_CANCEL_ENABLED", default=False)
 # Bookings created before this ISO datetime are never sent (no backfill). Empty: no cut-over.
 ISTEM_SYNC_START_AT = env("ISTEM_SYNC_START_AT", default="")
 # --- Remote Analysis RDP ---

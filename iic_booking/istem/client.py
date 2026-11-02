@@ -692,8 +692,8 @@ class IstemClient:
 
     def cancel_booking(self, request_id: str, *, cancelled_on: str, remarks: str, cancelled_by: str) -> str:
         """POST api/cancel-booking (full refunds only; see contract). [STAGING] verified: {"status": "Sucess",
-        "message": "Done", "file_path": "cancelled Sucessfully"}. Not called by the service yet (booking-app hooks
-        still need approval). Returns the message."""
+        "message": "Done", "file_path": "cancelled Sucessfully"}. Sent by the service for portal bookings cancelled with
+        a full refund (ISTEM_CANCEL_ENABLED). Returns the message."""
         body = self._call("cancel_booking", "POST", contract.CANCEL_BOOKING_PATH, data={
             "request_id": str(request_id), "cancelled_date": cancelled_on, "remarks": remarks,
             "cancelled": "true", "cancelled_by": cancelled_by,
