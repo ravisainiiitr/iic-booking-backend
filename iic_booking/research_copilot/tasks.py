@@ -42,3 +42,12 @@ def rebuild_all_indexes_task() -> dict:
     result = rebuild_all_indexes()
     logger.info("copilot index rebuild finished %s", result)
     return result
+
+
+@shared_task(name="research_copilot.refresh_equipment_references", acks_late=True, soft_time_limit=3600, time_limit=3900)
+@defer_during_peak("research_copilot.refresh_equipment_references")
+def refresh_equipment_references_task() -> dict:
+    """Monthly: fetch manufacturer references again (older than 30 days); a failed fetch keeps the last good text."""
+    from .services.equipment_references import refresh_stale
+
+    return refresh_stale()

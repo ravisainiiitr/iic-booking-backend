@@ -146,6 +146,8 @@ class EqFeatures:
     description: str
     active: bool
     parent_id: int | None
+    make: str = ""  # normalised manufacturer ("thermo fisher scientific")
+    model_c: str = ""  # compact model number ("sigma300")
 
 
 def features(eq) -> EqFeatures:
@@ -174,6 +176,8 @@ def features(eq) -> EqFeatures:
         description=norm(str(getattr(eq, "description", "") or ""))[:800],
         active=(eq.status or "").strip() == EquipmentStatus.ACTIVE,
         parent_id=getattr(eq, "parent_equipment_id", None),
+        make=norm(str(getattr(eq, "make", "") or "")),
+        model_c=compact(str(getattr(eq, "model_information", "") or "")),
     )
 
 
@@ -215,6 +219,10 @@ def _score(q_c: str, q_tokens: list[str], q_techs: set[str], q_misspelled: set[s
         exact_targets.add(f.acronym)
     if q_c and q_c in exact_targets:
         bump(1.0, "exact")
+    if f.model_c and len(q_c) >= 3 and (q_c == f.model_c or (len(q_c) >= 4 and q_c in f.model_c)):
+        bump(0.95, "model")
+    if f.make and make_named(q_tokens, f.make):
+        bump(0.8, "make")
     if q_techs & f.techniques:
         bump(0.93, "technique")
     elif "sem" in q_techs and "fesem" in f.techniques:
@@ -353,6 +361,8 @@ def _row_reason(c: Candidate) -> str:
         "category": "Same category",
         "description": "Mentioned in the description",
         "capability": "Can do this",
+        "model": "Model match",
+        "make": "Made by this manufacturer",
         "similar": "Similar instrument",
     }.get(c.reason, "")
 
@@ -367,10 +377,35 @@ def option_row(c: Candidate) -> dict[str, Any]:
         "department": getattr(dept, "name", "") or "",
         "location": " ".join(str(eq.location or "").split())[:120],
         "category": getattr(getattr(eq, "category", None), "name", "") or "",
+        "make": str(getattr(eq, "make", "") or "").strip(),
+        "model": str(getattr(eq, "model_information", "") or "").strip(),
         "reason": _row_reason(c),
         "bookable": (eq.status or "").strip() == "ACTIVE",
         "status_label": eq.get_status_display() if eq.status else "Unknown",
     }
+
+
+_MAKE_SKIP = {"scientific", "instruments", "instrument", "india", "pvt", "ltd", "limited", "inc", "gmbh",
+              "corporation", "corp", "co", "technologies", "technology", "systems", "analytical"}
+
+
+def make_named(q_tokens: list[str], make: str) -> bool:
+    """The query names this manufacturer: its distinctive first word ("zeiss", "thermo", "bruker") is in it."""
+    words = [w for w in make.split() if w not in _MAKE_SKIP and len(w) >= 3]
+    return bool(words) and words[0] in q_tokens
+
+
+def manufacturer_search(user, text: str, *, limit: int = 12) -> tuple[list[Candidate], str]:
+    """Visible instruments of the manufacturer the text names ("instruments from Thermo Fisher"), and that make."""
+    q_tokens = norm(text).split()
+    out: list[Candidate] = []
+    named = ""
+    for f in visible_pool(user):
+        if f.make and make_named(q_tokens, f.make):
+            out.append(Candidate(f.eq, 0.8, "make"))
+            named = named or str(getattr(f.eq, "make", "") or "").strip()
+    out.sort(key=lambda c: (0 if (c.eq.status or "").strip() == "ACTIVE" else 1, c.eq.name or ""))
+    return _collapse_modes(out)[:limit], named
 
 
 def capability_search(user, text: str, *, limit: int = 8) -> tuple[list[Candidate], list[str]]:

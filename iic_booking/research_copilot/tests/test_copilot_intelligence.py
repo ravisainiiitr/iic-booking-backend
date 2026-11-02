@@ -590,7 +590,7 @@ class TestApi:
                       {"content": "Book equipment", "choice": {"kind": "start", "value": "book"}}, format="json")
         assert resp.status_code == 200
         body = resp.json()
-        # The Research Assistant's guided flow owns "Book equipment" (department -> equipment -> ...).
+        # The IITR Assistant's guided flow owns "Book equipment" (department -> equipment -> ...).
         assert body["message"]["metadata"]["intent"].startswith("assistant:flow")
 
     def test_escalation_creates_ticket_once(self, world):

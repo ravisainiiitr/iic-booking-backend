@@ -1,5 +1,5 @@
 """
-Deterministic answers for the questions the IITR Research Assistant used to log as unanswered.
+Deterministic answers for the questions the IITR Assistant used to log as unanswered.
 
 Technique terms (FWHM, XRD, Bragg's law, ...), analysis software / data files / remote analysis, lab
 hours, sample preparation and submission, cost estimates for N samples, who pays (PI pricing), short

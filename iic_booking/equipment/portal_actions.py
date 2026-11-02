@@ -1,4 +1,4 @@
-"""Everything a signed-in user can do on the portal, as one catalogue shared by search and the IITR Research Assistant.
+"""Everything a signed-in user can do on the portal, as one catalogue shared by search and the IITR Assistant.
 
 Each action names the roles that may use it, where it happens (a page) and, when it is about one instrument, which
 equipment to choose from: instruments the user looks after (``manage``) or may book (``book``). A few equipment
@@ -90,6 +90,10 @@ ACTIONS: tuple[PortalAction, ...] = (
     _a("equipment_details", "Equipment details", "Specifications, charges, contacts and manuals",
        ("equipment details", "specification", "specifications", "equipment page", "about equipment", "manual"),
        ANY, "/equipment/{id}", equipment="book", group=_E),
+    _a("equipment_references", "Manufacturer references", "Product pages, datasheets and manuals the IITR Assistant cites",
+       ("manufacturer reference", "manufacturer references", "datasheet", "datasheets", "product page",
+        "manufacturer documentation", "technical documentation", "brochure"),
+       STAFF, "/equipment-references?equipment={id}", equipment="manage", group=_E),
     # --- Bookings ------------------------------------------------------------------------------------------------
     _a("my_bookings", "My bookings", "See, cancel or reschedule your bookings",
        ("my bookings", "my booking", "cancel booking", "reschedule", "booking status", "view booking"),
@@ -266,7 +270,7 @@ ACTIONS: tuple[PortalAction, ...] = (
        ADMIN, "/calendar-colors", group=_S),
     _a("automation", "AI and automation", "Instrument finder, best times and automatic alerts", ("automation", "ai settings", "no show", "alerts"),
        ADMIN, "/admin-settings/automation", group=_S),
-    _a("assistant_knowledge", "Research Assistant knowledge", "SOPs and FAQs the assistant answers from",
+    _a("assistant_knowledge", "IITR Assistant knowledge", "SOPs and FAQs the assistant answers from",
        ("knowledge", "sop", "faq", "assistant knowledge"), ADMIN, "/admin-settings/knowledge", group=_S),
     _a("support_admin", "Support tickets (helpdesk)", "Reassign and resolve tickets", ("helpdesk", "support queue", "all tickets"),
        ADMIN, "/admin-settings/support", group=_S),
@@ -346,6 +350,31 @@ def score(action: PortalAction, text: str) -> int:
 def match(user, text: str, *, limit: int = 6, min_score: int = 6) -> list[PortalAction]:
     ranked = sorted(((score(a, text), i, a) for i, a in enumerate(available(user))), key=lambda r: (-r[0], r[1]))
     return [a for s, _, a in ranked if s >= min_score][:limit]
+
+
+# Words too common to say which action someone means ("booking", "settings", ...): never a loose match on their own.
+_GENERIC = frozenset({
+    "book", "booking", "bookings", "slot", "slots", "equipment", "instrument", "instruments", "settings", "setting",
+    "page", "open", "show", "find", "change", "turn", "user", "users", "list", "status", "request", "requests",
+})
+
+
+def loose_match(user, text: str, *, limit: int = 4) -> list[PortalAction]:
+    """Actions whose keywords or title contain a distinctive word of a short query ("exchange", "flash", "amc").
+
+    Used only to offer choices when nothing matches strongly; the most words in common rank first."""
+    words = {w for w in _words(text) if len(w) >= 3 and w not in _GENERIC}
+    if not words:
+        return []
+    ranked = []
+    for i, a in enumerate(available(user)):
+        vocab = set(_words(a.title))
+        for k in a.keywords:
+            vocab |= set(_WORD.findall(k))
+        hit = len(words & vocab)
+        if hit:
+            ranked.append((-hit, i, a))
+    return [a for _, _, a in sorted(ranked, key=lambda r: (r[0], r[1]))][:limit]
 
 
 def desired_state(text: str) -> bool | None:

@@ -1,4 +1,4 @@
-"""Portal actions: one catalogue for search and the IITR Research Assistant, limited to the user's role."""
+"""Portal actions: one catalogue for search and the IITR Assistant, limited to the user's role."""
 
 from __future__ import annotations
 
@@ -94,7 +94,7 @@ def test_main_admin_switches_slot_exchange_and_others_cannot(lab):
     assert choices == [{"id": lab.xrd.pk, "name": lab.xrd.name, "code": lab.xrd.code, "on": True}]
 
 
-# --- IITR Research Assistant -----------------------------------------------------------------------------------------
+# --- IITR Assistant -----------------------------------------------------------------------------------------
 
 def _reply(resp):
     body = resp.json()
@@ -137,3 +137,72 @@ def test_assistant_refuses_a_forged_switch_button(lab):
     assert "not available" in text
     lab.fesem.refresh_from_db()
     assert lab.fesem.slot_exchange_enabled is False
+
+
+# --- short or ambiguous requests --------------------------------------------------------------------------------------
+
+def test_loose_match_follows_the_role_and_ignores_common_words(lab):
+    assert [a.key for a in P.loose_match(lab.admin, "exchange")][:1] == ["slot_exchange"]
+    assert "slot_exchange" not in {a.key for a in P.loose_match(lab.student, "exchange")}
+    assert "slot_exchanges" in {a.key for a in P.loose_match(lab.student, "exchange")}
+    assert P.loose_match(lab.admin, "booking") == []  # too common to mean one action
+
+
+def test_exchange_asks_which_instrument_for_the_main_admin(lab):
+    from iic_booking.research_copilot.tests.test_booking_assistant import _card
+
+    conv = _new_conv(lab, user=lab.admin)
+    resp = _post(lab, conv, "exchange", user=lab.admin)
+    text, buttons = _reply(resp)
+    assert "slot exchange" in text.lower() and "which instrument" in text.lower()
+    card, _ = _card(resp, "ba_equipment_picker")
+    assert card["action"] == "slot_exchange"
+    assert any(b.get("action_type") == "ba_portal" and b["payload"].get("equipment_id") == lab.fesem.pk for b in buttons)
+    assert any((b.get("prompt") or "").startswith("equipment for exchange") for b in buttons)  # the other meaning
+    # Choosing the instrument shows its state, a confirm button and the settings form; nothing changes yet.
+    pick = next(b for b in buttons if b.get("action_type") == "ba_portal" and b["payload"].get("equipment_id") == lab.fesem.pk)
+    text, buttons = _reply(_post(lab, conv, pick["label"], action={"type": "ba_portal", "payload": pick["payload"]}, user=lab.admin))
+    assert "Nothing changes until you press the button" in text
+    assert any(b.get("href") == f"/admin/section/equipment?edit={lab.fesem.pk}" for b in buttons)
+    lab.fesem.refresh_from_db()
+    assert lab.fesem.slot_exchange_enabled is False
+
+
+def test_exchange_for_a_student_offers_their_own_slot_exchanges(lab):
+    conv = _new_conv(lab)
+    text, buttons = _reply(_post(lab, conv, "exchange"))
+    assert any(b.get("href") == "/slot-exchanges" for b in buttons)
+    assert not any(b.get("action_type") == "ba_portal" and b["payload"].get("action") == "slot_exchange" for b in buttons)
+
+
+def test_several_meanings_become_choices(lab):
+    from iic_booking.research_copilot.services.assistant import portal
+
+    out = portal.clarify(lab.admin, None, "split rating")
+    buttons = out["message"]["suggested_actions"] if "message" in out else out.get("suggested_actions") or out.get("actions")
+    keys = {b["payload"]["action"] for b in buttons if b.get("action_type") == "ba_portal"}
+    assert {"split_booking", "user_rating"} <= keys
+    assert portal.clarify(lab.admin, None, "please tell me how the whole portal works today") is None  # long: not ours
+
+
+# --- equipment by manufacturer and model -----------------------------------------------------------------------------
+
+def test_equipment_found_by_model_and_by_manufacturer(lab):
+    from iic_booking.research_copilot.services.assistant import matching
+    from iic_booking.research_copilot.tests.test_booking_assistant import _card
+
+    lab.fesem.make, lab.fesem.model_information = "Carl Zeiss", "Sigma 300"
+    lab.fesem.save(update_fields=["make", "model_information"])
+    lab.tem.make, lab.tem.model_information = "Thermo Fisher Scientific", "Talos F200X"
+    lab.tem.save(update_fields=["make", "model_information"])
+    m = matching.match_equipment(lab.student, "sigma 300")
+    assert m.status == "unique" and m.equipment.pk == lab.fesem.pk and m.candidates[0].reason == "model"
+    row = matching.option_row(m.candidates[0])
+    assert (row["make"], row["model"]) == ("Carl Zeiss", "Sigma 300")
+    made, make = matching.manufacturer_search(lab.student, "find instruments from Thermo Fisher")
+    assert [c.eq.pk for c in made] == [lab.tem.pk] and make == "Thermo Fisher Scientific"
+    # Through the assistant: a list of that maker's instruments.
+    conv = _new_conv(lab)
+    card, body = _card(_post(lab, conv, "Find instruments from Thermo Fisher"), "ba_equipment_options")
+    assert [i["equipment_id"] for i in card["items"]] == [lab.tem.pk]
+    assert "Thermo Fisher Scientific" in body["message"]["content"]

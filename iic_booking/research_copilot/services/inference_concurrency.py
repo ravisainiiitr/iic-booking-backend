@@ -65,7 +65,7 @@ class CopilotBusyError(Exception):
 
 
 BUSY_USER_MESSAGE = (
-    "Research Assistant is temporarily busy. Your booking and other "
+    "IITR Assistant is temporarily busy. Your booking and other "
     "portal operations are unaffected."
 )
 
