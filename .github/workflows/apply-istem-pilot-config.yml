@@ -6,6 +6,9 @@
 #             on /auth?istem_test=<key>, and accounts registered through it are test accounts. Signed-in linking is
 #             limited to test accounts by the external pilot. User creation stays off; Confirm and FBR Execute stay off unless
 #             booking_steps=on (then only the I-STEM Single Booking workflow sends them, one booking at a time).
+#             booking_steps=automatic: as on, plus automatic FBR (ISTEM_AUTOMATIC_FBR), closing cancelled bookings on
+#             I-STEM (ISTEM_CANCEL_ENABLED) and the "I-STEM sync (every 5 minutes)" schedule switched on, so every new
+#             booking that needs an I-STEM FBR is created, confirmed and executed by the portal. off/on switch them off.
 #   open    : as enable, but without the test key: "Already registered on I-STEM?" shows for every external
 #             visitor and those sign-ups are ordinary (not test) accounts. Still I-STEM STAGING: for a temporary
 #             evaluation of the flow and screens only; switch back with enable (test link only) or disable.
@@ -29,10 +32,10 @@ on:
         required: false
         default: ""
       booking_steps:
-        description: "enable/open only: on = Confirm Booking and FBR Execute allowed for bookings sent one at a time by the I-STEM Single Booking workflow (nothing runs them automatically); off = both off"
+        description: "enable/open only: on = Confirm Booking and FBR Execute allowed for bookings sent one at a time by the I-STEM Single Booking workflow; automatic = the portal sends every new I-STEM booking itself (5-minute sync); off = all off"
         required: false
         type: choice
-        options: ["off", "on"]
+        options: ["off", "on", "automatic"]
         default: "off"
 
 permissions:
@@ -86,8 +89,10 @@ jobs:
                   "ISTEM_USER_CREATION_ENABLED": "False",
                   "ISTEM_CONFIRM_ENABLED": "False",
                   "ISTEM_EXECUTE_ENABLED": "False",
+                  "ISTEM_AUTOMATIC_FBR": "False",
+                  "ISTEM_CANCEL_ENABLED": "False",
               }
-              if os.environ.get("BOOKING_STEPS") == "on":
+              if os.environ.get("BOOKING_STEPS") in ("on", "automatic"):
                   from datetime import datetime, timezone
                   upsert.update({
                       "ISTEM_CONFIRM_ENABLED": "True",
@@ -99,6 +104,8 @@ jobs:
                       # Safety net: bookings made before this moment are never sent, even by istem_sync --enqueue.
                       "ISTEM_SYNC_START_AT": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                   })
+              if os.environ.get("BOOKING_STEPS") == "automatic":
+                  upsert.update({"ISTEM_AUTOMATIC_FBR": "True", "ISTEM_CANCEL_ENABLED": "True"})
               if mode == "open":
                   del upsert["ISTEM_REGISTRATION_TEST_KEY"]
                   remove = {"ISTEM_REGISTRATION_TEST_KEY"}
@@ -110,7 +117,8 @@ jobs:
               else:
                   remove.add("ISTEM_TEST_OTP_INBOX")
           elif mode == "disable":
-              upsert = {"ISTEM_ENABLED": "False", "ISTEM_MODE": "off", "ISTEM_OTP_LINKING_ENABLED": "False"}
+              upsert = {"ISTEM_ENABLED": "False", "ISTEM_MODE": "off", "ISTEM_OTP_LINKING_ENABLED": "False",
+                        "ISTEM_AUTOMATIC_FBR": "False", "ISTEM_CANCEL_ENABLED": "False"}
               remove = set(secret_keys) | {"ISTEM_TEST_OTP_INBOX", "ISTEM_CONFIRM_APPROVED_BY"}
           else:
               raise SystemExit("unknown mode")
@@ -144,6 +152,9 @@ jobs:
           docker ps --format '{{.Names}} {{.Status}}' | grep -E 'django' || true
 
       - name: Runtime verification
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          BOOKING_STEPS: ${{ github.event.inputs.booking_steps }}
         run: |
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
@@ -152,13 +163,30 @@ jobs:
 
           django.setup()
 
+          import os
+
+          from django_celery_beat.models import PeriodicTask
+
           from iic_booking.istem import conf, registration_lookup
+
+          # The 5-minute sync runs only with booking_steps=automatic (the task itself also skips unless automatic FBR is on).
+          sync = PeriodicTask.objects.filter(name="I-STEM sync (every 5 minutes)", task="istem.run_sync").first()
+          if sync is None:
+              print("SYNC SCHEDULE MISSING: deploy the release with istem migration 0008 first")
+          else:
+              want = os.environ.get("MODE") in ("enable", "open") and os.environ.get("BOOKING_STEPS") == "automatic"
+              if sync.enabled != want:
+                  sync.enabled = want
+                  sync.save()
+              print("RUNTIME sync schedule enabled=", sync.enabled, " last_run_at=", sync.last_run_at)
 
           print("RUNTIME istem_enabled=", conf.istem_enabled(), " mode=", conf.istem_mode(),
                 " network_allowed=", conf.network_allowed(), " missing=", conf.missing_live_settings())
           print("RUNTIME otp_linking=", conf.otp_linking_enabled(), " user_creation=", conf.user_creation_enabled(),
                 " test_key_set=", bool(registration_lookup._test_key()))
-          print("RUNTIME confirm=", conf.confirm_enabled(), " execute=", conf.execute_enabled())
+          print("RUNTIME confirm=", conf.confirm_enabled(), " execute=", conf.execute_enabled(),
+                " automatic_fbr=", conf.automatic_fbr_enabled() if hasattr(conf, "automatic_fbr_enabled") else "n/a",
+                " cancel=", conf.cancel_enabled() if hasattr(conf, "cancel_enabled") else "n/a")
           print("RUNTIME registration available without the key=", registration_lookup.available(""))
           print("RUNTIME test OTP inbox for @example.com staging users set=",
                 bool(registration_lookup.test_otp_inbox("check@example.com")) if hasattr(registration_lookup, "test_otp_inbox") else "n/a")
