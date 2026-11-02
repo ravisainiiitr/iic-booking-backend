@@ -271,8 +271,12 @@ def build_create_booking_payload(booking, user_link) -> MappingResult:
 
     billing = getattr(booking.user, "external_billing_profile", None)
     if billing is None:
-        for key in ("billing_user_name", "billing_address", "billing_state", "booking_gstn"):
+        for key in ("billing_user_name", "billing_address", "billing_state"):
             result.errors[key] = "the booking user has no billing profile"
+        if conf.gstin_placeholder():
+            p["booking_gstn"] = conf.gstin_placeholder()
+        else:
+            result.errors["booking_gstn"] = "the booking user has no billing profile"
     else:
         name = (billing.billing_name or "").strip()
         if not name:
@@ -294,7 +298,10 @@ def build_create_booking_payload(booking, user_link) -> MappingResult:
             p["billing_state"] = state
         gstin = (billing.gstin or "").strip().upper()
         if not gstin:
-            result.errors["booking_gstn"] = "GSTIN is empty (mandatory for Create Booking; I-STEM has not said empty is accepted)"
+            if conf.gstin_placeholder():
+                p["booking_gstn"] = conf.gstin_placeholder()
+            else:
+                result.errors["booking_gstn"] = "GSTIN is empty and ISTEM_GSTIN_PLACEHOLDER is not set"
         elif not GSTIN.match(gstin):
             result.errors["booking_gstn"] = "GSTIN must be 15 letters/digits"
         else:

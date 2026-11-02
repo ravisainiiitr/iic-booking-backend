@@ -874,6 +874,9 @@ ISTEM_MAX_ATTEMPTS = env.int("ISTEM_MAX_ATTEMPTS", default=5)
 ISTEM_INSTITUTE_ID = env("ISTEM_INSTITUTE_ID", default="")
 # PEM bundle for verifying I-STEM's certificate; empty = certifi. Staging needs ISRG Root YR (not in certifi yet).
 ISTEM_CA_BUNDLE = env("ISTEM_CA_BUNDLE", default="")
+# Sent as booking_gstn when the user has no GSTIN (I-STEM, 30 Oct 2026: it only needs to be non-empty). Empty: such
+# bookings are held back until a GSTIN is entered.
+ISTEM_GSTIN_PLACEHOLDER = env("ISTEM_GSTIN_PLACEHOLDER", default="NA")
 # Each remote operation beyond Create Booking is off until its open questions are answered.
 ISTEM_USER_CREATION_ENABLED = env.bool("ISTEM_USER_CREATION_ENABLED", default=False)
 ISTEM_ACCEPT_DUPLICATE_USER_ID = env.bool("ISTEM_ACCEPT_DUPLICATE_USER_ID", default=False)
