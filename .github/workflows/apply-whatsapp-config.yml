@@ -1,0 +1,137 @@
+# WhatsApp notifications (docs/whatsapp.md): switch them on for a pilot, for everyone who opted in, or off.
+#   pilot    : WHATSAPP_ENABLED=True, messages only to the numbers in pilot_numbers (comma-separated, +91...)
+#   everyone : WHATSAPP_ENABLED=True, every user who opted in on their profile
+#   off      : WHATSAPP_ENABLED=False (nothing is sent; the profile card disappears)
+# pilot / everyone need repository secrets WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_ACCESS_TOKEN, WHATSAPP_APP_SECRET and
+# WHATSAPP_VERIFY_TOKEN (from Meta Business Manager). django and the Celery worker are recreated. Nothing secret is
+# printed; the check at the end only reads the sender number's display name from Meta.
+name: Apply WhatsApp Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "pilot | everyone | off"
+        required: true
+        type: choice
+        options: [pilot, everyone, "off"]
+      pilot_numbers:
+        description: "pilot only: comma-separated WhatsApp numbers (+9198...) that alone receive messages"
+        required: false
+        default: ""
+      confirm:
+        description: "Type WHATSAPP to proceed"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        run: test "${{ github.event.inputs.confirm }}" = "WHATSAPP"
+
+      - name: Update env file and recreate django and the worker
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          PILOT_NUMBERS: ${{ github.event.inputs.pilot_numbers }}
+          WA_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
+          WA_ACCESS_TOKEN: ${{ secrets.WHATSAPP_ACCESS_TOKEN }}
+          WA_APP_SECRET: ${{ secrets.WHATSAPP_APP_SECRET }}
+          WA_VERIFY_TOKEN: ${{ secrets.WHATSAPP_VERIFY_TOKEN }}
+        run: |
+          set -euo pipefail
+          DEPLOY=/home/ubuntu/iic-booking-backend
+          ENV_FILE="$DEPLOY/.envs/.production/.django"
+          test -f "$ENV_FILE"
+          cp -p "$ENV_FILE" "$ENV_FILE.bak-whatsapp-$(date -u +%Y%m%dT%H%M%SZ)"
+          export ENV_FILE
+          python3 <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          mode = os.environ["MODE"]
+          env_file = Path(os.environ["ENV_FILE"])
+          upsert, remove = {}, set()
+          if mode in ("pilot", "everyone"):
+              secrets = {
+                  "WHATSAPP_PHONE_NUMBER_ID": os.environ.get("WA_PHONE_NUMBER_ID", ""),
+                  "WHATSAPP_ACCESS_TOKEN": os.environ.get("WA_ACCESS_TOKEN", ""),
+                  "WHATSAPP_APP_SECRET": os.environ.get("WA_APP_SECRET", ""),
+                  "WHATSAPP_VERIFY_TOKEN": os.environ.get("WA_VERIFY_TOKEN", ""),
+              }
+              missing = [k for k, v in secrets.items() if not v.strip()]
+              if missing:
+                  raise SystemExit("repository secrets not set: " + ", ".join(missing))
+              upsert = {**secrets, "WHATSAPP_ENABLED": "True"}
+              if mode == "pilot":
+                  numbers = [n.strip() for n in os.environ.get("PILOT_NUMBERS", "").split(",") if n.strip()]
+                  if not numbers or not all(re.fullmatch(r"\+\d{11,15}", n) for n in numbers):
+                      raise SystemExit("pilot needs pilot_numbers like +919876543210,+919812345678")
+                  upsert["WHATSAPP_PILOT_NUMBERS"] = ",".join(numbers)
+              else:
+                  remove.add("WHATSAPP_PILOT_NUMBERS")
+          else:
+              upsert = {"WHATSAPP_ENABLED": "False"}
+          out, seen = [], set()
+          for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+              key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+              if key in remove:
+                  continue
+              if key in upsert:
+                  if key not in seen:
+                      out.append(f"{key}={upsert[key]}")
+                      seen.add(key)
+                  continue
+              out.append(line)
+          for key, value in upsert.items():
+              if key not in seen:
+                  out.append(f"{key}={value}")
+          env_file.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+          print("mode=", mode, " set=", sorted(upsert), " removed=", sorted(remove))
+          PY
+          cd "$DEPLOY"
+          SERVICES="django"
+          if docker compose -f docker-compose.production.yml config --services | grep -qx celeryworker; then SERVICES="django celeryworker"; fi
+          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps $SERVICES
+          for i in $(seq 1 30); do
+            CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+            if [ -n "$CID" ] && docker exec "$CID" true 2>/dev/null; then break; fi
+            sleep 2
+          done
+          sleep 6
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'django|celery' || true
+
+      - name: Runtime verification
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import django
+
+          django.setup()
+          import requests
+
+          from iic_booking.whatsapp import conf
+          from iic_booking.whatsapp.service import status_summary
+
+          summary = status_summary()
+          print("RUNTIME whatsapp enabled=", summary["enabled"], " missing=", summary["missing_settings"],
+                " pilot_numbers=", summary["pilot_numbers"], " opted_in_users=", summary["opted_in_users"])
+          if conf.enabled():
+              try:
+                  r = requests.get(f"{conf.GRAPH_BASE}/{conf.api_version()}/{conf.phone_number_id()}",
+                                   params={"fields": "display_phone_number,verified_name,quality_rating"},
+                                   headers={"Authorization": f"Bearer {conf.access_token()}"}, timeout=15)
+                  data = r.json() if r.content else {}
+                  if r.ok:
+                      print("Meta sender:", data.get("verified_name"), data.get("display_phone_number"),
+                            "quality", data.get("quality_rating"))
+                  else:
+                      print("Meta check failed: HTTP", r.status_code, str((data.get("error") or {}).get("message"))[:200])
+              except Exception as exc:  # only the class, never credentials
+                  print("Meta check failed:", type(exc).__name__)
+          PY
