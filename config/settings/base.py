@@ -893,6 +893,9 @@ ISTEM_SILENT_MODE_FIELD = env("ISTEM_SILENT_MODE_FIELD", default="")
 ISTEM_SILENT_MODE_VALUE = env("ISTEM_SILENT_MODE_VALUE", default="1")
 ISTEM_CONFIRM_ENABLED = env.bool("ISTEM_CONFIRM_ENABLED", default=False)
 ISTEM_CONFIRM_APPROVED_BY = env("ISTEM_CONFIRM_APPROVED_BY", default="")
+# With confirmation on, Confirm Booking is queued right after a successful Create Booking: the user picks an open slot
+# and pays, so the slot is already theirs and nobody confirms it by hand (2 Nov 2026).
+ISTEM_AUTO_CONFIRM = env.bool("ISTEM_AUTO_CONFIRM", default=True)
 # FBR Execute after local completion; also needs a confirmation_id, so it does nothing while Confirm is off.
 ISTEM_EXECUTE_ENABLED = env.bool("ISTEM_EXECUTE_ENABLED", default=False)
 ISTEM_EXECUTE_UPDATED_BY = env("ISTEM_EXECUTE_UPDATED_BY", default="")

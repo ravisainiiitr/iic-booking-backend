@@ -30,6 +30,8 @@ LIVE_SETTINGS = {
     "ISTEM_BASE_URL": BASE_URL,
     "ISTEM_USERNAME": FAKE_USERNAME,
     "ISTEM_PASSWORD": FAKE_PASSWORD,
+    # Most tests drive Confirm Booking by hand; test_auto_confirm covers the automatic queueing.
+    "ISTEM_AUTO_CONFIRM": False,
 }
 
 

@@ -337,6 +337,7 @@ def _run_create_booking(job: IstemOutboxJob, client_factory) -> str:
             link = IstemBookingLink.objects.select_for_update().get(pk=link.pk)
             _apply_create_success(link, attempt, response.request_id, response.fbr_no)
             finish_job(job, JobState.DONE)
+            _queue_automatic_confirmation(link)
     except IntegrityError:
         with transaction.atomic():
             link = IstemBookingLink.objects.select_for_update().get(pk=link.pk)
@@ -357,6 +358,16 @@ def _apply_create_success(link, attempt, request_id: str, fbr_no: str | None) ->
     review = "" if fbr_no else "Create Booking returned no fbr_no (I-STEM states it should); obtain it from the I-STEM portal"
     _set_link(link, SyncState.CREATED, reason="Create Booking succeeded", attempt=attempt, review=review,
               request_id=request_id, fbr_no=fbr_no, remote_status=RemoteStatus.PENDING)
+
+
+def _queue_automatic_confirmation(link) -> None:
+    """Confirm Booking straight after Create Booking: the slot was chosen and paid for by the user, so there is no manual
+    confirmation step. Runs inside the caller's transaction; the confirm job then goes through the same checks
+    (change detection, identical repeats) as an administrator's request."""
+    if not conf.auto_confirm_enabled() or link.sync_state != SyncState.CREATED or not link.request_id:
+        return
+    _set_link(link, SyncState.CONFIRM_READY, reason="confirmation queued automatically after Create Booking")
+    add_job(Operation.CONFIRM_BOOKING, dedupe_key=f"CONFIRM_BOOKING:{link.booking_id}", trigger="automatic", booking_link=link)
 
 
 def _create_failed(job, link_pk, attempt, exc: IstemError, *, resume_state=SyncState.CREATE_READY) -> str:
@@ -517,9 +528,10 @@ def _run_ensure_user(job: IstemOutboxJob, client_factory) -> str:
 
 
 def request_confirmation(link: IstemBookingLink, *, actor, reason: str) -> IstemOutboxJob:
-    """Queue Confirm Booking for a created booking. Explicit administrator action; off unless ISTEM_CONFIRM_ENABLED."""
+    """Queue Confirm Booking for a created booking by hand (normally queued automatically after Create Booking, e.g.
+    after a change was acknowledged); off unless ISTEM_CONFIRM_ENABLED."""
     if not conf.confirm_enabled():
-        raise IstemConfigError("Confirmation is disabled (ISTEM_CONFIRM_ENABLED): the confirmation trigger has not been agreed.")
+        raise IstemConfigError("Confirmation is disabled (ISTEM_CONFIRM_ENABLED).")
     _require_perm(actor, "istem.request_confirm")
     with transaction.atomic():
         link = IstemBookingLink.objects.select_for_update().get(pk=link.pk)

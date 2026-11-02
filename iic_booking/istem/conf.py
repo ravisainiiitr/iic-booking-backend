@@ -86,8 +86,13 @@ def silent_fields() -> dict:
 
 
 def confirm_enabled() -> bool:
-    """Confirm Booking calls; off until the business trigger and approver identity are agreed."""
+    """Confirm Booking calls (off by default; switched on at go-live)."""
     return bool(_setting("ISTEM_CONFIRM_ENABLED", False))
+
+
+def auto_confirm_enabled() -> bool:
+    """Queue Confirm Booking automatically after Create Booking (bookings need no manual confirmation on the portal)."""
+    return confirm_enabled() and bool(_setting("ISTEM_AUTO_CONFIRM", True))
 
 
 def confirm_approved_by() -> str:
