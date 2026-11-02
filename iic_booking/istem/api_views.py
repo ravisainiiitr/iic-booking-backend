@@ -153,3 +153,57 @@ def istem_register_complete(request):
             pass
     return Response({"token": token.key, "user": UserSerializer(user, context={"request": request}).data,
                      "onboarding": onboarding.status(user)}, status=status.HTTP_201_CREATED)
+
+
+# --- I-STEM equipment mapping page (Main Admin: every instrument; department administrators: their own) --------------
+
+def _mapping_refusal(exc) -> Response:
+    return Response({"error": exc.message}, status=exc.http_status)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def istem_equipment_mappings(request):
+    """The instruments the user manages, each with its I-STEM equipment mapping."""
+    from .equipment_mapping import MappingRefused, list_rows
+
+    try:
+        return Response(list_rows(request.user))
+    except MappingRefused as exc:
+        return _mapping_refusal(exc)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def istem_equipment_search(request):
+    """``?q=`` part of an I-STEM equipment name: active I-STEM equipment of the portal's institute (read-only)."""
+    from .equipment_mapping import MappingRefused, search_istem_equipment
+
+    try:
+        return Response({"results": search_istem_equipment(request.user, request.query_params.get("q", ""))})
+    except MappingRefused as exc:
+        return _mapping_refusal(exc)
+
+
+@api_view(["PUT"])
+@permission_classes([IsAuthenticated])
+def istem_equipment_mapping_save(request, equipment_id: int):
+    """Body: ``istem_equipment_id``, ``sample_count_input_key``, ``is_active``, ``notes``."""
+    from .equipment_mapping import MappingRefused, save_mapping
+
+    try:
+        return Response(save_mapping(request.user, equipment_id, request.data))
+    except MappingRefused as exc:
+        return _mapping_refusal(exc)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def istem_equipment_mappings_verify(request):
+    """Check every mapping the user manages against I-STEM's Equipment List."""
+    from .equipment_mapping import MappingRefused, verify
+
+    try:
+        return Response(verify(request.user))
+    except MappingRefused as exc:
+        return _mapping_refusal(exc)
