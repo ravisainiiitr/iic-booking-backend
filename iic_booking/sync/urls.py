@@ -6,6 +6,7 @@ Mounted at /api/v1/sync/
 
 from django.urls import path
 
+from iic_booking.livefeed import views as livefeed_views
 from iic_booking.power import views as power_views
 from iic_booking.sync import views
 from iic_booking.sync.installer import views as installer_views
@@ -19,6 +20,10 @@ urlpatterns = [
     path("heartbeat/", views.heartbeat, name="heartbeat"),
     path("ups/devices/", power_views.agent_ups_devices, name="ups-devices"),
     path("ups/readings/", power_views.agent_ups_readings, name="ups-readings"),
+    path("live/start/", livefeed_views.agent_start, name="live-start"),
+    path("live/<int:session_id>/poll/", livefeed_views.agent_poll, name="live-poll"),
+    path("live/<int:session_id>/answer/", livefeed_views.agent_answer, name="live-answer"),
+    path("live/<int:session_id>/stop/", livefeed_views.agent_stop, name="live-stop"),
     path("bootstrap/", views.bootstrap, name="bootstrap"),
     # Operational data plane (Milestone 5)
     path("equipment/", views.equipment_list, name="equipment-list"),
