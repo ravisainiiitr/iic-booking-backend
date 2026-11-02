@@ -4,7 +4,8 @@
 #             ISTEM_STAGING_USERNAME / ISTEM_STAGING_PASSWORD), the CA chain shipped in the code, and the
 #             registration test key (secret ISTEM_REGISTRATION_TEST_KEY): "Already registered on I-STEM?" shows only
 #             on /auth?istem_test=<key>, and accounts registered through it are test accounts. Signed-in linking is
-#             limited to test accounts by the external pilot. User creation, Confirm and FBR Execute stay off.
+#             limited to test accounts by the external pilot. User creation stays off; Confirm and FBR Execute stay off unless
+#             booking_steps=on (then only the I-STEM Single Booking workflow sends them, one booking at a time).
 #   open    : as enable, but without the test key: "Already registered on I-STEM?" shows for every external
 #             visitor and those sign-ups are ordinary (not test) accounts. Still I-STEM STAGING: for a temporary
 #             evaluation of the flow and screens only; switch back with enable (test link only) or disable.
@@ -27,6 +28,12 @@ on:
         description: "enable/open only: inbox for OTPs of made-up @example.com I-STEM staging users (empty: none)"
         required: false
         default: ""
+      booking_steps:
+        description: "enable/open only: on = Confirm Booking and FBR Execute allowed for bookings sent one at a time by the I-STEM Single Booking workflow (nothing runs them automatically); off = both off"
+        required: false
+        type: choice
+        options: ["off", "on"]
+        default: "off"
 
 permissions:
   contents: read
@@ -42,6 +49,7 @@ jobs:
         env:
           MODE: ${{ github.event.inputs.mode }}
           TEST_OTP_INBOX: ${{ github.event.inputs.test_otp_inbox }}
+          BOOKING_STEPS: ${{ github.event.inputs.booking_steps }}
           ISTEM_STAGING_USERNAME: ${{ secrets.ISTEM_STAGING_USERNAME }}
           ISTEM_STAGING_PASSWORD: ${{ secrets.ISTEM_STAGING_PASSWORD }}
           ISTEM_REGISTRATION_TEST_KEY: ${{ secrets.ISTEM_REGISTRATION_TEST_KEY }}
@@ -79,6 +87,15 @@ jobs:
                   "ISTEM_CONFIRM_ENABLED": "False",
                   "ISTEM_EXECUTE_ENABLED": "False",
               }
+              if os.environ.get("BOOKING_STEPS") == "on":
+                  from datetime import datetime, timezone
+                  upsert.update({
+                      "ISTEM_CONFIRM_ENABLED": "True",
+                      "ISTEM_EXECUTE_ENABLED": "True",
+                      "ISTEM_CONFIRM_APPROVED_BY": "Officer in Charge IIC IIT Roorkee",
+                      # Safety net: bookings made before this moment are never sent, even by istem_sync --enqueue.
+                      "ISTEM_SYNC_START_AT": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  })
               if mode == "open":
                   del upsert["ISTEM_REGISTRATION_TEST_KEY"]
                   remove = {"ISTEM_REGISTRATION_TEST_KEY"}
@@ -91,7 +108,7 @@ jobs:
                   remove.add("ISTEM_TEST_OTP_INBOX")
           elif mode == "disable":
               upsert = {"ISTEM_ENABLED": "False", "ISTEM_MODE": "off", "ISTEM_OTP_LINKING_ENABLED": "False"}
-              remove = set(secret_keys) | {"ISTEM_TEST_OTP_INBOX"}
+              remove = set(secret_keys) | {"ISTEM_TEST_OTP_INBOX", "ISTEM_CONFIRM_APPROVED_BY"}
           else:
               raise SystemExit("unknown mode")
 
@@ -138,6 +155,7 @@ jobs:
                 " network_allowed=", conf.network_allowed(), " missing=", conf.missing_live_settings())
           print("RUNTIME otp_linking=", conf.otp_linking_enabled(), " user_creation=", conf.user_creation_enabled(),
                 " test_key_set=", bool(registration_lookup._test_key()))
+          print("RUNTIME confirm=", conf.confirm_enabled(), " execute=", conf.execute_enabled())
           print("RUNTIME registration available without the key=", registration_lookup.available(""))
           print("RUNTIME test OTP inbox for @example.com staging users set=",
                 bool(registration_lookup.test_otp_inbox("check@example.com")) if hasattr(registration_lookup, "test_otp_inbox") else "n/a")
