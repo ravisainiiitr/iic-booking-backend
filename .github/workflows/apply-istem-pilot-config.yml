@@ -93,6 +93,9 @@ jobs:
                       "ISTEM_CONFIRM_ENABLED": "True",
                       "ISTEM_EXECUTE_ENABLED": "True",
                       "ISTEM_CONFIRM_APPROVED_BY": "Officer in Charge IIC IIT Roorkee",
+                      # I-STEM (30 Oct 2026): silent=true on Create, Confirm and Cancel, so I-STEM emails nobody.
+                      "ISTEM_SILENT_MODE_FIELD": "silent",
+                      "ISTEM_SILENT_MODE_VALUE": "true",
                       # Safety net: bookings made before this moment are never sent, even by istem_sync --enqueue.
                       "ISTEM_SYNC_START_AT": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                   })
