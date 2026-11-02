@@ -520,7 +520,7 @@ from iic_booking.equipment.admin_dashboard_summary import admin_dashboard_summar
 from iic_booking.equipment.global_search import global_search
 from iic_booking.equipment.my_activity import my_activity
 from iic_booking.livefeed.views import create_peer as live_create_peer, my_sessions as live_my_sessions, peer_detail as live_peer_detail
-from iic_booking.power.views import ups_history, ups_list
+from iic_booking.power.views import ups_health, ups_health_run, ups_history, ups_list
 from iic_booking.calls.views import call_action, call_config, call_decline_from_device, call_detail, call_devices, call_options, calls
 from iic_booking.equipment.portal_actions import portal_action_equipment, portal_action_run, portal_actions_list
 from iic_booking.equipment.search_synonym_views import search_synonym_detail, search_synonym_list
@@ -1036,6 +1036,8 @@ urlpatterns = router.urls + [
     path("profiles/me/activity/", my_activity, name="profile-me-activity"),
     path("power/ups/", ups_list, name="power-ups"),
     path("power/ups/<int:device_id>/history/", ups_history, name="power-ups-history"),
+    path("power/ups/<int:device_id>/health/", ups_health, name="power-ups-health"),
+    path("power/ups/<int:device_id>/health/run/", ups_health_run, name="power-ups-health-run"),
     path("live/sessions/", live_my_sessions, name="live-sessions"),
     path("live/sessions/<int:session_id>/peers/", live_create_peer, name="live-create-peer"),
     path("live/peers/<int:peer_id>/", live_peer_detail, name="live-peer"),

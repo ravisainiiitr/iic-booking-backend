@@ -25,6 +25,7 @@ from .register_maps import FIELDS
 
 HISTORY_EVERY = timedelta(minutes=5)
 KEEP_HISTORY = timedelta(days=30)
+KEEP_EVENTS = timedelta(days=90)
 SILENT_AFTER = timedelta(minutes=5)
 NUMERIC = ("input_voltage", "output_voltage", "output_frequency", "load_percent", "battery_percent",
            "runtime_minutes", "battery_voltage", "temperature_c")
@@ -92,12 +93,26 @@ def sync_alerts(device: UpsDevice, active: dict[str, tuple[str, str, str]], *, r
                 equipment=device.equipment.first(),
                 details={"ups_id": device.pk, "host": device.host, "model": device.model},
             )
+            _tell("alert_opened", device, rule, title, message)
         elif rule not in active and existing is not None:
             existing.status = AlertLifecycleStatus.RESOLVED
             existing.resolved_at = now
             existing.resolved_by = "UPS monitor"
             existing.resolution = "Condition cleared"
             existing.save(update_fields=["status", "resolved_at", "resolved_by", "resolution", "updated_at"])
+            _tell("alert_resolved", device, rule)
+
+
+def _tell(what: str, device: UpsDevice, *args) -> None:
+    """Officer notices for power alerts; a failed notice never blocks storing the reading."""
+    from . import notify
+
+    try:
+        getattr(notify, what)(device, *args)
+    except Exception:  # noqa: BLE001
+        import logging
+
+        logging.getLogger(__name__).exception("UPS %s notice failed for UPS %s", what, device.pk)
 
 
 def record(agent, items: list[dict[str, Any]]) -> dict[str, int]:
@@ -129,10 +144,43 @@ def record(agent, items: list[dict[str, Any]]) -> dict[str, int]:
             if last is not None and not _is_history(last):
                 last.delete()
             reading.save()
+        track_events(device, reading)
         sync_alerts(device, conditions(device, reading))
         stored += 1
     UpsReading.objects.filter(read_at__lt=timezone.now() - KEEP_HISTORY).delete()
     return {"stored": stored, "ignored": ignored}
+
+
+def track_events(device: UpsDevice, r: UpsReading) -> None:
+    """Open, extend or close the on-battery / bypass / fault spells (kept 90 days for the health analysis)."""
+    from .models import UpsPowerEvent
+
+    if not r.reachable:
+        return  # an unreachable card says nothing about mains or battery
+    states = {"on_battery": r.on_battery, "on_bypass": r.on_bypass, "fault": r.fault}
+    for kind, active in states.items():
+        if active is None:
+            continue
+        current = UpsPowerEvent.objects.filter(device=device, kind=kind, ended_at__isnull=True).first()
+        if active:
+            if current is None:
+                UpsPowerEvent.objects.create(
+                    device=device, kind=kind, started_at=r.read_at, last_seen_at=r.read_at,
+                    start_battery_percent=r.battery_percent, end_battery_percent=r.battery_percent,
+                    start_runtime_minutes=r.runtime_minutes, end_runtime_minutes=r.runtime_minutes,
+                    max_load_percent=r.load_percent)
+            elif r.read_at >= current.last_seen_at:
+                current.last_seen_at = r.read_at
+                current.end_battery_percent = r.battery_percent
+                current.end_runtime_minutes = r.runtime_minutes
+                if r.load_percent is not None:
+                    current.max_load_percent = max(current.max_load_percent or 0, r.load_percent)
+                current.save(update_fields=["last_seen_at", "end_battery_percent", "end_runtime_minutes",
+                                            "max_load_percent"])
+        elif current is not None:
+            current.ended_at = r.read_at
+            current.save(update_fields=["ended_at"])
+    UpsPowerEvent.objects.filter(device=device, started_at__lt=timezone.now() - KEEP_EVENTS).delete()
 
 
 def _is_history(reading: UpsReading) -> bool:

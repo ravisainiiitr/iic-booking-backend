@@ -87,6 +87,7 @@ def ups_list(request):
             "equipment": [{"id": e.pk, "name": e.name, "code": e.code} for e in d.equipment.all()],
             "map_verified": d.map_verified, "enabled": d.enabled,
             "latest": _reading(service.latest(d), d),
+            "health": _health_brief(d),
         })
     return Response({"results": rows})
 
@@ -107,3 +108,61 @@ def ups_history(request, device_id):
         "read_at", "reachable", "load_percent", "battery_percent", "input_voltage", "output_voltage", "on_battery")
     return Response({"device": device.pk, "hours": hours,
                      "points": [{**r, "read_at": r["read_at"].isoformat()} for r in rows]})
+
+
+def _assessment(a) -> dict | None:
+    if a is None:
+        return None
+    return {"id": a.pk, "created_at": a.created_at.isoformat(), "level": a.level, "risk_score": a.risk_score,
+            "findings": a.findings, "metrics": a.metrics, "summary": a.summary, "summary_source": a.summary_source,
+            "notified_at": a.notified_at.isoformat() if a.notified_at else None, "notified_codes": a.notified_codes}
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def ups_health(request, device_id):
+    """The latest AI health check of a UPS, the notices sent to the officers and the recent power cuts."""
+    from .models import UpsHealthAssessment, UpsPowerEvent
+    from .notify import recipients
+
+    device = _visible_devices(request.user).filter(pk=device_id).first()
+    if device is None:
+        return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+    rows = UpsHealthAssessment.objects.filter(device=device)
+    notices = rows.filter(notified_at__isnull=False).order_by("-notified_at")[:10]
+    events = UpsPowerEvent.objects.filter(device=device).order_by("-started_at")[:20]
+    return Response({
+        "device": device.pk,
+        "latest": _assessment(rows.order_by("-created_at").first()),
+        "notices": [{"at": n.notified_at.isoformat(), "level": n.level, "codes": n.notified_codes,
+                     "summary": n.summary, "recipients": len(n.notified_to)} for n in notices],
+        "officers": [u.get_display_name() if hasattr(u, "get_display_name") else u.email for u in recipients(device)],
+        "notify_officers": device.notify_officers and device.map_verified,
+        "power_events": [{"kind": e.kind, "started_at": e.started_at.isoformat(),
+                          "ended_at": e.ended_at.isoformat() if e.ended_at else None, "minutes": round(e.minutes, 1),
+                          "start_battery_percent": e.start_battery_percent,
+                          "end_battery_percent": e.end_battery_percent} for e in events],
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def ups_health_run(request, device_id):
+    """Run the health check now (shown to the user; officers are told only as the hourly check would)."""
+    from .health import run
+    from .models import UpsHealthAssessment
+
+    device = _visible_devices(request.user).filter(pk=device_id).first()
+    if device is None:
+        return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+    last = UpsHealthAssessment.objects.filter(device=device).order_by("-created_at").first()
+    if last is not None and timezone.now() - last.created_at < timedelta(minutes=2):
+        return Response(_assessment(last))
+    return Response(_assessment(run(device)))
+
+
+def _health_brief(device) -> dict | None:
+    a = device.assessments.order_by("-created_at").only("level", "risk_score", "summary", "created_at").first()
+    if a is None:
+        return None
+    return {"level": a.level, "risk_score": a.risk_score, "summary": a.summary, "created_at": a.created_at.isoformat()}

@@ -942,6 +942,9 @@ CHANNEL_LAYERS = {
 }
 
 
+# UPS health: tell the Officers in Charge about power alerts and the hourly AI health check (verified UPS units only).
+UPS_HEALTH_NOTIFY = env.bool("UPS_HEALTH_NOTIFY", default=True)
+
 # In-app internet voice calls (WebRTC peer to peer; signalling over the Channels WebSocket ws/calls/).
 # Off until CALLS_ENABLED; while CALLS_TEST_ACCOUNTS_ONLY both caller and callee must be test accounts.
 CALLS_ENABLED = env.bool("CALLS_ENABLED", default=False)
