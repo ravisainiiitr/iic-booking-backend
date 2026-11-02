@@ -367,10 +367,13 @@ def weekly_slot_rows(equipment, user):
         rows.setdefault(start, end)
     spans = sorted(rows.items())
     if not _is_external(user):
-        lo, hi = getattr(equipment, "weekly_view_time_from", None), getattr(equipment, "weekly_view_time_to", None)
+        from .slot_window import END_OF_DAY, window
+
+        lo, hi = window(equipment)
         lo = lo.hour * 60 + lo.minute if lo else None
-        hi = hi.hour * 60 + hi.minute if hi else None
-        spans = [(s, e) for s, e in spans if (lo is None or s >= lo) and (hi is None or e % 1440 <= hi)]
+        # 23:59 stands for midnight; a span's end runs past 1440 when it crosses midnight.
+        hi = 1440 if hi is not None and hi >= END_OF_DAY else (hi.hour * 60 + hi.minute if hi else None)
+        spans = [(s, e) for s, e in spans if (lo is None or s >= lo) and (hi is None or e <= hi)]
     return spans
 
 

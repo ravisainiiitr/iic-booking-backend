@@ -226,15 +226,12 @@ def _slot_bookable_for(slot, equipment, user, *, is_admin: bool, is_external: bo
     if slot.status != SlotStatus.AVAILABLE:
         return False
     start_local = timezone.localtime(slot.start_datetime)
-    end_local = timezone.localtime(slot.end_datetime)
     if not is_admin:
         if not SlotAvailabilityChecker.is_slot_available(slot):
             return False
-        time_from = getattr(equipment, "weekly_view_time_from", None)
-        time_to = getattr(equipment, "weekly_view_time_to", None)
-        if time_from is not None and start_local.time() < time_from:
-            return False
-        if time_to is not None and end_local.time() > time_to:
+        from .slot_window import slot_in_window
+
+        if not slot_in_window(equipment, slot):
             return False
         if not is_external and not slot_allows_internal_user(slot, user, equipment):
             return False
