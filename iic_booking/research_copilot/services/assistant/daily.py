@@ -1,5 +1,5 @@
 """
-Day-to-day answers for the IITR Research Assistant: bookings, wallet, recharge, results, invoices, waitlist,
+Day-to-day answers for the IITR Assistant: bookings, wallet, recharge, results, invoices, waitlist,
 urgent requests, templates, ratings, tickets, students, staff queues.
 
 Every answer comes from live portal data or a short verified how-to, never from the LLM, and ends with
@@ -107,7 +107,7 @@ def help_reply(user, conversation=None, params=None, text: str = "") -> dict[str
     elif t in {"manager", "dept_admin"}:
         lines.append("- \"Block slots on XRD\" · \"Training authorisations for FESEM\" · \"Flash message\"")
     lines += ["", "Ask for any page or setting by name, e.g. \"notification settings\" or \"proforma invoice\"."]
-    return C.reply("\n".join(lines), actions=help_actions(user), intent="help", title_hint="Research Assistant help")
+    return C.reply("\n".join(lines), actions=help_actions(user), intent="help", title_hint="IITR Assistant help")
 
 
 def fallback_reply(user, *, reason: str = "") -> dict[str, Any]:

@@ -97,11 +97,11 @@ def _history(conversation) -> str:
 
 
 def _description(*, question, copilot_response, intent, entities, reason, note, conversation) -> str:
-    parts = ["Raised from IITR Research Assistant.", "", f"Question: {question}"]
+    parts = ["Raised from IITR Assistant.", "", f"Question: {question}"]
     if note:
         parts += ["", f"Additional details from user: {note}"]
     if copilot_response:
-        parts += ["", f"Research Assistant response: {copilot_response[:1500]}"]
+        parts += ["", f"IITR Assistant response: {copilot_response[:1500]}"]
     parts += ["", f"Reason: {reason}"]
     from iic_booking.equipment.input_display import humanize_key
 
@@ -171,7 +171,7 @@ def escalate(
     entities = dict(entities or {})
     data = {
         "ticket_type": ticket_type_for(intent),
-        "subject": ("Research Assistant: " + question)[:255],
+        "subject": ("IITR Assistant: " + question)[:255],
         "description": _description(
             question=question,
             copilot_response=str(copilot_response or ""),
@@ -196,7 +196,7 @@ def escalate(
         ticket = serializer.save(user=user)
         raised_by = ticket.get_user_name() or "User"
         TicketComment.objects.create(
-            ticket=ticket, user=user, comment=f"Ticket raised by {raised_by} from IITR Research Assistant.", is_internal=False
+            ticket=ticket, user=user, comment=f"Ticket raised by {raised_by} from IITR Assistant.", is_internal=False
         )
         ticket = apply_create_routing_and_events(ticket, actor=user)
         CopilotEscalation.objects.create(

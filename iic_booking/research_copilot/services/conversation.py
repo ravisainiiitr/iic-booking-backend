@@ -79,7 +79,7 @@ def _reply_from_llm_result(result, *, user_text: str = "") -> str:
     category = getattr(result, "error_category", "") if result else ""
     if category:
         return (
-            "Research Assistant is temporarily unavailable. "
+            "IITR Assistant is temporarily unavailable. "
             "Your booking and other portal operations are unaffected. "
             "Please try again shortly, or open **Tickets** for human support.\n"
             + ESCALATE_MARKER
@@ -368,7 +368,7 @@ def send_message(
             ),
         )
 
-    # --- Research Assistant: availability, equipment Q&A, confirm-gated booking over live data ---
+    # --- IITR Assistant: availability, equipment Q&A, confirm-gated booking over live data ---
     from iic_booking.research_copilot.services.assistant.engine import try_assistant_turn
 
     started = time.perf_counter()
@@ -733,7 +733,7 @@ def bootstrap_payload(*, user) -> dict:
     # Ordinary users see provider family only — no base URL / secrets.
     return {
         "enabled": feature_enabled(user=user),
-        "assistant_name": "IITR Research Assistant",
+        "assistant_name": "IITR Assistant",
         "role_bucket": ctx.role_bucket,
         "suggested_prompts": _suggested_for(ctx),
         "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
@@ -889,7 +889,7 @@ def public_bootstrap_payload() -> dict:
     enabled = feature_enabled(user=None)
     return {
         "enabled": enabled,
-        "assistant_name": "IITR Research Assistant",
+        "assistant_name": "IITR Assistant",
         "role_bucket": "public",
         "suggested_prompts": [
             "What does HOLD mean on a booking?",

@@ -231,6 +231,9 @@ class DocumentCategory(models.TextChoices):
     TRAINING = "training", _("Training Material")
     EQUIPMENT = "equipment", _("Equipment Knowledge")
     KNOWN_ISSUES = "known_issues", _("Known Issues")
+    # Public documentation of an instrument's make and model, fetched from the manufacturer (or another reliable source)
+    # by URL. Kept apart from IIC's own equipment records; never edits them.
+    MANUFACTURER = "manufacturer_reference", _("Manufacturer Reference")
     OTHER = "other", _("Other")
 
 
@@ -289,6 +292,10 @@ class KnowledgeDocument(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     indexed_at = models.DateTimeField(null=True, blank=True)
+    # Manufacturer references (category manufacturer_reference): when the page was last fetched, and whether it is on
+    # the manufacturer's own website.
+    retrieved_at = models.DateTimeField(null=True, blank=True)
+    is_official = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["-updated_at"]

@@ -258,6 +258,16 @@ _FINDER_LINK = ("Instrument finder", "/find-instrument")
 
 
 def capability_reply(user, text: str) -> dict[str, Any] | None:
+    made, make = matching.manufacturer_search(user, text)
+    if made:
+        rows = [matching.option_row(c) for c in made]
+        return C.reply(
+            f"Instruments on the portal made by **{make}**. Pick one to see details, charges or free slots.",
+            cards=[C.equipment_options_card(rows, title=f"{make} instruments", intent="info", query=text)],
+            actions=[C.link(*_FINDER_LINK)],
+            intent="manufacturer",
+            title_hint=f"{make} instruments",
+        )
     cands, labels = matching.capability_search(user, text)
     if not cands:
         return finder_reply(user, text)

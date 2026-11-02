@@ -258,7 +258,7 @@ def test_my_bookings_list_api_exposes_lock(egs_factory):
     assert res.data["bookings"][0]["can_reschedule"] is False
 
 
-# --- Research Assistant ----------------------------------------------------------------------------
+# --- IITR Assistant ----------------------------------------------------------------------------
 
 
 def test_assistant_does_not_offer_reschedule_after_acceptance(egs_factory):

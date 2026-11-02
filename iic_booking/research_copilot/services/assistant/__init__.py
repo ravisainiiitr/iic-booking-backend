@@ -1,1 +1,1 @@
-"""Research Assistant: availability, equipment Q&A and confirm-gated booking over live portal data."""
+"""IITR Assistant: availability, equipment Q&A and confirm-gated booking over live portal data."""

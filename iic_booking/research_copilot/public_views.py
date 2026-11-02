@@ -33,7 +33,7 @@ def public_ask(request):
             {
                 "error": {
                     "code": "research_copilot_disabled",
-                    "message": "IITR Research Assistant is not enabled on this environment.",
+                    "message": "IITR Assistant is not enabled on this environment.",
                 }
             },
             status=status.HTTP_503_SERVICE_UNAVAILABLE,

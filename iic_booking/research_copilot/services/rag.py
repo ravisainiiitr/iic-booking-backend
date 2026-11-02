@@ -309,6 +309,11 @@ def _passage(*, chunk_id, document, content: str, score: float, meta: dict) -> d
         "page_end": meta.get("page_end"),
         "has_file": bool(document.source_file_key),
         "score": float(score),
+        "category": document.category,
+        "url": safe_citation_url(document.source_uri or document.external_url)
+        if document.category == "manufacturer_reference" else "",
+        "official": bool(getattr(document, "is_official", False)),
+        "retrieved_at": document.retrieved_at.date().isoformat() if getattr(document, "retrieved_at", None) else "",
     }
 
 

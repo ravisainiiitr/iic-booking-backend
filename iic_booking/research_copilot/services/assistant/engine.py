@@ -1,5 +1,5 @@
 """
-Research Assistant turn handling.
+IITR Assistant turn handling.
 
 Runs first in `send_message` for signed-in users. Day-to-day questions (my bookings, wallet, recharge,
 results, invoices, waitlist, tickets, staff queues, ...) are answered by the deterministic intent table in
@@ -46,7 +46,7 @@ _STATUS_RE = re.compile(r"\b(status|track|where is|what happened|update on|progr
 _CHANGE_RE = re.compile(r"\b(cancel\w*|reschedul\w*|move|shift|refund)\b")
 _CAPABILITY_RE = re.compile(
     r"\b(which|what)\s+(equipment|instruments?|machines?|facilit\w+|tools?|techniques?)\b|"
-    r"\b(equipment|instruments?|facility)\s+(for|to)\s+\w+|\bwho\s+(offers|provides|does)\b|"
+    r"\b(equipment|instruments?|facility|machines?)\s+(for|to|from|by|made\s+by)\s+\w+|\bwho\s+(offers|provides|does)\b|"
     r"\b(can|could)\s+(measure|analy[sz]e|detect|characteri[sz]e|determine)\b"
 )
 _GOAL_RE = re.compile(
@@ -486,7 +486,11 @@ def try_assistant_turn(
         portal_out = portal.turn(user, conversation, text or "")
         if portal_out is not None:
             return portal_out
-        return _classify(user, conversation, text or "", ba_state.load(conversation), intel_busy)
+        classified = _classify(user, conversation, text or "", ba_state.load(conversation), intel_busy)
+        if classified is not None:
+            return classified
+        # A short query nothing above recognised ("exchange"): offer what it may mean for this user's role.
+        return portal.clarify(user, conversation, text or "")
     except Exception:  # noqa: BLE001
         logger.exception("booking assistant turn failed")
         if assistant_action is not None:

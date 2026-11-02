@@ -1,4 +1,4 @@
-"""Portal actions in the IITR Research Assistant: "enable slot exchange", "where do I block slots", "approve recharges".
+"""Portal actions in the IITR Assistant: "enable slot exchange", "where do I block slots", "approve recharges".
 
 Uses the same catalogue as the header search (``equipment.portal_actions``). An action about one instrument asks
 which one (buttons for the user's own instruments, or type the name); switches are changed only after the user
@@ -31,18 +31,31 @@ def _state_word(on: bool) -> str:
     return "on" if on else "off"
 
 
-def _choose(user, conversation, action: P.PortalAction, text: str, on: bool | None) -> dict[str, Any]:
+def picker_card(action: P.PortalAction) -> dict[str, Any]:
+    """A search box over the instruments the user may choose for the action (``/api/portal-actions/<key>/equipment/``)."""
+    return {"type": "ba_equipment_picker", "action": action.key, "title": "Search for the instrument",
+            "placeholder": "Name, code or model"}
+
+
+def _choose(user, conversation, action: P.PortalAction, text: str, on: bool | None, *, intro: str = "",
+            extra: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     rows = P.equipment_choices(user, action, "", limit=CHOICES)
     if not rows:
         return C.reply(f"You have no instruments to {_label(action)} for.", intent="portal:none")
     ba_state.save(conversation, portal_pending=action.key, portal_on=-1 if on is None else int(on))
     buttons = []
     for r in rows:
-        extra = f" · {_state_word(r['on'])}" if "on" in r else ""
-        buttons.append(C.assistant_action(f"{r['name']}{extra}", PORTAL, {"action": action.key, "equipment_id": r["id"]}))
-    more = " Type the name or code of another instrument if it is not listed." if len(rows) >= CHOICES else ""
-    return C.reply(f"**{action.title}** — which instrument?{more}", actions=buttons, intent=f"portal:{action.key}",
-                   title_hint=action.title)
+        state = f" · {_state_word(r['on'])}" if "on" in r else ""
+        buttons.append(C.assistant_action(f"{r['name']}{state}", PORTAL, {"action": action.key, "equipment_id": r["id"]}))
+    question = intro or f"**{action.title}** — which instrument?"
+    more = " Pick one below, or search for another." if len(rows) >= CHOICES else ""
+    return C.reply(f"{question}{more}", cards=[picker_card(action)], actions=[*buttons, *(extra or [])],
+                   intent=f"portal:{action.key}", title_hint=action.title)
+
+
+def settings_link(user, eq) -> dict[str, Any] | None:
+    """The instrument's own settings form, for the Main Administrator (the only role that edits it there)."""
+    return C.link("Open equipment settings", f"/admin/section/equipment?edit={eq.pk}") if P.ADMIN in P.roles_of(user) else None
 
 
 def _for_equipment(user, action: P.PortalAction, equipment_id: int, on: bool | None) -> dict[str, Any]:
@@ -59,10 +72,12 @@ def _for_equipment(user, action: P.PortalAction, equipment_id: int, on: bool | N
     if on is not None and on == current:
         note += " Nothing to change."
     verb = "Turn on" if want else "Turn off"
+    settings = settings_link(user, eq)
     return C.reply(
-        f"{note} {action.hint}.",
+        f"{note} {action.hint}. Nothing changes until you press the button.",
         actions=[C.assistant_action(f"{verb} for {eq.code or eq.name}", PORTAL,
-                                    {"action": action.key, "equipment_id": eq.pk, "on": int(want)}, primary=True)],
+                                    {"action": action.key, "equipment_id": eq.pk, "on": int(want)}, primary=True),
+                 *([settings] if settings else [])],
         intent=f"portal:{action.key}", title_hint=action.title,
     )
 
@@ -94,6 +109,41 @@ def button(user, conversation, payload: dict[str, Any]) -> dict[str, Any]:
     st = ba_state.load(conversation)
     on = st.get("portal_on")
     return _for_equipment(user, action, payload["equipment_id"], None if on in (None, -1) else bool(on))
+
+
+def _subject(action: P.PortalAction) -> str:
+    """"Turn Slot Exchange on or off" -> "the Slot Exchange setting"; other titles as they are, lower-cased."""
+    if action.switch:
+        return f"the {action.title.replace('Turn ', '').replace(' on or off', '')} setting"
+    return _label(action)
+
+
+def clarify(user, conversation, text: str) -> dict[str, Any] | None:
+    """A short query that names no action clearly ("exchange", "flash", "amc"): offer what it may mean for this user.
+
+    One likely action about an instrument: say so and ask which instrument (buttons and a search box). Several: ask
+    which, as buttons. Always also offer an equipment search for the same words. Nothing is changed here."""
+    words = P._words(text)
+    if not words or len(words) > 4:
+        return None
+    options = [a for a in P.loose_match(user, text) if a.key not in NATIVE]
+    if not options:
+        return None
+    q = " ".join(words)
+    find = C.prompt_action(f"Find equipment for “{q}”", f"equipment for {q}")
+    first = options[0]
+    if len(options) == 1 and first.equipment:
+        verb = "change" if first.switch else "open"
+        return _choose(user, conversation, first, text, None,
+                       intro=f"I can help you {verb} **{_subject(first)}**. Which instrument do you want to configure?",
+                       extra=[find])
+    if len(options) == 1:
+        return C.reply(f"I can help with **{first.title}** — {first.hint.lower()}.",
+                       actions=[C.link(f"Open {first.title.lower()}", first.path, primary=True), find],
+                       intent=f"portal:{first.key}", title_hint=first.title)
+    buttons = [C.assistant_action(a.title, PORTAL, {"action": a.key}) for a in options]
+    return C.reply(f"I can help with “{q}” in a few ways. Which do you mean?", actions=[*buttons, find],
+                   intent="portal:clarify")
 
 
 def turn(user, conversation, text: str) -> dict[str, Any] | None:
