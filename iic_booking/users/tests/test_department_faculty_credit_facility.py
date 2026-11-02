@@ -56,7 +56,22 @@ class DepartmentFacultyCreditFacilityRetiredTests(TestCase):
             avail_faculty_department_credit(
                 user=self.faculty, department_id=self.dept.id, amount=Decimal("10000")
             )
-        self.assertIn("retired", str(ctx.exception).lower())
+        self.assertIn("not offered to internal faculty", str(ctx.exception))
+
+    def test_settings_endpoint_refuses_switching_it_on(self):
+        from rest_framework.test import APIClient
+
+        admin = User.objects.create_user(email="main.admin.cf@test.iitr.ac.in", password="pass12345", name="Admin",
+                                         user_type=UserType.ADMIN, is_staff=True, is_superuser=True)
+        client = APIClient()
+        client.force_authenticate(admin)
+        url = f"/api/department-faculty-credit-facility/settings/?department_id={self.dept.id}"
+        on = client.put(url, {"enabled": True}, format="json")
+        self.assertEqual(on.status_code, 400)
+        self.assertIn("not offered to internal faculty", on.json()["error"])
+        off = client.put(url, {"enabled": False}, format="json")
+        self.assertEqual(off.status_code, 200)
+        self.assertFalse(off.json()["enabled"])
 
     def test_eligibility_helper_still_computes_but_floor_unused(self):
         # Settings/eligibility helpers remain for admin UI; overdraft floor is disabled.
