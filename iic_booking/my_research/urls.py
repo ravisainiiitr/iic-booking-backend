@@ -1,11 +1,14 @@
 from django.urls import path
 
-from . import group_views, views
+from . import group_views, quota_views, views
 
 app_name = "my_research"
 
 urlpatterns = [
     path("bootstrap/", views.bootstrap, name="bootstrap"),
+    path("admin/quotas/", quota_views.quotas, name="admin-quotas"),
+    path("admin/quotas/users/", quota_views.user_quota_set, name="admin-quota-user-set"),
+    path("admin/quotas/users/<int:row_id>/", quota_views.user_quota_clear, name="admin-quota-user-clear"),
     path("", views.home, name="home"),
     path("workspaces/", views.workspaces_collection, name="workspaces"),
     path("workspaces/<uuid:workspace_id>/", views.workspace_detail, name="workspace-detail"),

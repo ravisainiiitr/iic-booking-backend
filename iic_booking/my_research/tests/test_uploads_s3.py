@@ -299,17 +299,48 @@ def test_file_size_limits(settings, student, workspace, fake_s3):
     assert _initiate(client, workspace["id"], filename="a.pdf", size="abc").status_code == 400
 
 
-def test_workspace_and_user_quota(settings, student, workspace, fake_s3):
+def test_workspace_and_user_quota(monkeypatch, student, workspace, fake_s3):
+    from iic_booking.my_research import quotas
+    from iic_booking.my_research.models import StorageQuotaSettings, UserStorageQuota
+
+    monkeypatch.setattr(quotas, "GB", 1)  # quotas are set in GB; count bytes here
+    limits = StorageQuotaSettings.get_solo()
+    limits.user_quota_gb = 0
+    limits.save()
     client = make_client(student)
     upload_file(client, fake_s3, workspace["id"], "a.pdf", PDF)
-    settings.MY_RESEARCH_WORKSPACE_STORAGE_QUOTA = len(PDF) + 10
+    limits.user_quota_gb, limits.workspace_quota_gb = 0, len(PDF) + 10
+    limits.save()
     resp = _initiate(client, workspace["id"], filename="b.pdf", size=20)
     assert resp.status_code == 413
     assert resp.data["code"] == "quota_exceeded"
-    settings.MY_RESEARCH_WORKSPACE_STORAGE_QUOTA = 0
-    settings.MY_RESEARCH_USER_STORAGE_QUOTA = len(PDF) + 10
+    limits.user_quota_gb, limits.workspace_quota_gb = len(PDF) + 10, 0
+    limits.save()
     assert _initiate(client, workspace["id"], filename="b.pdf", size=20).status_code == 413
     assert _initiate(client, workspace["id"], filename="b.pdf", size=5).status_code == 201
+    # A user's own quota replaces the default one (0 = no limit).
+    UserStorageQuota.objects.create(user=student, quota_gb=0)
+    assert _initiate(client, workspace["id"], filename="c.pdf", size=20).status_code == 201
+
+
+def test_default_quota_is_100_gb_and_set_by_the_main_admin(student):
+    from iic_booking.my_research.models import StorageQuotaSettings
+    from iic_booking.users.models.user_type import UserType
+    from iic_booking.users.tests.factories import UserFactory
+
+    assert StorageQuotaSettings.get_solo().user_quota_gb == 100
+    url = "/api/v1/my-research/admin/quotas/"
+    assert make_client(student).get(url).status_code == 403
+    admin = make_client(UserFactory(user_type=UserType.ADMIN))
+    assert admin.get(url).data["user_quota_gb"] == 100
+    assert admin.put(url, {"user_quota_gb": -1}, format="json").status_code == 400
+    assert admin.put(url, {"user_quota_gb": 150, "workspace_quota_gb": 0}, format="json").data["user_quota_gb"] == 150
+    body = admin.post(url + "users/", {"email": student.email, "quota_gb": 500, "note": "Large imaging project"},
+                      format="json").data
+    assert [(u["email"], u["quota_gb"]) for u in body["users"]] == [(student.email, 500)]
+    assert make_client(student).get("/api/v1/my-research/").data["storage"]["quota_bytes"] == 500 * 1024**3
+    assert admin.delete(f"{url}users/{body['users'][0]['id']}/").data["users"] == []
+    assert make_client(student).get("/api/v1/my-research/").data["storage"]["quota_bytes"] == 150 * 1024**3
 
 
 def test_pending_upload_limit(settings, student, workspace, fake_s3):

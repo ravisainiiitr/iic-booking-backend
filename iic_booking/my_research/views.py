@@ -30,7 +30,7 @@ from rest_framework.response import Response
 
 from iic_booking.equipment.models import Booking, BookingStatus, EquipmentPublicationClaim
 
-from . import archive, file_policy, storage
+from . import archive, file_policy, quotas, storage
 from .access import (
     DISABLED_CODE,
     NOT_ELIGIBLE_CODE,
@@ -252,8 +252,8 @@ def bootstrap(request):
                     "max_file_size": int(settings.MY_RESEARCH_MAX_FILE_SIZE),
                     "multipart_threshold": int(settings.MY_RESEARCH_MULTIPART_THRESHOLD),
                     "download_url_expiry_seconds": int(settings.MY_RESEARCH_DOWNLOAD_URL_EXPIRY_SECONDS),
-                    "user_storage_quota": int(settings.MY_RESEARCH_USER_STORAGE_QUOTA or 0),
-                    "workspace_storage_quota": int(settings.MY_RESEARCH_WORKSPACE_STORAGE_QUOTA or 0),
+                    "user_storage_quota": quotas.user_quota_bytes(request.user),
+                    "workspace_storage_quota": quotas.workspace_quota_bytes(),
                 },
                 "groups_available": groups_enabled(),
                 "can_create_group": can_create_group(request.user),
@@ -291,7 +291,7 @@ def home(request):
             "can_create": can_create_workspace(user),
             "storage": {
                 "used_bytes": owner_usage_bytes(user),
-                "quota_bytes": int(settings.MY_RESEARCH_USER_STORAGE_QUOTA or 0),
+                "quota_bytes": quotas.user_quota_bytes(user),
             },
         }
     )
