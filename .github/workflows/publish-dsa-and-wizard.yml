@@ -1,0 +1,110 @@
+name: Publish DSA Installer and Equipment Wizard
+
+# Publishes a Department Sync Agent installer (+ offline ZIP) and/or an Equipment PC Wizard package into the
+# portal (Deployment Center / agent installer page) from the assets of a release in this repository. The release
+# may be a DRAFT (not public): the packages carry default configuration that should not be published openly.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: "Numeric id of the (draft) GitHub release holding the files"
+        required: true
+      dsa_version:
+        description: "DSA installer version to publish (empty: skip)"
+        required: false
+        default: ""
+      dsa_notes:
+        description: "DSA release notes"
+        required: false
+        default: ""
+      wizard_version:
+        description: "Equipment PC Wizard version to publish (empty: skip)"
+        required: false
+        default: ""
+      wizard_notes:
+        description: "Wizard release notes"
+        required: false
+        default: ""
+      channel:
+        description: "Release channel"
+        required: true
+        default: "stable"
+
+jobs:
+  publish:
+    runs-on: [self-hosted, Linux]
+    permissions:
+      contents: write  # needed to read draft release assets
+    steps:
+      - name: Download assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/dsa-publish && mkdir -p /tmp/dsa-publish && cd /tmp/dsa-publish
+          curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/releases/${RELEASE_ID}/assets?per_page=50" > assets.json
+          python3 - <<'PY' > list.txt
+          import json
+          for a in json.load(open("assets.json")):
+              print(a["url"], a["name"], a["size"])
+          PY
+          while read -r url name size; do
+            curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/octet-stream" -o "$name" "$url"
+            actual=$(stat -c %s "$name")
+            test "$actual" = "$size" || { echo "size mismatch for $name: $actual != $size"; exit 1; }
+            echo "$name $size $(sha256sum "$name" | cut -d' ' -f1)"
+          done < list.txt
+
+      - name: Publish into the portal
+        env:
+          DSA_VERSION: ${{ inputs.dsa_version }}
+          DSA_NOTES: ${{ inputs.dsa_notes }}
+          WIZARD_VERSION: ${{ inputs.wizard_version }}
+          WIZARD_NOTES: ${{ inputs.wizard_notes }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          cd /tmp/dsa-publish
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          test -n "$CID"
+          echo "container=$CID"
+          docker exec "$CID" mkdir -p /tmp/dsa-publish
+          if [ -n "$DSA_VERSION" ]; then
+            test -f DepartmentSyncAgentSetup.exe
+            docker cp DepartmentSyncAgentSetup.exe "$CID:/tmp/dsa-publish/DepartmentSyncAgentSetup.exe"
+            OFFLINE="$(ls DepartmentSyncAgentSetup-*-offline.zip 2>/dev/null | head -n 1 || true)"
+            ARGS=()
+            if [ -n "$OFFLINE" ]; then
+              docker cp "$OFFLINE" "$CID:/tmp/dsa-publish/$OFFLINE"
+              ARGS=(--offline "/tmp/dsa-publish/$OFFLINE")
+            fi
+            docker exec -w /app "$CID" python manage.py publish_dsa_installer /tmp/dsa-publish/DepartmentSyncAgentSetup.exe \
+              --release-version "$DSA_VERSION" --channel "$CHANNEL" --notes "$DSA_NOTES" "${ARGS[@]}"
+          fi
+          if [ -n "$WIZARD_VERSION" ]; then
+            PKG="$(ls EquipmentWizard-*.zip 2>/dev/null | head -n 1 || true)"
+            test -n "$PKG"
+            docker cp "$PKG" "$CID:/tmp/dsa-publish/$PKG"
+            docker exec -w /app "$CID" python manage.py publish_equipment_wizard "/tmp/dsa-publish/$PKG" \
+              --release-version "$WIZARD_VERSION" --channel "$CHANNEL" --notes "$WIZARD_NOTES"
+          fi
+          docker exec "$CID" rm -rf /tmp/dsa-publish
+          rm -rf /tmp/dsa-publish
+
+      - name: Show the latest releases
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          from iic_booking.sync.installer.models import DsaInstallerRelease
+          from iic_booking.deployment.models import EquipmentPcWizardRelease
+          for label, model in (('DSA', DsaInstallerRelease), ('Wizard', EquipmentPcWizardRelease)):
+              for r in model.objects.order_by('-created_at')[:3]:
+                  print(label, r.version, r.channel, 'latest' if r.is_latest else '-', 'active' if r.is_active else 'inactive',
+                        r.original_name, r.download_size_bytes, r.sha256[:16], bool(r.file and r.file.name),
+                        bool(getattr(r, 'offline_file', None) and r.offline_file.name))
+          "
