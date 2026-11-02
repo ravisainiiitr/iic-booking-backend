@@ -1,0 +1,79 @@
+# I-STEM sync for ONE booking on production (2 Nov 2026, I-STEM end-to-end demo). Runs scripts/ops/istem_single_booking.py
+# in the django container. inspect is read-only; map-equipment / set-codes change only the named instrument's I-STEM
+# mapping; create / confirm / execute send only the named booking to I-STEM (currently I-STEM STAGING).
+name: I-STEM Single Booking
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "inspect | map-equipment | set-codes | create | confirm | execute | status"
+        required: true
+        type: choice
+        options: [inspect, map-equipment, set-codes, create, confirm, execute, status]
+      booking:
+        description: "Booking virtual ID or numeric ID (create/confirm/execute/status; optional for inspect)"
+        required: false
+        default: ""
+      equipment:
+        description: "Equipment code or numeric ID, or part of its name to search (inspect/map-equipment/set-codes)"
+        required: false
+        default: ""
+      istem_equipment_id:
+        description: "map-equipment: I-STEM equipment_id"
+        required: false
+        default: ""
+      remote_name:
+        description: "Exact I-STEM equipment name to look up (read-only)"
+        required: false
+        default: ""
+      sample_key:
+        description: "map-equipment: booking input field that holds the sample count (optional)"
+        required: false
+        default: ""
+      codes:
+        description: "set-codes: TYPE:local_key=value;... for this instrument"
+        required: false
+        default: ""
+      waive_fbr_flag:
+        description: "yes = send this booking although its charge profile does not require an I-STEM FBR (this run only)"
+        required: false
+        type: choice
+        options: ["no", "yes"]
+        default: "no"
+      confirm:
+        description: "Type ISTEM for any action other than inspect/status"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - name: Require confirmation for changes
+        if: ${{ inputs.action != 'inspect' && inputs.action != 'status' }}
+        run: test "${{ inputs.confirm }}" = "ISTEM"
+      - name: Run in the django container
+        env:
+          ACTION: ${{ inputs.action }}
+          BOOKING: ${{ inputs.booking }}
+          EQUIPMENT: ${{ inputs.equipment }}
+          ISTEM_EQUIPMENT_ID: ${{ inputs.istem_equipment_id }}
+          REMOTE_NAME: ${{ inputs.remote_name }}
+          SAMPLE_KEY: ${{ inputs.sample_key }}
+          CODES: ${{ inputs.codes }}
+          WAIVE_FBR_FLAG: ${{ inputs.waive_fbr_flag }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          cd "$GITHUB_WORKSPACE"
+          git show HEAD:scripts/ops/istem_single_booking.py | \
+            docker exec -i -w /app -e ACTION -e BOOKING -e EQUIPMENT -e ISTEM_EQUIPMENT_ID -e REMOTE_NAME -e SAMPLE_KEY \
+              -e CODES -e WAIVE_FBR_FLAG -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python -
