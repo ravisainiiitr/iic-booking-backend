@@ -851,9 +851,9 @@ class CompetencyChecklist(models.Model):
 
 
 class AssessmentResult(models.TextChoices):
-    PASS = "PASS", _("Competent (pass)")
-    RETAKE = "RETAKE", _("Not yet competent (retake)")
-    FAIL = "FAIL", _("Not competent (fail)")
+    PASS = "PASS", _("Pass - competent")
+    RETAKE = "RETAKE", _("Needs further training")
+    FAIL = "FAIL", _("Reassessment required")
 
 
 class Assessment(models.Model):
@@ -1099,6 +1099,18 @@ class EquipmentAuthorisationSetting(models.Model):
         default=0, help_text=_("Users with this many completed bookings in the grace window may book (0 = no grace).")
     )
     grace_months = models.PositiveSmallIntegerField(default=12)
+    # Beginner / Expert competency workflow (off = the single "authorised" step used so far).
+    competency_levels = models.BooleanField(
+        default=False,
+        help_text=_("Beginner (supervised) then Expert (independent): approving training makes a student a Beginner, "
+                    "who may book only with an eligible supervisor; an Expert assessment then makes them independent."),
+    )
+    beginner_supervised_allowed = models.BooleanField(
+        default=True, help_text=_("Beginners may make supervised bookings (with a supervisor named on the booking)."),
+    )
+    expert_requires_oic_approval = models.BooleanField(
+        default=True, help_text=_("A Pass recorded by a trainer or Lab Operator needs the OIC's approval to make the student Expert."),
+    )
     note = models.TextField(blank=True, default="")
     updated_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     updated_at = models.DateTimeField(auto_now=True)
@@ -1122,9 +1134,15 @@ class AuthorisationRequestStatus(models.TextChoices):
 OPEN_REQUEST_STATUSES = (AuthorisationRequestStatus.PENDING, AuthorisationRequestStatus.SCHEDULED)
 
 
+class AuthorisationRequestKind(models.TextChoices):
+    TRAINING = "TRAINING", _("Training")
+    ASSESSMENT = "ASSESSMENT", _("Expert assessment")
+
+
 class AuthorisationRequest(models.Model):
     user = models.ForeignKey(USER, on_delete=models.CASCADE, related_name="authorisation_requests")
     equipment = models.ForeignKey("equipment.Equipment", on_delete=models.CASCADE, related_name="authorisation_requests")
+    kind = models.CharField(max_length=12, choices=AuthorisationRequestKind.choices, default=AuthorisationRequestKind.TRAINING)
     status = models.CharField(max_length=12, choices=AuthorisationRequestStatus.choices, default=AuthorisationRequestStatus.PENDING)
     message = models.TextField(blank=True, default="")
     scheduled_start = models.DateTimeField(null=True, blank=True)
@@ -1168,3 +1186,57 @@ class TrainingAuditLog(models.Model):
     class Meta:
         ordering = ["-created_at", "-id"]
         indexes = [models.Index(fields=["object_type", "object_id"])]
+
+
+class EquipmentTrainer(models.Model):
+    """An Expert the OIC designated to supervise Beginners and assess on one equipment (staff of the equipment always
+    may). History is kept: removing a trainer closes the row."""
+
+    equipment = models.ForeignKey("equipment.Equipment", on_delete=models.CASCADE, related_name="training_trainers")
+    user = models.ForeignKey(USER, on_delete=models.CASCADE, related_name="trainer_designations")
+    is_active = models.BooleanField(default=True)
+    note = models.TextField(blank=True, default="")
+    designated_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    designated_at = models.DateTimeField(auto_now_add=True)
+    removed_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    removed_at = models.DateTimeField(null=True, blank=True)
+    remove_reason = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-designated_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(fields=["equipment", "user"], condition=models.Q(is_active=True),
+                                    name="training_one_active_trainer_designation")
+        ]
+
+
+class SupervisionStatus(models.TextChoices):
+    REQUESTED = "REQUESTED", _("Awaiting supervisor")
+    CONFIRMED = "CONFIRMED", _("Supervisor confirmed")
+    DECLINED = "DECLINED", _("Supervisor declined")
+    ATTENDED = "ATTENDED", _("Supervised session completed")
+    NO_SHOW = "NO_SHOW", _("Student did not attend")
+    CANCELLED = "CANCELLED", _("Cancelled")
+
+
+class SupervisedSession(models.Model):
+    """A Beginner's booking made with a named supervisor: the supervisor confirms, then records the session, which
+    becomes part of the student's training history on that equipment."""
+
+    booking = models.OneToOneField("equipment.Booking", on_delete=models.CASCADE, related_name="supervised_session")
+    equipment = models.ForeignKey("equipment.Equipment", on_delete=models.CASCADE, related_name="supervised_sessions")
+    student = models.ForeignKey(USER, on_delete=models.CASCADE, related_name="supervised_sessions")
+    supervisor = models.ForeignKey(USER, on_delete=models.PROTECT, related_name="supervised_sessions_given")
+    status = models.CharField(max_length=12, choices=SupervisionStatus.choices, default=SupervisionStatus.REQUESTED)
+    responded_at = models.DateTimeField(null=True, blank=True)
+    response_note = models.TextField(blank=True, default="")
+    recorded_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    recorded_at = models.DateTimeField(null=True, blank=True)
+    remarks = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["supervisor", "status"]), models.Index(fields=["student", "equipment"])]
+

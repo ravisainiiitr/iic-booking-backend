@@ -114,6 +114,12 @@ def save_checklist(equipment, actor, data: dict) -> dict:
 def can_assess(user, equipment_id: int) -> bool:
     if access.can_manage_equipment(user, equipment_id) or equipment_id in access.operator_equipment_ids(user):
         return True
+    from .competency import designated_trainers
+    from iic_booking.equipment.models import Equipment
+
+    equipment = Equipment.objects.filter(pk=equipment_id).first()
+    if equipment is not None and any(t.user_id == user.pk for t in designated_trainers(equipment)):
+        return True
     return CertificationAward.objects.filter(
         user=user, equipment_id=equipment_id, status=AwardStatus.ACTIVE, level__rank__gte=30
     ).exists()
@@ -195,7 +201,13 @@ def record_assessment(actor, data: dict) -> Assessment:
         raise TrainingError("Only the OIC, a Lab Operator or a trainer of this equipment can assess.", status=403, code="forbidden")
     if user.pk == actor.pk:
         raise TrainingError("You cannot assess yourself.", status=403, code="forbidden")
-    level = CertificationLevel.objects.filter(code=data.get("target_level") or "CERT_L1", is_active=True).first()
+    from . import competency
+    from .authorisation import setting_row
+
+    gate_row = setting_row(equipment)
+    two_level = competency.two_level(gate_row)
+    default_level = competency.EXPERT if two_level else "CERT_L1"
+    level = CertificationLevel.objects.filter(code=data.get("target_level") or default_level, is_active=True).first()
     if level is None:
         raise TrainingError("Choose an active certification level.")
     waiver = (data.get("prerequisite_waiver_reason") or "").strip()
@@ -242,15 +254,24 @@ def record_assessment(actor, data: dict) -> Assessment:
             assessed_at=now,
         )
         audit(actor, "assessment.recorded", a, after={"result": result, "level": level.code, "user": user.pk}, note=waiver)
-        if result == AssessmentResult.PASS and is_oic and data.get("issue_award", True):
-            sign_off(a, actor)
+        # Expert on a two-level equipment: the OIC approves a Pass recorded by someone else, unless the equipment
+        # lets a Pass stand on its own.
+        approval_needed = not two_level or bool(getattr(gate_row, "expert_requires_oic_approval", True))
+        if result == AssessmentResult.PASS and (is_oic or not approval_needed) and data.get("issue_award", True):
+            sign_off(a, actor, approval_waived=not is_oic)
+        if two_level:
+            competency.close_assessment_request(a, actor, awarded=bool(a.award_id))
     _notify_result(a, actor)
     return a
 
 
-def sign_off(a: Assessment, actor) -> CertificationAward:
-    if not access.can_manage_equipment(actor, a.equipment_id):
+def sign_off(a: Assessment, actor, *, approval_waived: bool = False) -> CertificationAward:
+    """Issue the level of a passing assessment. The OIC signs off; ``approval_waived`` is for a two-level equipment that
+    lets a Pass stand without OIC approval (the assessor's own sign-off, recorded as such)."""
+    if not approval_waived and not access.can_manage_equipment(actor, a.equipment_id):
         raise TrainingError("Only the equipment's OIC can sign off a certification.", status=403, code="forbidden")
+    if actor is not None and getattr(actor, "pk", None) == a.user_id:
+        raise TrainingError("You cannot approve your own assessment.", status=403, code="forbidden")
     if a.result != AssessmentResult.PASS:
         raise TrainingError("Only a passing assessment can be signed off.")
     if a.award_id:
@@ -269,7 +290,10 @@ def sign_off(a: Assessment, actor) -> CertificationAward:
         a.signed_off_by = actor
         a.signed_off_at = timezone.now()
         a.save(update_fields=["award", "signed_off_by", "signed_off_at"])
-        audit(actor, "assessment.signed_off", a, after={"award": award.pk})
+        audit(actor, "assessment.signed_off", a, after={"award": award.pk, "approval_waived": approval_waived})
+        from . import competency
+
+        competency.close_assessment_request(a, actor, awarded=True)
     return award
 
 
