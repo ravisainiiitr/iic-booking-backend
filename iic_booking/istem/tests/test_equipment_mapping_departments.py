@@ -3,6 +3,8 @@ mappings at once. Main Admin chooses any department; a department administrator 
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from django.core.cache import cache
 
@@ -30,6 +32,7 @@ def _fresh():
     clear_token_cache()
     cache.delete(LISTING_CACHE_KEY)
     cache.delete(LISTING_SNAPSHOT_KEY)
+    cache.delete_many(['istem:department_names', 'istem:department_names:last'])
     yield
     clear_token_cache()
     cache.delete(LISTING_CACHE_KEY)
@@ -192,12 +195,14 @@ def test_istem_departments_are_listed_with_a_suggestion_from_mapped_instruments(
     iic = _department("I")
     fesem = _equipment(iic, "FESEM")
     IstemEquipmentMapping.objects.create(equipment=fesem, istem_equipment_id="38751", sample_count_input_key="A")
-    _, factory = _fake(DEPT_LISTING)
+    transport = FakeTransport(token_response(), _page(DEPT_LISTING), _departments_response())
+    factory = lambda: IstemClient(transport)  # noqa: E731
     from iic_booking.istem.equipment_mapping import istem_departments
 
     out = istem_departments(_admin(), client_factory=factory)
     rows = {r["istem_department_id"]: r for r in out["istem_departments"]}
-    assert rows["164"]["equipment_count"] == 2 and rows["164"]["suggested"] == {"id": iic.pk, "name": iic.name, "instruments": 1}
+    assert rows["164"]["equipment_count"] == 2
+    assert rows["164"]["suggested"] == {"id": iic.pk, "name": iic.name, "instruments": 1, "by": "instruments"}
     assert rows["164"]["locations"] and rows["164"]["department"] is None
     assert rows["171"]["suggested"] is None and rows[""]["equipment_count"] == 1
     with pytest.raises(MappingRefused):
@@ -348,3 +353,47 @@ def test_token_without_institute_is_refused_instead_of_listing_every_institute(s
     with pytest.raises(MappingRefused) as exc:
         istem_listing(_admin(), client_factory=lambda: IstemClient(transport))
     assert "institute_id" in exc.value.message
+
+
+# --- department names from I-STEM's Departments list ----------------------------------------------------------
+
+def _departments_response(*pairs):
+    from .support import json_response
+
+    return json_response({"status": "SUCCESS", "result": [{"id": i, "val": v} for i, v in pairs]})
+
+
+def test_departments_carry_names_and_list_those_without_equipment(settings):
+    from iic_booking.users.models import Department
+
+    apply_live(settings)
+    iic = Department.objects.create(name="Institute Instrumentation Centre", code=f"I{uuid.uuid4().hex[:5]}")
+    chem = Department.objects.create(name="Chemistry", code=f"C{uuid.uuid4().hex[:5]}")
+    rows = [dict(r, equipment_department_id="164") for r in LISTING[:2]]
+    transport = FakeTransport(token_response(institute_id=213), _page(rows),
+                              _departments_response(("164", "Institute Instrumentation Centre "),
+                                                    ("160", "Department of Chemistry"), ("1030", "Institute Computer Centre ICC")))
+
+    from iic_booking.istem.equipment_mapping import istem_departments
+
+    out = istem_departments(_admin(), client_factory=lambda: IstemClient(transport))
+    by_id = {r["istem_department_id"]: r for r in out["istem_departments"]}
+    assert set(by_id) == {"164", "160", "1030"}
+    assert by_id["164"]["name"] == "Institute Instrumentation Centre" and by_id["164"]["equipment_count"] == 2
+    assert by_id["160"]["equipment_count"] == 0
+    assert by_id["164"]["suggested"]["id"] == iic.pk and by_id["164"]["suggested"]["by"] == "name"
+    assert by_id["160"]["suggested"]["id"] == chem.pk
+    assert by_id["1030"]["suggested"] is None
+    assert [r["istem_department_id"] for r in out["istem_departments"]][0] == "164"  # with equipment first
+
+
+def test_department_names_fall_back_to_the_last_good_read(settings):
+    from iic_booking.istem.equipment_mapping import DEPARTMENT_NAMES_CACHE_KEY, DEPARTMENT_NAMES_SNAPSHOT_KEY, istem_department_names
+    from iic_booking.istem.client import TransportResponse
+
+    apply_live(settings)
+    cache.delete(DEPARTMENT_NAMES_CACHE_KEY)
+    cache.set(DEPARTMENT_NAMES_SNAPSHOT_KEY, {"164": "Institute Instrumentation Centre"}, None)
+    down = FakeTransport(TransportResponse(502, "<html>Bad Gateway</html>"))
+    assert istem_department_names(client_factory=lambda: IstemClient(down)) == {"164": "Institute Instrumentation Centre"}
+    cache.delete(DEPARTMENT_NAMES_SNAPSHOT_KEY)

@@ -568,3 +568,29 @@ def test_transport_verifies_with_the_configured_ca_bundle(settings):
     assert RequestsTransport().session.verify == "/etc/istem/ca.pem"
     settings.ISTEM_CA_BUNDLE = ""
     assert RequestsTransport().session.verify is True  # never disabled
+
+
+def test_token_with_a_php_path_before_the_json_is_read(live):
+    # [STAGING] 3 Nov 2026: "/var/www/istem1/html/application/models/ExternalAPIs/UserModel.php{"result": ...}"
+    from iic_booking.istem.client import TransportResponse
+
+    good = token_response(institute_id=213)
+    prefixed = TransportResponse(200, "/var/www/istem1/html/application/models/ExternalAPIs/UserModel.php" + good.text)
+    assert _client(FakeTransport(prefixed)).session_info().institute_id == "213"
+
+
+def test_html_error_page_is_still_not_json(live):
+    from iic_booking.istem.client import TransportResponse
+
+    page = TransportResponse(200, "<html><style>body{margin:0}</style>502 Bad Gateway</html>")
+    with pytest.raises(IstemError):
+        _client(FakeTransport(page)).session_info()
+
+
+def test_departments_are_listed_with_names(live):
+    body = {"status": "SUCCESS", "result": [{"id": "164", "val": "Institute Instrumentation Centre "},
+                                            {"id": "160", "val": "Department of  Chemistry"}, {"id": "x", "val": "bad"}]}
+    transport = FakeTransport(token_response(institute_id=213), json_response(body))
+    rows = _client(transport).list_departments(institute_id="213")
+    assert rows == [{"id": "164", "name": "Institute Instrumentation Centre"}, {"id": "160", "name": "Department of Chemistry"}]
+    assert transport.calls[-1]["params"] == {"institute_id": "213"}

@@ -126,6 +126,24 @@ def _safe_message(body: dict) -> str:
     return text.strip()[:MAX_MESSAGE_LENGTH]
 
 
+MAX_JSON_PREFIX = 1000
+
+
+def _loads(text):
+    """JSON body of an I-STEM response. [STAGING] 3 Nov 2026: /auth/token prints a PHP file path
+    ("/var/www/istem1/html/application/models/ExternalAPIs/UserModel.php") before the JSON, so a short non-JSON
+    prefix before the first "{" is skipped. Anything else that is not JSON still raises ValueError."""
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        if not isinstance(text, str):
+            raise
+        start = text.find("{")
+        if start <= 0 or start > MAX_JSON_PREFIX or "<" in text[:start]:
+            raise
+        return json.loads(text[start:])
+
+
 def _as_remote_id(value: Any) -> str | None:
     """A documented numeric identifier as a string, or None when absent or malformed."""
     if isinstance(value, bool):
@@ -358,7 +376,7 @@ class IstemClient:
 
     def _json(self, resp: TransportResponse, op: str, started: float, *, category_on_error=ErrorCategory.INVALID_RESPONSE) -> dict:
         try:
-            body = json.loads(resp.text)
+            body = _loads(resp.text)
         except (TypeError, ValueError):
             self._log(op, resp.status_code, started, category_on_error)
             raise IstemError(category_on_error, "I-STEM returned a response that is not JSON.", http_status=resp.status_code) from None
@@ -372,7 +390,7 @@ class IstemClient:
         if resp.status_code != 200:
             return False
         try:
-            body = json.loads(resp.text)
+            body = _loads(resp.text)
         except (TypeError, ValueError):
             return False
         return isinstance(body, dict) and _is_token_refusal(body)
@@ -519,6 +537,23 @@ class IstemClient:
         total = body.get("totalrecord")
         return EquipmentPage(rows, total if isinstance(total, int) and not isinstance(total, bool) and total >= 0 else None,
                              raw_count=len(result))
+
+    def list_departments(self, *, institute_id: str | None = None) -> list[dict]:
+        """GET api/departments: [{"id": "164", "name": "Institute Instrumentation Centre"}, ...] for the institute."""
+        params = {"institute_id": institute_id} if institute_id else None
+        body = self._call("departments", "GET", contract.DEPARTMENTS_PATH, params=params)
+        result = body.get("result")
+        if _is_success(body) is False and not isinstance(result, list):
+            raise IstemError(ErrorCategory.INVALID_RESPONSE, f"Departments: {_safe_message(body) or 'refused'}.")
+        if not isinstance(result, list):
+            raise IstemError(ErrorCategory.INVALID_RESPONSE, "Departments returned an unexpected structure.")
+        out = []
+        for row in result:
+            dept_id = _as_remote_id(row.get("id")) if isinstance(row, dict) else None
+            name = row.get("val") if isinstance(row, dict) else None
+            if dept_id:
+                out.append({"id": dept_id, "name": " ".join(str(name or "").split())[:255]})
+        return out
 
     def list_all_equipment(self, *, institute_id: str | None = None) -> list[dict]:
         """Every page of the Equipment List (bounded). Raises if the listing cannot be read completely."""
