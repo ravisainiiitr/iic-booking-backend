@@ -197,6 +197,63 @@ def istem_equipment_mapping_save(request, equipment_id: int):
         return _mapping_refusal(exc)
 
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def istem_equipment_listing(request):
+    """I-STEM's equipment listing for the institute, with the portal instruments mapped to each (``?refresh=1``)."""
+    from .equipment_mapping import MappingRefused, istem_listing
+
+    try:
+        return Response(istem_listing(request.user, refresh=request.query_params.get("refresh") == "1"))
+    except MappingRefused as exc:
+        return _mapping_refusal(exc)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def istem_equipment_suggestions(request):
+    """``?department_id=``: that department's unmapped instruments with likely I-STEM equipment by name."""
+    from .equipment_mapping import MappingRefused, suggestions
+
+    department_id = request.query_params.get("department_id") or None
+    equipment_id = request.query_params.get("equipment_id") or None
+    for value in (department_id, equipment_id):
+        if value is not None and not str(value).isdigit():
+            return Response({"error": "department_id and equipment_id are numbers."}, status=400)
+    try:
+        return Response(suggestions(request.user, department_id=department_id, equipment_id=equipment_id,
+                                    refresh=request.query_params.get("refresh") == "1"))
+    except MappingRefused as exc:
+        return _mapping_refusal(exc)
+
+
+@api_view(["GET", "PUT"])
+@permission_classes([IsAuthenticated])
+def istem_department_mappings(request):
+    """Main Admin. GET: I-STEM departments (from its equipment list) and their portal departments. PUT body:
+    ``mappings``: [{istem_department_id, department_id}] (department_id null removes it)."""
+    from .equipment_mapping import MappingRefused, istem_departments, save_department_mappings
+
+    try:
+        if request.method == "PUT":
+            return Response(save_department_mappings(request.user, request.data.get("mappings")))
+        return Response(istem_departments(request.user, refresh=request.query_params.get("refresh") == "1"))
+    except MappingRefused as exc:
+        return _mapping_refusal(exc)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def istem_equipment_mappings_bulk(request):
+    """Body: ``mappings``: [{equipment_id, istem_equipment_id, sample_count_input_key}], each saved on its own."""
+    from .equipment_mapping import MappingRefused, save_many
+
+    try:
+        return Response(save_many(request.user, request.data.get("mappings")))
+    except MappingRefused as exc:
+        return _mapping_refusal(exc)
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def istem_equipment_mappings_verify(request):

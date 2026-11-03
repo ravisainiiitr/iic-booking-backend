@@ -514,7 +514,7 @@ def test_equipment_of_other_institutes_is_dropped(live):
             {"equipment_id": "7943", "equipment_name": "ICPMS", "institute_id": "235"}]
     body = {"status": "SUCCESS", "message": "Equipment Found", "totalrecord": 2, "records": 2, "result": rows}
     page = _client(FakeTransport(token_response(), json_response(body))).list_equipment(institute_id="213")
-    assert page.rows == [{"equipment_id": "12454", "equipment_name": "VSM - IIC"}]
+    assert [(r["equipment_id"], r["equipment_name"]) for r in page.rows] == [("12454", "VSM - IIC")]
     assert page.raw_count == 2
 
 
