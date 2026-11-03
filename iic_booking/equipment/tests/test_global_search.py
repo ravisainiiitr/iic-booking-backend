@@ -196,3 +196,25 @@ def test_equipment_search_lists_lab_operator_and_oic_as_people_but_never_account
     people = {p["name"]: p["relation"] for p in body["people"]}
     assert people == {"Lab Person": f"Lab Operator · {world['xrd'].code}",
                       "Dr Oic": f"Officer In Charge · {world['xrd'].code}"}
+
+
+def test_staff_find_equipment_marked_as_test_data_users_do_not(world):
+    from django.core.cache import cache
+
+    from iic_booking.equipment import testdata
+
+    mcu = Equipment.objects.create(
+        name="Macromolecular Crystallography Unit (MCU)", code="MCU", slot_duration_minutes=60,
+        user_rating_enabled=False, internal_department=world["xrd"].internal_department,
+    )
+    testdata.mark("equipment", mcu)
+    cache.clear()
+    admin = UserFactory(admin_approved=True, user_type=UserType.ADMIN)
+    hits = _get(admin, "mcu")["equipment"]
+    assert [h["id"] for h in hits] == [mcu.equipment_id] and hits[0]["test"] is True
+    assert _get(world["alice"], "mcu")["equipment"] == []
+    # Not marked: everyone finds it, without the tag.
+    testdata.unmark("equipment", mcu)
+    cache.clear()
+    hit = _get(world["alice"], "mcu")["equipment"][0]
+    assert hit["id"] == mcu.equipment_id and hit["test"] is False

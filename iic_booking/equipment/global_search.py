@@ -29,15 +29,21 @@ LOOKS_UP_ANY_USER = frozenset({"admin", "manager", "operator", "dept_admin"})
 
 
 def _searchable_equipment_ids(user) -> set[int]:
-    """Equipment the viewer may see in the catalogue, without test equipment (kept for test accounts)."""
+    """Equipment the viewer may see in the catalogue. Equipment marked as test data is left out for users, but kept
+    for test accounts and for staff (Main Admin, Department Admin, OIC, Lab Operator): they can open it anyway, and a
+    search that hides it looks like the instrument is missing. Staff results carry ``test`` so the page can tag it."""
     from .api_views import get_visible_equipment_queryset
     from .testdata import exclude_test_equipment, is_test_user
 
     scope = "all" if getattr(user, "is_authenticated", False) else None
     qs = get_visible_equipment_queryset(user, catalog_scope=scope, mode_catalog_filter=False)
-    if not is_test_user(user):
+    if not is_test_user(user) and not _is_staff(user):
         qs = exclude_test_equipment(qs)
     return set(qs.values_list("equipment_id", flat=True))
+
+
+def _is_staff(user) -> bool:
+    return bool(getattr(user, "is_authenticated", False)) and str(getattr(user, "user_type", "") or "").lower() in LOOKS_UP_ANY_USER
 
 
 def _search_equipment(user, q: str) -> tuple[list[dict[str, Any]], str]:
@@ -46,8 +52,11 @@ def _search_equipment(user, q: str) -> tuple[list[dict[str, Any]], str]:
     from .models import Equipment
     from .search_index import rank
 
+    from .testdata import get_test_equipment_ids
+
     ranked, suggestion = rank(q, _searchable_equipment_ids(user), EQUIPMENT_LIMIT)
     rows = Equipment.objects.select_related("category", "internal_department").in_bulk([r["id"] for r in ranked])
+    test_ids = get_test_equipment_ids([r["id"] for r in ranked]) if _is_staff(user) else set()
     contacts = contacts_for_equipment(rows.values(), with_phone=bool(getattr(user, "is_authenticated", False)))
     out = []
     for r in ranked:
@@ -64,6 +73,7 @@ def _search_equipment(user, q: str) -> tuple[list[dict[str, Any]], str]:
                 "status": e.status or "",
                 "match": r["kind"],
                 "hint": r["hint"],
+                "test": e.equipment_id in test_ids,
                 "contacts": contacts.get(e.equipment_id),
             }
         )
