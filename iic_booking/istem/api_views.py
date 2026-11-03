@@ -180,7 +180,9 @@ def istem_equipment_search(request):
     from .equipment_mapping import MappingRefused, search_istem_equipment
 
     try:
-        return Response({"results": search_istem_equipment(request.user, request.query_params.get("q", ""))})
+        source: dict = {}
+        results = search_istem_equipment(request.user, request.query_params.get("q", ""), source=source)
+        return Response({"results": results, "istem_source": source})
     except MappingRefused as exc:
         return _mapping_refusal(exc)
 

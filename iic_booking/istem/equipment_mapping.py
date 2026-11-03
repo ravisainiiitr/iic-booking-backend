@@ -30,6 +30,20 @@ CLOSED_STATES = frozenset({
 })
 
 
+_DOWN = frozenset({"CONNECT_FAILED", "TLS", "AUTH_UNAVAILABLE", "READ_TIMEOUT", "CONNECTION_LOST", "SERVER_ERROR",
+                   "RATE_LIMITED", "INVALID_RESPONSE"})
+
+
+def istem_problem(exc: IstemError) -> str:
+    """What to tell the admin when I-STEM did not answer: its server is down, or it refused the portal's sign-in."""
+    category = str(getattr(exc, "category", "") or "")
+    if category in ("AUTH", "FORBIDDEN"):
+        return "I-STEM refused the portal's sign-in. The portal's I-STEM user name and password need checking."
+    if category in _DOWN:
+        return "I-STEM's server is not answering at the moment (it is run by IISc)."
+    return "I-STEM did not give a usable answer."
+
+
 class MappingRefused(Exception):
     def __init__(self, message: str, http_status: int = 400):
         super().__init__(message)
@@ -121,10 +135,13 @@ def list_rows(user) -> dict:
             "mapping": _mapping_row(mappings.get(e.pk)),
         })
     departments: dict = {}
+    linked: dict = {}
+    for department_id, istem_id in IstemDepartmentMapping.objects.values_list("department_id", "istem_department_id"):
+        linked.setdefault(department_id, []).append(istem_id)
     for row in rows:
         d = row["department"] or {"id": None, "name": "No department"}
         s = departments.setdefault(d["id"], {"id": d["id"], "name": d["name"], "total": 0, "mapped": 0,
-                                             "fbr_unmapped": 0})
+                                             "fbr_unmapped": 0, "istem_department_ids": sorted(linked.get(d["id"], []))})
         s["total"] += 1
         active = bool(row["mapping"] and row["mapping"]["is_active"])
         s["mapped"] += active
@@ -133,8 +150,9 @@ def list_rows(user) -> dict:
             "equipment": rows, "departments": sorted(departments.values(), key=lambda d: (d["name"] or "").lower())}
 
 
-def search_istem_equipment(user, query: str, client_factory=None) -> list[dict]:
-    """Active I-STEM equipment of the portal's institute whose name contains ``query`` (read-only Equipment List)."""
+def search_istem_equipment(user, query: str, client_factory=None, source: dict | None = None) -> list[dict]:
+    """Active I-STEM equipment of the portal's institute whose name contains ``query`` (read-only Equipment List).
+    While I-STEM is not answering, the last list read from it is searched instead (``source`` says which)."""
     from .service import default_client
 
     managed_department_id(user)  # permission check
@@ -147,14 +165,19 @@ def search_istem_equipment(user, query: str, client_factory=None) -> list[dict]:
     try:
         institute_id = client.session_info().institute_id
         page = client.list_equipment(institute_id=institute_id, equipment_name=query, limit=SEARCH_LIMIT)
+        rows = page.rows
+        if source is not None:
+            source.update(_live_source())
     except IstemError as exc:
-        raise MappingRefused(f"I-STEM did not answer the equipment search ({exc.category}). Try again shortly.", 502) from exc
-    used = {}
-    for equipment_id, istem_id, name in (IstemEquipmentMapping.objects.filter(
-            istem_equipment_id__in=[r["equipment_id"] for r in page.rows], is_active=True)
-            .values_list("equipment_id", "istem_equipment_id", "equipment__name")):
-        used.setdefault(istem_id, []).append({"equipment_id": equipment_id, "name": name})
-    return [{**row, "mapped_to": used.get(row["equipment_id"], [])} for row in page.rows]
+        snapshot = _snapshot()
+        if snapshot is None:
+            raise MappingRefused(f"{istem_problem(exc)} Try again later.", 502) from exc
+        needle = query.lower()
+        rows = [r for r in snapshot["rows"] if needle in (r.get("equipment_name") or "").lower()][:SEARCH_LIMIT]
+        if source is not None:
+            source.update(_saved_source(snapshot, exc))
+    used = _mapped_to(r["equipment_id"] for r in rows)
+    return [{**row, "mapped_to": used.get(row["equipment_id"], [])} for row in rows]
 
 
 def save_mapping(user, equipment_id: int, data: dict, *, client_factory=None, check_remote: bool = True) -> dict:
@@ -200,8 +223,12 @@ def save_mapping(user, equipment_id: int, data: dict, *, client_factory=None, ch
         warnings.append("The same I-STEM ID is also mapped to: " + ", ".join(sorted(shared)) + ".")
     if not key:
         warnings.append("No sample-count field chosen: I-STEM bookings for this instrument will wait until one is set.")
-    check = (verify(user, equipment_ids=[equipment.pk], client_factory=client_factory)
-             if check_remote and conf.network_allowed() else None)
+    check = None
+    if check_remote and conf.network_allowed():
+        try:
+            check = verify(user, equipment_ids=[equipment.pk], client_factory=client_factory)
+        except MappingRefused:
+            warnings.append("Saved. I-STEM is not answering, so the ID will be checked on I-STEM later.")
     mapping.refresh_from_db()
     if mapping.remote_found is False:
         warnings.append("I-STEM's equipment list for the institute does not show this ID as active.")
@@ -219,7 +246,7 @@ def verify(user, *, equipment_ids=None, client_factory=None) -> dict:
     try:
         return verify_equipment_mappings(client_factory or default_client, equipment_ids=sorted(ids))
     except IstemError as exc:
-        raise MappingRefused(f"I-STEM's equipment list could not be read ({exc.category}). Try again shortly.", 502) from exc
+        raise MappingRefused(f"{istem_problem(exc)} Try again later.", 502) from exc
 
 
 # --- Department-wise matching against I-STEM's own listing ------------------------------------------------------------
@@ -236,23 +263,56 @@ _PAREN = re.compile(r"\(([^)]{2,20})\)")
 _CODE_PREFIX = re.compile(r"[A-Za-z]{2,}")
 
 
-def _istem_listing(*, refresh: bool = False, client_factory=None) -> list[dict]:
-    """Every active I-STEM equipment of the portal's institute (Equipment List, cached for ten minutes)."""
+LISTING_SNAPSHOT_KEY = "istem:equipment_listing:last"
+
+
+def _snapshot() -> dict | None:
+    from django.core.cache import cache
+
+    snapshot = cache.get(LISTING_SNAPSHOT_KEY)
+    return snapshot if isinstance(snapshot, dict) and isinstance(snapshot.get("rows"), list) else None
+
+
+def _live_source(read_at: str | None = None) -> dict:
+    return {"live": True, "read_at": read_at or timezone.now().isoformat(), "problem": ""}
+
+
+def _saved_source(snapshot: dict, exc: IstemError) -> dict:
+    return {"live": False, "read_at": snapshot.get("read_at"), "problem": istem_problem(exc)}
+
+
+def listing_with_source(*, refresh: bool = False, client_factory=None) -> tuple[list[dict], dict]:
+    """Every active I-STEM equipment of the institute, and where it came from. Read from I-STEM at most every ten
+    minutes; the last good read is kept, so while I-STEM is not answering the page works from it (``live`` False,
+    ``read_at`` when it was read, ``problem`` why)."""
     from django.core.cache import cache
 
     from .service import default_client
 
     if not conf.network_allowed():
         raise MappingRefused("I-STEM is not connected on this portal.", 503)
-    rows = None if refresh else cache.get(LISTING_CACHE_KEY)
-    if rows is None:
-        client = (client_factory or default_client)()
-        try:
-            rows = client.list_all_equipment(institute_id=client.session_info().institute_id)
-        except IstemError as exc:
-            raise MappingRefused(f"I-STEM's equipment list could not be read ({exc.category}). Try again shortly.", 502) from exc
-        cache.set(LISTING_CACHE_KEY, rows, LISTING_CACHE_SECONDS)
-    return rows
+    fresh = None if refresh else cache.get(LISTING_CACHE_KEY)
+    if isinstance(fresh, dict) and isinstance(fresh.get("rows"), list):
+        return fresh["rows"], _live_source(fresh.get("read_at"))
+    client = (client_factory or default_client)()
+    try:
+        rows = client.list_all_equipment(institute_id=client.session_info().institute_id)
+    except IstemError as exc:
+        snapshot = _snapshot()
+        if snapshot is None:
+            raise MappingRefused(f"{istem_problem(exc)} Its equipment list has not been read before, so try again "
+                                 "later.", 502) from exc
+        logger.warning("istem equipment list unavailable (%s); using the list read at %s", exc.category,
+                       snapshot.get("read_at"))
+        return snapshot["rows"], _saved_source(snapshot, exc)
+    value = {"rows": rows, "read_at": timezone.now().isoformat()}
+    cache.set(LISTING_CACHE_KEY, value, LISTING_CACHE_SECONDS)
+    cache.set(LISTING_SNAPSHOT_KEY, value, None)
+    return rows, _live_source(value["read_at"])
+
+
+def _istem_listing(*, refresh: bool = False, client_factory=None) -> list[dict]:
+    return listing_with_source(refresh=refresh, client_factory=client_factory)[0]
 
 
 def _mapped_to(istem_ids) -> dict[str, list[dict]]:
@@ -267,11 +327,11 @@ def _mapped_to(istem_ids) -> dict[str, list[dict]]:
 def istem_listing(user, *, refresh: bool = False, client_factory=None) -> dict:
     """I-STEM's equipment listing for the institute, each row with the portal instruments mapped to it."""
     managed_department_id(user)  # permission check
-    rows = _istem_listing(refresh=refresh, client_factory=client_factory)
+    rows, source = listing_with_source(refresh=refresh, client_factory=client_factory)
     used = _mapped_to(r["equipment_id"] for r in rows)
     out = sorted(({**r, "mapped_to": used.get(r["equipment_id"], [])} for r in rows),
                  key=lambda r: (r["equipment_name"] or "").lower())
-    return {"equipment": out, "total": len(out), "mapped": sum(1 for r in out if r["mapped_to"])}
+    return {"equipment": out, "total": len(out), "mapped": sum(1 for r in out if r["mapped_to"]), "istem_source": source}
 
 
 def _words(name: str) -> set[str]:
@@ -359,7 +419,7 @@ def suggestions(user, *, department_id=None, equipment_id=None, refresh: bool = 
     scope = managed_department_id(user)
     if scope is not None:
         department_id = scope
-    listing = _istem_listing(refresh=refresh, client_factory=client_factory)
+    listing, source = listing_with_source(refresh=refresh, client_factory=client_factory)
     used = _mapped_to(r["equipment_id"] for r in listing)
     qs = managed_equipment(user)
     if equipment_id:
@@ -405,7 +465,7 @@ def suggestions(user, *, department_id=None, equipment_id=None, refresh: bool = 
             "confident": confident,
         })
     return {"department_id": int(department_id) if department_id else None, "istem_total": len(listing),
-            "equipment": rows}
+            "equipment": rows, "istem_source": source}
 
 
 # --- Portal departments <-> I-STEM departments (Main Admin) -----------------------------------------------------------
@@ -427,7 +487,7 @@ def istem_departments(user, *, refresh: bool = False, client_factory=None) -> di
     from iic_booking.users.models import Department
 
     _require_main_admin(user)
-    listing = _istem_listing(refresh=refresh, client_factory=client_factory)
+    listing, source = listing_with_source(refresh=refresh, client_factory=client_factory)
     groups: dict[str, list[dict]] = {}
     for r in listing:
         groups.setdefault(r.get("department_id") or "", []).append(r)
@@ -452,7 +512,7 @@ def istem_departments(user, *, refresh: bool = False, client_factory=None) -> di
                           if suggested else None),
         })
     portal = sorted(({"id": pk, "name": name} for pk, name in departments.items()), key=lambda d: d["name"].lower())
-    return {"istem_departments": rows, "portal_departments": portal}
+    return {"istem_departments": rows, "portal_departments": portal, "istem_source": source}
 
 
 def save_department_mappings(user, items) -> dict:
