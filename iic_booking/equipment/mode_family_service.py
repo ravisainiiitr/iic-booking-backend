@@ -17,6 +17,7 @@ from django.utils import timezone
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.rbac import is_department_admin, user_has_permission
 
+from iic_booking.equipment.config_audit import audited_update
 from .models import (
     Booking,
     BookingStatus,
@@ -161,7 +162,7 @@ def sync_family_flags(equipment_ids: Iterable[int], actor=None, *, reason: str =
         else:
             wanted = Equipment.objects.filter(parent_equipment_id=eq.equipment_id).exists()
         if eq.enable_multi_mode != wanted:
-            Equipment.objects.filter(pk=eq.pk).update(enable_multi_mode=wanted, updated_at=timezone.now())
+            audited_update(Equipment.objects.filter(pk=eq.pk), enable_multi_mode=wanted, updated_at=timezone.now())
             log_mode_change(
                 eq,
                 "FLAG_SYNC",
@@ -280,7 +281,7 @@ def set_family_modes(base: Equipment, raw_modes, user) -> FamilyChangeResult:
     for eid in to_add:
         eq = added_objs[eid]
         availability = wanted[eid] or ModeAvailability.ALWAYS
-        Equipment.objects.filter(pk=eid).update(
+        audited_update(Equipment.objects.filter(pk=eid), 
             parent_equipment_id=base.equipment_id,
             enable_multi_mode=False,
             mode_availability=availability,
@@ -297,7 +298,7 @@ def set_family_modes(base: Equipment, raw_modes, user) -> FamilyChangeResult:
         result.added.append(eid)
     for eid in to_remove:
         eq = current[eid]
-        Equipment.objects.filter(pk=eid).update(parent_equipment=None, enable_multi_mode=False, updated_at=now)
+        audited_update(Equipment.objects.filter(pk=eid), parent_equipment=None, enable_multi_mode=False, updated_at=now)
         log_mode_change(
             eq,
             "MODE_UNLINKED",
@@ -308,7 +309,7 @@ def set_family_modes(base: Equipment, raw_modes, user) -> FamilyChangeResult:
         result.removed.append(eid)
     for eid, availability in wanted.items():
         if eid in current and availability and current[eid].mode_availability != availability:
-            Equipment.objects.filter(pk=eid).update(mode_availability=availability, updated_at=now)
+            audited_update(Equipment.objects.filter(pk=eid), mode_availability=availability, updated_at=now)
             log_mode_change(
                 current[eid],
                 "MODE_AVAILABILITY",
@@ -341,7 +342,7 @@ def link_mode_for_schedule(base: Equipment, mode: Equipment, user) -> bool:
             raise FamilyChangeError(f"{mode.code} belongs to a different department than {base.code}.")
         raise FamilyChangeError(f"{mode.code} cannot be a mode of {base.code}.")
     before = {"enable_multi_mode": mode.enable_multi_mode, "mode_availability": mode.mode_availability}
-    Equipment.objects.filter(pk=mode.pk).update(
+    audited_update(Equipment.objects.filter(pk=mode.pk), 
         parent_equipment_id=base.equipment_id,
         enable_multi_mode=False,
         mode_availability=ModeAvailability.SCHEDULED_ONLY,
@@ -362,7 +363,7 @@ def link_mode_for_schedule(base: Equipment, mode: Equipment, user) -> bool:
 
 
 def _unlink(base_id: int, mode: Equipment, user, reason: str) -> None:
-    Equipment.objects.filter(pk=mode.pk).update(parent_equipment=None, enable_multi_mode=False, updated_at=timezone.now())
+    audited_update(Equipment.objects.filter(pk=mode.pk), parent_equipment=None, enable_multi_mode=False, updated_at=timezone.now())
     log_mode_change(
         mode,
         "MODE_UNLINKED",

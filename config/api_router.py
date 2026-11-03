@@ -14,6 +14,12 @@ from iic_booking.department_modules import urls as department_modules_urls
 from iic_booking.external_services import urls as external_services_urls
 from iic_booking.equipment import disruption_views
 from iic_booking.equipment import flash_message_views
+from iic_booking.equipment.config_audit_views import (
+    equipment_config_audit_detail,
+    equipment_config_audit_facets,
+    equipment_config_audit_list,
+)
+from iic_booking.equipment.oic_request_registration_views import oic_registered_requests
 from iic_booking.equipment.peak_window_views import PeakWindowSettingView, peak_window_status
 from iic_booking.users.api.auth_views import (
     omniport_auth_url,
@@ -1704,6 +1710,10 @@ urlpatterns = router.urls + [
     path("bookings/<int:booking_id>/add-results/", add_booking_results, name="add-booking-results"),
     path("bookings/<int:booking_id>/refund/", refund_booking, name="refund-booking"),
     path("bookings/<int:booking_id>/mark-not-utilized/", mark_booking_not_utilized, name="mark-booking-not-utilized"),
+    path("equipment-config-audit/", equipment_config_audit_list, name="equipment-config-audit-list"),
+    path("equipment-config-audit/facets/", equipment_config_audit_facets, name="equipment-config-audit-facets"),
+    path("equipment-config-audit/<int:pk>/", equipment_config_audit_detail, name="equipment-config-audit-detail"),
+    path("equipments/<int:pk>/oic-requests/", oic_registered_requests, name="equipment-oic-requests"),
     path("bookings/<int:booking_id>/absent/", absent_booking, name="absent-booking"),
     path(
         "bookings/<int:booking_id>/extend-operator-absent-hold/",

@@ -546,8 +546,13 @@ def test_menu_layout_save_keeps_equipment_order():
 
 
 def test_oic_can_change_slot_status_and_reserve_on_managed_equipment():
+    from iic_booking.users.models import Department
+
     oic = _user(user_type=UserType.MANAGER)
-    mine, not_mine = _equipment(), _equipment()
+    home = Department.objects.create(name=f"Home {uuid.uuid4().hex[:4]}", code=f"H{uuid.uuid4().hex[:4].upper()}")
+    # Reserving for non-home departments needs the equipment's Department-Based Slot Reservation switch.
+    mine = _equipment(internal_department=home, department_slot_reservation_enabled=True)
+    not_mine = _equipment(internal_department=home, department_slot_reservation_enabled=True)
     EquipmentManager.objects.create(equipment=mine, manager=oic)
     start = timezone.now() + timedelta(days=3)
     slot = _slot(mine, start)

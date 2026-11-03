@@ -3530,6 +3530,22 @@ def admin_api_router():
             from iic_booking.equipment.slot_utils import SlotGenerator
 
             equipment = self.get_object()
+            if not getattr(equipment, "department_slot_reservation_enabled", False):
+                return Response(
+                    {
+                        "error": (
+                            "Department-Based Slot Reservation is switched off for this equipment. "
+                            "The Main Administrator can switch it on in the equipment settings."
+                        ),
+                        "code": "DEPARTMENT_SLOT_RESERVATION_OFF",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not equipment.internal_department_id:
+                return Response(
+                    {"error": "This equipment has no internal (home) department, so slots cannot be reserved."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             data = request.data or {}
             flag = data.get("home_department_only")
             if flag is None:

@@ -92,7 +92,9 @@ def _copy_image(source: Equipment, target: Equipment) -> str | None:
         if not content:
             return "Source image is empty; the copy has no image."
         target.image.save(os.path.basename(name), ContentFile(content), save=False)
-        Equipment.objects.filter(pk=target.pk).update(image=target.image.name)
+        from .config_audit import audited_update
+
+        audited_update(Equipment.objects.filter(pk=target.pk), image=target.image.name)
     except Exception as exc:
         logger.warning("Could not copy image for equipment %s -> %s: %s", source.pk, target.pk, exc)
         target.image.name = ""

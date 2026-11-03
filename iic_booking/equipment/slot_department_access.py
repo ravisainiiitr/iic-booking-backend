@@ -1,15 +1,15 @@
 """Department-based access rules for DailySlot booking eligibility.
 
-When the equipment has an internal (home) department and at least one upcoming
-slot is marked home_department_only=True ("reserved for non-home"):
+When the equipment's "Enable Department-Based Slot Reservation" switch is on and it has an
+internal (home) department (slots marked home_department_only=True are "reserved for non-home"):
 
 - Marked slots → reserved for non-home-department users only
 - Unmarked slots → home department only
 - Marked slots that remain unbooked until ``equipment.reschedule_hours_threshold``
   hours before start → available to all departments
 
-When no upcoming marked slots exist (or equipment has no internal department),
-department marking is inactive and all internal users may book unmarked slots.
+When the switch is off (the default) or the equipment has no internal department, department
+marking is inactive: marks are ignored and all internal users may book any slot.
 """
 
 from __future__ import annotations
@@ -31,24 +31,13 @@ def user_is_home_department(user: Any, equipment: Any) -> bool:
 
 def equipment_department_slot_policy_active(equipment: Any) -> bool:
     """
-    True when home/non-home slot split should be enforced.
-
-    Active only when the equipment has an internal department and at least one
-    upcoming (today or later) slot is marked reserved-for-non-home.
+    True when home/non-home slot split should be enforced: the equipment's Department-Based Slot
+    Reservation switch is on and it has an internal (home) department. Unmarked slots are then
+    home-department only, marked slots non-home only.
     """
-    home_id = getattr(equipment, "internal_department_id", None)
-    if not home_id:
+    if not getattr(equipment, "department_slot_reservation_enabled", False):
         return False
-    eid = getattr(equipment, "equipment_id", None) or getattr(equipment, "pk", None)
-    if eid is None:
-        return False
-    from .models import DailySlot
-
-    return DailySlot.objects.filter(
-        slot_master__equipment_id=eid,
-        home_department_only=True,
-        date__gte=timezone.localdate(),
-    ).exists()
+    return bool(getattr(equipment, "internal_department_id", None))
 
 
 def non_home_reservation_release_cutoff(slot: Any, equipment: Any):

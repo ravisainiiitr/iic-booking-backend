@@ -18,15 +18,21 @@ class SlotGenerator:
         target_date: date,
         open_time: time,
         close_time: time,
+        day_start: Optional[time] = None,
     ) -> Tuple[datetime, datetime]:
-        """Build timezone-aware start/end datetimes for a slot on target_date.
+        """Build timezone-aware start/end datetimes for a slot of the operating day target_date.
 
-        The slot belongs to target_date (its start). Close earlier than Open ends the next day;
-        Close = Open is a full 24-hour slot ending at the same time the next day.
+        The slot belongs to target_date. Close earlier than Open ends the next day; Close = Open is a full
+        24-hour slot ending at the same time the next day. ``day_start`` is the equipment's Operating day
+        starts at: a slot opening before it (e.g. 00:00-01:00 of a 09:00-09:00 cycle) runs on the next calendar
+        day while still belonging to target_date's cycle.
         """
         tz = timezone.get_current_timezone()
-        start_datetime = timezone.make_aware(datetime.combine(target_date, open_time), tz)
-        end_date = target_date + timedelta(days=1) if close_time <= open_time else target_date
+        start_date = target_date
+        if day_start is not None and day_start != time(0, 0) and open_time < day_start:
+            start_date = target_date + timedelta(days=1)
+        start_datetime = timezone.make_aware(datetime.combine(start_date, open_time), tz)
+        end_date = start_date + timedelta(days=1) if close_time <= open_time else start_date
         end_datetime = timezone.make_aware(datetime.combine(end_date, close_time), tz)
         return start_datetime, end_datetime
 
@@ -162,7 +168,7 @@ class SlotGenerator:
             if (slot_master.pk, target_date) in existing_keys:
                 continue
             start_datetime, end_datetime = SlotGenerator._aware_slot_datetimes(
-                target_date, slot_master.open_time, slot_master.close_time
+                target_date, slot_master.open_time, slot_master.close_time, equipment.operating_day_start
             )
             to_create.append(
                 DailySlot(
@@ -217,7 +223,7 @@ class SlotGenerator:
                 if (slot_master.pk, current_date) in existing_keys:
                     continue
                 start_datetime, end_datetime = SlotGenerator._aware_slot_datetimes(
-                    current_date, slot_master.open_time, slot_master.close_time
+                    current_date, slot_master.open_time, slot_master.close_time, equipment.operating_day_start
                 )
                 row_status = initial_status
                 if (
