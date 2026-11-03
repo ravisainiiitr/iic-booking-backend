@@ -138,6 +138,7 @@ class AuditAction(models.TextChoices):
     PROVIDER_UNAVAILABLE = "provider_unavailable", _("Provider Unavailable")
     TIMEOUT = "timeout", _("Timeout")
     BUSY = "busy", _("Busy")
+    ASSISTANT_TURN = "assistant_turn", _("Assistant Turn")
 
 
 class CopilotAuditEvent(models.Model):

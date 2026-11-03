@@ -8,6 +8,7 @@ stay with the assistant's own answers.
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 from typing import Any
 
@@ -151,6 +152,126 @@ def clarify(user, conversation, text: str) -> dict[str, Any] | None:
     buttons = [C.assistant_action(a.title, PORTAL, {"action": a.key}) for a in options]
     return C.reply(f"I can help with “{q}” in a few ways. Which do you mean?", actions=[*buttons, *find],
                    intent="portal:clarify")
+
+
+_EXCHANGE_RE = re.compile(
+    r"\b(exchang\w*|swap\w*|trade\s+(my\s+)?(slot|booking)s?|transfer\s+(my\s+|a\s+|the\s+)?(slot|booking)s?|"
+    r"give\s+(away\s+)?my\s+slot)\b"
+)
+EXCHANGE_LIST = 6
+
+
+def _exchangeable_bookings(user) -> list:
+    """The user's own bookings that Slot Exchange would accept now (same checks as an exchange request)."""
+    from django.utils import timezone
+
+    from iic_booking.equipment import slot_exchange as sx
+    from iic_booking.equipment.models import Booking, BookingStatus
+
+    now = timezone.now()
+    out = []
+    qs = (Booking.objects.filter(user=user, status=BookingStatus.BOOKED, equipment__slot_exchange_enabled=True)
+          .select_related("equipment").prefetch_related("daily_slots"))
+    for b in qs:
+        slots = sorted(b.daily_slots.all(), key=lambda s: s.start_datetime)
+        if not slots or slots[0].start_datetime <= now + sx.CUTOFF:
+            continue
+        if sx._booking_problem(b, now, whose="Your") is None:
+            out.append((slots[0].start_datetime, b))
+    return [b for _, b in sorted(out, key=lambda row: row[0])]
+
+
+def _exchange_for_booker(user) -> dict[str, Any]:
+    from django.utils import timezone
+
+    from iic_booking.equipment import slot_exchange as sx
+    from iic_booking.research_copilot.services.booking_refs import display_ref
+
+    page = C.link("Open slot exchanges", "/slot-exchanges")
+    if not sx.is_internal_user(user):
+        return C.reply(
+            "Slot Exchange is only between internal (IITR) users, so it is not available on your account. "
+            "To move one of your bookings, reschedule it from My Bookings while the self-service window is open.",
+            actions=[C.link("Open My Bookings", "/my-bookings", primary=True)],
+            intent="portal:slot_exchange_external", title_hint="Slot exchange",
+        )
+    rows = _exchangeable_bookings(user)
+    if not rows:
+        return C.reply(
+            "You have no upcoming booking on an instrument with Slot Exchange turned on, so there is nothing to "
+            "exchange right now. To move a booking yourself, reschedule it from My Bookings.",
+            actions=[page, C.link("Open My Bookings", "/my-bookings")],
+            intent="portal:slot_exchanges", title_hint="Slot exchange",
+        )
+    shown = rows[:EXCHANGE_LIST]
+    lines = []
+    for b in shown:
+        start = min(s.start_datetime for s in b.daily_slots.all())
+        lines.append(f"- **{display_ref(b)}** · {b.equipment.name} · {timezone.localtime(start):%a %d %b, %H:%M}")
+    calendars, seen = [], set()
+    for b in shown:
+        if b.equipment_id not in seen:
+            seen.add(b.equipment_id)
+            calendars.append(C.link(f"{b.equipment.code or b.equipment.name} calendar",
+                                    f"/book-equipment?equipment_id={b.equipment_id}"))
+    more = f"\n\n…and {len(rows) - EXCHANGE_LIST} more in My Bookings." if len(rows) > EXCHANGE_LIST else ""
+    return C.reply(
+        "These bookings of yours can be exchanged:\n\n" + "\n".join(lines) + more + "\n\n"
+        "Open the instrument's calendar, click another user's booked slot of the same length and charge, and send "
+        "an exchange request. Both of you must agree, up to 5 minutes before the slots start. Requests you sent "
+        "or received are under Slot exchanges.",
+        actions=[*calendars[:3], page],
+        intent="portal:slot_exchanges", title_hint="Slot exchange",
+    )
+
+
+def _exchange_for_staff(user) -> dict[str, Any]:
+    """OIC, lab staff, department administrators: only the Main Administrator turns Slot Exchange on or off."""
+    from iic_booking.equipment.models import Equipment
+
+    lines = []
+    try:
+        from iic_booking.equipment.api_views import _get_equipment_ids_for_log_access
+
+        ids = _get_equipment_ids_for_log_access(user)
+    except Exception:  # noqa: BLE001
+        ids = []
+    if ids:
+        for eq in Equipment.objects.filter(pk__in=ids).order_by("name")[:CHOICES]:
+            lines.append(f"- {eq.name}: **{_state_word(bool(eq.slot_exchange_enabled))}**")
+    status = ("\n\nSlot Exchange on your instruments:\n" + "\n".join(lines)) if lines else ""
+    return C.reply(
+        "Only the Main Administrator can turn Slot Exchange on or off for an instrument. When it is on, internal "
+        "users swap their own booked slots with each other; nothing is needed from the lab." + status
+        + "\n\nTo ask for a change, raise a support ticket for the Main Administrator.",
+        actions=[C.link("Raise a support ticket", "/tickets", primary=True),
+                 C.link("Booking calendar", "/booking-calendar")],
+        intent="portal:slot_exchange_admin_only", title_hint="Slot exchange",
+    )
+
+
+def exchange_turn(user, conversation, text: str) -> dict[str, Any] | None:
+    """"exchange slot" and its variations, read by role: the Main Administrator configures the Slot Exchange
+    switch of an instrument; a booking user exchanges their own booking; other staff are told who can change it."""
+    if not _EXCHANGE_RE.search((text or "").lower()):
+        return None
+    roles = P.roles_of(user)
+    if P.ADMIN in roles:
+        action = P.BY_KEY["slot_exchange"]
+        on = P.desired_state(text)
+        named = P.equipment_named_in(user, action, text)
+        if named is not None:
+            return _for_equipment(user, action, named["equipment_id"], on)
+        words = P._words(text)
+        q = " ".join(words)
+        # "exchange" alone could also name an instrument; "exchange slot" could not.
+        find = [] if set(words) & P._GENERIC else [C.prompt_action(f"Find equipment for “{q}”", f"equipment for {q}")]
+        return _choose(user, conversation, action, text, on,
+                       intro="You want to manage the **Slot Exchange** setting. Which instrument would you like to "
+                             "configure?", extra=find)
+    if P.USER in roles:
+        return _exchange_for_booker(user)
+    return _exchange_for_staff(user)
 
 
 def staff_turn(user, conversation, text: str) -> dict[str, Any] | None:

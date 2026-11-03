@@ -297,7 +297,16 @@ def _classify(user, conversation, text: str, ctx: dict[str, Any], intel_busy: bo
         intent = ""
 
     if not intent:
-        return _planned(user, conversation, text, ctx) if phrase else None
+        planned = _planned(user, conversation, text, ctx) if phrase else None
+        if planned is not None or m is None or not 2 <= len(lower.split()) <= 4:
+            return planned
+        # A bare instrument name of a few words ("field emission SEM", "Bruker D8"): what it is, with booking and
+        # charges next. A single word ("fesem") stays with the intelligence layer.
+        if m.status == "unique":
+            return _for_equipment(user, conversation, m.equipment, "overview", None)
+        if m.status in ("options", "unavailable"):
+            return _options_reply(m, intent="overview", when=None, text_query=phrase)
+        return None
 
     if _HOW_TO_RE.search(lower) and not (m and m.status in ("unique", "options")):
         return None
@@ -429,6 +438,50 @@ def _daily(user, conversation, text: str, intel_state_dict: dict[str, Any]) -> d
     return out
 
 
+def _outcome(out: dict[str, Any] | None, intent: str, failed: bool) -> str:
+    """One word per turn for the trial metrics (no message text is kept)."""
+    if failed or intent.endswith(":error") or intent == "assistant:error":
+        return "failure"
+    if out is None:
+        return "unrecognised"
+    meta = out.get("metadata") or {}
+    card_types = {c.get("type") for c in (out.get("cards") or meta.get("cards") or [])}
+    if intent.endswith(":not_found") or intent.endswith(":none"):
+        return "not_found"
+    if (out.get("response_kind") == "CLARIFICATION" or "clarify" in intent or intent.endswith("_choose")
+            or "ba_equipment_picker" in card_types or "ba_equipment_options" in card_types):
+        return "clarification"
+    if intent.endswith(":done") or meta.get("executed") or intent.endswith(":refused"):
+        return "completed" if not intent.endswith(":refused") else "refused"
+    if out.get("suggested_actions") or card_types:
+        return "action_suggested"
+    return "answered"
+
+
+def _track(user, conversation, out: dict[str, Any] | None, *, button: bool, failed: bool) -> None:
+    try:
+        from iic_booking.equipment.portal_actions import ANY, roles_of
+        from iic_booking.research_copilot.services.audit import audit_assistant_turn
+
+        meta = (out or {}).get("metadata") or {}
+        intent = str(meta.get("intent") or "")[:64]
+        outcome = _outcome(out, intent, failed)
+        audit_assistant_turn(
+            user=user,
+            conversation=conversation,
+            detail={
+                "intent": intent,
+                "outcome": outcome,
+                "recognised": outcome not in ("unrecognised", "failure", "not_found"),
+                "source": "button" if button else "typed",
+                "roles": sorted(roles_of(user) - {ANY}),
+                "actions": len((out or {}).get("suggested_actions") or []),
+            },
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("assistant metrics not recorded", exc_info=True)
+
+
 def try_assistant_turn(
     *,
     user,
@@ -440,6 +493,23 @@ def try_assistant_turn(
 ) -> dict[str, Any] | None:
     if not assistant_enabled() or user is None or not getattr(user, "is_authenticated", False):
         return None
+    failed: list[bool] = []
+    out = _assistant_turn(user=user, text=text, conversation=conversation, assistant_action=assistant_action,
+                          choice=choice, action=action, failed=failed)
+    _track(user, conversation, out, button=assistant_action is not None or bool(choice or action), failed=bool(failed))
+    return out
+
+
+def _assistant_turn(
+    *,
+    user,
+    text: str,
+    conversation,
+    assistant_action: dict[str, Any] | None,
+    choice: dict[str, Any] | None,
+    action: dict[str, Any] | None,
+    failed: list[bool],
+) -> dict[str, Any] | None:
     try:
         if assistant_action is None and (choice or action):
             changed = _change_choice(user, conversation, choice)
@@ -480,6 +550,10 @@ def try_assistant_turn(
             return None
         from iic_booking.research_copilot.services.assistant import portal
 
+        # "exchange slot" means the Slot Exchange setting, the user's own booking or "ask the Main Admin" by role.
+        exchange_out = portal.exchange_turn(user, conversation, text or "")
+        if exchange_out is not None:
+            return exchange_out
         staff_out = portal.staff_turn(user, conversation, text or "")
         if staff_out is not None:
             return staff_out
@@ -502,6 +576,7 @@ def try_assistant_turn(
         return portal.clarify(user, conversation, text or "")
     except Exception:  # noqa: BLE001
         logger.exception("booking assistant turn failed")
+        failed.append(True)
         if assistant_action is not None:
             return C.reply(
                 "Something went wrong while handling that. Please try again, or continue on the booking page.",
