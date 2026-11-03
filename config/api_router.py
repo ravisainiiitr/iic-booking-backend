@@ -20,6 +20,7 @@ from iic_booking.equipment.config_audit_views import (
     equipment_config_audit_list,
 )
 from iic_booking.equipment.oic_request_registration_views import oic_registered_requests
+from iic_booking.equipment.booking_status_override_views import booking_status_override
 from iic_booking.equipment.peak_window_views import PeakWindowSettingView, peak_window_status
 from iic_booking.users.api.auth_views import (
     omniport_auth_url,
@@ -1714,6 +1715,7 @@ urlpatterns = router.urls + [
     path("equipment-config-audit/facets/", equipment_config_audit_facets, name="equipment-config-audit-facets"),
     path("equipment-config-audit/<int:pk>/", equipment_config_audit_detail, name="equipment-config-audit-detail"),
     path("equipments/<int:pk>/oic-requests/", oic_registered_requests, name="equipment-oic-requests"),
+    path("bookings/<int:booking_id>/status-override/", booking_status_override, name="booking-status-override"),
     path("bookings/<int:booking_id>/absent/", absent_booking, name="absent-booking"),
     path(
         "bookings/<int:booking_id>/extend-operator-absent-hold/",
