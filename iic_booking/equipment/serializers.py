@@ -4810,7 +4810,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
             'rating', 'rating_feedback',
             'rated_at', 'repeat_sample_enabled', 'source_booking_id',
             'istem_fbr_number', 'istem_fbr_status', 'istem_fbr_status_display', 'istem_fbr_invalid_reason', 'istem_fbr_executed_at',
-            'istem_portal_url', 'istem_fbr_status_url', 'require_istem_fbr',
+            'istem_automatic', 'istem_portal_url', 'istem_fbr_status_url', 'require_istem_fbr',
             'oic_contacts', 'sample_summary', 'lab_questions_open', 'results_deadline', 'results_overdue',
             'results_paused', 'fabrication_rejected_at', 'fabrication_replace_deadline',
         ]
