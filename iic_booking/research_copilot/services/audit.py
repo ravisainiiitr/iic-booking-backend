@@ -44,6 +44,18 @@ def audit_message_replied(*, user, conversation, confidence: float | None, escal
     )
 
 
+def audit_assistant_turn(*, user, conversation, detail: dict) -> None:
+    """One row per IITR Assistant turn for trial metrics: intent, outcome, typed or button, the user's roles.
+    Never the message text."""
+    write_audit(
+        action=AuditAction.ASSISTANT_TURN,
+        message=f"Assistant turn {detail.get('outcome', '')}"[:512],
+        user=user,
+        conversation=conversation,
+        detail=detail,
+    )
+
+
 def audit_tool_executed(*, user, name: str, ok: bool, arguments: dict | None = None, result: dict | None = None) -> None:
     """Record Copilot tool execution (read or confirmation-card prepare)."""
     safe_args = {

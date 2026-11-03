@@ -362,9 +362,51 @@ def detail_reply(user, conversation, b) -> dict[str, Any]:
     )
 
 
+def staff_booking(user, ref: str):
+    """A booking of an instrument the staff member looks after (Main Admin: any), by display ID or number."""
+    from django.db.models import Q
+
+    from iic_booking.equipment.api_views import _get_equipment_ids_for_log_access, check_operator_permission
+    from iic_booking.equipment.models import Booking
+
+    if not ref or not check_operator_permission(user):
+        return None
+    ids = _get_equipment_ids_for_log_access(user)
+    filt = Q(virtual_booking_id__iexact=ref)
+    if ref.isdigit():
+        filt |= Q(booking_id=int(ref))
+    qs = Booking.objects.filter(filt).select_related("equipment", "user").prefetch_related("daily_slots")
+    if ids is not None:
+        qs = qs.filter(equipment_id__in=ids)
+    return qs.first()
+
+
+def staff_detail_reply(user, b) -> dict[str, Any]:
+    """Read-only summary for staff; changes happen in Booking management."""
+    from iic_booking.communication.in_app import person_label
+
+    r = _row(b)
+    lines = [f"**{r['reference']}** · {r['equipment']}", "", f"- Booked by: {person_label(b.user)}",
+             f"- Status: **{r['status_label']}**"]
+    if r["when"]:
+        lines.append(f"- Slot: {r['when']}")
+    if r["charge"] is not None:
+        lines.append(f"- Charge: ₹{r['charge']:,.2f}")
+    return C.reply(
+        "\n".join(lines),
+        actions=[C.link("Open in Booking management", f"/booking-management?expand={b.pk}", primary=True)],
+        intent="booking_details_staff",
+        title_hint=f"Booking {r['reference']}",
+        extra={"booking_id": int(b.pk)},
+    )
+
+
 def status_reply(user, ref: str, *, conversation=None) -> dict[str, Any]:
     b = find_owned(user, ref)
     if b is None:
+        staff = staff_booking(user, ref)
+        if staff is not None:
+            return staff_detail_reply(user, staff)
         return C.reply(
             f"I couldn't find booking **{ref}** among your bookings. Check the ID in My Bookings.",
             actions=[C.prompt_action("Show my bookings", "Show my recent bookings"), C.link("My Bookings", "/my-bookings")],

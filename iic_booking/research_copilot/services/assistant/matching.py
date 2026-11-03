@@ -347,7 +347,10 @@ def equipment_phrase(text: str) -> str:
     """The words left once request words, dates, times, numbers and question words are removed."""
     lower = norm(text)
     lower = re.sub(r"\b\d{1,3}\s*(samples?|specimens?|hours?|hrs?|mins?|minutes?|slots?|days?)\b", " ", lower)
-    words = [w for w in lower.split() if w and w not in _STOP and not w.isdigit()]
+    toks = lower.split()
+    # "field" is a form word ("input fields") except in "field emission" (FESEM).
+    words = [w for i, w in enumerate(toks) if w and not w.isdigit()
+             and (w not in _STOP or (w == "field" and toks[i + 1:i + 2] == ["emission"]))]
     return " ".join(words[:6]).strip()
 
 

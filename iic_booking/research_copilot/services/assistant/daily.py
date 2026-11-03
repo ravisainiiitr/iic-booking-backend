@@ -154,6 +154,9 @@ def booking_details(user, conversation, params, text):
         return None
     if b is None:
         ref = params.get("ref")
+        staff = B.staff_booking(user, str(ref)) if ref else None
+        if staff is not None:
+            return B.staff_detail_reply(user, staff)
         return C.reply(
             (f"I couldn't find booking **{ref}** among your bookings." if ref else "Which booking do you mean?")
             + " Here are your recent bookings.",

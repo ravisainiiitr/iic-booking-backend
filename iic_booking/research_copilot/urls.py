@@ -4,6 +4,7 @@ from django.urls import path
 
 from iic_booking.research_copilot import (
     api_views,
+    assistant_metrics_views,
     equipment_reference_views,
     intelligence_views,
     knowledge_views,
@@ -14,6 +15,7 @@ app_name = "research_copilot"
 
 urlpatterns = [
     path("bootstrap/", api_views.bootstrap, name="bootstrap"),
+    path("assistant/metrics/", assistant_metrics_views.assistant_metrics, name="assistant-metrics"),
     path("equipment-references/", equipment_reference_views.equipment_overview, name="equipment-references"),
     path("equipment/<int:equipment_id>/references/", equipment_reference_views.references, name="equipment-reference-list"),
     path("equipment/<int:equipment_id>/references/<uuid:doc_id>/refresh/", equipment_reference_views.reference_refresh,
