@@ -3947,6 +3947,8 @@ def equipment_daily_slots(request, pk):
             "calendar_colors": calendar_colors,
             "weekly_view_time_from": equipment.weekly_view_time_from.strftime("%H:%M") if equipment.weekly_view_time_from else None,
             "weekly_view_time_to": equipment.weekly_view_time_to.strftime("%H:%M") if equipment.weekly_view_time_to else None,
+            # Rows start here and wrap round (slots opening earlier belong to the next calendar day); None = 00:00.
+            "operating_day_start": equipment.operating_day_start.strftime("%H:%M") if equipment.operating_day_start else None,
             "weekly_view_max_rows": equipment.weekly_view_max_rows,
             "weekly_view_default_days": equipment.weekly_view_default_days,
             "slot_window_min_date": slot_window_min_date.isoformat() if slot_window_min_date else None,
@@ -19035,6 +19037,7 @@ def _oic_equipment_settings_row(eq, usage: dict | None = None) -> dict:
             "slot_window_reference_time": _t(eq.slot_window_reference_time),
             "weekly_view_time_from": _t(eq.weekly_view_time_from),
             "weekly_view_time_to": _t(eq.weekly_view_time_to),
+            "operating_day_start": _t(eq.operating_day_start),
             **{name: getattr(eq, name) for name in OIC_EQUIPMENT_SETTINGS_INT_FIELDS},
             "waitlist_queue_depth": eq.waitlist_queue_depth or 0,
             "max_urgent_requests": eq.max_urgent_requests,
@@ -19235,6 +19238,31 @@ def oic_equipment_settings_update(request, equipment_id):
             else:
                 eq.important_instruction_by_user_type = cleaned
                 changed.append("important_instruction_by_user_type")
+
+    if "operating_day_start" in data:
+        raw = data.get("operating_day_start")
+        wanted = None
+        if raw not in (None, ""):
+            try:
+                hh, mm = str(raw).strip().split(":")[:2]
+                wanted = dt_time(int(hh), int(mm))
+            except (TypeError, ValueError):
+                errors["operating_day_start"] = "Use a 24-hour time such as 09:00, or leave empty."
+        if "operating_day_start" not in errors and wanted != eq.operating_day_start:
+            if not _is_admin_user(request.user):
+                errors["operating_day_start"] = "Only the Main Administrator can change when the operating day starts."
+            else:
+                from .operating_cycle import booked_slots_that_would_move
+
+                moved = booked_slots_that_would_move(eq, wanted)
+                if moved:
+                    errors["operating_day_start"] = (
+                        f"{len(moved)} upcoming booked or reserved slot(s) would move to another day (first: "
+                        f"{moved[0]}). Change the operating day when those bookings are done or moved."
+                    )
+                else:
+                    eq.operating_day_start = wanted
+                    changed.append("operating_day_start")
 
     if (
         "weekly_view_time_from" not in errors
