@@ -111,6 +111,24 @@ class IstemLinkOtp(models.Model):
         return f"OTP {self.pk} → {self.email_masked} ({self.state})"
 
 
+class IstemInstituteSetting(models.Model):
+    """The I-STEM institute this portal belongs to, chosen once by the Main Admin (a single row).
+
+    Used only when I-STEM's token response names no institute (the integration account may not be an institute
+    account); a token that names one always wins. Never configured in code or settings."""
+
+    institute_id = models.CharField(max_length=32)
+    set_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    set_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "I-STEM institute"
+        verbose_name_plural = "I-STEM institute"
+
+    def __str__(self) -> str:
+        return f"I-STEM institute {self.institute_id}"
+
+
 class IstemDepartmentMapping(models.Model):
     """Which portal department an I-STEM department is (I-STEM lists equipment with ``equipment_department_id`` only).
     Set by the Main Admin; narrows the I-STEM equipment suggested for that department's instruments."""

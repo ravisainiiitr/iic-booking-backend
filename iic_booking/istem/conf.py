@@ -50,6 +50,27 @@ def gstin_placeholder() -> str:
     return str(_setting("ISTEM_GSTIN_PLACEHOLDER", "NA") or "").strip()
 
 
+PORTAL_INSTITUTE_CACHE_KEY = "istem:portal_institute"
+
+
+def portal_institute_id() -> str:
+    """The I-STEM institute the Main Admin saved on the portal ("" when none). Read through the shared cache so every
+    worker sees a change at once (the save refreshes it)."""
+    from django.core.cache import cache
+
+    value = cache.get(PORTAL_INSTITUTE_CACHE_KEY)
+    if value is None:
+        try:
+            from .models import IstemInstituteSetting
+
+            row = IstemInstituteSetting.objects.order_by("pk").first()
+            value = row.institute_id if row else ""
+        except Exception:
+            return ""
+        cache.set(PORTAL_INSTITUTE_CACHE_KEY, value, 300)
+    return value if str(value).isdigit() else ""
+
+
 def max_attempts() -> int:
     return max(1, int(_setting("ISTEM_MAX_ATTEMPTS", 5)))
 
