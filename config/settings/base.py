@@ -146,6 +146,7 @@ LOCAL_APPS = [
     "iic_booking.courier_tracking.apps.CourierTrackingConfig",
     "iic_booking.external_services.apps.ExternalServicesConfig",
     "iic_booking.istem.apps.IstemConfig",
+    "iic_booking.whatsapp.apps.WhatsAppConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -973,6 +974,18 @@ CALLS_STUN_URLS = env.list("CALLS_STUN_URLS", default=["stun:stun.l.google.com:1
 CALLS_TURN_URLS = env.list("CALLS_TURN_URLS", default=[])
 CALLS_TURN_SECRET = env("CALLS_TURN_SECRET", default="")
 CALLS_TURN_TTL_SECONDS = env.int("CALLS_TURN_TTL_SECONDS", default=600)
+
+# WhatsApp notifications (Meta WhatsApp Business Cloud API; docs/whatsapp.md). Off until WHATSAPP_ENABLED and the four
+# Meta values are set; only users who opted in on their profile receive approved template messages. While
+# WHATSAPP_PILOT_NUMBERS is set (comma-separated E.164), only those numbers do.
+WHATSAPP_ENABLED = env.bool("WHATSAPP_ENABLED", default=False)
+WHATSAPP_PHONE_NUMBER_ID = env("WHATSAPP_PHONE_NUMBER_ID", default="")
+WHATSAPP_ACCESS_TOKEN = env("WHATSAPP_ACCESS_TOKEN", default="")
+WHATSAPP_APP_SECRET = env("WHATSAPP_APP_SECRET", default="")
+WHATSAPP_VERIFY_TOKEN = env("WHATSAPP_VERIFY_TOKEN", default="")
+WHATSAPP_API_VERSION = env("WHATSAPP_API_VERSION", default="v21.0")
+WHATSAPP_TEMPLATE_LANGUAGE = env("WHATSAPP_TEMPLATE_LANGUAGE", default="en")
+WHATSAPP_PILOT_NUMBERS = env.list("WHATSAPP_PILOT_NUMBERS", default=[])
 # Android: Firebase Cloud Messaging HTTP v1 (path to the service-account JSON, kept outside the repository).
 CALLS_FCM_SERVICE_ACCOUNT_FILE = env("CALLS_FCM_SERVICE_ACCOUNT_FILE", default="")
 # iOS: APNs VoIP pushes with a token-based (.p8) key (path kept outside the repository).
