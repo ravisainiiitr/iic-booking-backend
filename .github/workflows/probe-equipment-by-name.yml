@@ -1,0 +1,49 @@
+# Find equipment by name / code fragment with its internal department and OICs (read-only; prints ids, codes and names only)
+name: Probe Equipment By Name
+
+on:
+  workflow_dispatch:
+    inputs:
+      text:
+        description: "Part of the equipment name or code, e.g. Electronics Repair"
+        required: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        env:
+          PROBE_TEXT: ${{ github.event.inputs.text }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e PROBE_TEXT -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.db.models import Q
+          from iic_booking.equipment.models import Equipment, EquipmentManager
+          text = (os.environ.get("PROBE_TEXT") or "").strip()
+          qs = Equipment.objects.filter(Q(name__icontains=text) | Q(code__icontains=text)).select_related("internal_department")
+          print("matches", qs.count())
+          for eq in qs.order_by("name")[:20]:
+              dept = eq.internal_department
+              oics = list(EquipmentManager.objects.filter(equipment=eq).values_list("manager_id", flat=True))
+              print(f"id={eq.pk} code={eq.code!r} name={eq.name!r} status={eq.status} profile={eq.profile_type} "
+                    f"dept_id={getattr(dept, 'pk', None)} dept_code={getattr(dept, 'code', None)!r} "
+                    f"dept={getattr(dept, 'name', None)!r} oic_user_ids={oics}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
