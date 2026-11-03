@@ -19,6 +19,9 @@ AUTH_TOKEN_PATH = "auth/token"  # POST, form: username, password
 CREATE_USER_PATH = "api/public-user"  # POST, form
 PUBLIC_USER_LOOKUP_PATH = "api/public-user-lookup"  # GET, query: user_email and/or user_contactno (read-only)
 EQUIPMENT_LIST_PATH = "api/equipment-list"  # GET, query: institute_id, page, limit, ... (read-only, Active only)
+# GET, query: institute_id (ignored for an institute token). {"result": [{"id": "164", "val": "Institute ..."}]}; the id
+# is the equipment_department_id of the Equipment List.
+DEPARTMENTS_PATH = "api/departments"
 CREATE_BOOKING_PATH = "api/create-booking"  # POST, form
 CONFIRM_BOOKING_PATH = "api/confirm-booking"  # POST, form
 GET_BOOKINGS_PATH = "api/get-bookings"  # GET, query: fbr_no + status_code (both required)

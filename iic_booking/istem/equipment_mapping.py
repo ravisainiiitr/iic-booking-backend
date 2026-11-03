@@ -496,38 +496,106 @@ def _require_main_admin(user) -> None:
         raise MappingRefused("Only the Main Administrator maps departments to I-STEM.", 403)
 
 
+DEPARTMENT_NAMES_CACHE_KEY = "istem:department_names"
+DEPARTMENT_NAMES_SNAPSHOT_KEY = "istem:department_names:last"
+DEPARTMENT_NAMES_CACHE_SECONDS = 6 * 3600
+DEPARTMENT_NAME_MIN_SCORE = 0.75
+_DEPARTMENT_FILLER = {"department", "dept", "of", "the", "and", "centre", "center", "for", "in"}
+
+
+def istem_department_names(*, refresh: bool = False, client_factory=None) -> dict[str, str]:
+    """{I-STEM department id: name} from I-STEM's Departments list for the token's institute. Cached for six hours;
+    the last good read is used while I-STEM is not answering, and {} when it has never been read."""
+    from django.core.cache import cache
+
+    from .service import default_client
+
+    fresh = None if refresh else cache.get(DEPARTMENT_NAMES_CACHE_KEY)
+    if isinstance(fresh, dict):
+        return fresh
+    try:
+        client = (client_factory or default_client)()
+        names = {d["id"]: d["name"] for d in client.list_departments(institute_id=_token_institute(client))}
+    except (IstemError, MappingRefused) as exc:
+        logger.warning("istem department names unavailable (%s)", getattr(exc, "category", exc))
+        saved = cache.get(DEPARTMENT_NAMES_SNAPSHOT_KEY)
+        return saved if isinstance(saved, dict) else {}
+    cache.set(DEPARTMENT_NAMES_CACHE_KEY, names, DEPARTMENT_NAMES_CACHE_SECONDS)
+    cache.set(DEPARTMENT_NAMES_SNAPSHOT_KEY, names, None)
+    return names
+
+
+def _department_words(name: str) -> set[str]:
+    return {w for w in re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).split() if w not in _DEPARTMENT_FILLER}
+
+
+def department_name_score(istem_name: str, portal_name: str) -> float:
+    """0..1: "Department of Chemistry" vs "Chemistry Department", "Institute Instrumentation Centre " vs "IIC"."""
+    from difflib import SequenceMatcher
+
+    a, b = _department_words(istem_name), _department_words(portal_name)
+    if not a or not b:
+        return 0.0
+    overlap = len(a & b) / len(a | b)
+    spelling = SequenceMatcher(None, " ".join(sorted(a)), " ".join(sorted(b))).ratio()
+    return round(max(overlap, spelling), 2)
+
+
+def _suggest_by_name(istem_name: str, portal: dict[int, str], codes: dict[int, str]) -> dict | None:
+    best = None
+    for pk, name in portal.items():
+        score = department_name_score(istem_name, name)
+        code = (codes.get(pk) or "").strip().lower()
+        if code and code in {w.lower() for w in re.findall(r"\b[A-Z]{2,}\b", istem_name or "")}:
+            score = max(score, 0.95)  # "Institute Computer Centre ICC" -> department code ICC
+        if best is None or score > best[1]:
+            best = (pk, score)
+    if best is None or best[1] < DEPARTMENT_NAME_MIN_SCORE:
+        return None
+    return {"id": best[0], "name": portal[best[0]], "instruments": 0, "by": "name", "score": best[1]}
+
+
 def istem_departments(user, *, refresh: bool = False, client_factory=None) -> dict:
-    """I-STEM's departments as seen in its equipment list (ID only: I-STEM sends no department names), each with its
-    equipment count, a few names and locations to recognise it, the portal department it is mapped to, and a
-    suggestion taken from the portal departments of instruments already mapped to its equipment."""
+    """Every I-STEM department of the institute, with its name (I-STEM's Departments list) and what its equipment
+    list shows (count, a few names and locations), the portal department it is mapped to, and a suggestion: the
+    portal departments of instruments already mapped to its equipment, else the portal department with the most
+    similar name."""
     from collections import Counter
 
     from iic_booking.users.models import Department
 
     _require_main_admin(user)
     listing, source = listing_with_source(refresh=refresh, client_factory=client_factory)
+    names = istem_department_names(refresh=refresh, client_factory=client_factory)
     groups: dict[str, list[dict]] = {}
     for r in listing:
         groups.setdefault(r.get("department_id") or "", []).append(r)
+    for istem_department_id in names:
+        groups.setdefault(istem_department_id, [])
     mapped = {m.istem_department_id: m for m in IstemDepartmentMapping.objects.select_related("department")}
     by_istem_equipment: dict[str, list[int]] = {}
     for istem_id, department_id in (IstemEquipmentMapping.objects.filter(is_active=True, equipment__internal_department__isnull=False)
                                     .values_list("istem_equipment_id", "equipment__internal_department_id")):
         by_istem_equipment.setdefault(istem_id, []).append(department_id)
     departments = {d.pk: d.name for d in Department.objects.all()}
+    codes = dict(Department.objects.values_list("pk", "code"))
     rows = []
     for istem_department_id, items in sorted(groups.items(), key=lambda g: (g[0] == "", -len(g[1]), g[0])):
         votes = Counter(d for r in items for d in by_istem_equipment.get(r["equipment_id"], []))
         suggested = votes.most_common(1)[0] if votes else None
         current = mapped.get(istem_department_id)
+        name = names.get(istem_department_id, "")
+        by_name = None if suggested or not name else _suggest_by_name(name, departments, codes)
         rows.append({
             "istem_department_id": istem_department_id,
+            "name": name,
             "equipment_count": len(items),
             "sample_equipment": sorted(r["equipment_name"] for r in items)[:SAMPLE_NAMES],
             "locations": [loc for loc, _ in Counter(r.get("location") for r in items if r.get("location")).most_common(3)],
             "department": {"id": current.department_id, "name": current.department.name} if current else None,
-            "suggested": ({"id": suggested[0], "name": departments.get(suggested[0], ""), "instruments": suggested[1]}
-                          if suggested else None),
+            "suggested": ({"id": suggested[0], "name": departments.get(suggested[0], ""), "instruments": suggested[1],
+                           "by": "instruments"}
+                          if suggested else by_name),
         })
     portal = sorted(({"id": pk, "name": name} for pk, name in departments.items()), key=lambda d: d["name"].lower())
     return {"istem_departments": rows, "portal_departments": portal, "istem_source": source}
