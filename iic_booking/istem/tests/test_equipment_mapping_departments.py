@@ -8,7 +8,7 @@ from django.core.cache import cache
 
 from iic_booking.istem.client import IstemClient, clear_token_cache
 from iic_booking.istem.equipment_mapping import (
-    LISTING_CACHE_KEY, MappingRefused, istem_listing, match_score, save_many, suggestions,
+    LISTING_CACHE_KEY, LISTING_SNAPSHOT_KEY, MappingRefused, istem_listing, match_score, save_many, suggestions,
 )
 from iic_booking.istem.models import IstemEquipmentMapping
 
@@ -29,9 +29,11 @@ LISTING = [
 def _fresh():
     clear_token_cache()
     cache.delete(LISTING_CACHE_KEY)
+    cache.delete(LISTING_SNAPSHOT_KEY)
     yield
     clear_token_cache()
     cache.delete(LISTING_CACHE_KEY)
+    cache.delete(LISTING_SNAPSHOT_KEY)
 
 
 def _fake(rows=LISTING):
@@ -57,7 +59,8 @@ def test_list_shows_progress_per_department():
     IstemEquipmentMapping.objects.create(equipment=xrf, istem_equipment_id="38750", sample_count_input_key="A")
     body = _api(_admin()).get(URL).data
     by_name = {d["name"]: d for d in body["departments"]}
-    assert by_name[chem.name] == {"id": chem.pk, "name": chem.name, "total": 2, "mapped": 1, "fbr_unmapped": 1}
+    assert by_name[chem.name] == {"id": chem.pk, "name": chem.name, "total": 2, "mapped": 1, "fbr_unmapped": 1,
+                                  "istem_department_ids": []}
     assert by_name[phys.name]["total"] == 1 and by_name[phys.name]["mapped"] == 0
 
 
@@ -259,3 +262,64 @@ def test_one_instrument_can_be_suggested_even_when_mapped(settings):
     assert row["candidates"][0]["equipment_id"] == "38750" and row["candidates"][0]["mapped_to"] == []
     with pytest.raises(MappingRefused):
         suggestions(_dept_admin(_department("P")), equipment_id=xrf.pk, client_factory=factory)
+
+
+# --- While I-STEM is not answering ------------------------------------------------------------------------------------
+
+def _down():
+    from iic_booking.istem.choices import ErrorCategory
+    from iic_booking.istem.errors import IstemError
+
+    transport = FakeTransport(IstemError(ErrorCategory.CONNECT_FAILED, "connect timeout"))
+    return lambda: IstemClient(transport)
+
+
+def test_the_last_list_read_is_used_while_istem_is_down(settings):
+    apply_live(settings)
+    _, factory = _fake(DEPT_LISTING)
+    first = istem_listing(_admin(), client_factory=factory)
+    assert first["istem_source"]["live"] is True
+    out = istem_listing(_admin(), refresh=True, client_factory=_down())
+    assert out["total"] == len(DEPT_LISTING)
+    assert out["istem_source"]["live"] is False and out["istem_source"]["read_at"] == first["istem_source"]["read_at"]
+    assert "not answering" in out["istem_source"]["problem"]
+
+
+def test_without_an_earlier_read_the_admin_is_told_istem_is_down(settings):
+    apply_live(settings)
+    with pytest.raises(MappingRefused) as down:
+        istem_listing(_admin(), client_factory=_down())
+    assert down.value.http_status == 502 and "not answering" in down.value.message
+    assert "AUTH_UNAVAILABLE" not in down.value.message and "CONNECT_FAILED" not in down.value.message
+
+
+def test_search_falls_back_to_the_last_list(settings):
+    from iic_booking.istem.equipment_mapping import search_istem_equipment
+
+    apply_live(settings)
+    _, factory = _fake(DEPT_LISTING)
+    istem_listing(_admin(), client_factory=factory)
+    source: dict = {}
+    rows = search_istem_equipment(_admin(), "fluorescence", client_factory=_down(), source=source)
+    assert [r["equipment_id"] for r in rows] == ["38750", "38760"] and source["live"] is False
+
+
+def test_saving_while_istem_is_down_keeps_the_mapping_and_says_so(settings):
+    from iic_booking.istem.equipment_mapping import save_mapping
+
+    apply_live(settings)
+    xrf = _equipment(_department("C"), "XRF")
+    out = save_mapping(_admin(), xrf.pk, {"istem_equipment_id": "38750", "sample_count_input_key": "A"},
+                       client_factory=_down())
+    assert out["mapping"]["istem_equipment_id"] == "38750" and out["checked"] is False
+    assert any("checked on I-STEM later" in w for w in out["warnings"])
+
+
+def test_department_progress_lists_linked_istem_departments():
+    from iic_booking.istem.models import IstemDepartmentMapping
+
+    iic = _department("I")
+    _equipment(iic, "XRF")
+    IstemDepartmentMapping.objects.create(istem_department_id="164", department=iic)
+    body = _api(_admin()).get(URL).data
+    assert {d["id"]: d["istem_department_ids"] for d in body["departments"]}[iic.pk] == ["164"]
