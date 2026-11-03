@@ -292,10 +292,79 @@ def _token_institute(client) -> str:
     if not institute_id:
         raise MappingRefused(
             "I-STEM signed the portal in but named no institute (institute_id), so its equipment list cannot be "
-            "limited to this institute. Ask I-STEM to include institute_id in the token response.",
-            502,
+            "limited to this institute. The Main Administrator can set the I-STEM institute on this page.",
+            409,
         )
     return str(institute_id)
+
+
+def _forget_listings() -> None:
+    from django.core.cache import cache
+
+    cache.delete_many([LISTING_CACHE_KEY, LISTING_SNAPSHOT_KEY, DEPARTMENT_NAMES_CACHE_KEY, DEPARTMENT_NAMES_SNAPSHOT_KEY])
+
+
+def institute_status(user, *, client_factory=None) -> dict:
+    """Which I-STEM institute the portal works with: the token's, else the one saved by the Main Admin."""
+    from .models import IstemInstituteSetting
+    from .service import default_client
+
+    managed_department_id(user)  # permission check
+    saved = IstemInstituteSetting.objects.select_related("set_by").order_by("pk").first()
+    token_institute = None
+    user_entity = ""
+    problem = ""
+    if conf.network_allowed():
+        try:
+            client = (client_factory or default_client)()
+            info = client._session()[1]
+            token_institute, user_entity = info.institute_id, info.user_entity
+        except IstemError as exc:
+            problem = istem_problem(exc)
+    effective = token_institute or (saved.institute_id if saved else None)
+    return {
+        "institute_id": effective,
+        "source": "token" if token_institute else "portal" if saved else "",
+        "token_institute_id": token_institute,
+        "user_entity": user_entity,
+        "saved": ({"institute_id": saved.institute_id, "set_at": saved.set_at.isoformat(),
+                   "set_by": getattr(saved.set_by, "name", "") or getattr(saved.set_by, "email", "")} if saved else None),
+        "can_set": _is_main_admin(user),
+        "problem": problem,
+    }
+
+
+def save_institute(user, institute_id, *, client_factory=None) -> dict:
+    """Main Admin: save the I-STEM institute, after I-STEM confirms it lists departments for it (saved with a warning
+    while I-STEM is not answering)."""
+    from django.core.cache import cache
+
+    from .models import IstemInstituteSetting
+    from .service import default_client
+
+    _require_main_admin(user)
+    value = str(institute_id or "").strip()
+    if not ISTEM_ID.match(value):
+        raise MappingRefused("The I-STEM institute ID is a number, e.g. 213.")
+    warnings: list[str] = []
+    departments = None
+    if conf.network_allowed():
+        try:
+            departments = (client_factory or default_client)().list_departments(institute_id=value)
+        except IstemError as exc:
+            warnings.append(f"Saved without checking: {istem_problem(exc)}")
+        if departments is not None and not departments:
+            raise MappingRefused(f"I-STEM lists no departments for institute {value}; check the ID.")
+    with transaction.atomic():
+        row = IstemInstituteSetting.objects.select_for_update().order_by("pk").first() or IstemInstituteSetting()
+        row.institute_id = value
+        row.set_by = user
+        row.save()
+    cache.set(conf.PORTAL_INSTITUTE_CACHE_KEY, value, 300)
+    _forget_listings()
+    logger.info("istem institute set to %s by user %s", value, getattr(user, "pk", None))
+    return {"institute_id": value, "departments": len(departments) if departments is not None else None,
+            "warnings": warnings}
 
 
 def listing_with_source(*, refresh: bool = False, client_factory=None) -> tuple[list[dict], dict]:

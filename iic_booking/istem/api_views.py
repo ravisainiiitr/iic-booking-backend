@@ -244,6 +244,21 @@ def istem_department_mappings(request):
         return _mapping_refusal(exc)
 
 
+@api_view(["GET", "PUT"])
+@permission_classes([IsAuthenticated])
+def istem_institute(request):
+    """GET: the I-STEM institute in use and where it comes from. PUT (Main Admin) ``institute_id``: save the institute
+    used when I-STEM's token names none."""
+    from .equipment_mapping import MappingRefused, institute_status, save_institute
+
+    try:
+        if request.method == "PUT":
+            return Response(save_institute(request.user, request.data.get("institute_id")))
+        return Response(institute_status(request.user))
+    except MappingRefused as exc:
+        return _mapping_refusal(exc)
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def istem_equipment_mappings_bulk(request):

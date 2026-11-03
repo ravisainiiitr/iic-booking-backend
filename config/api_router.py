@@ -621,6 +621,7 @@ from iic_booking.istem.api_views import (
     istem_equipment_mappings_bulk,
     istem_department_mappings,
     istem_equipment_mappings_verify,
+    istem_institute,
 )
 
 from iic_booking.whatsapp.views import whatsapp_me, whatsapp_status, whatsapp_webhook
@@ -1703,6 +1704,7 @@ urlpatterns = router.urls + [
     path("istem/equipment-mappings/suggestions/", istem_equipment_suggestions, name="istem-equipment-suggestions"),
     path("istem/equipment-mappings/bulk/", istem_equipment_mappings_bulk, name="istem-equipment-mappings-bulk"),
     path("istem/department-mappings/", istem_department_mappings, name="istem-department-mappings"),
+    path("istem/institute/", istem_institute, name="istem-institute"),
     path("istem/equipment-mappings/verify/", istem_equipment_mappings_verify, name="istem-equipment-mappings-verify"),
     path("istem/equipment-mappings/<int:equipment_id>/", istem_equipment_mapping_save, name="istem-equipment-mapping-save"),
     path("bookings/<int:booking_id>/istem-fbr/", update_booking_istem_fbr, name="booking-istem-fbr-update"),

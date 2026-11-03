@@ -17,7 +17,7 @@ import logging
 import re
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 import requests
@@ -108,6 +108,9 @@ class AuthInfo:
     institute_id: str | None
     user_id: str | None
     user_entity: str
+    # "token": named in I-STEM's token response; "portal": the institute the Main Admin saved, used because the token
+    # names none; "" when neither is known.
+    institute_source: str = "token"
 
 
 # Process-wide token cache: {(base_url, username): (token, monotonic_expiry, AuthInfo)}.
@@ -319,8 +322,13 @@ class IstemClient:
         return self._session(force=force)[0]
 
     def session_info(self) -> AuthInfo:
-        """The account behind the token (authenticates when no valid token is cached)."""
-        return self._session()[1]
+        """The account behind the token (authenticates when no valid token is cached). When the token names no
+        institute, the one the Main Admin saved on the portal stands in (``institute_source`` "portal")."""
+        info = self._session()[1]
+        if info.institute_id:
+            return info
+        saved = conf.portal_institute_id()
+        return replace(info, institute_id=saved or None, institute_source="portal" if saved else "")
 
     def _forget_token(self, token: str) -> None:
         with _token_lock:
