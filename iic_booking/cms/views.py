@@ -39,7 +39,7 @@ def site_stats(request):
     """
     from django.contrib.auth import get_user_model
 
-    from iic_booking.equipment.models import Booking, Equipment, EquipmentPublication, EquipmentStatus
+    from iic_booking.equipment.models import Booking, Equipment, EquipmentStatus
 
     User = get_user_model()
     equipment_count = (
@@ -49,7 +49,10 @@ def site_stats(request):
     )
     active_users_count = User.objects.filter(is_active=True).count()
     total_bookings_count = Booking.objects.count()
-    publication_count = EquipmentPublication.objects.count()
+    from iic_booking.equipment.publication_dedupe import unique_publication_count
+
+    # Unique publications: the same paper linked to several instruments (or entered twice) counts once.
+    publication_count = unique_publication_count()
     return Response(
         {
             "equipment_count": equipment_count,
@@ -63,33 +66,28 @@ def site_stats(request):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def public_publications(request):
-    """Public list of equipment-linked publications for the home hero link."""
-    from iic_booking.equipment.models import EquipmentPublication
+    """Public list of unique publications for the home hero link (``publication_dedupe``): each paper once, with every
+    instrument it used. Query: q, equipment_id, year, sort (newest | oldest | title), page, page_size (max 100)."""
+    from iic_booking.equipment import publication_dedupe
 
-    qs = (
-        EquipmentPublication.objects.select_related("equipment")
-        .order_by("-year", "title", "equipment_publication_id")
+    p = request.query_params
+
+    def _int(name):
+        try:
+            return int(p.get(name))
+        except (TypeError, ValueError):
+            return None
+
+    out = publication_dedupe.query(
+        q=p.get("q") or "",
+        equipment_id=_int("equipment_id"),
+        year=_int("year"),
+        sort=(p.get("sort") or "newest").strip().lower(),
+        page=_int("page") or 1,
+        page_size=_int("page_size") or 50,
     )
-    results = []
-    for pub in qs[:500]:
-        eq = pub.equipment
-        href = (pub.url or "").strip()
-        if not href and pub.doi:
-            href = f"https://doi.org/{str(pub.doi).strip()}"
-        results.append(
-            {
-                "id": pub.equipment_publication_id,
-                "title": pub.title,
-                "citation": pub.citation or "",
-                "url": href,
-                "doi": pub.doi or "",
-                "year": pub.year,
-                "equipment_id": eq.equipment_id if eq else None,
-                "equipment_name": eq.name if eq else "",
-                "equipment_code": eq.code if eq else "",
-            }
-        )
-    return Response({"count": qs.count(), "results": results})
+    out["facets"] = publication_dedupe.facets()
+    return Response(out)
 
 
 @api_view(["GET"])
