@@ -1,0 +1,70 @@
+# Read-only: the institute I-STEM names in its token, I-STEM's equipment and departments for it, and the portal's
+# equipment / department mappings. Prints ids, codes, names and counts only; no token, credential or user data.
+name: Probe I-STEM Institute Mapping
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          from collections import Counter
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.conf import settings
+          from iic_booking.istem import conf
+          from iic_booking.istem.models import IstemDepartmentMapping, IstemEquipmentMapping
+          print("network_allowed", conf.network_allowed(), "ISTEM_INSTITUTE_ID setting present", bool(getattr(settings, "ISTEM_INSTITUTE_ID", "")))
+          from iic_booking.istem.service import default_client
+          client = default_client()
+          try:
+              info = client.session_info()
+              print("token institute_id", info.institute_id, "user_entity", info.user_entity, "token user_id present", bool(info.user_id))
+          except Exception as exc:
+              print("token FAILED", type(exc).__name__, getattr(exc, "category", ""), str(exc)[:200])
+              info = None
+          rows = []
+          if info is not None:
+              try:
+                  rows = client.list_all_equipment(institute_id=info.institute_id)
+              except Exception as exc:
+                  print("listing FAILED", type(exc).__name__, getattr(exc, "category", ""), str(exc)[:200])
+          print("istem equipment for institute", len(rows))
+          depts = Counter(str(r.get("department_id") or "-") for r in rows)
+          print("istem departments", len(depts), dict(sorted(depts.items(), key=lambda kv: -kv[1])[:40]))
+          listed = {str(r["equipment_id"]): r for r in rows}
+          maps = list(IstemEquipmentMapping.objects.select_related("equipment", "equipment__internal_department"))
+          print("portal equipment mappings", len(maps), "active", sum(m.is_active for m in maps))
+          for m in maps:
+              eq = m.equipment
+              row = listed.get(str(m.istem_equipment_id))
+              print(f"  map eq={eq.code!r} dept={getattr(eq.internal_department, 'code', None)!r} istem_id={m.istem_equipment_id} "
+                    f"active={m.is_active} remote_found={m.remote_found} remote_institute={m.remote_institute_id!r} "
+                    f"in_listing_now={row is not None} istem_dept={(row or {}).get('department_id')}")
+          dmaps = list(IstemDepartmentMapping.objects.select_related("department"))
+          print("portal department mappings", len(dmaps))
+          for dm in dmaps:
+              print(f"  dept istem={dm.istem_department_id} -> {getattr(dm.department, 'code', None)!r} {getattr(dm.department, 'name', '')!r} "
+                    f"istem_equipment={depts.get(str(dm.istem_department_id), 0)}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
