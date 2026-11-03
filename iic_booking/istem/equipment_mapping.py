@@ -16,7 +16,7 @@ from django.utils import timezone
 from . import conf
 from .choices import SyncState
 from .errors import IstemError
-from .models import IstemBookingLink, IstemEquipmentMapping
+from .models import IstemBookingLink, IstemDepartmentMapping, IstemEquipmentMapping
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +120,17 @@ def list_rows(user) -> dict:
             "open_istem_bookings": open_counts.get(e.pk, 0),
             "mapping": _mapping_row(mappings.get(e.pk)),
         })
+    departments: dict = {}
+    for row in rows:
+        d = row["department"] or {"id": None, "name": "No department"}
+        s = departments.setdefault(d["id"], {"id": d["id"], "name": d["name"], "total": 0, "mapped": 0,
+                                             "fbr_unmapped": 0})
+        s["total"] += 1
+        active = bool(row["mapping"] and row["mapping"]["is_active"])
+        s["mapped"] += active
+        s["fbr_unmapped"] += bool(row["requires_istem_fbr"] and not active)
     return {"istem_connected": conf.network_allowed(), "all_departments": managed_department_id(user) is None,
-            "equipment": rows}
+            "equipment": rows, "departments": sorted(departments.values(), key=lambda d: (d["name"] or "").lower())}
 
 
 def search_istem_equipment(user, query: str, client_factory=None) -> list[dict]:
@@ -148,7 +157,7 @@ def search_istem_equipment(user, query: str, client_factory=None) -> list[dict]:
     return [{**row, "mapped_to": used.get(row["equipment_id"], [])} for row in page.rows]
 
 
-def save_mapping(user, equipment_id: int, data: dict, *, client_factory=None) -> dict:
+def save_mapping(user, equipment_id: int, data: dict, *, client_factory=None, check_remote: bool = True) -> dict:
     """Create or change an instrument's I-STEM mapping, then check it against I-STEM's Equipment List when connected.
     The I-STEM ID cannot change, and the mapping cannot be switched off, while the instrument has bookings open on
     I-STEM (their Confirm Booking / FBR Execute must use the ID they were created with)."""
@@ -191,7 +200,8 @@ def save_mapping(user, equipment_id: int, data: dict, *, client_factory=None) ->
         warnings.append("The same I-STEM ID is also mapped to: " + ", ".join(sorted(shared)) + ".")
     if not key:
         warnings.append("No sample-count field chosen: I-STEM bookings for this instrument will wait until one is set.")
-    check = verify(user, equipment_ids=[equipment.pk], client_factory=client_factory) if conf.network_allowed() else None
+    check = (verify(user, equipment_ids=[equipment.pk], client_factory=client_factory)
+             if check_remote and conf.network_allowed() else None)
     mapping.refresh_from_db()
     if mapping.remote_found is False:
         warnings.append("I-STEM's equipment list for the institute does not show this ID as active.")
@@ -210,3 +220,299 @@ def verify(user, *, equipment_ids=None, client_factory=None) -> dict:
         return verify_equipment_mappings(client_factory or default_client, equipment_ids=sorted(ids))
     except IstemError as exc:
         raise MappingRefused(f"I-STEM's equipment list could not be read ({exc.category}). Try again shortly.", 502) from exc
+
+
+# --- Department-wise matching against I-STEM's own listing ------------------------------------------------------------
+# I-STEM lists the institute's equipment by ID and name only (no department), so a department's unmapped instruments
+# are matched by name against the whole listing; the Main Admin (or the department's administrator) confirms each one.
+
+LISTING_CACHE_KEY = "istem:equipment_listing"
+LISTING_CACHE_SECONDS = 600
+SUGGESTIONS_PER_INSTRUMENT = 3
+SUGGESTION_MIN_SCORE = 0.45
+BULK_LIMIT = 200
+_STOPWORDS = frozenset({"iic", "the", "of", "and", "for", "with", "a", "an", "system", "instrument", "equipment", "facility"})
+_PAREN = re.compile(r"\(([^)]{2,20})\)")
+_CODE_PREFIX = re.compile(r"[A-Za-z]{2,}")
+
+
+def _istem_listing(*, refresh: bool = False, client_factory=None) -> list[dict]:
+    """Every active I-STEM equipment of the portal's institute (Equipment List, cached for ten minutes)."""
+    from django.core.cache import cache
+
+    from .service import default_client
+
+    if not conf.network_allowed():
+        raise MappingRefused("I-STEM is not connected on this portal.", 503)
+    rows = None if refresh else cache.get(LISTING_CACHE_KEY)
+    if rows is None:
+        client = (client_factory or default_client)()
+        try:
+            rows = client.list_all_equipment(institute_id=client.session_info().institute_id)
+        except IstemError as exc:
+            raise MappingRefused(f"I-STEM's equipment list could not be read ({exc.category}). Try again shortly.", 502) from exc
+        cache.set(LISTING_CACHE_KEY, rows, LISTING_CACHE_SECONDS)
+    return rows
+
+
+def _mapped_to(istem_ids) -> dict[str, list[dict]]:
+    used: dict[str, list[dict]] = {}
+    for equipment_id, istem_id, name in (IstemEquipmentMapping.objects.filter(istem_equipment_id__in=list(istem_ids),
+                                                                                 is_active=True)
+                                         .values_list("equipment_id", "istem_equipment_id", "equipment__name")):
+        used.setdefault(istem_id, []).append({"equipment_id": equipment_id, "name": name})
+    return used
+
+
+def istem_listing(user, *, refresh: bool = False, client_factory=None) -> dict:
+    """I-STEM's equipment listing for the institute, each row with the portal instruments mapped to it."""
+    managed_department_id(user)  # permission check
+    rows = _istem_listing(refresh=refresh, client_factory=client_factory)
+    used = _mapped_to(r["equipment_id"] for r in rows)
+    out = sorted(({**r, "mapped_to": used.get(r["equipment_id"], [])} for r in rows),
+                 key=lambda r: (r["equipment_name"] or "").lower())
+    return {"equipment": out, "total": len(out), "mapped": sum(1 for r in out if r["mapped_to"])}
+
+
+def _words(name: str) -> set[str]:
+    return {w for w in re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).split() if w not in _STOPWORDS}
+
+
+def _acronyms(name: str, code: str = "") -> set[str]:
+    """"X-ray Fluorescence (XRF) -IIC" -> {"XRF"}; "FESEM-01" (code) -> {"FESEM"}; upper-case words of two letters up."""
+    out = {re.sub(r"[^A-Z0-9]", "", p.upper()) for p in _PAREN.findall(name or "")}
+    out |= {w for w in re.findall(r"\b[A-Z][A-Z0-9-]{1,}\b", name or "") if w.upper() != "IIC"}
+    prefix = _CODE_PREFIX.match(code or "")
+    if prefix:
+        out.add(prefix.group(0).upper())
+    return {a.replace("-", "") for a in out if len(a.replace("-", "")) >= 2}
+
+
+def match_score(portal_name: str, portal_code: str, istem_name: str) -> float:
+    """0..1: how likely the I-STEM name is the same instrument (shared words, spelling, a shared acronym)."""
+    from difflib import SequenceMatcher
+
+    a, b = _words(portal_name), _words(istem_name)
+    overlap = len(a & b) / len(a | b) if a and b else 0.0
+    spelling = SequenceMatcher(None, " ".join(sorted(a)), " ".join(sorted(b))).ratio() * 0.9
+    score = max(overlap, spelling)
+    if _acronyms(portal_name, portal_code) & _acronyms(istem_name):
+        score = max(score, 0.85)
+    return round(score, 2)
+
+
+def _default_sample_key(keys: list[str]) -> str:
+    """The sample-count field to propose: "A" (the portal's usual "number of samples") or the only field."""
+    if "A" in keys:
+        return "A"
+    return keys[0] if len(keys) == 1 else ""
+
+
+def _compact(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+
+def score_row(equipment, row: dict) -> tuple[float, list[str]]:
+    """How likely the I-STEM entry is this instrument, and why: same serial number (certain), same model, the
+    I-STEM short name in the instrument's name or code, then the names themselves."""
+    reasons: list[str] = []
+    score = match_score(equipment.name, equipment.code, row.get("equipment_name", ""))
+    if score >= SUGGESTION_MIN_SCORE:
+        reasons.append("name")
+    serial = _compact(getattr(equipment, "asset_serial_number", ""))
+    if len(serial) >= 4 and serial == _compact(row.get("serial", "")):
+        score = 1.0
+        reasons.insert(0, "serial number")
+    model = _compact(getattr(equipment, "model_information", ""))
+    if len(model) >= 3 and model == _compact(row.get("model", "")):
+        score = max(score, 0.95)
+        reasons.insert(0, "model")
+    abbr = re.sub(r"[^A-Z0-9]", "", (row.get("abbr") or "").upper())
+    if len(abbr) >= 2 and abbr in _acronyms(equipment.name, equipment.code):
+        score = max(score, 0.9)
+        reasons.append("short name")
+    make = _words(getattr(equipment, "make", ""))
+    if make and make & _words(row.get("make", "")) and score >= SUGGESTION_MIN_SCORE:
+        score = min(1.0, score + 0.05)
+        reasons.append("make")
+    return round(score, 2), reasons
+
+
+CONFIDENT_SCORE = 0.9
+CONFIDENT_GAP = 0.1
+
+
+def _istem_departments_of(department_ids) -> dict[int, set[str]]:
+    out: dict[int, set[str]] = {}
+    for department_id, istem_id in (IstemDepartmentMapping.objects.filter(department_id__in=list(department_ids))
+                                    .values_list("department_id", "istem_department_id")):
+        out.setdefault(department_id, set()).add(istem_id)
+    return out
+
+
+def suggestions(user, *, department_id=None, equipment_id=None, refresh: bool = False, client_factory=None) -> dict:
+    """A department's instruments without an active mapping (or one instrument, mapped or not), each with up to three
+    I-STEM equipment. Searched automatically in the I-STEM departments mapped to the instrument's department (the whole
+    institute list when none is mapped). ``confident``: the top match is certain enough to save without picking."""
+    from iic_booking.equipment.models import ChargeProfile, DynamicInputField
+
+    scope = managed_department_id(user)
+    if scope is not None:
+        department_id = scope
+    listing = _istem_listing(refresh=refresh, client_factory=client_factory)
+    used = _mapped_to(r["equipment_id"] for r in listing)
+    qs = managed_equipment(user)
+    if equipment_id:
+        equipment = list(qs.filter(pk=int(equipment_id)))
+        if not equipment:
+            raise MappingRefused("Equipment not found among the instruments you manage.", 404)
+    else:
+        if department_id:
+            qs = qs.filter(internal_department_id=int(department_id))
+        mapped = set(IstemEquipmentMapping.objects.filter(is_active=True).values_list("equipment_id", flat=True))
+        equipment = [e for e in qs.order_by("name", "pk") if e.pk not in mapped]
+    istem_departments = _istem_departments_of({e.internal_department_id for e in equipment if e.internal_department_id})
+    ids = [e.pk for e in equipment]
+    needs_fbr = set(ChargeProfile.objects.filter(equipment_id__in=ids, is_active=True, require_istem_fbr=True)
+                    .values_list("equipment_id", flat=True))
+    fields: dict[int, dict[str, str]] = {}
+    for equipment_id, key, label in (DynamicInputField.objects.filter(equipment_id__in=ids)
+                                     .order_by("field_key").values_list("equipment_id", "field_key", "field_label")):
+        fields.setdefault(equipment_id, {}).setdefault(key, label or key)
+    rows = []
+    for e in equipment:
+        narrowed_to = sorted(istem_departments.get(e.internal_department_id, set()))
+        pool = [r for r in listing if r.get("department_id") in narrowed_to] if narrowed_to else listing
+        scored = sorted(((*score_row(e, r), r) for r in pool), key=lambda s: (-s[0], s[2]["equipment_name"]))
+        candidates = [{**r, "score": s, "reasons": why,
+                       "mapped_to": [m for m in used.get(r["equipment_id"], []) if m["equipment_id"] != e.pk]}
+                      for s, why, r in scored[:SUGGESTIONS_PER_INSTRUMENT] if s >= SUGGESTION_MIN_SCORE]
+        top = candidates[0] if candidates else None
+        confident = bool(top and top["score"] >= CONFIDENT_SCORE and not top["mapped_to"]
+                         and (len(candidates) == 1 or candidates[1]["score"] <= top["score"] - CONFIDENT_GAP))
+        department = e.internal_department
+        keys = sorted(fields.get(e.pk, {}))
+        rows.append({
+            "equipment_id": e.pk,
+            "code": e.code,
+            "name": e.name,
+            "department": {"id": department.pk, "name": department.name} if department else None,
+            "requires_istem_fbr": e.pk in needs_fbr,
+            "input_fields": [{"key": k, "label": fields[e.pk][k]} for k in keys],
+            "default_sample_key": _default_sample_key(keys),
+            "istem_departments": narrowed_to,
+            "candidates": candidates,
+            "confident": confident,
+        })
+    return {"department_id": int(department_id) if department_id else None, "istem_total": len(listing),
+            "equipment": rows}
+
+
+# --- Portal departments <-> I-STEM departments (Main Admin) -----------------------------------------------------------
+
+SAMPLE_NAMES = 5
+
+
+def _require_main_admin(user) -> None:
+    if not _is_main_admin(user):
+        raise MappingRefused("Only the Main Administrator maps departments to I-STEM.", 403)
+
+
+def istem_departments(user, *, refresh: bool = False, client_factory=None) -> dict:
+    """I-STEM's departments as seen in its equipment list (ID only: I-STEM sends no department names), each with its
+    equipment count, a few names and locations to recognise it, the portal department it is mapped to, and a
+    suggestion taken from the portal departments of instruments already mapped to its equipment."""
+    from collections import Counter
+
+    from iic_booking.users.models import Department
+
+    _require_main_admin(user)
+    listing = _istem_listing(refresh=refresh, client_factory=client_factory)
+    groups: dict[str, list[dict]] = {}
+    for r in listing:
+        groups.setdefault(r.get("department_id") or "", []).append(r)
+    mapped = {m.istem_department_id: m for m in IstemDepartmentMapping.objects.select_related("department")}
+    by_istem_equipment: dict[str, list[int]] = {}
+    for istem_id, department_id in (IstemEquipmentMapping.objects.filter(is_active=True, equipment__internal_department__isnull=False)
+                                    .values_list("istem_equipment_id", "equipment__internal_department_id")):
+        by_istem_equipment.setdefault(istem_id, []).append(department_id)
+    departments = {d.pk: d.name for d in Department.objects.all()}
+    rows = []
+    for istem_department_id, items in sorted(groups.items(), key=lambda g: (g[0] == "", -len(g[1]), g[0])):
+        votes = Counter(d for r in items for d in by_istem_equipment.get(r["equipment_id"], []))
+        suggested = votes.most_common(1)[0] if votes else None
+        current = mapped.get(istem_department_id)
+        rows.append({
+            "istem_department_id": istem_department_id,
+            "equipment_count": len(items),
+            "sample_equipment": sorted(r["equipment_name"] for r in items)[:SAMPLE_NAMES],
+            "locations": [loc for loc, _ in Counter(r.get("location") for r in items if r.get("location")).most_common(3)],
+            "department": {"id": current.department_id, "name": current.department.name} if current else None,
+            "suggested": ({"id": suggested[0], "name": departments.get(suggested[0], ""), "instruments": suggested[1]}
+                          if suggested else None),
+        })
+    portal = sorted(({"id": pk, "name": name} for pk, name in departments.items()), key=lambda d: d["name"].lower())
+    return {"istem_departments": rows, "portal_departments": portal}
+
+
+def save_department_mappings(user, items) -> dict:
+    """``items``: [{istem_department_id, department_id}] - department_id empty/null removes that I-STEM department's
+    mapping. Several I-STEM departments may belong to one portal department."""
+    from iic_booking.users.models import Department
+
+    _require_main_admin(user)
+    if not isinstance(items, list) or not items:
+        raise MappingRefused("Nothing to save.")
+    known = set(Department.objects.values_list("pk", flat=True))
+    saved = removed = 0
+    with transaction.atomic():
+        for item in items:
+            istem_id = str((item or {}).get("istem_department_id") or "").strip()
+            if not ISTEM_ID.match(istem_id):
+                raise MappingRefused("The I-STEM department ID is a number.")
+            department_id = (item or {}).get("department_id")
+            if department_id in (None, ""):
+                removed += IstemDepartmentMapping.objects.filter(istem_department_id=istem_id).delete()[0]
+                continue
+            try:
+                department_id = int(department_id)
+            except (TypeError, ValueError):
+                raise MappingRefused("Choose a portal department.") from None
+            if department_id not in known:
+                raise MappingRefused("That portal department does not exist.", 404)
+            IstemDepartmentMapping.objects.update_or_create(
+                istem_department_id=istem_id, defaults={"department_id": department_id, "set_by": user})
+            saved += 1
+    logger.info("istem department mappings: %s saved, %s removed by user=%s", saved, removed, user.pk)
+    return {"saved": saved, "removed": removed}
+
+
+def save_many(user, items, *, client_factory=None) -> dict:
+    """Save several mappings at once (the department matching screen); each row succeeds or fails on its own, with
+    the same rules as saving one. One check against I-STEM's listing afterwards."""
+    if not isinstance(items, list) or not items:
+        raise MappingRefused("Choose at least one instrument to map.")
+    if len(items) > BULK_LIMIT:
+        raise MappingRefused(f"Save at most {BULK_LIMIT} mappings at a time.")
+    results, saved = [], []
+    for item in items:
+        try:
+            equipment_id = int((item or {}).get("equipment_id"))
+        except (TypeError, ValueError):
+            results.append({"equipment_id": None, "ok": False, "error": "Missing instrument."})
+            continue
+        try:
+            out = save_mapping(user, equipment_id, item, client_factory=client_factory, check_remote=False)
+        except MappingRefused as exc:
+            results.append({"equipment_id": equipment_id, "ok": False, "error": exc.message})
+            continue
+        saved.append(equipment_id)
+        results.append({"equipment_id": equipment_id, "ok": True, "warnings": out["warnings"]})
+    checked = False
+    if saved and conf.network_allowed():
+        try:
+            verify(user, equipment_ids=saved, client_factory=client_factory)
+            checked = True
+        except MappingRefused:
+            checked = False
+    return {"results": results, "saved": len(saved), "failed": len(results) - len(saved), "checked": checked}

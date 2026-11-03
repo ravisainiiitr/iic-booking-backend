@@ -254,6 +254,24 @@ class EquipmentPage:
     raw_count: int = 0  # rows I-STEM returned on the page, before dropping other institutes' equipment
 
 
+def _listing_details(row: dict) -> dict:
+    """What the Equipment List says about an instrument besides its name, for matching it to a portal instrument:
+    short name, make, model, serial number, location and I-STEM's department ID ("" when I-STEM has none)."""
+    def text(key: str, limit: int = 255) -> str:
+        value = row.get(key)
+        return str(value).strip()[:limit] if value not in (None, "") else ""
+
+    department = text("equipment_department_id", 32)
+    return {
+        "abbr": text("equipment_abbr", 64),
+        "make": text("equipment_make"),
+        "model": text("equipment_model"),
+        "serial": text("equipment_srno", 120),
+        "location": text("equipment_location"),
+        "department_id": "" if department in ("", "0") else department,
+    }
+
+
 class IstemClient:
     def __init__(self, transport=None, *, clock: Callable[[], float] = time.monotonic):
         if not conf.network_allowed():
@@ -502,7 +520,8 @@ class IstemClient:
             if institute_id and row_institute and row_institute != str(institute_id):
                 continue
             name = row.get("equipment_name")
-            rows.append({"equipment_id": equipment_id, "equipment_name": name.strip()[:255] if isinstance(name, str) else ""})
+            rows.append({"equipment_id": equipment_id, "equipment_name": name.strip()[:255] if isinstance(name, str) else "",
+                         **_listing_details(row)})
         total = body.get("totalrecord")
         return EquipmentPage(rows, total if isinstance(total, int) and not isinstance(total, bool) and total >= 0 else None,
                              raw_count=len(result))

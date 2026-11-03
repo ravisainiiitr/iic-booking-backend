@@ -609,6 +609,10 @@ from iic_booking.istem.api_views import (
     istem_equipment_mappings,
     istem_equipment_search,
     istem_equipment_mapping_save,
+    istem_equipment_listing,
+    istem_equipment_suggestions,
+    istem_equipment_mappings_bulk,
+    istem_department_mappings,
     istem_equipment_mappings_verify,
 )
 
@@ -1688,6 +1692,10 @@ urlpatterns = router.urls + [
     path("istem/register/complete/", istem_register_complete, name="istem-register-complete"),
     path("istem/equipment-mappings/", istem_equipment_mappings, name="istem-equipment-mappings"),
     path("istem/equipment-mappings/search/", istem_equipment_search, name="istem-equipment-search"),
+    path("istem/equipment-mappings/istem-listing/", istem_equipment_listing, name="istem-equipment-listing"),
+    path("istem/equipment-mappings/suggestions/", istem_equipment_suggestions, name="istem-equipment-suggestions"),
+    path("istem/equipment-mappings/bulk/", istem_equipment_mappings_bulk, name="istem-equipment-mappings-bulk"),
+    path("istem/department-mappings/", istem_department_mappings, name="istem-department-mappings"),
     path("istem/equipment-mappings/verify/", istem_equipment_mappings_verify, name="istem-equipment-mappings-verify"),
     path("istem/equipment-mappings/<int:equipment_id>/", istem_equipment_mapping_save, name="istem-equipment-mapping-save"),
     path("bookings/<int:booking_id>/istem-fbr/", update_booking_istem_fbr, name="booking-istem-fbr-update"),

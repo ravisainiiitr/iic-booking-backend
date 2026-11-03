@@ -111,6 +111,22 @@ class IstemLinkOtp(models.Model):
         return f"OTP {self.pk} → {self.email_masked} ({self.state})"
 
 
+class IstemDepartmentMapping(models.Model):
+    """Which portal department an I-STEM department is (I-STEM lists equipment with ``equipment_department_id`` only).
+    Set by the Main Admin; narrows the I-STEM equipment suggested for that department's instruments."""
+
+    istem_department_id = models.CharField(max_length=32, unique=True)
+    department = models.ForeignKey("users.Department", on_delete=models.CASCADE, related_name="istem_departments")
+    set_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    set_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["istem_department_id"]
+
+    def __str__(self) -> str:
+        return f"I-STEM department {self.istem_department_id} -> {self.department_id}"
+
+
 class IstemEquipmentMapping(models.Model):
     """The I-STEM ``equipment_id`` for a local instrument, entered by an admin and checked against I-STEM's Equipment
     List (``remote_*``, written only by ``service.verify_equipment_mappings``).
