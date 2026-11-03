@@ -81,7 +81,6 @@ jobs:
                   "ISTEM_BASE_URL": "https://istemstaging.iisc.ac.in/istem1",
                   "ISTEM_USERNAME": os.environ["ISTEM_STAGING_USERNAME"],
                   "ISTEM_PASSWORD": os.environ["ISTEM_STAGING_PASSWORD"],
-                  "ISTEM_INSTITUTE_ID": "213",
                   "ISTEM_CA_BUNDLE": "/app/iic_booking/istem/certs/istem_ca_chain.pem",
                   "ISTEM_CONNECT_TIMEOUT": "20",
                   "ISTEM_OTP_LINKING_ENABLED": "True",
@@ -123,6 +122,8 @@ jobs:
           else:
               raise SystemExit("unknown mode")
 
+          # The institute is the one I-STEM names in its token response; it is no longer configured on the portal.
+          remove = set(remove) | {"ISTEM_INSTITUTE_ID"}
           out, seen = [], set()
           for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
               key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
