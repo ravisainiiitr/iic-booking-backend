@@ -50,13 +50,6 @@ def gstin_placeholder() -> str:
     return str(_setting("ISTEM_GSTIN_PLACEHOLDER", "NA") or "").strip()
 
 
-def configured_institute_id() -> str:
-    """``ISTEM_INSTITUTE_ID`` (IIT Roorkee: 213), used only when the token response names no institute ([STAGING]
-    tokens carry none). When the token names one, that wins and a different configured value is refused."""
-    value = str(_setting("ISTEM_INSTITUTE_ID", "") or "").strip()
-    return value if value.isdigit() else ""
-
-
 def max_attempts() -> int:
     return max(1, int(_setting("ISTEM_MAX_ATTEMPTS", 5)))
 

@@ -339,16 +339,10 @@ class IstemClient:
         expires_in = message.get("expires_in")
         lifetime = expires_in if isinstance(expires_in, int) and 0 < expires_in <= 86400 else contract.DOCUMENTED_TOKEN_LIFETIME_SECONDS
         entity = message.get("user_entity")
-        institute_id = _as_remote_id(message.get("institute_id"))
-        configured = conf.configured_institute_id()
-        if institute_id and configured and configured != institute_id:
-            self._log("auth", resp.status_code, started, ErrorCategory.CONFIG)
-            raise IstemConfigError(
-                f"ISTEM_INSTITUTE_ID is {configured} but the I-STEM token belongs to institute {institute_id}."
-            )
         info = AuthInfo(
-            # [STAGING] The token names no institute: the configured one stands in.
-            institute_id=institute_id or configured or None,
+            # The institute is the one I-STEM names in the token response (IIT Roorkee's account: 213); it is never
+            # configured on the portal. A token without one leaves it None, and institute-bound calls are refused.
+            institute_id=_as_remote_id(message.get("institute_id")) or None,
             user_id=_as_remote_id(message.get("user_id")),
             user_entity=entity.strip()[:16] if isinstance(entity, str) else "",
         )

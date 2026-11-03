@@ -871,8 +871,6 @@ ISTEM_PASSWORD = env("ISTEM_PASSWORD", default="")
 ISTEM_CONNECT_TIMEOUT = env.float("ISTEM_CONNECT_TIMEOUT", default=5.0)
 ISTEM_READ_TIMEOUT = env.float("ISTEM_READ_TIMEOUT", default=30.0)
 ISTEM_MAX_ATTEMPTS = env.int("ISTEM_MAX_ATTEMPTS", default=5)
-# The institute when the token response names none (staging tokens carry none). IIT Roorkee is 213.
-ISTEM_INSTITUTE_ID = env("ISTEM_INSTITUTE_ID", default="")
 # PEM bundle for verifying I-STEM's certificate; empty = certifi. Staging needs ISRG Root YR (not in certifi yet).
 ISTEM_CA_BUNDLE = env("ISTEM_CA_BUNDLE", default="")
 # Sent as booking_gstn when the user has no GSTIN (I-STEM, 30 Oct 2026: it only needs to be non-empty). Empty: such

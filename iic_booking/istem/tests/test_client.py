@@ -470,20 +470,14 @@ def test_listing_lookup_reads_further_pages_until_it_passes_the_request(live):
 
 # --- [STAGING] account and catalogue -------------------------------------------------------------------------------
 
-def test_staging_token_without_institute_uses_the_configured_one(live, settings):
-    settings.ISTEM_INSTITUTE_ID = "213"
-    assert _client(FakeTransport(staging_token_response())).session_info().institute_id == "213"
+def test_institute_comes_from_the_token_response(live, settings):
+    info = _client(FakeTransport(token_response(institute_id=213))).session_info()
+    assert (info.institute_id, info.user_id, info.user_entity) == ("213", "2740", "IN")
 
 
-def test_staging_token_without_institute_and_no_setting_has_none(live, settings):
-    settings.ISTEM_INSTITUTE_ID = ""
+def test_no_configured_institute_stands_in_for_the_token(live, settings):
+    settings.ISTEM_INSTITUTE_ID = "213"  # an old setting left in an env file is ignored
     assert _client(FakeTransport(staging_token_response())).session_info().institute_id is None
-
-
-def test_configured_institute_contradicting_the_token_is_refused(live, settings):
-    settings.ISTEM_INSTITUTE_ID = "999"
-    with pytest.raises(IstemConfigError):
-        _client(FakeTransport(token_response())).session_info()
 
 
 def test_duplicate_user_takes_the_existing_id_from_data(live):

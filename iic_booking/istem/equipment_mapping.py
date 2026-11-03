@@ -163,11 +163,11 @@ def search_istem_equipment(user, query: str, client_factory=None, source: dict |
         raise MappingRefused("I-STEM is not connected on this portal.", 503)
     client = (client_factory or default_client)()
     try:
-        institute_id = client.session_info().institute_id
+        institute_id = _token_institute(client)
         page = client.list_equipment(institute_id=institute_id, equipment_name=query, limit=SEARCH_LIMIT)
         rows = page.rows
         if source is not None:
-            source.update(_live_source())
+            source.update(_live_source(institute_id=institute_id))
     except IstemError as exc:
         snapshot = _snapshot()
         if snapshot is None:
@@ -273,12 +273,29 @@ def _snapshot() -> dict | None:
     return snapshot if isinstance(snapshot, dict) and isinstance(snapshot.get("rows"), list) else None
 
 
-def _live_source(read_at: str | None = None) -> dict:
-    return {"live": True, "read_at": read_at or timezone.now().isoformat(), "problem": ""}
+def _live_source(read_at: str | None = None, institute_id: str | None = None) -> dict:
+    return {"live": True, "read_at": read_at or timezone.now().isoformat(), "problem": "", "institute_id": institute_id}
 
 
 def _saved_source(snapshot: dict, exc: IstemError) -> dict:
-    return {"live": False, "read_at": snapshot.get("read_at"), "problem": istem_problem(exc)}
+    return {
+        "live": False,
+        "read_at": snapshot.get("read_at"),
+        "problem": istem_problem(exc),
+        "institute_id": snapshot.get("institute_id"),
+    }
+
+
+def _token_institute(client) -> str:
+    """The institute named in I-STEM's token response: the mapping covers that institute's equipment only."""
+    institute_id = client.session_info().institute_id
+    if not institute_id:
+        raise MappingRefused(
+            "I-STEM signed the portal in but named no institute (institute_id), so its equipment list cannot be "
+            "limited to this institute. Ask I-STEM to include institute_id in the token response.",
+            502,
+        )
+    return str(institute_id)
 
 
 def listing_with_source(*, refresh: bool = False, client_factory=None) -> tuple[list[dict], dict]:
@@ -292,11 +309,12 @@ def listing_with_source(*, refresh: bool = False, client_factory=None) -> tuple[
     if not conf.network_allowed():
         raise MappingRefused("I-STEM is not connected on this portal.", 503)
     fresh = None if refresh else cache.get(LISTING_CACHE_KEY)
-    if isinstance(fresh, dict) and isinstance(fresh.get("rows"), list):
-        return fresh["rows"], _live_source(fresh.get("read_at"))
+    if isinstance(fresh, dict) and isinstance(fresh.get("rows"), list) and fresh.get("institute_id"):
+        return fresh["rows"], _live_source(fresh.get("read_at"), fresh.get("institute_id"))
     client = (client_factory or default_client)()
     try:
-        rows = client.list_all_equipment(institute_id=client.session_info().institute_id)
+        institute_id = _token_institute(client)
+        rows = client.list_all_equipment(institute_id=institute_id)
     except IstemError as exc:
         snapshot = _snapshot()
         if snapshot is None:
@@ -305,10 +323,10 @@ def listing_with_source(*, refresh: bool = False, client_factory=None) -> tuple[
         logger.warning("istem equipment list unavailable (%s); using the list read at %s", exc.category,
                        snapshot.get("read_at"))
         return snapshot["rows"], _saved_source(snapshot, exc)
-    value = {"rows": rows, "read_at": timezone.now().isoformat()}
+    value = {"rows": rows, "read_at": timezone.now().isoformat(), "institute_id": institute_id}
     cache.set(LISTING_CACHE_KEY, value, LISTING_CACHE_SECONDS)
     cache.set(LISTING_SNAPSHOT_KEY, value, None)
-    return rows, _live_source(value["read_at"])
+    return rows, _live_source(value["read_at"], institute_id)
 
 
 def _istem_listing(*, refresh: bool = False, client_factory=None) -> list[dict]:
