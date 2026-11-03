@@ -6,6 +6,8 @@ Tokens, keys and access tokens are never logged.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import time
@@ -33,11 +35,41 @@ def _jwt(header: dict, claims: dict, sign) -> str:
 
 # --- Android: FCM HTTP v1 ---------------------------------------------------------------------------------------------
 
+FCM_ACCOUNT_FIELDS = ("project_id", "client_email", "private_key", "token_uri")
+
+
+def parse_service_account(raw: str) -> dict | None:
+    """The Firebase service-account JSON, given as the JSON itself or base64 of it; None unless it is a service
+    account with every field FCM needs."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    if not raw.startswith("{"):
+        try:
+            raw = base64.b64decode(raw, validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError, ValueError):
+            return None
+    try:
+        account = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(account, dict) or account.get("type") != "service_account":
+        return None
+    if not all(isinstance(account.get(k), str) and account[k] for k in FCM_ACCOUNT_FIELDS):
+        return None
+    return account
+
+
 def _fcm_account() -> dict | None:
+    """From CALLS_FCM_SERVICE_ACCOUNT_JSON (the key in the server's environment, base64 or JSON), else the file at
+    CALLS_FCM_SERVICE_ACCOUNT_FILE."""
+    inline = parse_service_account(getattr(settings, "CALLS_FCM_SERVICE_ACCOUNT_JSON", ""))
+    if inline is not None:
+        return inline
     path = getattr(settings, "CALLS_FCM_SERVICE_ACCOUNT_FILE", "")
     if not path or not Path(path).is_file():
         return None
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    return parse_service_account(Path(path).read_text(encoding="utf-8"))
 
 
 def fcm_configured() -> bool:
