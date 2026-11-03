@@ -297,6 +297,33 @@ class Equipment(models.Model):
         default=48,
         verbose_name=_('Reschedule Hours Threshold')
     )
+    department_slot_reservation_enabled = models.BooleanField(
+        default=False,
+        verbose_name=_('Enable Department-Based Slot Reservation'),
+        help_text=_(
+            'When on (and the equipment has an internal department), unmarked slots are bookable only by the home '
+            'department and slots marked "Reserved for non-home department" only by other departments. The OIC sees '
+            'the two reservation options in Change Slot Status only when this is on. Main Administrator setting.'
+        ),
+    )
+    operating_day_start = models.TimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('Operating day starts at'),
+        help_text=_(
+            'For equipment whose operating day does not start at midnight, e.g. 09:00 for a 09:00 to 09:00 '
+            'next-day cycle. Slots that open before this time belong to the cycle that began the previous '
+            'calendar day, so they are dated on the next calendar day. Leave empty for calendar days (00:00).'
+        ),
+    )
+    oic_request_registration_enabled = models.BooleanField(
+        default=False,
+        verbose_name=_('Allow OIC to Register Equipment Requests'),
+        help_text=_(
+            "When on, this equipment's Officer In-charge can register a request (booking) in their own name for "
+            "the lab's own work, with no wallet charge. Main Administrator setting."
+        ),
+    )
     results_base_location = models.CharField(
         max_length=500,
         default=r'D:\Results',
@@ -1104,6 +1131,19 @@ class Equipment(models.Model):
 
     def clean(self):
         super().clean()
+        if self.pk:
+            before = type(self)._base_manager.filter(pk=self.pk).values_list("operating_day_start", flat=True).first()
+            if before != self.operating_day_start:
+                from .operating_cycle import booked_slots_that_would_move
+
+                moved = booked_slots_that_would_move(self, self.operating_day_start)
+                if moved:
+                    raise ValidationError({
+                        'operating_day_start': _(
+                            '%(count)s upcoming booked or reserved slot(s) would move to another day (first: '
+                            '%(first)s). Change the operating day when those bookings are done or moved.'
+                        ) % {'count': len(moved), 'first': moved[0]},
+                    })
         parent = self.parent_equipment
         if parent is None:
             return
@@ -7973,4 +8013,7 @@ from iic_booking.equipment.maintenance_models import (  # noqa: E402
 from iic_booking.equipment.slot_exchange_models import (  # noqa: E402
     SlotExchangeRequest,
     SlotExchangeStatus,
+)
+from iic_booking.equipment.config_audit_models import (  # noqa: E402
+    EquipmentConfigAuditLog,
 )

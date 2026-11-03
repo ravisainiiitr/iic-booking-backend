@@ -259,7 +259,9 @@ def _future_slot_count(equipment: Equipment, cleaned: dict) -> int:
             for master in masters:
                 if (master.pk, current) in existing:
                     continue
-                slot_start, _ = SlotGenerator._aware_slot_datetimes(current, master.open_time, master.close_time)
+                slot_start, _ = SlotGenerator._aware_slot_datetimes(
+                    current, master.open_time, master.close_time, equipment.operating_day_start
+                )
                 if slot_start > now:
                     count += 1
         current += timedelta(days=1)

@@ -4030,6 +4030,10 @@ def book_equipment(request, pk):
 def _booking_created_event_metadata(request, equipment, *, atmosphere_sensitive_sample=False):
     """BookingEvent(CREATED) metadata; records Equipment Group alternative provenance when present."""
     metadata = {"atmosphere_sensitive_sample": True} if atmosphere_sensitive_sample else {}
+    from .oic_request_registration import METADATA_KEY, oic_registration_refusal, oic_registration_requested
+
+    if oic_registration_requested(request) and oic_registration_refusal(request.user, equipment) is None:
+        metadata[METADATA_KEY] = True
     source_id = request.data.get("alternative_of_equipment_id")
     if source_id not in (None, ""):
         from .equipment_group_service import validate_alternative_source
@@ -4153,6 +4157,21 @@ def _book_equipment_impl(request, pk):
                 {"error": "Invalid user_id for booking on behalf."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+    from .oic_request_registration import oic_registration_refusal, oic_registration_requested
+
+    oic_registration = oic_registration_requested(request)
+    if oic_registration:
+        oic_refusal = oic_registration_refusal(request.user, equipment)
+        if oic_refusal:
+            _create_booking_attempt_log(
+                request, equipment, BookingAttemptOutcome.FAILED,
+                failure_reason=oic_refusal,
+                number_of_samples=request.data.get("number_of_samples") or 1,
+                additional_info=_get_additional_info_from_request(request, equipment),
+            )
+            return Response({"error": oic_refusal, "code": "OIC_REGISTRATION_NOT_ALLOWED"}, status=status.HTTP_403_FORBIDDEN)
+        # Registered in the OIC's own name, whatever user_id says.
+        booking_user = request.user
     from iic_booking.users.account_lifecycle import suspension_refusal
 
     suspended = suspension_refusal(booking_user, on_behalf=booking_user.pk != request.user.pk)
@@ -4182,7 +4201,9 @@ def _book_equipment_impl(request, pk):
         pass  # External users confirm I-STEM after payment on the next-steps page (no pre-book gate).
     # Admin and OIC (and other admin-panel users) see all slots and are not restricted by slot window; only regular users are.
     is_admin = getattr(request.user, "user_type", None) in UserType.get_admin_panel_codes()
-    skip_period_limits = is_admin or staff_booking_skips_period_limits(request.user, equipment, booking_user)
+    skip_period_limits = (
+        is_admin or oic_registration or staff_booking_skips_period_limits(request.user, equipment, booking_user)
+    )
 
     # Get request data
     start_time_str = request.data.get('start_time')
@@ -4395,6 +4416,9 @@ def _book_equipment_impl(request, pk):
         waitlist_on_failure = waitlist_on_failure_raw.strip().lower() in ("true", "1", "yes", "y")
     else:
         waitlist_on_failure = bool(waitlist_on_failure_raw)
+    if oic_registration:
+        # An OIC request is for the chosen slot only: no waitlist, no substitute slots.
+        waitlist_on_failure = False
 
     # Explicit waitlist booking request when there are no visible slots selected.
     # Used by frontend "Confirm Waitlisted Booking" flow.
@@ -4456,8 +4480,10 @@ def _book_equipment_impl(request, pk):
                 is_external=UserType.is_external_user(user_type),
             )
         perf.mark("candidate_slots_query")
-        book_any_available_slots = request.data.get("book_any_available_slots") is True
-        book_even_if_single_slot_available = request.data.get("book_even_if_single_slot_available") is True
+        book_any_available_slots = request.data.get("book_any_available_slots") is True and not oic_registration
+        book_even_if_single_slot_available = (
+            request.data.get("book_even_if_single_slot_available") is True and not oic_registration
+        )
         input_values_adjusted_for_single_slot = [False]  # use list so inner transaction can set [0]=True
         visible_week_start = None
         visible_week_end = None
@@ -4825,6 +4851,12 @@ def _book_equipment_impl(request, pk):
                 booking_user,
             )
         except ChargeProfile.DoesNotExist:
+            charge_profile = None
+            if oic_registration:
+                from .oic_request_registration import fallback_charge_profile
+
+                charge_profile = fallback_charge_profile(equipment)
+        if charge_profile is None:
             _create_booking_attempt_log(
                 request, equipment, BookingAttemptOutcome.FAILED,
                 failure_reason=f"No active charge profile found for equipment {pk} and user type {user_type}.",
@@ -4961,12 +4993,20 @@ def _book_equipment_impl(request, pk):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
         perf.mark("quota_checks_done")
+        if oic_registration:
+            from .oic_request_registration import no_charge
+
+            total_charge, charge_breakdown = no_charge()
         status_map = {'booked': BookingStatus.BOOKED, 'hold': BookingStatus.HOLD}
         booking_status_enum = BookingStatus.HOLD if create_as_hold else status_map.get(booking_status.lower(), BookingStatus.BOOKED)
         from iic_booking.users.repositories.wallet_repository import WalletRepository
         booking_target, _ = WalletRepository.get_booking_wallet_target(
             booking_user, getattr(equipment, "internal_department", None)
         )
+        if not booking_target and oic_registration:
+            from .oic_request_registration import NoChargeWallet
+
+            booking_target = NoChargeWallet()
         if not booking_target:
             _create_booking_attempt_log(
                 request, equipment, BookingAttemptOutcome.FAILED,
@@ -5308,6 +5348,11 @@ def _book_equipment_impl(request, pk):
                 debit_transaction = None
                 wallet_applied = wallet_applied_precheck
                 amount_due = amount_due_precheck
+                if oic_registration:
+                    from .oic_request_registration import no_charge
+
+                    total_charge, charge_breakdown = no_charge()
+                    wallet_applied = amount_due = Decimal("0.00")
                 settlement_dept = getattr(equipment, "internal_department", None)
                 if wallet_applied > 0 and not create_as_hold:
                     from iic_booking.users.wallet_credit_facility import subwallet_minimum_balance_after_debit

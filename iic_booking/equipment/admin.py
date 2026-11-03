@@ -1619,6 +1619,9 @@ class EquipmentAdmin(admin.ModelAdmin):
                 'model_information', 'show_model_on_card',
                 'split_booking_enabled',
                 'slot_exchange_enabled',
+                'department_slot_reservation_enabled',
+                'operating_day_start',
+                'oic_request_registration_enabled',
                 'skip_quota_check',
                 'auto_slot_selection_default',
                 'enable_charge_recalculation', 'user_rating_enabled',
@@ -1726,7 +1729,12 @@ class EquipmentAdmin(admin.ModelAdmin):
         # Slot Exchange is switched by the Main Admin only (as in the portal's equipment form).
         user = request.user
         if not (getattr(user, "is_superuser", False) or getattr(user, "user_type", None) == "admin"):
-            fields.append("slot_exchange_enabled")
+            fields += [
+                "slot_exchange_enabled",
+                "department_slot_reservation_enabled",
+                "operating_day_start",
+                "oic_request_registration_enabled",
+            ]
         return fields
     
     ordering = ['name', 'profile_type']
@@ -3093,3 +3101,36 @@ class FabricationFileChangeAdmin(admin.ModelAdmin):
 #     )
     
 #     readonly_fields = ['created_at', 'updated_at']
+
+
+from iic_booking.equipment.config_audit_models import EquipmentConfigAuditLog  # noqa: E402
+
+
+@admin.register(EquipmentConfigAuditLog)
+class EquipmentConfigAuditLogAdmin(admin.ModelAdmin):
+    """Read-only: configuration audit rows are append-only and visible to the Main Admin only."""
+
+    list_display = ["changed_at", "equipment_code", "object_type", "setting_label", "previous_value", "new_value", "changed_by_label", "source"]
+    list_filter = ["source", "action", "object_type", "is_system"]
+    search_fields = ["equipment_code", "equipment_name", "setting", "setting_label", "changed_by_label", "previous_value", "new_value"]
+    date_hierarchy = "changed_at"
+    readonly_fields = [f.name for f in EquipmentConfigAuditLog._meta.fields]
+
+    def _main_admin(self, request):
+        user = request.user
+        return getattr(user, "is_superuser", False) or getattr(user, "user_type", None) == "admin"
+
+    def has_view_permission(self, request, obj=None):
+        return self._main_admin(request)
+
+    def has_module_permission(self, request):
+        return self._main_admin(request)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

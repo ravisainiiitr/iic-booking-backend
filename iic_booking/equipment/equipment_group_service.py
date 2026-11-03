@@ -211,7 +211,9 @@ def merge_equipment_groups_by_name(*, apply: bool = False) -> list[dict]:
                         changed.append(field_name)
                 if changed:
                     keep.save(update_fields=[*changed, "updated_at"])
-                Equipment.objects.filter(equipment_group__in=drop).update(equipment_group=keep)
+                from .config_audit import audited_update
+
+                audited_update(Equipment.objects.filter(equipment_group__in=drop), equipment_group=keep)
                 EquipmentGroup.objects.filter(pk__in=[g.pk for g in drop]).delete()
             _log_event("groups_merged_by_name", name=keep.name, keep=keep.pk, merged=entry["merge_ids"])
         report.append(entry)

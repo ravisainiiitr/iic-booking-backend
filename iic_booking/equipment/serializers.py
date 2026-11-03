@@ -2157,6 +2157,9 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'visibility_group_name',
             'visible_to_test_accounts_only',
             'reschedule_hours_threshold',
+            'department_slot_reservation_enabled',
+            'operating_day_start',
+            'oic_request_registration_enabled',
             'results_base_location',
             'specifications',
             'publications',
@@ -2717,6 +2720,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'slot_duration_minutes', 'slots_per_day',
             'slot_tolerance_minutes',
             'reschedule_hours_threshold', 'results_base_location', 'split_booking_enabled', 'slot_exchange_enabled',
+            'department_slot_reservation_enabled', 'operating_day_start', 'oic_request_registration_enabled',
             'auto_slot_selection_default', 'weekly_view_display',
             'weekly_view_time_from', 'weekly_view_time_to', 'weekly_view_max_rows', 'weekly_view_default_days',
             'slot_window_reference_weekday', 'slot_window_reference_time',
@@ -2918,6 +2922,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
                         {"slot_exchange_enabled": "Only the Main Admin can turn Slot Exchange on or off."}
                     )
                 attrs.pop("slot_exchange_enabled")
+        self._validate_main_admin_settings(attrs, instance)
         if "fabrication_notification_emails" in attrs:
             # Deprecated single-address column, kept in step so a rollback to an older release still has it.
             emails = attrs["fabrication_notification_emails"] or []
@@ -3062,6 +3067,40 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             _sync_mode_flags_after_save(equipment, None, actor)
             _add_fabrication_quantity_input(equipment, None)
         return equipment
+
+    MAIN_ADMIN_SETTINGS = {
+        "department_slot_reservation_enabled": "Department-Based Slot Reservation",
+        "operating_day_start": "Operating day starts at",
+        "oic_request_registration_enabled": "Allow OIC to Register Equipment Requests",
+    }
+
+    def _validate_main_admin_settings(self, attrs, instance):
+        """Only the Main Admin may change these; others keep the current value. Operating day changes must not move
+        booked future slots."""
+        request = self.context.get("request")
+        actor = getattr(request, "user", None)
+        is_main_admin = getattr(actor, "user_type", None) == UserType.ADMIN or getattr(actor, "is_superuser", False)
+        for field, label in self.MAIN_ADMIN_SETTINGS.items():
+            if field not in attrs:
+                continue
+            current = getattr(instance, field, None) if instance else Equipment._meta.get_field(field).get_default()
+            if attrs[field] != current and not is_main_admin:
+                raise serializers.ValidationError({field: f"Only the Main Admin can change {label}."})
+            if attrs[field] == current:
+                attrs.pop(field)
+        if instance is not None and "operating_day_start" in attrs:
+            from .operating_cycle import booked_slots_that_would_move
+
+            moved = booked_slots_that_would_move(instance, attrs["operating_day_start"])
+            if moved:
+                raise serializers.ValidationError(
+                    {
+                        "operating_day_start": (
+                            f"{len(moved)} upcoming booked or reserved slot(s) would move to another day "
+                            f"(first: {moved[0]}). Change the operating day when those bookings are done or moved."
+                        )
+                    }
+                )
 
     def update(self, instance, validated_data):
         from django.db import transaction
