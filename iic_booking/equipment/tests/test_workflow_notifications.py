@@ -1,4 +1,4 @@
-"""In-app notifications and pending-action counts for repeat sample requests."""
+"""In-app notifications and pending-action counts for repeat sample requests (raised by the OIC)."""
 
 from __future__ import annotations
 
@@ -83,11 +83,11 @@ def staff_permission():
         yield
 
 
-def test_repeat_sample_request_notifies_requester_and_oic(django_capture_on_commit_callbacks):
+def test_repeat_sample_user_request_is_refused_without_notifying(django_capture_on_commit_callbacks):
+    """Repeat samples are arranged by the OIC at the lab: a user's request is refused, nothing is recorded or sent."""
     eq = _equipment()
     student = _user(user_type=UserType.STUDENT)
     oic = _user(user_type=UserType.MANAGER)
-    other_oic = _user(user_type=UserType.MANAGER)
     EquipmentManager.objects.create(equipment=eq, manager=oic)
     booking = _completed_booking(student, eq)
 
@@ -95,21 +95,12 @@ def test_repeat_sample_request_notifies_requester_and_oic(django_capture_on_comm
         res = _client_for(student).post(
             f"/api/bookings/{booking.pk}/request-repeat-sample/", {"user_notes": "Peaks missing"}, format="json"
         )
-    assert res.status_code == 201, res.data
+    assert res.status_code == 403, res.data
+    assert res.data["code"] == "REPEAT_SAMPLE_BY_OIC_ONLY"
 
-    mine = _bell(student)
-    assert len(mine) == 1
-    assert mine[0].subject == "Repeat sample request submitted"
-    assert "Officer in charge" in mine[0].message
-
-    oic_rows = _bell(oic)
-    assert len(oic_rows) == 1
-    assert oic_rows[0].subject == "Action needed: repeat sample request"
-    assert oic_rows[0].metadata["link"] == "/repeat-sample-requests"
-    assert oic_rows[0].metadata["action_required"] is True
-    assert "Peaks missing" in oic_rows[0].message
-
-    assert _bell(other_oic) == []
+    assert not RepeatSampleRequest.objects.filter(booking=booking).exists()
+    assert _bell(student) == []
+    assert _bell(oic) == []
 
 
 def test_repeat_sample_list_and_reject_are_scoped_and_notify(staff_permission, django_capture_on_commit_callbacks):

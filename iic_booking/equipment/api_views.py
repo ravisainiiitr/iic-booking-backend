@@ -17783,39 +17783,6 @@ def _repeat_request_action_denied(user, repeat_req):
     return None
 
 
-def _notify_repeat_sample_requested(repeat_req, actor) -> None:
-    from iic_booking.communication.in_app import equipment_oic_users, notify_in_app, person_label
-
-    booking = repeat_req.booking
-    equipment = booking.equipment
-    ref = booking_display_id_for_email(booking)
-    extra = {"repeat_sample_request_id": repeat_req.id, "real_booking_id": booking.booking_id}
-    notify_in_app(
-        [actor],
-        title="Repeat sample request submitted",
-        message=f"{ref} — {equipment.name}: your request for a complimentary repeat sample was sent to the Officer in charge for review.",
-        link=f"/my-bookings?booking={ref}",
-        event="repeat_sample.requested",
-        created_by=actor,
-        extra=extra,
-    )
-    oics = [u for u in equipment_oic_users(equipment) if u.id != actor.id]
-    notify_in_app(
-        oics,
-        title="Action needed: repeat sample request",
-        message=(
-            f"{person_label(actor)} requested a complimentary repeat sample for {ref} — {equipment.name}."
-            + (f" Note: {repeat_req.user_notes}" if repeat_req.user_notes else "")
-            + " Approve or reject it from Repeat sample requests."
-        ),
-        link="/repeat-sample-requests",
-        notification_type="warning",
-        event="repeat_sample.requested",
-        created_by=actor,
-        extra={**extra, "action_required": True},
-    )
-
-
 def _notify_repeat_sample_decided(repeat_req, actor) -> None:
     from iic_booking.communication.in_app import equipment_oic_users, notify_in_app, person_label
 
