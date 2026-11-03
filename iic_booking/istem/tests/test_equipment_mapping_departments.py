@@ -323,3 +323,28 @@ def test_department_progress_lists_linked_istem_departments():
     IstemDepartmentMapping.objects.create(istem_department_id="164", department=iic)
     body = _api(_admin()).get(URL).data
     assert {d["id"]: d["istem_department_ids"] for d in body["departments"]}[iic.pk] == ["164"]
+
+
+# --- institute from the token -----------------------------------------------------------------------------------
+
+def test_listing_is_for_the_institute_named_in_the_token(settings):
+    apply_live(settings)
+    rows = LISTING + [{"equipment_id": 49001, "equipment_name": "Another institute's XRD", "institute_id": 999}]
+    transport = FakeTransport(token_response(institute_id=213), _page(rows))
+    body = istem_listing(_admin(), client_factory=lambda: IstemClient(transport))
+    ids = {r["equipment_id"] for r in body["equipment"]}
+    assert "49001" not in ids and "38750" in ids
+    assert body["istem_source"]["institute_id"] == "213"
+    sent = [c for c in transport.calls if "equipment-list" in str(c.get("url", ""))]
+    assert sent and sent[0]["params"]["institute_id"] == "213"
+
+
+def test_token_without_institute_is_refused_instead_of_listing_every_institute(settings):
+    from .support import staging_token_response
+
+    apply_live(settings)
+    settings.ISTEM_INSTITUTE_ID = "213"  # a leftover setting must not stand in for the token
+    transport = FakeTransport(staging_token_response(), _page(LISTING))
+    with pytest.raises(MappingRefused) as exc:
+        istem_listing(_admin(), client_factory=lambda: IstemClient(transport))
+    assert "institute_id" in exc.value.message

@@ -50,9 +50,8 @@ FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
 # "user_id", "user_entity", "institute_id"}}. Wrong credentials are HTTP 200 with {"result": "Error"}.
 DOCUMENTED_TOKEN_LIFETIME_SECONDS = 3600
 
-# [STAGING] The token message carries only access_token, token_type ("Bearer") and expires_in: no institute_id,
-# user_id or user_entity. The institute then comes from ISTEM_INSTITUTE_ID (IIT Roorkee is 213); when the token does
-# name an institute, it wins and a different configured value is refused.
+# The institute comes only from the token's institute_id (3 Nov 2026: staging returns user_id, user_entity and
+# institute_id 213 for IIT Roorkee's account); it is not configured on the portal.
 # [STAGING] Only the "Token" header is accepted; "Authorization: Bearer" and no header answer 401 "Invalid Token".
 
 # Success spellings that appear in the documented responses ("SUCCESS", "Sucess", "success") and on [STAGING]
