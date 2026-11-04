@@ -4,8 +4,9 @@
   (the existing SPA route). The ID never changes, so a printed code survives renames.
 - QR images are generated on demand with the ``qrcode`` library already used for certificates (PNG via Pillow, SVG
   as vector paths); nothing is stored and no external service is called.
-- ``public_equipment_payload`` is an explicit allowlist of fields safe for anyone who scans the code. It never
-  includes staff names/emails/phones, charges, bookings, internal notes, storage paths or notification addresses.
+- ``public_equipment_payload`` is an explicit allowlist of fields for anyone who scans the code. It includes the
+  lab contacts (Officers In-charge and Lab Operators: name, phone, email, office, photo; approved for public display
+  on 5 Nov 2026) and never charges, bookings, internal notes, storage paths or notification addresses.
 - Management endpoints (list, PNG/SVG, ZIP) are for the Main Admin (all equipment) and OICs (equipment they are
   Officer In-charge of, primary or temporary), enforced here.
 """
@@ -208,10 +209,42 @@ def public_equipment_payload(eq: Equipment, request=None) -> dict:
         "location": (eq.location or "").strip(),
         "directions": directions(eq),
         "enquiry_address": (eq.office_address or "").strip(),
+        "contacts": public_contacts(eq, request),
         "public_url": public_equipment_url(eq.pk),
         "booking_path": f"/book-equipment?equipment_id={eq.pk}",
         "charges_path": "/analysis-charges",
     }
+
+
+def _contact(role: str, name, email, phone, alternate, office, photo) -> dict | None:
+    name = (name or "").strip()
+    if not name:
+        return None
+    phones = [p for p in dict.fromkeys([(phone or "").strip(), (alternate or "").strip()]) if p]
+    return {"role": role, "name": name, "email": (email or "").strip(), "phones": phones,
+            "office": (office or "").strip(), "photo_url": photo or ""}
+
+
+def public_contacts(eq: Equipment, request=None) -> list[dict]:
+    """Officers In-charge, then Lab Operators, exactly as the signed-in equipment page lists them (same serializers,
+    so secondary-operator cover is applied the same way). Only these contact fields leave the server."""
+    from .serializers import EquipmentDetailSerializer, EquipmentManagerSerializer
+
+    ctx = {"request": request}
+    out = []
+    managers = eq.equipment_managers.select_related("manager").order_by("equipment_manager_id")
+    for m in EquipmentManagerSerializer(managers, many=True, context=ctx).data:
+        out.append(_contact("Officer In-charge", m.get("manager_name"), m.get("manager_email"), m.get("manager_phone"),
+                            m.get("alternate_phone_number"), m.get("office_address"), m.get("manager_profile_picture")))
+    for o in EquipmentDetailSerializer(context=ctx).get_operators(eq):
+        out.append(_contact("Lab Operator", o.get("operator_name"), o.get("operator_email"), o.get("operator_phone"),
+                            o.get("alternate_phone_number"), o.get("office_address"), o.get("operator_profile_picture")))
+    seen, unique = set(), []
+    for c in out:
+        if c and (c["role"], c["name"], c["email"]) not in seen:
+            seen.add((c["role"], c["name"], c["email"]))
+            unique.append(c)
+    return unique
 
 
 @api_view(["GET"])
