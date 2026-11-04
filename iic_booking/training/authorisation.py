@@ -395,7 +395,9 @@ def _require_configure(user, equipment_id):
 # Setting
 # ---------------------------------------------------------------------------
 SETTING_FIELDS = ("required", "applies_to", "min_level_code", "validity_months", "grace_completed_bookings", "grace_months",
-                  "competency_levels", "beginner_supervised_allowed", "expert_requires_oic_approval", "note")
+                  "competency_levels", "beginner_supervised_allowed", "expert_requires_oic_approval",
+                  "min_supervised_sessions", "beginner_validity_months", "note")
+MAX_SUPERVISED_SESSIONS = 20
 BOOL_SETTING_FIELDS = ("competency_levels", "beginner_supervised_allowed", "expert_requires_oic_approval")
 
 
@@ -419,6 +421,8 @@ def setting_out(equipment, row: EquipmentAuthorisationSetting | None = None) -> 
         "competency_levels": bool(row.competency_levels),
         "beginner_supervised_allowed": bool(row.beginner_supervised_allowed),
         "expert_requires_oic_approval": bool(row.expert_requires_oic_approval),
+        "min_supervised_sessions": row.min_supervised_sessions,
+        "beginner_validity_months": row.beginner_validity_months,
         "note": row.note,
         "updated_at": s.iso(row.updated_at) if row.pk else None,
         "updated_by": s.user_brief(row.updated_by)["name"] if row.pk and row.updated_by_id else None,
@@ -457,6 +461,11 @@ def save_setting(equipment, actor, data: dict) -> dict:
             row.grace_completed_bookings = _int_in(data, "grace_completed_bookings", 0, 50, 0)
         if "grace_months" in data:
             row.grace_months = _int_in(data, "grace_months", 1, MAX_MONTHS, row.grace_months)
+        if "min_supervised_sessions" in data:
+            row.min_supervised_sessions = _int_in(data, "min_supervised_sessions", 0, MAX_SUPERVISED_SESSIONS,
+                                                  row.min_supervised_sessions)
+        if "beginner_validity_months" in data:
+            row.beginner_validity_months = _int_in(data, "beginner_validity_months", 1, MAX_MONTHS, row.beginner_validity_months)
         for name in BOOL_SETTING_FIELDS:
             if name in data:
                 setattr(row, name, data[name] in (True, "true", "True", "1", 1))
@@ -720,6 +729,10 @@ def act_on_award(award: CertificationAward, actor, action: str, data: dict) -> C
     reason = str(data.get("reason") or "").strip()
     if not reason:
         raise TrainingError("A reason is required.", code="reason_required")
+    if action == "downgrade":
+        from . import competency
+
+        return competency.downgrade(award, actor, reason)
     now = timezone.now()
     before = {"status": award.status, "valid_until": s.iso(award.valid_until)}
     if action == "revoke":
