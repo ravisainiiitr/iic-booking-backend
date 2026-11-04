@@ -133,10 +133,24 @@ class SlotGenerator:
         Returns:
             List of created DailySlot instances
         """
+        opened_holiday = False
         if not allow_holiday:
             is_holiday, holiday_reason = Holiday.is_holiday(target_date)
             if is_holiday:
-                return []
+                # A weekend/holiday slot a Repeat block "Available" rule opens is generated for everyone.
+                from .slot_block_rules import masters_opened_on, opening_rules
+
+                rules = opening_rules(equipment, target_date, target_date)
+                if not rules:
+                    return []
+                if slot_masters is None:
+                    slot_masters = list(
+                        SlotMaster.objects.filter(equipment=equipment, is_active=True).order_by('slot_number')
+                    )
+                slot_masters = masters_opened_on(rules, slot_masters, target_date)
+                if not slot_masters:
+                    return []
+                opened_holiday = True
         
         # Get slot masters (if not provided)
         if slot_masters is None:
@@ -146,7 +160,9 @@ class SlotGenerator:
             ).order_by('slot_number'))
 
         initial_status = SlotGenerator._get_initial_slot_status_for_equipment(equipment)
-        if allow_holiday and initial_status in SlotGenerator.CLOSED_ON_HOLIDAYS:
+        if opened_holiday:
+            initial_status = SlotStatus.NOT_AVAILABLE
+        elif allow_holiday and initial_status in SlotGenerator.CLOSED_ON_HOLIDAYS:
             # Admin/OIC grid: weekend + table holidays are closed until staff sets e.g. AVAILABLE — also while the
             # equipment is Under Maintenance, so they do not reopen when it is Operational again.
             is_holiday, _ = Holiday.is_holiday(target_date)
@@ -213,24 +229,32 @@ class SlotGenerator:
                 date__lte=week_end,
             ).values_list("slot_master_id", "date")
         )
+        open_rules = []
+        if not allow_holiday and holidays_in_range:
+            # Weekend/holiday slots a Repeat block "Available" rule opens are generated for everyone.
+            from .slot_block_rules import masters_opened_on, opening_rules
+
+            open_rules = opening_rules(equipment, week_start, week_end)
         to_create = []
         current_date = week_start
         while current_date <= week_end:
+            day_masters = slot_masters
             if not allow_holiday and current_date in holidays_in_range:
-                current_date += timedelta(days=1)
-                continue
-            for slot_master in slot_masters:
+                day_masters = masters_opened_on(open_rules, slot_masters, current_date)
+                if not day_masters:
+                    current_date += timedelta(days=1)
+                    continue
+            for slot_master in day_masters:
                 if (slot_master.pk, current_date) in existing_keys:
                     continue
                 start_datetime, end_datetime = SlotGenerator._aware_slot_datetimes(
                     current_date, slot_master.open_time, slot_master.close_time, equipment.operating_day_start
                 )
                 row_status = initial_status
-                if (
-                    allow_holiday
-                    and row_status in SlotGenerator.CLOSED_ON_HOLIDAYS
-                    and current_date in holidays_in_range
+                if current_date in holidays_in_range and (
+                    not allow_holiday or row_status in SlotGenerator.CLOSED_ON_HOLIDAYS
                 ):
+                    # Closed until staff (or a Repeat block "Available" rule, applied on create) opens it.
                     row_status = SlotStatus.NOT_AVAILABLE
                 to_create.append(
                     DailySlot(

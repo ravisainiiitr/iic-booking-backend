@@ -61,7 +61,7 @@ class SlotBlockRuleListCreateView(APIView):
         body = {
             "equipment": {"id": equipment.pk, "code": equipment.code, "name": equipment.name},
             "slot_times": rules.equipment_slot_times(equipment),
-            "status_options": rules.rule_status_options(),
+            "status_options": rules.rule_status_options(equipment),
             "rules": active,
         }
         if include_removed:

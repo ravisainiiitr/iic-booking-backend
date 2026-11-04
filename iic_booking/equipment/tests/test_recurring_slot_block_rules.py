@@ -607,7 +607,8 @@ def test_invalid_status_is_rejected_and_options_are_listed(admin, eq):
     assert res.status_code == 400
     options = _client(admin).get(_url(eq)).data["status_options"]
     assert [o["value"] for o in options] == [
-        "BLOCKED", "UNDER_MAINTENANCE", "SCHEDULED_MAINT", "OPERATOR_ABSENT", "NOT_AVAILABLE", "RESERVED_EXTERNAL",
+        "BLOCKED", "UNDER_MAINTENANCE", "SCHEDULED_MAINT", "OPERATOR_ABSENT", "AVAILABLE", "NOT_AVAILABLE",
+        "RESERVED_EXTERNAL",
     ]
     assert options[0]["label"] == "Other Reasons"
 
@@ -616,3 +617,183 @@ def test_rules_created_before_statuses_still_mean_other_reasons(admin, eq):
     data = _create(admin, eq, weekdays=[MONDAY], slot_times=["10:00"])
     assert data["rule"]["slot_status"] == SlotStatus.BLOCKED
     assert data["rule"]["slot_status_display"] == "Other Reasons"
+
+
+
+# --- Available and the non-home reservation (every repeatable Select operation) ------------------
+
+SAT = MON + timedelta(days=5)
+
+
+def _reservation_equipment(**kwargs) -> Equipment:
+    from iic_booking.users.models import Department
+
+    dept = Department.objects.create(name=f"Home {uuid.uuid4().hex[:4]}", code=f"H{uuid.uuid4().hex[:4].upper()}")
+    equipment = _equipment(internal_department=dept, department_slot_reservation_enabled=True, **kwargs)
+    _generate(equipment, MON, MON + timedelta(days=13))
+    return equipment
+
+
+def test_options_follow_the_select_operation_list(admin, eq):
+    options = [o["value"] for o in _client(admin).get(_url(eq)).data["status_options"]]
+    assert options == [
+        "BLOCKED", "UNDER_MAINTENANCE", "SCHEDULED_MAINT", "OPERATOR_ABSENT", "AVAILABLE", "NOT_AVAILABLE",
+        "RESERVED_EXTERNAL",
+    ]
+    reserved = _reservation_equipment()
+    labels = {o["value"]: o["label"] for o in _client(admin).get(_url(reserved)).data["status_options"]}
+    assert labels["HOME_DEPARTMENT_ONLY"] == "Reserved for non-home department"
+    assert labels["CLEAR_HOME_DEPT"] == "Clear non-home reservation (home dept)"
+    # One-off booking actions cannot repeat.
+    for value in ("BOOKING_NOT_UTILIZED", "RESCHEDULE", "BULK_EMAIL", "CREATE_BOOKING", "BOOKED"):
+        res = _client(admin).post(_url(reserved), _payload(slot_status=value), format="json")
+        assert res.status_code == 400 and res.data["field"] == "slot_status"
+
+
+def test_reservation_rules_need_department_reservation_on(admin, eq):
+    res = _client(admin).post(_url(eq), _payload(slot_status="HOME_DEPARTMENT_ONLY"), format="json")
+    assert res.status_code == 400 and res.data["code"] == "department_slot_reservation_off"
+
+
+def test_available_rule_opens_not_available_slots_and_closes_them_on_removal(admin, eq):
+    student = _user(UserType.STUDENT)
+    _book(eq, _slot(eq, SAT, "14:00"), student)
+    data = _create(
+        admin, eq, slot_status=SlotStatus.AVAILABLE, weekdays=[SATURDAY, MONDAY], slot_times=["10:00", "14:00"],
+        end_date=(MON + timedelta(days=27)).isoformat(),
+    )
+    result = data["result"]
+    # Sat 12 + 19 at 10:00 and Sat 19 at 14:00 open; Sat 12 14:00 is booked; Monday slots are already available.
+    assert result["blocked_count"] == 3
+    assert result["skipped_booked_count"] == 1
+    assert {r["reason"] for r in result["skipped_other"]} == {"Already available"}
+    assert result["future_slots_count"] == 4  # Sat 26 Jan + Sat 2 Feb are not generated yet (2 x 2)
+    assert data["rule"]["slot_status_display"] == "Available"
+    for day in (SAT, SAT + timedelta(days=7)):
+        assert _slot(eq, day, "10:00").status == SlotStatus.AVAILABLE
+    assert _slot(eq, SAT, "00:30").status == SlotStatus.NOT_AVAILABLE
+    assert _slot(eq, SAT, "14:00").status == SlotStatus.BOOKED
+
+    res = _client(admin).post(_url(eq, f"{data['rule']['id']}/remove/"), {}, format="json")
+    assert res.status_code == 200, res.data
+    assert res.data["result"]["unblocked_count"] == 3
+    assert res.data["result"]["restored_status"] == SlotStatus.NOT_AVAILABLE
+    assert _slot(eq, SAT, "10:00").status == SlotStatus.NOT_AVAILABLE
+    assert _slot(eq, MON, "10:00").status == SlotStatus.AVAILABLE
+    assert _slot(eq, SAT, "14:00").status == SlotStatus.BOOKED
+
+
+def test_available_rule_opens_generated_weekend_slots_for_everyone(admin, eq):
+    rule_id = _create(
+        admin, eq, slot_status=SlotStatus.AVAILABLE, weekdays=[SATURDAY], slot_times=["10:00"],
+        end_date=(MON + timedelta(days=40)).isoformat(),
+    )["rule"]["id"]
+    # Staff grid (allow_holiday) and the public week / day generation (weekends are otherwise skipped).
+    _generate(eq, MON + timedelta(days=14), MON + timedelta(days=20))
+    SlotGenerator.generate_slots_for_week(eq, MON + timedelta(days=21), MON + timedelta(days=27))
+    SlotGenerator.generate_daily_slots(eq, MON + timedelta(days=33))
+    for day in (SAT + timedelta(days=14), SAT + timedelta(days=21), SAT + timedelta(days=28)):
+        slot = _slot(eq, day, "10:00")
+        assert slot.status == SlotStatus.AVAILABLE
+        assert RecurringSlotBlockRuleSlot.objects.filter(
+            rule_id=rule_id, daily_slot=slot, source=RecurringSlotBlockRuleSlot.Source.GENERATED
+        ).exists()
+    # The public week only creates the weekend slots the rule opens; the staff grid still closes the rest.
+    public_sat = DailySlot.objects.filter(slot_master__equipment=eq, date=SAT + timedelta(days=21))
+    assert public_sat.count() == 1
+    assert not DailySlot.objects.filter(slot_master__equipment=eq, date=SAT + timedelta(days=22)).exists()
+    assert _slot(eq, SAT + timedelta(days=14), "14:00").status == SlotStatus.NOT_AVAILABLE
+
+
+def test_available_rule_does_not_open_while_equipment_is_under_repair(admin, eq):
+    Equipment.objects.filter(pk=eq.pk).update(status=EquipmentStatus.REPAIR)
+    eq.refresh_from_db()
+    data = _create(admin, eq, slot_status=SlotStatus.AVAILABLE, weekdays=[SATURDAY], slot_times=["10:00"])
+    assert data["result"]["blocked_count"] == 0
+    assert {r["reason"] for r in data["result"]["skipped_other"]} == {"Equipment is under repair"}
+    assert data["result"]["future_slots_count"] == 0
+    assert _slot(eq, SAT, "10:00").status == SlotStatus.NOT_AVAILABLE
+    SlotGenerator.generate_slots_for_week(eq, MON + timedelta(days=14), MON + timedelta(days=20))
+    assert not DailySlot.objects.filter(slot_master__equipment=eq, date=SAT + timedelta(days=14)).exists()
+
+
+def test_weekend_opened_by_rule_stays_open_after_maintenance(admin, eq):
+    from iic_booking.equipment.maintenance_auto import restore_slots_after_maintenance
+
+    _create(admin, eq, slot_status=SlotStatus.AVAILABLE, weekdays=[SATURDAY], slot_times=["10:00", "14:00"])
+    opened = _slot(eq, SAT, "10:00")
+    closed = _slot(eq, SAT, "00:30")
+    DailySlot.objects.filter(pk__in=[opened.pk, closed.pk]).update(status=SlotStatus.UNDER_MAINTENANCE)
+    restore_slots_after_maintenance([opened.pk, closed.pk])
+    assert _slot(eq, SAT, "10:00").status == SlotStatus.AVAILABLE
+    assert _slot(eq, SAT, "00:30").status == SlotStatus.NOT_AVAILABLE
+
+
+def test_available_and_blocking_rules_combine_on_generated_weekend_slots(admin, eq):
+    window = {"weekdays": [SATURDAY], "end_date": (MON + timedelta(days=27)).isoformat()}
+    _create(admin, eq, slot_status=SlotStatus.AVAILABLE, slot_times=["10:00", "14:00"], **window)
+    _create(admin, eq, slot_times=["14:00"], label="Lunch service", **window)
+    _generate(eq, MON + timedelta(days=14), MON + timedelta(days=20))
+    later = SAT + timedelta(days=14)
+    assert _slot(eq, later, "10:00").status == SlotStatus.AVAILABLE
+    assert (_slot(eq, later, "14:00").status, _slot(eq, later, "14:00").blocked_label) == (
+        SlotStatus.BLOCKED, "Lunch service",
+    )
+    # Created now: the Other Reasons rule blocks the Saturday slot the Available rule opened.
+    assert _slot(eq, SAT, "14:00").status == SlotStatus.BLOCKED
+
+
+def test_reserve_non_home_rule_marks_unbooked_slots_and_clears_on_removal(admin):
+    eq = _reservation_equipment()
+    student = _user(UserType.STUDENT)
+    _book(eq, _slot(eq, MON + timedelta(days=7), "10:00"), student)
+    DailySlot.objects.filter(pk=_slot(eq, MON + timedelta(days=3), "10:00").pk).update(status=SlotStatus.BLOCKED)
+    data = _create(
+        admin, eq, slot_status="HOME_DEPARTMENT_ONLY", weekdays=[MONDAY, THURSDAY], slot_times=["10:00"],
+        end_date=(MON + timedelta(days=27)).isoformat(),
+    )
+    result = data["result"]
+    assert result["blocked_count"] == 3  # Mon 7, Thu 10 (blocked, still marked), Thu 17; Mon 14 is booked
+    assert result["skipped_booked_count"] == 1
+    assert result["future_slots_count"] == 4
+    for day in (MON, MON + timedelta(days=3), MON + timedelta(days=10)):
+        assert _slot(eq, day, "10:00").home_department_only is True
+    # Status is untouched; the booked slot is left as it was.
+    assert _slot(eq, MON + timedelta(days=3), "10:00").status == SlotStatus.BLOCKED
+    assert _slot(eq, MON, "10:00").status == SlotStatus.AVAILABLE
+    assert _slot(eq, MON + timedelta(days=7), "10:00").home_department_only is False
+    assert _slot(eq, MON, "14:00").home_department_only is False
+
+    _generate(eq, MON + timedelta(days=14), MON + timedelta(days=20))
+    generated = _slot(eq, MON + timedelta(days=14), "10:00")
+    assert (generated.status, generated.home_department_only) == (SlotStatus.AVAILABLE, True)
+    rule = _client(admin).get(_url(eq, f"{data['rule']['id']}/")).data["rule"]
+    assert rule["blocked_now_count"] == 5 and rule["generated_count"] == 2
+
+    again = _create(admin, eq, slot_status="HOME_DEPARTMENT_ONLY", weekdays=[MONDAY], slot_times=["10:00"])
+    assert again["result"]["blocked_count"] == 0
+    assert again["result"]["already_blocked_by_rule_count"] == 1
+
+    res = _client(admin).post(_url(eq, f"{data['rule']['id']}/remove/"), {}, format="json")
+    assert res.status_code == 200, res.data
+    assert res.data["result"]["restored_home_department_only"] is False
+    # Mon 7 stays marked: the second rule still covers it.
+    assert _slot(eq, MON, "10:00").home_department_only is True
+    for day in (MON + timedelta(days=3), MON + timedelta(days=10), MON + timedelta(days=14)):
+        assert _slot(eq, day, "10:00").home_department_only is False
+
+
+def test_clear_non_home_rule_clears_marks_and_restores_them(admin):
+    eq = _reservation_equipment()
+    DailySlot.objects.filter(slot_master__equipment=eq, date__in=[MON, MON + timedelta(days=7)]).update(
+        home_department_only=True
+    )
+    data = _create(admin, eq, slot_status="CLEAR_HOME_DEPT", weekdays=[MONDAY, THURSDAY], slot_times=["10:00"])
+    assert data["result"]["blocked_count"] == 2
+    assert {r["reason"] for r in data["result"]["skipped_other"]} == {"Not reserved for non-home department"}
+    assert _slot(eq, MON, "10:00").home_department_only is False
+    assert _slot(eq, MON, "14:00").home_department_only is True
+
+    _client(admin).post(_url(eq, f"{data['rule']['id']}/remove/"), {}, format="json")
+    assert _slot(eq, MON, "10:00").home_department_only is True
+    assert _slot(eq, MON + timedelta(days=3), "10:00").home_department_only is False
