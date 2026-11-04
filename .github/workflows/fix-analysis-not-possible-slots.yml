@@ -1,0 +1,46 @@
+# Relabel slots freed from "Analysis Not Possible" bookings that were wrongly marked Operator Absent
+# (dry run unless apply=true). Prints only counts per equipment id.
+name: Fix Analysis Not Possible Slots
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Write the changes (false = dry run)"
+        type: boolean
+        default: false
+      include_past:
+        description: "Also include slots that have already ended"
+        type: boolean
+        default: false
+
+jobs:
+  fix:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Fix
+        env:
+          APPLY: ${{ inputs.apply }}
+          INCLUDE_PAST: ${{ inputs.include_past }}
+        run: |
+          set -euo pipefail
+          ARGS=()
+          [[ "$APPLY" == "true" ]] && ARGS+=(--apply)
+          [[ "$INCLUDE_PAST" == "true" ]] && ARGS+=(--include-past)
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+                python manage.py fix_analysis_not_possible_slots "${ARGS[@]}"
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
