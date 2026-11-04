@@ -353,6 +353,10 @@ def act(award: CertificationAward, actor, action: str, data: dict) -> Certificat
     reason = (data.get("reason") or "").strip()
     if not reason:
         raise TrainingError("A reason is required.", code="reason_required")
+    if action == "downgrade":
+        from . import competency
+
+        return competency.downgrade(award, actor, reason)
     now = timezone.now()
     before = {"status": award.status, "valid_until": award.valid_until.isoformat() if award.valid_until else None}
     if action == "suspend":

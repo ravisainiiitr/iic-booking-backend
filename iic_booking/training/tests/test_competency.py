@@ -42,7 +42,15 @@ def _quiet_notifications():
 
 
 def two_level_on(eq, **kwargs):
+    kwargs.setdefault("min_supervised_sessions", 0)
     return gate_on(eq, competency_levels=True, **kwargs)
+
+
+def attended(world, *, recorded_at=None):
+    b = make_booking(world.student, world.equipment)
+    return SupervisedSession.objects.create(booking=b, equipment=world.equipment, student=world.student,
+                                            supervisor=world.operator, status=SupervisionStatus.ATTENDED,
+                                            recorded_by=world.operator, recorded_at=recorded_at or timezone.now())
 
 
 def award(user, eq, code_, *, status=AwardStatus.ACTIVE, valid_until=None):
@@ -312,4 +320,75 @@ def test_settings_switches_round_trip(world):
     assert resp.status_code == 200, resp.data
     world.equipment.authorisation_setting.refresh_from_db()
     assert world.equipment.authorisation_setting.expert_requires_oic_approval is False
+    resp = client_for(world.oic).put(url, {"min_supervised_sessions": 3, "beginner_validity_months": 4}, format="json")
+    assert resp.status_code == 200 and resp.data["min_supervised_sessions"] == 3 and resp.data["beginner_validity_months"] == 4
+    assert client_for(world.oic).put(url, {"min_supervised_sessions": 99}, format="json").status_code == 400
+    assert client_for(world.oic).put(url, {"beginner_validity_months": 0}, format="json").status_code == 400
     assert client_for(world.student).put(url, {"competency_levels": False}, format="json").status_code == 403
+
+
+# --------------------------------------------------------------------------- minimum sessions, Beginner expiry, downgrade
+def test_assessment_needs_the_minimum_supervised_sessions_since_becoming_beginner(world):
+    two_level_on(world.equipment, min_supervised_sessions=2)
+    beginner = award(world.student, world.equipment, "BEGINNER")
+    attended(world, recorded_at=beginner.awarded_at - timedelta(days=1))  # before the Beginner status: not counted
+    attended(world)
+    url = f"{AUTH}/assessment-requests/"
+    resp = client_for(world.student).post(url, {"equipment_id": world.equipment.pk}, format="json")
+    assert resp.status_code == 400 and resp.data["code"] == "sessions_required"
+    st = authorisation.evaluate(world.student, world.equipment)
+    assert (st["supervised_sessions_done"], st["supervised_sessions_required"], st["can_request_assessment"]) == (1, 2, False)
+    attended(world)
+    st = authorisation.evaluate(world.student, world.equipment)
+    assert st["supervised_sessions_done"] == 2 and st["can_request_assessment"]
+    assert client_for(world.student).post(url, {"equipment_id": world.equipment.pk}, format="json").status_code == 201
+
+
+def test_beginner_status_expires_after_the_set_months(world):
+    two_level_on(world.equipment, beginner_validity_months=3)
+    induct(world)
+    b = CertificationAward.objects.get(user=world.student, equipment=world.equipment, level__code="BEGINNER")
+    expected = timezone.now() + relativedelta(months=3)
+    assert abs((b.valid_until - expected).total_seconds()) < 120
+    st = authorisation.evaluate(world.student, world.equipment)
+    assert st["stage"] == "BEGINNER" and st["beginner_valid_until"]
+    CertificationAward.objects.filter(pk=b.pk).update(valid_until=timezone.now() - timedelta(minutes=1))
+    st = authorisation.evaluate(world.student, world.equipment)
+    assert st["stage"] != "BEGINNER" and not st["supervised_only"] and not st["allowed"]
+    assert authorisation.check_booking(world.student, world.equipment, actor=world.student, supervisor=world.operator) is not None
+
+
+def test_oic_downgrades_an_expert_to_beginner(world):
+    two_level_on(world.equipment, min_supervised_sessions=1)
+    expert = award(world.student, world.equipment, "EXPERT")
+    trainer = EquipmentTrainer.objects.create(equipment=world.equipment, user=world.student, designated_by=world.oic)
+    attended(world)  # earlier sessions do not count after a downgrade
+    url = f"{API}/certifications/{expert.pk}/downgrade/"
+    assert client_for(world.operator).post(url, {"reason": "Unsafe handling"}, format="json").status_code == 403
+    assert client_for(world.student).post(url, {"reason": "x"}, format="json").status_code == 403
+    assert client_for(world.oic).post(url, {}, format="json").status_code == 400
+    # Same action from the Authorised users list (Lab Operators may revoke there, but not downgrade).
+    auth_url = f"{AUTH}/awards/{expert.pk}/downgrade/"
+    assert client_for(world.operator).post(auth_url, {"reason": "Unsafe handling"}, format="json").status_code == 403
+    resp = client_for(world.oic).post(auth_url, {"reason": "Unsafe handling of the X-ray shutter"}, format="json")
+    assert resp.status_code == 200, resp.data
+    assert resp.data["level"] == "BEGINNER" and resp.data["valid_until"]
+    expert.refresh_from_db()
+    trainer.refresh_from_db()
+    assert expert.status == AwardStatus.REVOKED and expert.revoke_reason.startswith("Downgraded to Beginner")
+    assert trainer.is_active is False
+    st = authorisation.evaluate(world.student, world.equipment)
+    assert st["stage"] == "BEGINNER" and st["supervised_only"] and not st["allowed"]
+    assert st["supervised_sessions_done"] == 0 and not st["can_request_assessment"]
+    assert code(book(world.student, world.equipment)) == SUP
+    assert TrainingAuditLog.objects.filter(action="competency.downgraded").exists()
+    # A Beginner award cannot be downgraded again.
+    again = client_for(world.oic).post(f"{API}/certifications/{resp.data['id']}/downgrade/", {"reason": "x"}, format="json")
+    assert again.status_code == 400 and again.data["code"] == "not_expert"
+
+
+def test_downgrade_needs_two_level_equipment(world):
+    gate_on(world.equipment)
+    a = award(world.student, world.equipment, "EXPERT")
+    resp = client_for(world.oic).post(f"{API}/certifications/{a.pk}/downgrade/", {"reason": "x"}, format="json")
+    assert resp.status_code == 400 and resp.data["code"] == "not_two_level"
