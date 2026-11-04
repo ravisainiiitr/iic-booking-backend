@@ -1,0 +1,71 @@
+name: Probe Publication Discovery (read-only)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Publication discovery health (SELECT only, counts only, no personal data)
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import json, os, urllib.request
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.conf import settings
+          from django.db.models import Count
+          from django.utils import timezone
+          from django_celery_beat.models import PeriodicTask
+          from iic_booking.impact.models import PublicationSuggestion, ResearcherOrcid
+
+          print("NOW", timezone.localtime().strftime("%Y-%m-%d %H:%M %Z"))
+          t = PeriodicTask.objects.filter(name="impact-weekly-publication-discovery").select_related("crontab").first()
+          if t is None:
+              print("BEAT TASK missing")
+          else:
+              c = t.crontab
+              print(f"BEAT TASK task={t.task} enabled={t.enabled} cron='{c.minute} {c.hour} * * {c.day_of_week}' tz={c.timezone} "
+                    f"last_run_at={t.last_run_at} total_run_count={t.total_run_count}")
+
+          rows = ResearcherOrcid.objects.all()
+          print("ORCID ROWS", rows.count(), "| discovery_enabled", rows.filter(discovery_enabled=True).count(),
+                "| active users", rows.filter(user__is_active=True).count())
+          print("  checked at least once", rows.exclude(last_checked_at__isnull=True).count(),
+                "| never checked", rows.filter(last_checked_at__isnull=True).count(),
+                "| last check had error", rows.exclude(last_error="").count())
+          last = rows.exclude(last_checked_at__isnull=True).order_by("-last_checked_at").values_list("last_checked_at", flat=True).first()
+          print("  most recent check", timezone.localtime(last).strftime("%Y-%m-%d %H:%M") if last else "-")
+          errs = rows.exclude(last_error="").values("last_error").annotate(n=Count("id")).order_by("-n")[:5]
+          for e in errs:
+              print(f"  error x{e['n']}: {e['last_error'][:200]}")
+
+          s = PublicationSuggestion.objects.all()
+          print("SUGGESTIONS", s.count())
+          for r in s.values("status").annotate(n=Count("id")).order_by("status"):
+              print(f"  {r['status']}: {r['n']}")
+          print("  users with suggestions", s.values("user").distinct().count())
+
+          print("OPENALEX_MAILTO set", bool(getattr(settings, "OPENALEX_MAILTO", "")))
+          try:
+              req = urllib.request.Request("https://api.openalex.org/works?per-page=1&select=id",
+                                           headers={"User-Agent": "facility-booking-portal (publication discovery probe)"})
+              with urllib.request.urlopen(req, timeout=15) as resp:
+                  body = json.loads(resp.read().decode("utf-8"))
+              print("OPENALEX reachable status", resp.status, "results", len(body.get("results") or []))
+          except Exception as exc:
+              print("OPENALEX unreachable:", type(exc).__name__, str(exc)[:200])
+          PY
+      - name: Celery worker knows the task
+        run: |
+          set -uo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          docker compose -f docker-compose.production.yml ps --format '{{.Name}} {{.Status}}' | grep -E 'celery|beat' || echo "no celery/beat containers listed"
+          W=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep -E 'celeryworker|worker' | head -n1)
+          if [ -n "$W" ]; then
+            docker exec "$W" celery -A config.celery_app inspect registered 2>/dev/null | grep -c "impact.weekly_discovery" | sed 's/^/registered count: /' || echo "inspect failed"
+          fi
