@@ -190,3 +190,65 @@ def claim_evidence(claim) -> list[dict]:
         "confidence": float(m.confidence), "matched_phrases": m.matched_phrases, "rationale": m.rationale,
         **evidence_out(m.evidence),
     } for m in rows]
+
+
+# --------------------------------------------------------------------------- probable matches (review)
+def _review_call(fn):
+    from . import match_review
+
+    try:
+        return fn()
+    except match_review.ReviewError as exc:
+        return Response({"detail": exc.message, "code": exc.code}, status=exc.status)
+
+
+@impact_api(["GET"])
+def publication_matches(request):
+    """Probable matches for the Main Administrator (all) or a Department Administrator (their department).
+    ?status=PENDING|APPROVED|REJECTED, ?q=, ?department_id= (Main Administrator)."""
+    from . import match_review
+    from .models import ReviewStatus
+
+    svc.require(match_review.is_reviewer(request.user),
+                "Publication matches are reviewed by the Main Administrator and Department Administrators.")
+    st = request.query_params.get("status") or ReviewStatus.PENDING
+    if st not in (ReviewStatus.PENDING, ReviewStatus.APPROVED, ReviewStatus.REJECTED):
+        st = ReviewStatus.PENDING
+    dept = request.query_params.get("department_id")
+    qs = match_review.queue(request.user, st, request.query_params.get("q") or "",
+                            int(dept) if dept and str(dept).isdigit() else None)
+    rows = list(qs[:200])
+    return Response({"results": [match_review.evidence_out(e, request.user) for e in rows],
+                     "count": qs.count(), "pending_count": match_review.pending_count(request.user)})
+
+
+@impact_api(["GET"])
+def publication_matches_count(request):
+    from . import match_review
+
+    return Response({"pending_count": match_review.pending_count(request.user)})
+
+
+@impact_api(["POST"])
+def publication_match_approve(request, pk: int):
+    from . import match_review
+
+    def run():
+        raw = request.data.get("equipment_ids") or []
+        ids = raw if isinstance(raw, list) else [x for x in str(raw).split(",") if x.strip()]
+        ev = match_review.approve(pk, request.user, ids, str(request.data.get("note") or ""))
+        ev = match_review.queue(request.user, ev.review_status).filter(pk=ev.pk).first() or ev
+        return Response(match_review.evidence_out(ev, request.user))
+
+    return _review_call(run)
+
+
+@impact_api(["POST"])
+def publication_match_reject(request, pk: int):
+    from . import match_review
+
+    def run():
+        ev = match_review.reject(pk, request.user, str(request.data.get("note") or ""))
+        return Response(match_review.evidence_out(ev, request.user))
+
+    return _review_call(run)

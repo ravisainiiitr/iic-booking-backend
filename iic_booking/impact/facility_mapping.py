@@ -6,10 +6,9 @@ subscription. Papers without one keep their PublicationSuggestion untouched for 
 PublicationEvidence row records the source URL, a short acknowledgement excerpt and the outcome; each facility it names
 becomes a PublicationFacilityMapping with the matched phrases, the rationale and a confidence score.
 
-- Department-level mappings are kept as verified department-publication mappings (no claim).
-- Equipment-level mappings at or above ``PUBLICATION_MAPPING_CLAIM_THRESHOLD`` become one pending
-  EquipmentPublicationClaim per paper for the OIC to approve (never approved here); approval creates the usual
-  EquipmentPublication rows, which publication_dedupe counts once per paper however many equipment items it names.
+Mappings at or above ``PUBLICATION_MAPPING_CLAIM_THRESHOLD`` are SUGGESTED and the paper waits (review_status PENDING)
+for the Main Administrator, or the Department Administrator of the department it names (see match_review). Nothing is
+published until one of them approves; approval creates the usual approved publication.
 """
 
 from __future__ import annotations
@@ -59,18 +58,25 @@ BLOCK_PAGE = re.compile(r"(?i)unable to complete the above request|verify you ar
                         r"enable javascript and cookies|access denied|just a moment\.\.\.|incident id")
 
 # Confidence by alias source (department and equipment); see score_matches().
-DEPARTMENT_CONFIDENCE = {AliasSource.MANUAL: 0.95, AliasSource.NAME: 0.95, AliasSource.POLICY: 0.95, AliasSource.CODE: 0.75}
+DEPARTMENT_CONFIDENCE = {AliasSource.MANUAL: 0.95, AliasSource.NAME: 0.95, AliasSource.POLICY: 0.95,
+                         AliasSource.DERIVED: 0.95, AliasSource.CODE: 0.75}
 EQUIPMENT_CONFIDENCE = {
-    AliasSource.MANUAL: 0.9, AliasSource.NAME: 0.9, AliasSource.CODE: 0.6, AliasSource.CATEGORY: 0.5,
-    AliasSource.FUNDING: 0.3,
+    AliasSource.MANUAL: 0.9, AliasSource.NAME: 0.9, AliasSource.CODE: 0.6, AliasSource.DERIVED: 0.6,
+    AliasSource.CATEGORY: 0.5, AliasSource.FUNDING: 0.3,
 }
+# Instrument-name prefixes that qualify a technique ("FE-SEM" is an SEM, "HR-TEM" a TEM, "PXRD" an XRD).
+TECHNIQUE_PREFIXES = ("FEG", "FE", "HR", "P")
+ACRONYM_IN_BRACKETS = re.compile(r"\(([A-Za-z][A-Za-z0-9-]{1,11})\)")
+# The model written after the bracketed acronym: "Field Emission Scanning Electron Microscope (FESEM)-GEMINI 300".
+MODEL_AFTER_BRACKETS = re.compile(r"\)\s*[-\u2013]\s*([A-Za-z][A-Za-z0-9 ]{2,30})\s*$")
 DEPARTMENT_BOOST = 0.2  # equipment match whose own department is also acknowledged
 EQUIPMENT_WITHOUT_DEPARTMENT = 0.6  # cap when the equipment's department/centre is not named
 AMBIGUOUS_FACTOR = 0.6  # the same phrase matched several equipment items
 ONE_WORD_DEPARTMENT = 0.75  # "Chemistry" also names other institutes' departments
 NO_INSTITUTE_FACTOR = 0.5  # no author at the institute and the acknowledgement does not name it
 
-GENERIC_WORDS = {"test", "sample", "general", "other", "equipment", "instrument", "facility", "lab", "laboratory"}
+GENERIC_WORDS = {"test", "sample", "general", "other", "equipment", "instrument", "facility", "lab", "laboratory",
+                 "ultra", "pro", "plus", "max", "mini", "lite", "new", "old"}
 AUTO_CODE_RE = re.compile(r"^[A-Z]{1,4}-\d{8,}", re.I)  # generated codes like EQ-20260730021949-A6BB50
 
 
@@ -88,6 +94,43 @@ def _good_code(code: str) -> bool:
 def _good_name(name: str) -> bool:
     name = (name or "").strip()
     return len(name) >= 6 and not AUTO_CODE_RE.match(name) and name.lower() not in GENERIC_WORDS and "-updated" not in name.lower()
+
+
+def name_variants(name: str) -> list[str]:
+    """Spelling variants of a department/centre name: Centre <-> Center."""
+    out = []
+    for a, b in (("Centre", "Center"), ("Center", "Centre"), ("centre", "center"), ("center", "centre")):
+        if re.search(rf"\b{a}\b", name):
+            out.append(re.sub(rf"\b{a}\b", b, name))
+    return out
+
+
+def acronym_variants(token: str) -> list[str]:
+    """For an instrument acronym or code: hyphen/space variants and the base technique.
+    "FE-SEM" -> FESEM, FE SEM, SEM;  "FESEM" -> FE-SEM, SEM;  "HRTEM" -> HR-TEM, TEM;  "PXRD" -> P-XRD, XRD."""
+    t = token.strip()
+    if not t or not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{1,14}", t):
+        return []
+    out: list[str] = []
+    singles = [t]
+    if "-" in t:
+        parts = [p for p in t.split("-") if p]
+        out += ["".join(parts), " ".join(parts)]
+        base = parts[-1]
+        if len(base) >= 3 and base.isalpha():
+            out.append(base)
+        singles = [p for p in parts if len(p) >= 4]  # "ICPMS-MS" -> also look at "ICPMS"
+    for one in singles:
+        if "-" in one or not one.isupper():
+            continue
+        for prefix in TECHNIQUE_PREFIXES:
+            rest = one[len(prefix):]
+            if one.startswith(prefix) and len(rest) >= 3 and rest.isalpha():
+                out += [f"{prefix}-{rest}", rest]
+                break
+        if len(one) >= 4 and one.endswith("MS") and one[:-2].isalpha():
+            out += [f"{one[:-2]}-MS", one]  # mass spectrometry: "ICPMS" is written "ICP-MS"
+    return [v for v in dict.fromkeys(out) if v.lower() != t.lower()]
 
 
 def generate_aliases() -> list[dict]:
@@ -118,15 +161,36 @@ def generate_aliases() -> list[dict]:
         if _good_name(d["name"]):
             add(d["id"], None, d["name"], AliasSource.NAME)
             by_text[d["name"].strip().lower()] = d["id"]
+            for v in name_variants(d["name"].strip()):
+                add(d["id"], None, v, AliasSource.DERIVED)
         if _good_code(d["code"] or ""):
             add(d["id"], None, d["code"], AliasSource.CODE, case_sensitive=True)
             by_text[(d["code"] or "").strip().lower()] = d["id"]
 
     for r in eq_rows:
-        if _good_name(r["name"]) and r["name"].strip().lower() != (r["code"] or "").strip().lower():
-            add(None, r["equipment_id"], r["name"], AliasSource.NAME)
-        if _good_code(r["code"]):
-            add(None, r["equipment_id"], r["code"], AliasSource.CODE, case_sensitive=True)
+        eid, name, code = r["equipment_id"], (r["name"] or "").strip(), (r["code"] or "").strip()
+        if _good_name(name) and name.lower() != code.lower():
+            add(None, eid, name, AliasSource.NAME)
+            bare = name.split("(", 1)[0].strip(" -") if ACRONYM_IN_BRACKETS.search(name) else name
+            if bare != name and _good_name(bare):
+                add(None, eid, bare, AliasSource.NAME)  # "Transmission Electron Microscope"
+        model = MODEL_AFTER_BRACKETS.search(name)
+        if model:
+            label = " ".join(model.group(1).split())
+            if label.lower() not in GENERIC_WORDS and (len(label) >= 5 or " " in label):
+                add(None, eid, label, AliasSource.DERIVED)  # "GEMINI 300", "APREO" (any case)
+        if _good_code(code):
+            add(None, eid, code, AliasSource.CODE, case_sensitive=True)
+        tokens = [m.group(1) for m in ACRONYM_IN_BRACKETS.finditer(name)]
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{1,14}", name) and name.upper() == name:
+            tokens.append(name)  # a name that is itself an acronym ("FE-SEM")
+        for tok in tokens:
+            if _good_code(tok) or len(tok) == 3:
+                add(None, eid, tok, AliasSource.DERIVED, case_sensitive=tok.upper() == tok)
+        for tok in dict.fromkeys(tokens + ([code] if _good_code(code) else [])):
+            for v in acronym_variants(tok):
+                if len(v.replace(" ", "")) >= 3:
+                    add(None, eid, v, AliasSource.DERIVED, case_sensitive=v.upper() == v)
         if r["category__name"] and len(r["category__name"].strip()) >= 5 and r["category__name"].strip().lower() not in GENERIC_WORDS:
             add(None, r["equipment_id"], r["category__name"], AliasSource.CATEGORY)
 
@@ -520,85 +584,51 @@ def _existing_equipment_publication(equipment_id: int, doi: str) -> bool:
     return bool(doi) and EquipmentPublication.objects.filter(equipment_id=equipment_id, doi__iexact=doi).exists()
 
 
-def _create_pending_claim(user, res: PaperResult, work: dict | None, equipment_ids: list[int], suggestion):
-    from iic_booking.equipment.models import Equipment, EquipmentPublicationClaim, EquipmentPublicationClaimStatus
-    from iic_booking.equipment.publication_claim_views import build_citation
+def save_result(user, res: PaperResult, work: dict | None, suggestion=None) -> dict:
+    """Store the evidence and mappings. A paper with a probable match (any mapping at or above the threshold, on
+    equipment or a department that does not already list it) waits for review. A decision already taken (approved
+    or rejected) is never reopened by a later check."""
+    from .models import ReviewStatus
 
-    existing = (EquipmentPublicationClaim.objects.filter(submitted_by=user, doi__iexact=res.doi)
-                .exclude(status="rejected").first() if res.doi else None)
-    if existing:
-        return existing, False
-    loc = (work or {}).get("primary_location") or {}
-    journal = ((loc.get("source") or {}) or {}).get("display_name") or (suggestion.journal if suggestion else "")
-    authors = suggestion.authors if suggestion else ", ".join(
-        ((a.get("author") or {}).get("display_name") or "") for a in (work or {}).get("authorships") or [])
-    note = (f"Found automatically from the open-access acknowledgement ({res.source_url}). "
-            f"Excerpt: “{res.snippet}”")
-    claim = EquipmentPublicationClaim.objects.create(
-        submitted_by=user, title=res.title[:500], authors=authors[:1000], journal=journal[:500], year=res.year,
-        doi=res.doi[:200], url=(f"https://doi.org/{res.doi}" if res.doi else res.source_url)[:500],
-        facility_note=note, citation=build_citation(authors=authors, title=res.title, journal=journal, year=res.year,
-                                                    volume_pages="", doi=res.doi),
-        status=EquipmentPublicationClaimStatus.PENDING, assigned_reviewer=None,
-    )
-    claim.equipments.set(Equipment.objects.filter(pk__in=equipment_ids))
-    return claim, True
-
-
-def save_result(user, res: PaperResult, work: dict | None, suggestion=None, *, notify: bool = False) -> dict:
-    """Store the evidence and mappings; send equipment-level evidence above the threshold to the OIC as one pending
-    claim. Returns what was done."""
-    out = {"claim_id": None, "claim_created": False, "mappings": 0}
+    threshold = claim_threshold()
+    out = {"queued": False, "mappings": 0, "evidence_id": None}
     with transaction.atomic():
         lookup = {"user": user, "doi": res.doi} if res.doi else {"user": user, "openalex_id": (work or {}).get("id") or "", "title": res.title[:500]}
-        ev, _ = PublicationEvidence.objects.update_or_create(**lookup, defaults={
+        ev = PublicationEvidence.objects.select_for_update().filter(**lookup).first()
+        if ev and ev.review_status in (ReviewStatus.APPROVED, ReviewStatus.REJECTED):
+            out["evidence_id"] = ev.pk
+            return out
+        fields = {
             "suggestion": suggestion, "openalex_id": (work or {}).get("id") or "", "title": res.title[:500],
             "year": res.year, "status": res.status, "source_url": res.source_url[:1000], "oa_status": res.oa_status[:20],
             "licence": (res.licence or "")[:60], "acknowledgement_snippet": res.snippet, "detail": res.detail[:500],
             "checked_at": timezone.now(),
-        })
-        threshold = claim_threshold()
-        claim_eq = [m.equipment_id for m in res.matches if m.level == MappingLevel.EQUIPMENT and m.confidence >= threshold
-                    and not _existing_equipment_publication(m.equipment_id, res.doi)]
-        claim = None
-        if claim_eq:
-            claim, created = _create_pending_claim(user, res, work, claim_eq, suggestion)
-            out.update(claim_id=claim.pk, claim_created=created)
+        }
+        if ev is None:
+            ev = PublicationEvidence.objects.create(**lookup, **fields)
+        else:
+            for k, v in fields.items():
+                setattr(ev, k, v)
+        suggested = 0
         for m in res.matches:
-            if m.level == MappingLevel.DEPARTMENT:
-                status = MappingStatus.VERIFIED if m.confidence >= threshold else MappingStatus.BELOW_THRESHOLD
-            elif m.equipment_id in claim_eq:
-                status = MappingStatus.CLAIM_PENDING
-            else:
-                status = MappingStatus.BELOW_THRESHOLD if m.confidence < threshold else MappingStatus.VERIFIED
+            listed = m.level == MappingLevel.EQUIPMENT and _existing_equipment_publication(m.equipment_id, res.doi)
+            status = MappingStatus.SUGGESTED if m.confidence >= threshold and not listed else MappingStatus.BELOW_THRESHOLD
+            suggested += status == MappingStatus.SUGGESTED
             key = {"evidence": ev, "level": m.level, "department_id": m.department_id, "equipment_id": m.equipment_id}
             PublicationFacilityMapping.objects.update_or_create(**key, defaults={
-                "matched_phrases": m.phrases, "rationale": m.rationale, "confidence": Decimal(str(m.confidence)),
-                "status": status, "claim": claim if m.equipment_id in claim_eq else None,
+                "matched_phrases": m.phrases, "rationale": m.rationale + (" The equipment already lists this paper." if listed else ""),
+                "confidence": Decimal(str(m.confidence)), "status": status,
             })
             out["mappings"] += 1
-    if out["claim_created"] and notify:
-        _notify_oic(claim)
+        ev.review_status = ReviewStatus.PENDING if suggested else ReviewStatus.NONE
+        ev.save()
+        out.update(queued=bool(suggested), evidence_id=ev.pk)
     return out
-
-
-def _notify_oic(claim) -> None:
-    from iic_booking.communication.in_app import equipment_oic_users, notify_in_app
-
-    reviewers = {u.id: u for eq in claim.equipments.all() for u in equipment_oic_users(eq)}
-    title = claim.title if len(claim.title) <= 120 else claim.title[:117] + "…"
-    notify_in_app(
-        list(reviewers.values()),
-        title="Action needed: publication found",
-        message=f"“{title}” acknowledges your equipment (found automatically). Review the evidence and approve.",
-        link="/publication-claims", notification_type="warning", event="publication_claim.submitted",
-        extra={"publication_claim_id": claim.pk, "action_required": True, "auto_found": True},
-    )
 
 
 # --------------------------------------------------------------------------- a researcher's suggestions
 def verify_user(user, *, apply: bool, dois: list[str] | None = None, limit: int | None = None, recheck: bool = False,
-                notify: bool = False, reader=None, works_lookup=None, log=None) -> dict:
+                reader=None, works_lookup=None, log=None) -> dict:
     """Check the open-access acknowledgement of the user's suggested papers (dismissed ones skipped; suggestions are
     never changed). Dry run unless ``apply``."""
     from iic_booking.equipment.publication_dedupe import normalize_doi
@@ -613,7 +643,7 @@ def verify_user(user, *, apply: bool, dois: list[str] | None = None, limit: int 
     works = works_lookup([r.doi for r in rows]) if rows else {}
     aliases = load_aliases()
     summary = {"papers": len(rows), "by_status": {}, "department_mappings": 0, "equipment_mappings": 0,
-               "claims_to_create": 0, "claims_created": 0, "results": []}
+               "for_review": 0, "queued": 0, "queued_ids": [], "results": []}
     threshold = claim_threshold()
     for s in rows:
         work = works.get(s.doi)
@@ -621,12 +651,15 @@ def verify_user(user, *, apply: bool, dois: list[str] | None = None, limit: int 
         summary["by_status"][res.status] = summary["by_status"].get(res.status, 0) + 1
         summary["department_mappings"] += sum(1 for m in res.matches if m.level == MappingLevel.DEPARTMENT)
         summary["equipment_mappings"] += sum(1 for m in res.matches if m.level == MappingLevel.EQUIPMENT)
-        if any(m.level == MappingLevel.EQUIPMENT and m.confidence >= threshold
-               and not _existing_equipment_publication(m.equipment_id, res.doi) for m in res.matches):
-            summary["claims_to_create"] += 1
+        if any(m.confidence >= threshold and not (m.level == MappingLevel.EQUIPMENT
+                                                  and _existing_equipment_publication(m.equipment_id, res.doi))
+               for m in res.matches):
+            summary["for_review"] += 1
         if apply:
-            done = save_result(user, res, work, s, notify=notify)
-            summary["claims_created"] += int(done["claim_created"])
+            done = save_result(user, res, work, s)
+            if done["queued"]:
+                summary["queued"] += 1
+                summary["queued_ids"].append(done["evidence_id"])
         summary["results"].append(res)
         if log:
             log(res)

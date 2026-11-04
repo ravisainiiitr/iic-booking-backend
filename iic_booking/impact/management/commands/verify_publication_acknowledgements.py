@@ -1,7 +1,7 @@
 """Read the open-access acknowledgement of researchers' suggested papers and map them to portal facilities.
 
-Dry run unless --apply. With --apply: evidence and mappings are stored, and equipment-level evidence above the
-threshold becomes a pending claim for the OIC (never approved here). Suggestions are not changed.
+Dry run unless --apply. With --apply: evidence and mappings are stored, and papers with a probable match wait for
+the Main Administrator / Department Administrator to approve (nothing is published here). Suggestions are not changed.
 
     python manage.py verify_publication_acknowledgements --user-id 1911 [--limit 50] [--apply] [--notify]
     python manage.py verify_publication_acknowledgements --doi 10.1000/x --doi 10.1000/y   # papers only, no user
@@ -24,7 +24,7 @@ class Command(BaseCommand):
         parser.add_argument("--limit", type=int, default=None)
         parser.add_argument("--recheck", action="store_true", help="Also papers that already have evidence.")
         parser.add_argument("--apply", action="store_true")
-        parser.add_argument("--notify", action="store_true", help="With --apply: tell the OICs about new claims.")
+        parser.add_argument("--notify", action="store_true", help="With --apply: tell the reviewers about new matches.")
         parser.add_argument("--quiet", action="store_true", help="Only the summary.")
 
     def _print(self, res):
@@ -43,8 +43,8 @@ class Command(BaseCommand):
 
     def _summary(self, label, s):
         self.stdout.write(f"{label}: papers={s['papers']} {s['by_status']} department mappings={s['department_mappings']} "
-                          f"equipment mappings={s['equipment_mappings']} claims to create={s['claims_to_create']} "
-                          f"claims created={s['claims_created']}")
+                          f"equipment mappings={s['equipment_mappings']} for review={s['for_review']} "
+                          f"queued={s['queued']}")
 
     def handle(self, *args, **opts):
         self.quiet = opts["quiet"]
@@ -64,7 +64,7 @@ class Command(BaseCommand):
             works = fm.openalex_works_by_doi(dois)
             aliases = fm.load_aliases()
             s = {"papers": len(dois), "by_status": {}, "department_mappings": 0, "equipment_mappings": 0,
-                 "claims_to_create": 0, "claims_created": 0}
+                 "for_review": 0, "queued": 0}
             self.stdout.write(f"{mode} papers-only: {len(dois)} DOI(s)")
             for d in dois:
                 w = works.get(d)
@@ -72,7 +72,7 @@ class Command(BaseCommand):
                 s["by_status"][res.status] = s["by_status"].get(res.status, 0) + 1
                 s["department_mappings"] += sum(1 for m in res.matches if m.level == "DEPARTMENT")
                 s["equipment_mappings"] += sum(1 for m in res.matches if m.level == "EQUIPMENT")
-                s["claims_to_create"] += any(m.level == "EQUIPMENT" and m.confidence >= fm.claim_threshold() for m in res.matches)
+                s["for_review"] += any(m.confidence >= fm.claim_threshold() for m in res.matches)
                 self._print(res)
             self._summary("papers-only", s)
             return
@@ -80,7 +80,11 @@ class Command(BaseCommand):
         for u in get_user_model().objects.filter(pk__in=opts["user_id"]).order_by("pk"):
             self.stdout.write(f"{mode} user={u.pk} type={u.user_type}")
             s = fm.verify_user(u, apply=opts["apply"], dois=dois or None, limit=opts["limit"], recheck=opts["recheck"],
-                               notify=opts["notify"], log=self._print)
+                               log=self._print)
             self._summary(f"user={u.pk}", s)
+            if opts["apply"] and opts["notify"]:
+                from iic_booking.impact.match_review import notify_reviewers
+
+                self.stdout.write(f"reviewers notified: {notify_reviewers(s['queued_ids'])}")
         if not opts["apply"]:
             self.stdout.write("Dry run: nothing saved. Re-run with --apply to save.")

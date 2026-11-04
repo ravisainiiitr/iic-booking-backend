@@ -454,15 +454,28 @@ def weekly_discovery(limit: int = 500) -> dict:
             done += 1
         except ImpactError:
             failed += 1
-    out = {"checked": done, "failed": failed, "added": added}
-    if getattr(settings, "PUBLICATION_MAPPING_ENABLED", False):
-        out["mapping"] = weekly_mapping()
-    return out
+    return {"checked": done, "failed": failed, "added": added}
+
+
+def daily_publication_scan(limit_users: int = 60, papers_per_user: int = 25) -> dict:
+    """Continuous scan (only when PUBLICATION_MAPPING_ENABLED), run daily in small batches: refresh discovery for
+    researchers with an ORCID iD or a linked OpenAlex author record, read new suggestions' open-access
+    acknowledgements, and tell the reviewers (Main Administrator, Department Administrators) about new matches."""
+    if not getattr(settings, "PUBLICATION_MAPPING_ENABLED", False):
+        return {"skipped": "PUBLICATION_MAPPING_ENABLED is off"}
+    from . import match_review
+    from .models import PublicationEvidence
+
+    discovery = weekly_discovery(limit=limit_users)
+    mapping = weekly_mapping(limit_users=limit_users, papers_per_user=papers_per_user)
+    notified = match_review.notify_reviewers(mapping.pop("queued_ids", []))
+    pending = PublicationEvidence.objects.filter(review_status="PENDING").count()
+    return {"discovery": discovery, "mapping": mapping, "reviewers_notified": notified, "pending_total": pending}
 
 
 def weekly_mapping(limit_users: int = 200, papers_per_user: int = 50) -> dict:
-    """Automatic processing (only when PUBLICATION_MAPPING_ENABLED): suggest works of linked OpenAlex author records,
-    then check new suggestions' open-access acknowledgements and send equipment evidence to the OICs."""
+    """Suggest works of linked OpenAlex author records, then check new suggestions' open-access acknowledgements;
+    probable matches wait for review."""
     from . import author_linking, facility_mapping
     from .models import AuthorLinkStatus, ResearcherAuthorCandidate
 
@@ -477,16 +490,18 @@ def weekly_mapping(limit_users: int = 200, papers_per_user: int = 50) -> dict:
             logger.warning("linked-author discovery failed user=%s: %s", u.pk, exc)
     with_new = (PublicationSuggestion.objects.filter(status=SuggestionStatus.NEW).exclude(doi="")
                 .values_list("user_id", flat=True).distinct()[:limit_users])
-    checked = claims = 0
+    checked = queued = 0
+    queued_ids: list[int] = []
     for u in USER_MODEL().objects.filter(pk__in=list(with_new), is_active=True):
         try:
-            s = facility_mapping.verify_user(u, apply=True, limit=papers_per_user, notify=True)
+            s = facility_mapping.verify_user(u, apply=True, limit=papers_per_user)
         except Exception as exc:  # network
             logger.warning("acknowledgement check failed user=%s: %s", u.pk, exc)
             continue
         checked += s["papers"]
-        claims += s["claims_created"]
-    return {"linked_users": len(users), "papers_checked": checked, "claims_created": claims}
+        queued += s["queued"]
+        queued_ids += s["queued_ids"]
+    return {"linked_users": len(users), "papers_checked": checked, "queued_for_review": queued, "queued_ids": queued_ids}
 
 
 def USER_MODEL():  # noqa: N802 - mirrors get_user_model()

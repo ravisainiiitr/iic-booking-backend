@@ -1,4 +1,4 @@
-"""Publication-to-facility mapping: aliases, acknowledgement extraction and scoring, evidence + mappings + pending claims,
+"""Publication-to-facility mapping: aliases, acknowledgement extraction and scoring, evidence + mappings, the review queue,
 OpenAlex author matching, API permissions and the feature flag. No network: readers and lookups are faked."""
 
 import io
@@ -25,6 +25,7 @@ from iic_booking.impact.models import (
     PublicationFacilityMapping,
     PublicationSuggestion,
     ResearcherAuthorCandidate,
+    ReviewStatus,
 )
 from iic_booking.training.tests.conftest import client_for, make_equipment, world  # noqa: F401
 
@@ -178,7 +179,7 @@ def test_check_paper_outcomes(facility):
     assert res.status == EvidenceStatus.NO_ACKNOWLEDGEMENT
     res = fm.check_paper("10.1/a", "T", 2025, _work("10.1/a"), aliases,
                          reader=lambda u: ACK_PAPER.replace("Central Analytical Facility for", "Another Centre for")
-                         .replace("FESEM and Confocal Raman Spectrometer", "SEM"))
+                         .replace("FESEM and Confocal Raman Spectrometer", "an optical bench"))
     assert res.status == EvidenceStatus.NO_MATCH
     res = fm.check_paper("10.1/a", "T", 2025, _work("10.1/a"), aliases, reader=lambda u: ACK_PAPER)
     assert res.status == EvidenceStatus.MATCHED and res.source_url == "https://repo.example.org/paper.pdf"
@@ -249,69 +250,175 @@ def _verify(user, **kw):
     return fm.verify_user(user, reader=lambda u: ACK_PAPER, works_lookup=lambda dois: works, **kw)
 
 
-def test_dry_run_writes_nothing_and_apply_maps_and_sends_one_pending_claim(facility):
+def test_dry_run_writes_nothing_and_apply_queues_the_match_for_review(facility):
     w = facility
     s1 = _suggest(w.faculty, "10.1000/multi")
     s2 = _suggest(w.faculty, "10.1000/closed", title="A paywalled paper")
     before = publication_dedupe.unique_publication_count()
 
     dry = _verify(w.faculty, apply=False)
-    assert dry["papers"] == 2 and dry["claims_to_create"] == 1 and dry["department_mappings"] == 1
+    assert dry["papers"] == 2 and dry["for_review"] == 1 and dry["department_mappings"] == 1
     assert dry["by_status"] == {EvidenceStatus.MATCHED: 1, EvidenceStatus.NO_OPEN_ACCESS: 1}
     assert not PublicationEvidence.objects.exists() and not EquipmentPublicationClaim.objects.exists()
 
     done = _verify(w.faculty, apply=True)
-    assert done["claims_created"] == 1
+    assert done["queued"] == 1 and len(done["queued_ids"]) == 1
     ev = PublicationEvidence.objects.get(doi="10.1000/multi")
-    assert ev.status == EvidenceStatus.MATCHED and ev.source_url and ev.acknowledgement_snippet
-    assert PublicationEvidence.objects.get(doi="10.1000/closed").status == EvidenceStatus.NO_OPEN_ACCESS
+    assert ev.status == EvidenceStatus.MATCHED and ev.review_status == ReviewStatus.PENDING
+    assert ev.source_url and ev.acknowledgement_snippet
+    assert PublicationEvidence.objects.get(doi="10.1000/closed").review_status == ReviewStatus.NONE
     maps = {(m.level, m.equipment_id): m for m in ev.mappings.all()}
-    assert maps[("DEPARTMENT", None)].status == MappingStatus.VERIFIED and maps[("DEPARTMENT", None)].claim_id is None
-    eq_maps = [maps[("EQUIPMENT", w.equipment.pk)], maps[("EQUIPMENT", w.raman.pk)]]
-    assert all(m.status == MappingStatus.CLAIM_PENDING and m.rationale and m.confidence >= Decimal("0.7") for m in eq_maps)
-    claim = EquipmentPublicationClaim.objects.get()
-    assert eq_maps[0].claim_id == eq_maps[1].claim_id == claim.pk  # one claim for both equipment items
-    assert claim.status == "pending" and claim.assigned_reviewer_id is None and claim.submitted_by_id == w.faculty.pk
-    assert set(claim.equipments.values_list("pk", flat=True)) == {w.equipment.pk, w.raman.pk}
-    assert "open-access acknowledgement" in claim.facility_note
+    assert set(maps) == {("DEPARTMENT", None), ("EQUIPMENT", w.equipment.pk), ("EQUIPMENT", w.raman.pk)}
+    assert all(m.status == MappingStatus.SUGGESTED and m.rationale and m.confidence >= Decimal("0.7") for m in maps.values())
 
-    # Pending claims are not equipment publications; suggestions are untouched.
-    assert publication_dedupe.unique_publication_count() == before and not EquipmentPublication.objects.exists()
-    for s in (s1, s2):
-        s.refresh_from_db()
-        assert s.status == "NEW"
+    # Nothing is published or claimed before review; suggestions are untouched.
+    assert not EquipmentPublicationClaim.objects.exists() and not EquipmentPublication.objects.exists()
+    assert publication_dedupe.unique_publication_count() == before
+    for sg in (s1, s2):
+        sg.refresh_from_db()
+        assert sg.status == "NEW"
 
-    # Running again changes nothing (already checked), and --recheck does not duplicate the claim.
+    # Running again changes nothing (already checked); --recheck updates the same rows.
     assert _verify(w.faculty, apply=True)["papers"] == 0
     _verify(w.faculty, apply=True, recheck=True)
-    assert EquipmentPublicationClaim.objects.count() == 1 and PublicationFacilityMapping.objects.count() == 3
+    assert PublicationEvidence.objects.count() == 2 and PublicationFacilityMapping.objects.count() == 3
 
-    # The OIC sees the evidence and approves with one click: one unique publication, on both equipment pages.
-    review = client_for(w.oic).get("/api/publication-claims/review/").data
-    rows = review["results"] if isinstance(review, dict) else review
-    evidence = next(r for r in rows if r["id"] == claim.pk)["facility_evidence"]
-    assert {e["equipment"]["id"] for e in evidence} == {w.equipment.pk, w.raman.pk}
-    assert evidence[0]["acknowledgement_snippet"] and evidence[0]["source_url"] and evidence[0]["rationale"]
-    assert client_for(w.oic).post(f"/api/publication-claims/{claim.pk}/approve/", {}, format="json").status_code == 200
+
+@pytest.fixture
+def reviewers(facility):
+    from iic_booking.training.tests.conftest import make_user
+    from iic_booking.users.models.user_type import UserType
+
+    facility.dept_admin = make_user(user_type=UserType.DEPT_ADMIN, department=facility.dept, name="Dept Admin One")
+    facility.other_dept_admin = make_user(user_type=UserType.DEPT_ADMIN, department=facility.other_dept, name="Dept Admin Two")
+    return facility
+
+
+def _queued(w, user=None, text=ACK_PAPER, doi="10.1000/multi"):
+    user = user or w.faculty
+    _suggest(user, doi)
+    fm.verify_user(user, apply=True, reader=lambda u: text, works_lookup=lambda d: {doi: _work(doi)})
+    return PublicationEvidence.objects.get(user=user, doi=doi)
+
+
+def test_review_queue_is_scoped_to_main_admin_and_the_department_admin(reviewers):
+    w = reviewers
+    ev = _queued(w)
+    url = f"{API}/publication-matches/"
+    assert client_for(w.student).get(url).status_code == 403
+    assert client_for(w.oic).get(url).status_code == 403
+    admin = client_for(w.admin).get(url).data
+    assert [r["id"] for r in admin["results"]] == [ev.pk] and admin["pending_count"] == 1
+    row = admin["results"][0]
+    assert row["researcher"]["name"] == w.faculty.name and row["evidence"]["acknowledgement_snippet"]
+    assert row["evidence"]["source_url"] and row["can_review"] is True
+    choices = {c["id"]: c for c in row["equipment_choices"]}
+    assert choices[w.equipment.pk]["suggested"] and choices[w.raman.pk]["suggested"]
+    assert [r["id"] for r in client_for(w.dept_admin).get(url).data["results"]] == [ev.pk]
+    assert client_for(w.other_dept_admin).get(url).data["results"] == []
+    assert client_for(w.dept_admin).get(f"{url}count/").data == {"pending_count": 1}
+
+
+def test_approval_publishes_once_with_the_chosen_instruments_and_counts_for_recognition(reviewers):
+    from iic_booking.cms import recognition
+
+    w = reviewers
+    ev = _queued(w)
+    before = publication_dedupe.unique_publication_count()
+    approve = f"{API}/publication-matches/{ev.pk}/approve/"
+    bad = client_for(w.dept_admin).post(approve, {"equipment_ids": [w.other_equipment.pk]}, format="json")
+    assert bad.status_code == 400 and bad.data["code"] == "equipment_scope"
+    with mock.patch("iic_booking.communication.in_app.notify_in_app") as notify:
+        r = client_for(w.dept_admin).post(approve, {"equipment_ids": [w.equipment.pk, w.raman.pk], "note": "Checked"}, format="json")
+    assert r.status_code == 200 and r.data["review_status"] == "APPROVED"
+    assert notify.call_args.kwargs["title"] == "Publication added" and notify.call_args.args[0] == [w.faculty]
+    ev.refresh_from_db()
+    claim = ev.claim
+    assert claim.status == "approved" and claim.submitted_by_id == w.faculty.pk and claim.reviewed_by_id == w.dept_admin.pk
+    assert set(claim.equipments.values_list("pk", flat=True)) == {w.equipment.pk, w.raman.pk}
+    assert EquipmentPublication.objects.filter(doi="10.1000/multi").count() == 2  # on both equipment pages
     publication_dedupe.invalidate()
-    assert EquipmentPublication.objects.count() == 2
+    assert publication_dedupe.unique_publication_count() == before + 1  # once on the Publications page
+    assert set(ev.mappings.values_list("status", flat=True)) == {MappingStatus.APPROVED}
+    assert recognition._approved_claims().filter(submitted_by=w.faculty).count() == 1  # Researcher of the Month
+    again = client_for(w.admin).post(approve, {"equipment_ids": []}, format="json")
+    assert again.status_code == 409 and again.data["code"] == "already_reviewed"
+
+
+def test_department_level_approval_without_instruments_is_listed_on_the_publications_page(reviewers):
+    w = reviewers
+    ev = _queued(w)
+    r = client_for(w.admin).post(f"{API}/publication-matches/{ev.pk}/approve/", {"equipment_ids": [w.raman.pk]}, format="json")
+    assert r.status_code == 200
+    statuses = {m.equipment_id: m.status for m in ev.mappings.all()}
+    assert statuses[w.raman.pk] == MappingStatus.APPROVED and statuses[w.equipment.pk] == MappingStatus.NOT_SELECTED
+
+    ev2 = _queued(w, user=w.faculty2, doi="10.1000/dept-only")
+    before = publication_dedupe.unique_publication_count()
+    assert client_for(w.admin).post(f"{API}/publication-matches/{ev2.pk}/approve/", {"equipment_ids": []}, format="json").status_code == 200
+    ev2.refresh_from_db()
+    assert ev2.claim.equipments.count() == 0 and not EquipmentPublication.objects.filter(doi="10.1000/dept-only").exists()
+    publication_dedupe.invalidate()
     assert publication_dedupe.unique_publication_count() == before + 1
+    found = publication_dedupe.query(q="thin film")["results"]
+    assert any(p["doi"] == "10.1000/dept-only" and p["equipment"] == [] for p in found)
 
 
-def test_no_claim_when_the_equipment_already_lists_the_paper_or_evidence_is_weak(facility):
+def test_papers_naming_another_departments_facilities_go_to_the_main_admin(reviewers):
+    w = reviewers
+    w.other_dept.name = "Physics Department"
+    w.other_dept.save()
+    call_command("seed_facility_aliases", "--apply", stdout=io.StringIO())
+    text = ACK_PAPER.replace("We also thank DST for funding.", "We also thank the Physics Department for the XRD.")
+    ev = _queued(w, text=text)
+    assert {m.department_id for m in ev.mappings.filter(status=MappingStatus.SUGGESTED)} == {w.dept.pk, w.other_dept.pk}
+    row = client_for(w.dept_admin).get(f"{API}/publication-matches/").data["results"][0]
+    assert row["can_review"] is False and "Main Administrator" in row["review_blocked_reason"]
+    denied = client_for(w.dept_admin).post(f"{API}/publication-matches/{ev.pk}/approve/", {"equipment_ids": []}, format="json")
+    assert denied.status_code == 403
+    assert client_for(w.admin).post(f"{API}/publication-matches/{ev.pk}/approve/",
+                                    {"equipment_ids": [w.equipment.pk, w.other_equipment.pk]}, format="json").status_code == 200
+
+
+def test_rejection_is_kept_and_a_later_check_never_reopens_a_decision(reviewers):
+    w = reviewers
+    ev = _queued(w)
+    r = client_for(w.dept_admin).post(f"{API}/publication-matches/{ev.pk}/reject/", {"note": "Not our facility"}, format="json")
+    assert r.status_code == 200 and r.data["review_status"] == "REJECTED"
+    fm.verify_user(w.faculty, apply=True, recheck=True, reader=lambda u: ACK_PAPER,
+                   works_lookup=lambda d: {"10.1000/multi": _work("10.1000/multi")})
+    ev.refresh_from_db()
+    assert ev.review_status == ReviewStatus.REJECTED and ev.review_note == "Not our facility"
+    assert not EquipmentPublicationClaim.objects.exists()
+    rejected = client_for(w.admin).get(f"{API}/publication-matches/?status=REJECTED").data["results"]
+    assert [x["id"] for x in rejected] == [ev.pk]
+
+
+def test_already_listed_equipment_and_weak_evidence_are_not_queued(facility):
     w = facility
     EquipmentPublication.objects.create(equipment=w.equipment, title="A thin film paper", doi="10.1000/multi", year=2025)
-    _suggest(w.faculty, "10.1000/multi")
-    _verify(w.faculty, apply=True)
-    claim = EquipmentPublicationClaim.objects.get()
-    assert list(claim.equipments.values_list("pk", flat=True)) == [w.raman.pk]  # FE-SEM already lists it
+    ev = _queued(w)
+    by_eq = {m.equipment_id: m for m in ev.mappings.filter(level="EQUIPMENT")}
+    assert by_eq[w.equipment.pk].status == MappingStatus.BELOW_THRESHOLD and "already lists" in by_eq[w.equipment.pk].rationale
+    assert by_eq[w.raman.pk].status == MappingStatus.SUGGESTED and ev.review_status == ReviewStatus.PENDING
 
-    weak_text = ACK_PAPER.replace("the Central Analytical Facility for the FESEM and Confocal Raman Spectrometer", "a FESEM")
-    _suggest(w.faculty2, "10.1000/multi")
-    fm.verify_user(w.faculty2, apply=True, reader=lambda u: weak_text, works_lookup=lambda d: {"10.1000/multi": _work("10.1000/multi")})
-    m = PublicationFacilityMapping.objects.get(evidence__user=w.faculty2)
-    assert m.status == MappingStatus.BELOW_THRESHOLD and m.claim_id is None
-    assert EquipmentPublicationClaim.objects.filter(submitted_by=w.faculty2).count() == 0
+    weak = ACK_PAPER.replace("the Central Analytical Facility for the FESEM and Confocal Raman Spectrometer", "a FESEM")
+    ev2 = _queued(w, user=w.faculty2, text=weak)
+    assert ev2.review_status == ReviewStatus.NONE
+    assert set(ev2.mappings.values_list("status", flat=True)) == {MappingStatus.BELOW_THRESHOLD}
+
+
+def test_reviewers_are_notified_once_each(reviewers):
+    from iic_booking.impact import match_review
+
+    w = reviewers
+    ev = _queued(w)
+    with mock.patch("iic_booking.communication.in_app.notify_in_app") as notify:
+        assert match_review.notify_reviewers([ev.pk]) == 2  # the Main Admin and this department's admin
+    told = [c.args[0][0] for c in notify.call_args_list]
+    assert {u.pk for u in told} == {w.admin.pk, w.dept_admin.pk}
+    assert all(c.kwargs["link"] == "/publication-matches" for c in notify.call_args_list)
+    assert match_review.notify_reviewers([]) == 0
 
 
 def test_verify_command_dry_run_and_dismissed_suggestions_are_skipped(facility):
@@ -323,7 +430,7 @@ def test_verify_command_dry_run_and_dismissed_suggestions_are_skipped(facility):
             mock.patch.object(fm, "read_full_text", return_value=ACK_PAPER):
         call_command("verify_publication_acknowledgements", "--user-id", str(w.faculty.pk), stdout=out)
     text = out.getvalue()
-    assert "DRY RUN" in text and "papers=1" in text and "claims to create=1" in text and "Not mine" not in text
+    assert "DRY RUN" in text and "papers=1" in text and "for review=1" in text and "Not mine" not in text
     assert not PublicationEvidence.objects.exists()
 
 
@@ -412,12 +519,71 @@ def test_mappings_api_is_scoped_and_levels_are_distinct(facility):
     assert client_for(w.faculty).get(url).data["results"][0]["evidence"]["source_url"]
 
 
-def test_weekly_mapping_runs_only_when_the_flag_is_on(world, settings):
+def test_daily_scan_runs_only_when_the_flag_is_on(world, settings):
     settings.PUBLICATION_MAPPING_ENABLED = False
     with mock.patch.object(service, "weekly_mapping") as wm:
-        assert "mapping" not in service.weekly_discovery()
+        assert service.daily_publication_scan() == {"skipped": "PUBLICATION_MAPPING_ENABLED is off"}
         wm.assert_not_called()
+    assert "mapping" not in service.weekly_discovery()  # the weekly discovery no longer runs the mapping itself
     settings.PUBLICATION_MAPPING_ENABLED = True
-    with mock.patch.object(service, "weekly_mapping", return_value={"papers_checked": 0}) as wm:
-        assert service.weekly_discovery()["mapping"] == {"papers_checked": 0}
-        wm.assert_called_once()
+    with mock.patch.object(service, "weekly_discovery", return_value={"checked": 0}) as wd, \
+            mock.patch.object(service, "weekly_mapping", return_value={"papers_checked": 3, "queued_ids": [11]}) as wm, \
+            mock.patch("iic_booking.impact.match_review.notify_reviewers", return_value=2) as nr:
+        out = service.daily_publication_scan()
+    wd.assert_called_once()
+    wm.assert_called_once()
+    nr.assert_called_once_with([11])
+    assert out["reviewers_notified"] == 2 and out["mapping"] == {"papers_checked": 3}
+
+
+def test_acronym_spelling_and_technique_aliases(world):
+    from iic_booking.impact.facility_mapping import acronym_variants, name_variants
+
+    assert acronym_variants("FE-SEM") == ["FESEM", "FE SEM", "SEM"]
+    assert acronym_variants("FESEM") == ["FE-SEM", "SEM"]
+    assert acronym_variants("HRTEM") == ["HR-TEM", "TEM"]
+    assert acronym_variants("PXRD") == ["P-XRD", "XRD"]
+    assert acronym_variants("TEM") == [] and acronym_variants("Raman") == []
+    assert "ICP-MS" in acronym_variants("ICPMS-MS") and "ICP-MS" in acronym_variants("ICPMS")
+    assert "XRD" in acronym_variants("GI-XRD")
+    assert name_variants("Institute Instrumentation Centre") == ["Institute Instrumentation Center"]
+
+    world.dept.name = "Central Instrumentation Centre"
+    world.dept.save()
+    tem = make_equipment(world.dept, name="Transmission Electron Microscope (TEM)", code="EQ-TEM-01")
+    world.equipment.name, world.equipment.code = "FE-SEM", "FESEM01"
+    world.equipment.save()
+    rows = {(r["equipment_id"] or r["department_id"], r["phrase"]): r for r in fm.generate_aliases()}
+    assert rows[(tem.pk, "TEM")]["source"] == AliasSource.DERIVED and rows[(tem.pk, "TEM")]["case_sensitive"]
+    assert (tem.pk, "Transmission Electron Microscope") in rows
+    for phrase in ("FESEM", "FE SEM", "SEM"):
+        assert rows[(world.equipment.pk, phrase)]["source"] == AliasSource.DERIVED
+    assert rows[(world.dept.pk, "Central Instrumentation Center")]["source"] == AliasSource.DERIVED
+
+    call_command("seed_facility_aliases", "--apply", stdout=io.StringIO())
+    hits = {m.equipment_id or m.department_id: m for m in fm.score_matches(
+        "We thank the Central Instrumentation Center for SEM and TEM measurements.", fm.load_aliases())}
+    assert hits[world.dept.pk].confidence == 0.95
+    assert hits[world.equipment.pk].confidence == 0.8 and hits[tem.pk].confidence == 0.8  # 0.6 + department named
+    assert not fm.score_matches("We used a sem image.", fm.load_aliases())  # acronyms match their case only
+
+
+def test_several_instruments_of_one_kind_need_the_model_name(world):
+    """Four FE-SEMs: "FESEM" alone is ambiguous (department-level suggestion, the reviewer picks); the model picks one."""
+    world.dept.name = "Central Instrumentation Centre"
+    world.dept.save()
+    a = make_equipment(world.dept, name="Field Emission Scanning Electron Microscope (FESEM)-APREO", code="APREO")
+    g = make_equipment(world.dept, name="Field Emission Scanning Electron Microscope (FESEM)-GEMINI 300", code="GEM300")
+    u = make_equipment(world.dept, name="Field Emission Scanning Electron Microscope (FESEM)-ULTRA", code="ULTRA")
+    call_command("seed_facility_aliases", "--apply", stdout=io.StringIO())
+    assert not FacilityAlias.objects.filter(equipment=u, phrase__iexact="ULTRA", source=AliasSource.DERIVED).exists()
+    aliases = fm.load_aliases()
+    vague = {m.equipment_id: m.confidence for m in fm.score_matches(
+        "We thank the Central Instrumentation Centre for the FESEM facility.", aliases) if m.equipment_id}
+    assert set(vague) >= {a.pk, g.pk, u.pk} and all(c < 0.7 for c in vague.values())
+    exact = {m.equipment_id: m.confidence for m in fm.score_matches(
+        "We thank the Central Instrumentation Centre for the Zeiss Gemini 300 FESEM.", aliases) if m.equipment_id}
+    assert exact[g.pk] >= 0.7 and exact[a.pk] < 0.7
+    apreo = {m.equipment_id: m.confidence for m in fm.score_matches(
+        "SEM images were taken on an Apreo at the Central Instrumentation Center.", aliases) if m.equipment_id}
+    assert apreo[a.pk] >= 0.7

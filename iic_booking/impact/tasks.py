@@ -12,3 +12,12 @@ def impact_weekly_discovery_task() -> dict:
     result = weekly_discovery()
     logger.info("impact.weekly_discovery: %s", result)
     return result
+
+
+@shared_task(name="impact.daily_publication_scan")
+def impact_daily_publication_scan_task() -> dict:
+    from .service import daily_publication_scan
+
+    result = daily_publication_scan()
+    logger.info("impact.daily_publication_scan: %s", result)
+    return result

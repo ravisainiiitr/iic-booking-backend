@@ -19,4 +19,8 @@ urlpatterns = [
     path("author-candidates/", mapping_views.author_candidates, name="author-candidates"),
     path("author-candidates/<int:pk>/decide/", mapping_views.author_candidate_decide, name="author-candidate-decide"),
     path("publication-mappings/", mapping_views.publication_mappings, name="publication-mappings"),
+    path("publication-matches/", mapping_views.publication_matches, name="publication-matches"),
+    path("publication-matches/count/", mapping_views.publication_matches_count, name="publication-matches-count"),
+    path("publication-matches/<int:pk>/approve/", mapping_views.publication_match_approve, name="publication-match-approve"),
+    path("publication-matches/<int:pk>/reject/", mapping_views.publication_match_reject, name="publication-match-reject"),
 ]

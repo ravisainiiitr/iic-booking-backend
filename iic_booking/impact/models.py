@@ -108,6 +108,7 @@ class AliasSource(models.TextChoices):
     CATEGORY = "CATEGORY", _("Equipment category")
     POLICY = "POLICY", _("Acknowledgement policy phrase")
     FUNDING = "FUNDING", _("Funding acknowledgement phrase")
+    DERIVED = "DERIVED", _("Derived from a name or code (acronym, spelling or technique variant)")
 
 
 class FacilityAlias(models.Model):
@@ -184,6 +185,13 @@ class ResearcherAuthorCandidate(models.Model):
         return self.status in (AuthorLinkStatus.AUTO_LINKED, AuthorLinkStatus.CONFIRMED)
 
 
+class ReviewStatus(models.TextChoices):
+    NONE = "NONE", _("Nothing to review")
+    PENDING = "PENDING", _("Awaiting approval")
+    APPROVED = "APPROVED", _("Approved")
+    REJECTED = "REJECTED", _("Rejected")
+
+
 class EvidenceStatus(models.TextChoices):
     NO_OPEN_ACCESS = "NO_OPEN_ACCESS", _("No legal open-access copy")
     FETCH_FAILED = "FETCH_FAILED", _("Open-access copy could not be read")
@@ -194,7 +202,8 @@ class EvidenceStatus(models.TextChoices):
 
 class PublicationEvidence(models.Model):
     """The result of reading one paper's open-access acknowledgement for one researcher. One row per paper and user,
-    however many facilities it names (see PublicationFacilityMapping)."""
+    however many facilities it names (see PublicationFacilityMapping). Probable matches wait (review_status PENDING)
+    for the Main Administrator or the Department Administrator; approval creates the approved publication."""
 
     user = models.ForeignKey(USER, on_delete=models.CASCADE, related_name="publication_evidence")
     suggestion = models.ForeignKey(
@@ -213,6 +222,15 @@ class PublicationEvidence(models.Model):
     )
     detail = models.CharField(max_length=500, blank=True, default="")
     checked_at = models.DateTimeField()
+    review_status = models.CharField(max_length=10, choices=ReviewStatus.choices, default=ReviewStatus.NONE, db_index=True,
+                                     help_text=_("Main Admin / Department Admin review of a probable match."))
+    reviewed_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_note = models.TextField(blank=True, default="")
+    claim = models.ForeignKey(
+        "equipment.EquipmentPublicationClaim", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="facility_evidence", help_text=_("The approved publication claim created on approval."),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -227,17 +245,19 @@ class MappingLevel(models.TextChoices):
 
 
 class MappingStatus(models.TextChoices):
-    VERIFIED = "VERIFIED", _("Verified")
-    CLAIM_PENDING = "CLAIM_PENDING", _("Equipment claim sent to the OIC")
+    SUGGESTED = "SUGGESTED", _("Probable match, awaiting approval")
     BELOW_THRESHOLD = "BELOW_THRESHOLD", _("Evidence below the confidence threshold")
+    APPROVED = "APPROVED", _("Approved")
+    NOT_SELECTED = "NOT_SELECTED", _("Not selected when the paper was approved")
+    REJECTED = "REJECTED", _("Rejected")
 
 
 class PublicationFacilityMapping(models.Model):
     """One facility a paper's acknowledgement names: a department/centre, or one equipment item.
 
-    Department-level rows are the verified department-publication mapping. Equipment-level rows with enough evidence
-    are sent to the OIC as one pending EquipmentPublicationClaim per paper (covering every matched equipment item);
-    approval creates the EquipmentPublication rows as usual, which publication_dedupe counts once per paper."""
+    Department-level and equipment-level rows are kept apart. Rows at or above the confidence threshold are SUGGESTED
+    and shown to the reviewer; on approval the chosen equipment items become APPROVED (EquipmentPublication rows via
+    one approved claim, counted once per paper by publication_dedupe) and the others NOT_SELECTED."""
 
     evidence = models.ForeignKey(PublicationEvidence, on_delete=models.CASCADE, related_name="mappings")
     level = models.CharField(max_length=10, choices=MappingLevel.choices)
