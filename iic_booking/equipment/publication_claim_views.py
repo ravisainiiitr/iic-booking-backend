@@ -230,7 +230,15 @@ def serialize_claim(claim: EquipmentPublicationClaim) -> dict:
         }
         if reviewer
         else None,
+        "facility_evidence": _facility_evidence(claim),
     }
+
+
+def _facility_evidence(claim: EquipmentPublicationClaim) -> list[dict]:
+    """Open-access acknowledgement evidence for claims created by publication-to-facility mapping."""
+    from iic_booking.impact.mapping_views import claim_evidence
+
+    return claim_evidence(claim)
 
 
 def _parse_equipment_ids(raw) -> list[int]:
