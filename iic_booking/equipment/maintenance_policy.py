@@ -47,19 +47,50 @@ def released_slot_status_after_booking_freed(equipment) -> str:
     return SlotStatus.AVAILABLE
 
 
+ANALYSIS_NOT_POSSIBLE_SLOT_LABEL = "Analysis Not Possible"
+
+
 def effective_slot_status_when_freeing_disruption_booking(booking) -> str:
     """
     When refunding or auto-cancelling under the disruption policy, honor the originally
-    intended slot marking (under maintenance vs operator absent).
+    intended slot marking: Under Maintenance, Operator Absent, or Other Reasons labelled
+    "Analysis Not Possible" (never Operator Absent: the operator was there).
     """
-    from .models import SlotStatus
+    from .models import BookingDisruptionKind, SlotStatus
 
+    if str(getattr(booking, "disruption_kind", "") or "") == BookingDisruptionKind.OTHER_DISRUPTION:
+        return SlotStatus.BLOCKED
     target = getattr(booking, "disruption_release_slot_status", None)
     if target == SlotStatus.UNDER_MAINTENANCE:
         return SlotStatus.UNDER_MAINTENANCE
     if target == SlotStatus.OPERATOR_ABSENT:
         return SlotStatus.OPERATOR_ABSENT
+    if target == SlotStatus.BLOCKED:
+        return SlotStatus.BLOCKED
     return released_slot_status_after_booking_freed(booking.equipment)
+
+
+def freed_slot_label(booking, slot_status: str) -> str | None:
+    """``DailySlot.blocked_label`` for slots freed with ``slot_status`` (only Other Reasons carries a label)."""
+    from .models import BookingDisruptionKind, SlotStatus
+
+    if slot_status != SlotStatus.BLOCKED:
+        return None
+    if str(getattr(booking, "disruption_kind", "") or "") == BookingDisruptionKind.OTHER_DISRUPTION:
+        return ANALYSIS_NOT_POSSIBLE_SLOT_LABEL
+    return None
+
+
+def disruption_freed_slot_fields(booking, *, disrupted: bool, equipment=None) -> dict:
+    """``status`` and ``blocked_label`` for the slots a booking gives up (refund, cancel, reschedule, move).
+
+    ``disrupted``: the booking is (or was just) in the disruption workflow, so its intended marking applies;
+    otherwise freed slots reopen (or stay Under Maintenance while the equipment is in repair)."""
+    if disrupted:
+        slot_status = effective_slot_status_when_freeing_disruption_booking(booking)
+    else:
+        slot_status = released_slot_status_after_booking_freed(equipment or booking.equipment)
+    return {"status": slot_status, "blocked_label": freed_slot_label(booking, slot_status)}
 
 
 DISRUPTION_DECISION_DAYS = 5
@@ -622,7 +653,7 @@ def apply_other_disruption_for_booking_manually(booking, *, reason: str) -> None
     booking.status = BookingStatus.DISRUPTION_PENDING
     booking.disruption_kind = BookingDisruptionKind.OTHER_DISRUPTION
     booking.disruption_reason = reason_clean
-    booking.disruption_release_slot_status = SlotStatus.OPERATOR_ABSENT
+    booking.disruption_release_slot_status = SlotStatus.BLOCKED
     booking.quota_period_anchor_at = _disruption_quota_anchor(booking, first_start)
     booking.maintenance_disruption_flag = True
     booking.maintenance_decision_deadline_at = deadline
@@ -1108,11 +1139,9 @@ def auto_cancel_expired_maintenance_bookings() -> int:
                 released_slot_ids = list(booking.daily_slots.values_list("id", flat=True))
                 previous_status = booking.status
                 refund_amount = Decimal("0.00")
-                slot_status = effective_slot_status_when_freeing_disruption_booking(booking)
-                booking.daily_slots.update(
-                    booking=None,
-                    status=slot_status,
-                )
+                freed = disruption_freed_slot_fields(booking, disrupted=True)
+                slot_status = freed["status"]
+                booking.daily_slots.update(booking=None, **freed)
                 record_freed_booking_slots(booking.equipment, released_slot_ids, source="EQUIPMENT_STATUS")
                 refund_target, _ = WalletRepository.get_booking_wallet_target(
                     booking.user, getattr(booking.equipment, "internal_department", None)

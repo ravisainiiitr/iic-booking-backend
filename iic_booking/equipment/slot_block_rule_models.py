@@ -6,7 +6,9 @@ from django.utils.translation import gettext_lazy as _
 
 
 class RecurringSlotBlockRule(models.Model):
-    """OIC / Main Admin rule: block AVAILABLE slots on chosen weekdays and slot times within a date range."""
+    """OIC / Main Admin rule: give AVAILABLE slots on chosen weekdays and slot times within a date range one status
+    (Other Reasons by default; also Under Maintenance, Scheduled Maintenance, Operator Absent, Not Available or
+    Reserved for External)."""
 
     equipment = models.ForeignKey(
         "equipment.Equipment",
@@ -23,11 +25,19 @@ class RecurringSlotBlockRule(models.Model):
     )
     start_date = models.DateField()
     end_date = models.DateField()
+    slot_status = models.CharField(
+        max_length=20,
+        default="BLOCKED",
+        help_text=_("Status the rule gives its slots (a SlotStatus value; BLOCKED = Other Reasons)."),
+    )
     label = models.CharField(
         max_length=255,
         blank=True,
         default="",
-        help_text=_("Stored in DailySlot.blocked_label of every slot this rule blocks."),
+        help_text=_(
+            "Other Reasons: stored in DailySlot.blocked_label of every slot this rule blocks. "
+            "Other statuses: the reason recorded with the disruption."
+        ),
     )
     is_active = models.BooleanField(default=True, db_index=True)
     summary = models.JSONField(

@@ -133,10 +133,20 @@ def test_validation_schedule_limits_and_sanitising():
     admin = _user(UserType.ADMIN)
     now = timezone.now()
 
-    assert _create(admin, eq, end_at="").status_code == 400
+    missing_end = _payload(eq)
+    missing_end.pop("end_at")
+    assert _client(admin).post(URL, missing_end, format="json").status_code == 400
     assert _create(admin, eq, end_at=(now - timedelta(minutes=5)).isoformat()).status_code == 400
-    assert _create(admin, eq, end_at=(now + timedelta(days=31)).isoformat()).status_code == 400
-    assert _create(admin, eq, message="x" * 301).status_code == 400
+    # No 30-day cap and no 90-day start cap: any future start and end, any year.
+    assert _create(admin, eq, end_at=(now + timedelta(days=31)).isoformat()).status_code == 201
+    far = _create(
+        admin, eq,
+        start_at=(now + timedelta(days=400)).isoformat(),
+        end_at=(now + timedelta(days=3 * 365)).isoformat(),
+    )
+    assert far.status_code == 201 and far.data["status"] == "SCHEDULED"
+    assert _create(admin, eq, message="x" * 2001).status_code == 400
+    assert _create(admin, eq, message="x" * 1500).status_code == 201
     assert _create(admin, eq, message="<b> </b>").status_code == 400
     assert _create(admin, eq, tone="LOUD").status_code == 400
     assert _create(admin, eq, audience="USER_TYPES", audience_user_types=[]).status_code == 400
@@ -152,12 +162,91 @@ def test_validation_schedule_limits_and_sanitising():
     )
     assert res.status_code == 201
     html = res.data["message"]
-    assert "<script" not in html and "onclick" not in html and "<img" not in html and "<u>" not in html
-    assert "<strong>Bold</strong>" in html and "<em>it</em>" in html
+    assert "<script" not in html and "onclick" not in html and "<img" not in html
+    assert "<strong>Bold</strong>" in html and "<em>it</em>" in html and "<u>u</u>" in html
     assert 'href="https://iitr.ac.in"' in html and "javascript" not in html
     assert res.data["link_label"] == "Learn more"
     assert res.data["show_on_modes"] is False  # not a multi-mode base instrument
-    assert sanitize_flash_html("a < b & c") == "a &lt; b &amp; c"
+    assert sanitize_flash_html("a < b & c") == "<p>a &lt; b &amp; c</p>"
+
+
+def test_rich_text_like_the_important_instruction():
+    eq = _equipment()
+    admin = _user(UserType.ADMIN)
+    res = _create(
+        admin, eq,
+        message=(
+            '<h3>NMR Facility</h3><p style="text-align: center">Open for <span style="color: #dc2626">routine</span>'
+            ' samples.</p><ul><li>TXI probe: email a week ahead</li></ul><p><mark style="background-color: yellow">'
+            "Thank you</mark></p>"
+        ),
+    )
+    assert res.status_code == 201, res.data
+    html = res.data["message"]
+    assert "<h3>" in html and "<ul><li>" in html and "<mark" in html and "text-align" in html
+    assert "color" in html
+    assert res.data["message_plain"].startswith("NMR Facility")
+    assert "Hello\nWorld" not in sanitize_flash_html("Hello\nWorld")
+    assert sanitize_flash_html("Hello\nWorld") == "<p>Hello</p><p>World</p>"
+
+
+def test_until_changed_runs_without_an_end():
+    eq = _equipment()
+    admin = _user(UserType.ADMIN)
+    res = _create(admin, eq, message="Until changed notice", end_at=None)
+    assert res.status_code == 201, res.data
+    assert res.data["end_at"] is None and res.data["until_changed"] is True and res.data["status"] == "LIVE"
+    pk = res.data["id"]
+
+    public = public_flash_messages(eq, _Anon())
+    assert [(m["message"], m["until_changed"], m["end_at"]) for m in public] == [
+        ("<p>Until changed notice</p>", True, None)
+    ]
+    data = _client(admin).get(URL, {"with_options": 1}).data
+    assert data["summary"]["live"] == 1 and data["limits"]["max_duration_days"] is None
+    assert [r["id"] for r in _client(admin).get(URL, {"status": "live"}).data["results"]] == [pk]
+
+    # Extending makes no sense without an end; editing can set one, End now ends it.
+    assert _client(admin).post(f"{URL}{pk}/extend/", {"days": 3}, format="json").status_code == 400
+    end = (timezone.now() + timedelta(days=5)).isoformat()
+    res = _client(admin).patch(f"{URL}{pk}/", {"end_at": end}, format="json")
+    assert res.status_code == 200 and res.data["until_changed"] is False
+    res = _client(admin).patch(f"{URL}{pk}/", {"end_at": None}, format="json")
+    assert res.status_code == 200 and res.data["until_changed"] is True
+    res = _client(admin).post(f"{URL}{pk}/end/", {}, format="json")
+    assert res.status_code == 200 and res.data["status"] == "EXPIRED"
+    assert public_flash_messages(eq, _Anon()) == []
+
+    scheduled = _create(
+        admin, eq, message="later", start_at=(timezone.now() + timedelta(days=2)).isoformat(), end_at=None
+    )
+    assert scheduled.status_code == 201 and scheduled.data["status"] == "SCHEDULED"
+    assert public_flash_messages(eq, _Anon()) == []
+
+
+def test_all_modes_page_reads_the_base_instrument_messages():
+    base = _equipment(enable_multi_mode=True)
+    mode = _equipment(parent_equipment=base, internal_department=base.internal_department)
+    admin = _user(UserType.ADMIN)
+    _create(admin, base, message="facility notice", end_at=None)
+    _create(admin, base, message="internal only", audience="INTERNAL")
+    _create(admin, mode, message="mode notice")
+    anon = APIClient()
+    url = f"{URL}public/"
+
+    res = anon.get(url, {"equipment": base.pk, "include_base": 0})
+    assert res.status_code == 200
+    assert [m["message"] for m in res.data["messages"]] == ["<p>facility notice</p>"]
+    assert res.data["can_manage"] is False
+    res = _client(_user(UserType.STUDENT)).get(url, {"equipment": base.pk, "include_base": 0})
+    assert {m["message"] for m in res.data["messages"]} == {"<p>facility notice</p>", "<p>internal only</p>"}
+    res = _client(admin).get(url, {"equipment": base.pk})
+    assert res.data["can_manage"] is True and all("audience_display" in m for m in res.data["messages"])
+    # A mode page keeps its own messages; the base instrument's appear there only when ticked.
+    res = anon.get(url, {"equipment": mode.pk})
+    assert [m["message"] for m in res.data["messages"]] == ["<p>mode notice</p>"]
+    assert anon.get(url, {"equipment": "x"}).status_code == 400
+    assert anon.get(url, {"equipment": 999999}).status_code == 404
 
 
 def test_status_window_end_now_and_extend():
@@ -172,7 +261,7 @@ def test_status_window_end_now_and_extend():
     data = _client(admin).get(URL, {"with_options": 1}).data
     assert data["summary"] == {"live": 1, "scheduled": 1, "expired": 1, "off": 1}
     assert [r["status"] for r in data["results"]] == ["LIVE", "SCHEDULED", "OFF", "EXPIRED"]
-    assert data["limits"]["message_max_chars"] == 300
+    assert data["limits"]["message_max_chars"] == 2000
     assert [r["message_plain"] for r in _client(admin).get(URL, {"status": "scheduled"}).data["results"]] == ["later"]
 
     assert [m["message"] for m in public_flash_messages(eq, _Anon())] == ["live"]
@@ -185,11 +274,12 @@ def test_status_window_end_now_and_extend():
     res = _client(admin).post(f"{URL}{live.pk}/extend/", {"days": 3}, format="json")
     assert res.status_code == 200 and res.data["status"] == "LIVE"
     assert [m["message"] for m in public_flash_messages(eq, _Anon())] == ["live"]
-    assert _client(admin).post(f"{URL}{live.pk}/extend/", {"days": 45}, format="json").status_code == 400
+    assert _client(admin).post(f"{URL}{live.pk}/extend/", {"days": 45}, format="json").status_code == 200
+    assert _client(admin).post(f"{URL}{live.pk}/extend/", {"days": 4000}, format="json").status_code == 400
 
     res = _client(admin).post(f"{URL}{scheduled.pk}/end/", {}, format="json")
     assert res.data["status"] == "EXPIRED"
-    assert [h["action"] for h in _client(admin).get(f"{URL}{live.pk}/").data["history"]] == ["ended", "extended"]
+    assert [h["action"] for h in _client(admin).get(f"{URL}{live.pk}/").data["history"]] == ["ended", "extended", "extended"]
 
     res = _client(admin).patch(f"{URL}{live.pk}/", {"is_active": False}, format="json")
     assert res.data["status"] == "OFF" and public_flash_messages(eq, _Anon()) == []
@@ -224,9 +314,9 @@ def test_base_instrument_messages_show_on_modes_when_ticked():
     _create(admin, base, message="base only")
     _msg(mode, message="mode own")
 
-    assert [m["message"] for m in public_flash_messages(mode, _Anon())] == ["mode own", "family wide"]
+    assert [m["message"] for m in public_flash_messages(mode, _Anon())] == ["mode own", "<p>family wide</p>"]
     assert [m["from_base_instrument"] for m in public_flash_messages(mode, _Anon())] == [False, True]
-    assert {m["message"] for m in public_flash_messages(base, _Anon())} == {"family wide", "base only"}
+    assert {m["message"] for m in public_flash_messages(base, _Anon())} == {"<p>family wide</p>", "<p>base only</p>"}
 
 
 def test_detail_payload_query_budget_and_cache(django_assert_max_num_queries):
