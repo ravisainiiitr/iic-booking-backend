@@ -18,6 +18,9 @@ class EquipmentConfig(AppConfig):
 
         connect_celery_signals()
         connect_config_audit_signals()
+        from iic_booking.equipment.publication_dedupe import connect_signals as connect_publication_signals
+
+        connect_publication_signals()
         from iic_booking.equipment.operating_cycle import connect_signals as connect_operating_cycle_signals
 
         connect_operating_cycle_signals()
