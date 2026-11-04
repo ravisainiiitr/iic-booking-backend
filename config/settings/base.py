@@ -725,6 +725,9 @@ FRONTEND_URL = env(
     "FRONTEND_URL",
     default="http://localhost:8080",
 )
+# Canonical public site used in equipment QR codes (<base>/equipment/<id>). Defaults to FRONTEND_URL; set it
+# when the frontend is reached under several hosts so printed codes always use the official one.
+PUBLIC_EQUIPMENT_BASE_URL = env("PUBLIC_EQUIPMENT_BASE_URL", default="")
 
 # Platform compatibility / version manifest (Phase R.2.6)
 # ------------------------------------------------------------------------------
