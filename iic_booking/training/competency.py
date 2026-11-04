@@ -8,6 +8,11 @@ Per equipment, never across equipment:
   Independent booking needs Expert (or any level the gate already accepted before, so people authorised earlier keep
   their rights).
 
+Rules set per equipment: a minimum number of completed supervised sessions (counted since the current Beginner
+status began) before the Expert assessment can be requested; Beginner status lasts ``beginner_validity_months``; the
+OIC can downgrade an Expert back to Beginner (with a reason), which closes their trainer designation and restarts the
+supervised-session count.
+
 Supervisors and assessors: the equipment's staff (OIC, temporary OIC, Lab Operators) and the Experts the OIC
 designated as trainers (``EquipmentTrainer``) while their own authorisation is valid. Nobody supervises or assesses
 themselves. Every step is in the training audit log; awards, assessments and sessions are never overwritten.
@@ -166,15 +171,83 @@ def trainer_out(row: EquipmentTrainer) -> dict:
 
 
 # --------------------------------------------------------------------------- Beginner (induction) and assessment requests
+def _setting(equipment):
+    from .authorisation import setting_row
+
+    return setting_row(equipment)
+
+
+def beginner_months(row) -> int:
+    return int(getattr(row, "beginner_validity_months", 0) or 6)
+
+
+def sessions_required(row) -> int:
+    return int(getattr(row, "min_supervised_sessions", 0) or 0)
+
+
+def sessions_done(user, equipment, beginner=None) -> int:
+    """Completed supervised sessions on the equipment since the current Beginner status began."""
+    beginner = beginner if beginner is not None else beginner_award(user, equipment)
+    if beginner is None:
+        return 0
+    return SupervisedSession.objects.filter(student=user, equipment_id=_eid(equipment), status=SupervisionStatus.ATTENDED,
+                                            recorded_at__gte=beginner.awarded_at).count()
+
+
 def grant_beginner(user, equipment, actor, *, reason: str = "") -> CertificationAward:
     from . import certification
 
     held = beginner_award(user, equipment) or independent_award(user, equipment)
     if held is not None:
         return held
-    award = certification.issue(user, equipment, level(BEGINNER), actor, months=None)
+    award = certification.issue(user, equipment, level(BEGINNER), actor, months=beginner_months(_setting(equipment)))
     audit(actor, "competency.beginner_granted", award, after={"user": user.pk, "equipment": equipment.pk}, note=reason)
     return award
+
+
+def downgrade(award: CertificationAward, actor, reason: str) -> CertificationAward:
+    """OIC: an Expert goes back to Beginner (supervised use). Returns the new Beginner award."""
+    from . import certification
+    from .authorisation import _require_configure
+    from .models import UserBadge
+
+    _require_configure(actor, award.equipment_id)
+    reason = (reason or "").strip()
+    if not reason:
+        raise TrainingError("A reason is required.", code="reason_required")
+    equipment, user = award.equipment, award.user
+    row = _setting(equipment)
+    if not two_level(row):
+        raise TrainingError("Downgrade applies only to equipment with Beginner and Expert levels.", code="not_two_level")
+    if award.level.rank < INDEPENDENT_RANK or award.status not in (*LIVE_AWARD, AwardStatus.SUSPENDED):
+        raise TrainingError("Only a held Expert (independent) authorisation can be downgraded.", code="not_expert")
+    if user.pk == getattr(actor, "pk", None):
+        raise TrainingError("You cannot downgrade your own authorisation.", status=403, code="forbidden")
+    now = timezone.now()
+    with transaction.atomic():
+        held = CertificationAward.objects.select_for_update().filter(
+            user=user, equipment=equipment, level__rank__gte=INDEPENDENT_RANK,
+            status__in=(*LIVE_AWARD, AwardStatus.SUSPENDED),
+        )
+        for old in held:
+            old.status, old.revoked_at, old.revoked_by = AwardStatus.REVOKED, now, actor
+            old.revoke_reason = f"Downgraded to Beginner: {reason}"[:2000]
+            old.save()
+            UserBadge.objects.filter(award=old, revoked_at__isnull=True).update(revoked_at=now)
+            audit(actor, "competency.downgraded", old, before={"level": old.level.code}, after={"level": BEGINNER}, note=reason)
+        for t in EquipmentTrainer.objects.filter(equipment=equipment, user=user, is_active=True):
+            t.is_active, t.removed_by, t.removed_at = False, actor, now
+            t.remove_reason = f"Downgraded to Beginner: {reason}"[:2000]
+            t.save()
+            audit(actor, "competency.trainer_removed", t, after={"user": user.pk}, note=t.remove_reason)
+        beginner = certification.issue(user, equipment, level(BEGINNER), actor, months=beginner_months(row))
+    need = sessions_required(row)
+    certification._notify_status(
+        beginner, actor, "Downgraded",
+        f"You are now a Beginner on {equipment.name} (supervised use only). Reason: {reason}"
+        + (f" Complete {need} supervised session(s) before asking for the Expert assessment again." if need else ""),
+    )
+    return beginner
 
 
 def request_assessment(user, equipment, message: str = "") -> AuthorisationRequest:
@@ -185,9 +258,14 @@ def request_assessment(user, equipment, message: str = "") -> AuthorisationReque
         raise TrainingError("This equipment has no Expert assessment.", code="not_required")
     if independent_award(user, equipment) is not None:
         raise TrainingError("You are already authorised to operate this equipment independently.", code="already_authorised")
-    if beginner_award(user, equipment) is None:
+    beginner = beginner_award(user, equipment)
+    if beginner is None:
         raise TrainingError("Complete the induction first: an Expert assessment is for Beginners on this equipment.",
                             code="beginner_required")
+    need, done = sessions_required(row), sessions_done(user, equipment, beginner)
+    if done < need:
+        raise TrainingError(f"Complete {need} supervised session(s) first: {done} of {need} recorded as completed.",
+                            code="sessions_required")
     if AuthorisationRequest.objects.filter(user=user, equipment=equipment, status__in=OPEN_REQUEST_STATUSES).exists():
         raise TrainingError("You already have an open request for this equipment.", status=409, code="request_open")
     req = AuthorisationRequest.objects.create(user=user, equipment=equipment, kind=AuthorisationRequestKind.ASSESSMENT,
@@ -412,6 +490,8 @@ def describe(user, equipment, row, status: dict) -> dict:
     else:
         stage, label = "NOT_TRAINED", "Not trained"
     supervised = bool(beginner is not None and getattr(row, "beginner_supervised_allowed", True))
+    need = sessions_required(row)
+    done = sessions_done(user, equipment, beginner) if beginner is not None else 0
     return {
         "two_level": True,
         "stage": stage,
@@ -419,7 +499,10 @@ def describe(user, equipment, row, status: dict) -> dict:
         "independent": bool(independent),
         "supervised_only": supervised,
         "beginner_since": s.iso(beginner.awarded_at) if beginner else None,
-        "can_request_assessment": bool(beginner is not None and open_req is None),
+        "beginner_valid_until": s.iso(beginner.valid_until) if beginner and beginner.valid_until else None,
+        "supervised_sessions_done": done,
+        "supervised_sessions_required": need,
+        "can_request_assessment": bool(beginner is not None and open_req is None and done >= need),
         "supervisors": [supervisor_out(p, equipment) for p in eligible_supervisors(equipment, exclude_user=user)]
         if supervised else [],
     }

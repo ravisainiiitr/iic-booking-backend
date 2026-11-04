@@ -1111,6 +1111,14 @@ class EquipmentAuthorisationSetting(models.Model):
     expert_requires_oic_approval = models.BooleanField(
         default=True, help_text=_("A Pass recorded by a trainer or Lab Operator needs the OIC's approval to make the student Expert."),
     )
+    min_supervised_sessions = models.PositiveSmallIntegerField(
+        default=2,
+        help_text=_("Supervised sessions a Beginner must complete (since becoming Beginner) before asking for the Expert "
+                    "assessment (0 = none)."),
+    )
+    beginner_validity_months = models.PositiveSmallIntegerField(
+        default=6, help_text=_("How long Beginner status lasts; after that the induction must be renewed or repeated."),
+    )
     note = models.TextField(blank=True, default="")
     updated_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     updated_at = models.DateTimeField(auto_now=True)
