@@ -186,9 +186,10 @@ def restore_slots_after_maintenance(slot_ids, *, was_open_ids=()) -> list[int]:
     """Put Under Maintenance slots back when the equipment is Operational again; returns the ids made Available.
 
     Weekend and holiday slots stay closed (Not Available): only those that were open before maintenance
-    converted them (``was_open_ids``, e.g. a Saturday staff opened) become Available again.
+    converted them (``was_open_ids``, e.g. a Saturday staff opened) or that an active Repeat block "Available" rule
+    opened become Available again.
     """
-    from .models import DailySlot, Holiday, SlotStatus
+    from .models import DailySlot, Holiday, RecurringSlotBlockRuleSlot, SlotStatus
 
     rows = list(
         DailySlot.objects.filter(pk__in=list(slot_ids), status=SlotStatus.UNDER_MAINTENANCE, booking__isnull=True)
@@ -199,6 +200,11 @@ def restore_slots_after_maintenance(slot_ids, *, was_open_ids=()) -> list[int]:
     dates = [d for _, d in rows]
     closed_days = Holiday.get_holidays_in_range(min(dates), max(dates))
     keep_open = set(was_open_ids or [])
+    keep_open |= set(
+        RecurringSlotBlockRuleSlot.objects.filter(
+            daily_slot_id__in=[sid for sid, _ in rows], rule__is_active=True, rule__slot_status=SlotStatus.AVAILABLE
+        ).values_list("daily_slot_id", flat=True)
+    )
     closed = [sid for sid, d in rows if d in closed_days and sid not in keep_open]
     opened = [sid for sid, _ in rows if sid not in set(closed)]
     if closed:
