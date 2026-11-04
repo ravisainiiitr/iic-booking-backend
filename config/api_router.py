@@ -723,6 +723,8 @@ urlpatterns = router.urls + [
     path("v1/research-copilot/", include("iic_booking.research_copilot.urls")),
     path("v1/my-research/", include("iic_booking.my_research.urls")),
     path("v1/training/", include("iic_booking.training.urls")),
+    # Online learning before training (modules, SOP sign-off, quizzes) and the booking logbook
+    path("v1/learning/", include("iic_booking.learning.urls")),
     # Research impact: funding lines, acknowledgement check, ORCID publication discovery, funder reports
     path("v1/impact/", include("iic_booking.impact.urls")),
     # Equipment upkeep: maintenance schedule, uptime target, early-warning alerts (staff only)
