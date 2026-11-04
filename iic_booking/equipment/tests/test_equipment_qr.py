@@ -108,10 +108,10 @@ def test_public_page_data_is_an_allowlist_and_needs_no_login(world):
     d = r.json()
     assert set(d) == {"equipment_id", "code", "name", "description", "important_instruction", "status", "category",
                       "department", "make", "model", "image_url", "specifications", "accessories", "location",
-                      "directions", "enquiry_address", "public_url", "booking_path", "charges_path"}
+                      "directions", "enquiry_address", "contacts", "public_url", "booking_path", "charges_path"}
     assert not PRIVATE_KEYS & set(d)
     body = r.content.decode()
-    assert "99999" not in body and "staff@example" not in body and world.oic.email not in body
+    assert "99999" not in body and "staff@example" not in body  # equipment-level phone and notification list
     assert d["specifications"] == [{"label": "Resolution", "value": "0.8 nm at 15 kV"}]
     assert d["accessories"] == [{"name": "EDS detector", "optional": True}]
     assert d["department"]["name"] == world.dept.name and d["category"] == "Electron Microscopy"
@@ -123,6 +123,31 @@ def test_public_page_data_is_an_allowlist_and_needs_no_login(world):
     eq.save()
     assert APIClient().get(f"/api/equipments/{eq.pk}/public/").json()["status"] == {
         "key": "unavailable", "label": "Temporarily unavailable"}
+
+
+def test_lab_contacts_are_public_with_only_contact_fields(world):
+    from iic_booking.equipment.models import EquipmentManager, EquipmentOperator
+
+    eq = world.equipment
+    world.oic.phone_number = "+91 11111 22222"
+    world.oic.save()
+    mgr = EquipmentManager.objects.get(equipment=eq, manager=world.oic)
+    mgr.office_address, mgr.alternate_phone_number = "Room 5, IIC", "+91 33333 44444"
+    mgr.save()
+    op = EquipmentOperator.objects.get(equipment=eq, operator=world.operator)
+    op.alternate_phone_number = "+91 55555 66666"
+    op.save()
+    contacts = APIClient().get(f"/api/equipments/{eq.pk}/public/").json()["contacts"]
+    assert [c["role"] for c in contacts] == ["Officer In-charge", "Lab Operator"]
+    oic, lab = contacts
+    assert set(oic) == {"role", "name", "email", "phones", "office", "photo_url"}
+    assert oic["name"] and oic["email"] == world.oic.email and oic["office"] == "Room 5, IIC"
+    assert "+91 33333 44444" in oic["phones"]
+    assert lab["email"] == world.operator.email and "+91 55555 66666" in lab["phones"]
+    body = APIClient().get(f"/api/equipments/{eq.pk}/public/").content.decode()
+    assert "disable_booking_confirmation_email" not in body and '"operator":' not in body and '"manager":' not in body
+    bare = make_equipment(world.dept, name="No staff yet")
+    assert APIClient().get(f"/api/equipments/{bare.pk}/public/").json()["contacts"] == []
 
 
 def test_restricted_and_missing_equipment_get_the_same_not_available_answer(world):
