@@ -723,6 +723,8 @@ urlpatterns = router.urls + [
     path("v1/research-copilot/", include("iic_booking.research_copilot.urls")),
     path("v1/my-research/", include("iic_booking.my_research.urls")),
     path("v1/training/", include("iic_booking.training.urls")),
+    # Research impact: funding lines, acknowledgement check, ORCID publication discovery, funder reports
+    path("v1/impact/", include("iic_booking.impact.urls")),
     # AI and automation (instrument finder, best slots, ticket triage, admin switches / dry runs)
     path("v1/automation/", include("iic_booking.automation.urls")),
     # Procurement & Assets (per-department switch; default OFF)
