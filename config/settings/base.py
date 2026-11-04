@@ -125,6 +125,7 @@ LOCAL_APPS = [
     "iic_booking.calls",
     "iic_booking.power",
     "iic_booking.impact",
+    "iic_booking.upkeep",
     "iic_booking.livefeed",
     "iic_booking.users",
     "iic_booking.communication",

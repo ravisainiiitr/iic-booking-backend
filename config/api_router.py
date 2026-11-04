@@ -725,6 +725,8 @@ urlpatterns = router.urls + [
     path("v1/training/", include("iic_booking.training.urls")),
     # Research impact: funding lines, acknowledgement check, ORCID publication discovery, funder reports
     path("v1/impact/", include("iic_booking.impact.urls")),
+    # Equipment upkeep: maintenance schedule, uptime target, early-warning alerts (staff only)
+    path("v1/upkeep/", include("iic_booking.upkeep.urls")),
     # AI and automation (instrument finder, best slots, ticket triage, admin switches / dry runs)
     path("v1/automation/", include("iic_booking.automation.urls")),
     # Procurement & Assets (per-department switch; default OFF)
