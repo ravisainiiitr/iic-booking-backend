@@ -7,12 +7,13 @@ POST   /api/equipments/flash-messages/                 create
 GET    /api/equipments/flash-messages/<id>/            detail with audit history
 PATCH  /api/equipments/flash-messages/<id>/            edit
 POST   /api/equipments/flash-messages/<id>/end/        end now
-POST   /api/equipments/flash-messages/<id>/extend/     ``days`` (1-30) or ``end_at``
+POST   /api/equipments/flash-messages/<id>/extend/     ``days`` or ``end_at``
+GET    /api/equipments/flash-messages/public/?equipment=<id>   live messages for one equipment page (anyone)
+
+``end_at`` may be null: the message runs until it is changed or switched off ("Until changed").
 """
 
 from __future__ import annotations
-
-from datetime import timedelta
 
 from django.db import transaction
 from django.db.models import Case
@@ -26,23 +27,27 @@ from rest_framework.decorators import api_view
 from rest_framework.decorators import parser_classes
 from rest_framework.decorators import permission_classes
 from rest_framework.parsers import JSONParser
+from rest_framework.permissions import AllowAny
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from iic_booking.users.models.user_type import UserType
 
 from .flash_message_service import LINK_LABEL_MAX_CHARS
-from .flash_message_service import MAX_DURATION_DAYS
-from .flash_message_service import MAX_START_AHEAD_DAYS
+from .flash_message_service import MAX_EXTEND_DAYS
 from .flash_message_service import MESSAGE_MAX_CHARS
 from .flash_message_service import actor_role
 from .flash_message_service import audience_user_type_choices
+from .flash_message_service import can_manage_equipment_flash
+from .flash_message_service import ends_after_q
+from .flash_message_service import extend_by_days
 from .flash_message_service import clean_flash_message
 from .flash_message_service import clean_link
 from .flash_message_service import clean_user_types
 from .flash_message_service import flash_equipment_ids
 from .flash_message_service import message_status
 from .flash_message_service import parse_when
+from .flash_message_service import public_flash_messages
 from .flash_message_service import schedule_error
 from .rich_text import rich_text_to_plain
 
@@ -76,8 +81,8 @@ def _status_q(state: str, now) -> Q | None:
     return {
         "off": Q(is_active=False),
         "expired": Q(is_active=True, end_at__lte=now),
-        "scheduled": Q(is_active=True, start_at__gt=now, end_at__gt=now),
-        "live": Q(is_active=True, start_at__lte=now, end_at__gt=now),
+        "scheduled": Q(is_active=True, start_at__gt=now) & ends_after_q(now),
+        "live": Q(is_active=True, start_at__lte=now) & ends_after_q(now),
     }.get(state)
 
 
@@ -113,6 +118,7 @@ def serialize_message(msg, now=None) -> dict:
         "tone_display": str(dict(FlashTone.choices).get(msg.tone, msg.tone)),
         "start_at": msg.start_at,
         "end_at": msg.end_at,
+        "until_changed": msg.end_at is None,
         "is_active": msg.is_active,
         "status": state,
         "status_display": STATUS_LABELS[state],
@@ -156,8 +162,9 @@ def _options(user) -> dict:
         "user_types": [{"value": k, "label": v} for k, v in audience_user_type_choices()],
         "limits": {
             "message_max_chars": MESSAGE_MAX_CHARS,
-            "max_duration_days": MAX_DURATION_DAYS,
-            "max_start_ahead_days": MAX_START_AHEAD_DAYS,
+            "max_duration_days": None,
+            "max_start_ahead_days": None,
+            "max_extend_days": MAX_EXTEND_DAYS,
             "link_label_max_chars": LINK_LABEL_MAX_CHARS,
         },
     }
@@ -241,8 +248,8 @@ def _validate(data, *, instance=None, equipment=None, now=None):
         if start is False or end is False:
             return None, "Enter the start and end as a date and time."
         start = start or (instance.start_at if instance and "start_at" not in data else now)
-        if end is None:
-            return None, "Choose when the message should end."
+        if creating and "end_at" not in data:
+            return None, "Choose when the message should end, or Until changed."
         error = schedule_error(start, end, now, creating=creating or (end != instance.end_at))
         if error:
             return None, error
@@ -396,7 +403,7 @@ def flash_message_end(request, pk: int):
     if error:
         return error
     now = timezone.now()
-    if msg.end_at <= now:
+    if msg.end_at is not None and msg.end_at <= now:
         return Response({"error": "This message has already ended."}, status=status.HTTP_400_BAD_REQUEST)
     _apply(msg, {"start_at": min(msg.start_at, now), "end_at": now}, request.user, "ended")
     return Response(_detail(msg))
@@ -411,6 +418,10 @@ def flash_message_extend(request, pk: int):
         return error
     data = request.data or {}
     now = timezone.now()
+    if msg.end_at is None:
+        return Response(
+            {"error": "This message runs until changed. Edit it to set an end."}, status=status.HTTP_400_BAD_REQUEST
+        )
     if data.get("end_at"):
         end = parse_when(data.get("end_at"))
         if not end:
@@ -420,11 +431,11 @@ def flash_message_extend(request, pk: int):
             days = int(data.get("days") or 0)
         except (TypeError, ValueError):
             days = 0
-        if not 1 <= days <= MAX_DURATION_DAYS:
+        if not 1 <= days <= MAX_EXTEND_DAYS:
             return Response(
-                {"error": f"Extend by 1 to {MAX_DURATION_DAYS} days."}, status=status.HTTP_400_BAD_REQUEST
+                {"error": f"Extend by 1 to {MAX_EXTEND_DAYS} days."}, status=status.HTTP_400_BAD_REQUEST
             )
-        end = max(msg.end_at, now) + timedelta(days=days)
+        end = extend_by_days(msg.end_at, now, days)
     start = msg.start_at
     if msg.end_at <= now and start < now:
         start = now
@@ -433,3 +444,28 @@ def flash_message_extend(request, pk: int):
         return Response({"error": message}, status=status.HTTP_400_BAD_REQUEST)
     _apply(msg, {"start_at": start, "end_at": end}, request.user, "extended")
     return Response(_detail(msg))
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def flash_message_public(request):
+    """Live messages of one equipment for this viewer. On a multi-mode base instrument this is what the page
+    listing all its modes shows (the base instrument's own messages)."""
+    from .models import Equipment
+
+    raw = str(request.query_params.get("equipment") or "").strip()
+    if not raw.isdigit():
+        return Response({"error": "Pass the equipment id."}, status=status.HTTP_400_BAD_REQUEST)
+    equipment = Equipment.objects.filter(pk=int(raw)).only(
+        "equipment_id", "parent_equipment_id", "internal_department_id"
+    ).first()
+    if equipment is None:
+        return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
+    include_base = str(request.query_params.get("include_base", "1")).lower() not in ("0", "false", "no")
+    return Response(
+        {
+            "equipment_id": equipment.pk,
+            "messages": public_flash_messages(equipment, request.user, include_base=include_base),
+            "can_manage": can_manage_equipment_flash(request.user, equipment),
+        }
+    )

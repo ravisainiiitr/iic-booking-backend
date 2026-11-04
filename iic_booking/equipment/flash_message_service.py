@@ -9,63 +9,44 @@ from __future__ import annotations
 
 import re
 from datetime import timedelta
+from html import escape
 
-import nh3
 from django.core.cache import cache
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from iic_booking.users.models.user_type import UserType
 
+from .rich_text import looks_like_html
 from .rich_text import rich_text_to_plain
+from .rich_text import sanitize_rich_text
 
-MESSAGE_MAX_CHARS = 300
-MESSAGE_HTML_MAX_CHARS = 3000
-MAX_DURATION_DAYS = 30
-MAX_START_AHEAD_DAYS = 90
+MESSAGE_MAX_CHARS = 2000
+MESSAGE_HTML_MAX_CHARS = 20000
+MAX_EXTEND_DAYS = 3650
 LINK_LABEL_MAX_CHARS = 40
 CACHE_SECONDS = 300
-_CACHE_PREFIX = "equipment_flash_messages:v1:"
+_CACHE_PREFIX = "equipment_flash_messages:v2:"
 
-_TAG_RENAMES = (("b", "strong"), ("i", "em"))
-_BLOCK_BREAK = re.compile(r"</?(p|div|br|li|ul|ol|h[1-6])(\s[^>]*)?/?>", re.I)
-_EMPTY_WRAPPER = re.compile(r"<(strong|em|a)(\s[^>]*)?>\s*</\1>")
 _SPACES = re.compile(r"\s+")
 
 
-def _href_filter(element: str, attribute: str, value: str) -> str | None:
-    if element == "a" and attribute == "href":
-        v = value.strip()
-        return v if len(v) <= 500 and re.match(r"^(https?://|mailto:)", v, re.I) else None
-    return value
-
-
 def sanitize_flash_html(raw) -> str:
-    """One line of text with bold, italic and links only; plain text is escaped."""
+    """The Important Instruction's rich text (headings, lists, colours, sizes, fonts, alignment, links); plain
+    text is escaped and kept line by line."""
     text = "" if raw is None else str(raw).replace("\r\n", "\n").strip()
     if not text:
         return ""
-    text = _BLOCK_BREAK.sub(" ", text)
-    for old, new in _TAG_RENAMES:
-        text = re.sub(rf"<(/?){old}(\s[^>]*)?>", rf"<\1{new}>", text, flags=re.I)
-    html = nh3.clean(
-        text,
-        tags={"strong", "em", "a"},
-        clean_content_tags={"script", "style", "iframe", "object", "embed", "noscript", "template", "title"},
-        attributes={"a": {"href"}},
-        attribute_filter=_href_filter,
-        url_schemes={"http", "https", "mailto"},
-        url_relative="deny",
-        link_rel="noopener noreferrer",
-        set_tag_attribute_values={"a": {"target": "_blank"}},
-        strip_comments=True,
-    )
-    html = re.sub(r"<a(?![^>]*\shref=)[^>]*>(.*?)</a>", r"\1", html, flags=re.S)
-    previous = None
-    while previous != html:
-        previous, html = html, _EMPTY_WRAPPER.sub("", html)
-    return _SPACES.sub(" ", html).strip()
+    if not looks_like_html(text):
+        return "".join(f"<p>{escape(line)}</p>" for line in text.split("\n") if line.strip())
+    return sanitize_rich_text(text)
+
+
+def ends_after_q(now) -> Q:
+    """Messages that have not ended at ``now`` (no end = until changed)."""
+    return Q(end_at__isnull=True) | Q(end_at__gt=now)
 
 
 def clean_flash_message(raw) -> tuple[str | None, str | None]:
@@ -105,15 +86,18 @@ def parse_when(raw):
 
 
 def schedule_error(start_at, end_at, now, *, creating: bool) -> str | None:
+    """Any future start and end (any year); ``end_at`` None = until changed."""
+    if end_at is None:
+        return None
     if end_at <= start_at:
         return "The end must be after the start."
     if creating and end_at <= now:
         return "The end must be in the future."
-    if start_at > now + timedelta(days=MAX_START_AHEAD_DAYS):
-        return f"The start can be at most {MAX_START_AHEAD_DAYS} days ahead."
-    if end_at > max(start_at, now) + timedelta(days=MAX_DURATION_DAYS, minutes=1):
-        return f"A flash message can run for at most {MAX_DURATION_DAYS} days."
     return None
+
+
+def extend_by_days(end_at, now, days: int):
+    return max(end_at, now) + timedelta(days=days)
 
 
 def audience_user_type_choices() -> list[tuple[str, str]]:
@@ -139,7 +123,7 @@ def message_status(msg, now=None) -> str:
     now = now or timezone.now()
     if not msg.is_active:
         return "OFF"
-    if msg.end_at <= now:
+    if msg.end_at is not None and msg.end_at <= now:
         return "EXPIRED"
     if msg.start_at > now:
         return "SCHEDULED"
@@ -227,7 +211,7 @@ def _pending_rows(equipment_id, now) -> list[dict]:
         from .models import EquipmentFlashMessage
 
         rows = list(
-            EquipmentFlashMessage.objects.filter(equipment_id=equipment_id, is_active=True, end_at__gt=now)
+            EquipmentFlashMessage.objects.filter(ends_after_q(now), equipment_id=equipment_id, is_active=True)
             .order_by("start_at", "id")
             .values(
                 "id", "message", "tone", "start_at", "end_at", "audience", "audience_user_types",
@@ -257,8 +241,10 @@ def _viewer_sees(row, user) -> bool:
     return ut.lower() in codes
 
 
-def public_flash_messages(equipment, user=None, now=None) -> list[dict]:
-    """Messages live now for this viewer: the equipment's own, then its base instrument's 'show on all modes'."""
+def public_flash_messages(equipment, user=None, now=None, *, include_base: bool = True) -> list[dict]:
+    """Messages live now for this viewer: the equipment's own, then (``include_base``) its base instrument's
+    messages marked 'also show on each mode'. The page listing all modes of an instrument shows the base
+    instrument's own messages (``include_base=False`` on the base instrument)."""
     from .models import FlashAudience
 
     if equipment is None or not getattr(equipment, "pk", None):
@@ -270,20 +256,22 @@ def public_flash_messages(equipment, user=None, now=None) -> list[dict]:
     audience_labels = dict(FlashAudience.choices)
     sources = [(equipment.pk, False)]
     parent_id = getattr(equipment, "parent_equipment_id", None)
-    if parent_id:
+    if parent_id and include_base:
         sources.append((parent_id, True))
     out = []
     for eq_id, inherited in sources:
         for row in _pending_rows(eq_id, now):
             if inherited and not row.get("show_on_modes"):
                 continue
-            if not (row["start_at"] <= now < row["end_at"]) or not _viewer_sees(row, user):
+            ends = row.get("end_at")
+            if row["start_at"] > now or (ends is not None and ends <= now) or not _viewer_sees(row, user):
                 continue
             item = {
                 "id": row["id"],
                 "message": row["message"],
                 "tone": row["tone"],
                 "end_at": row["end_at"],
+                "until_changed": row["end_at"] is None,
                 "link_url": row["link_url"] or "",
                 "link_label": row["link_label"] or "",
                 "from_base_instrument": inherited,

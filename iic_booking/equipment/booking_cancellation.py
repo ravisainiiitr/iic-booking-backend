@@ -32,9 +32,8 @@ from .slot_allocation import (
 )
 from .maintenance_policy import (
     clear_disruption_policy_fields,
-    effective_slot_status_when_freeing_disruption_booking,
+    disruption_freed_slot_fields,
     record_freed_booking_slots,
-    released_slot_status_after_booking_freed,
 )
 from .models import (
     Booking,
@@ -825,20 +824,16 @@ def perform_booking_cancellation(
             # Full cancel: equal-split helper returns the full charge when all slots go.
             refund_amount = calculate_refund_for_cancelled_slots(booking, cancelled_slots)
 
-    free_status = (
-        effective_slot_status_when_freeing_disruption_booking(booking)
-        if (
+    freed_fields = disruption_freed_slot_fields(
+        booking,
+        disrupted=(
             previous_status == BookingStatus.DISRUPTION_PENDING
             or getattr(booking, "maintenance_disruption_flag", False)
-        )
-        else released_slot_status_after_booking_freed(booking.equipment)
+        ),
     )
 
     if slot_ids:
-        DailySlot.objects.filter(id__in=slot_ids, booking=booking).update(
-            booking=None,
-            status=free_status,
-        )
+        DailySlot.objects.filter(id__in=slot_ids, booking=booking).update(booking=None, **freed_fields)
         record_freed_booking_slots(booking.equipment, slot_ids)
         schedule_waitlist_slots_available_after_commit(
             booking.equipment,

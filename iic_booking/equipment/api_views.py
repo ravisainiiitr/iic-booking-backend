@@ -212,7 +212,7 @@ from .booking_cancellation import (
 from .booking_audit import disruption_choice_audit
 from .maintenance_policy import (
     clear_disruption_policy_fields,
-    effective_slot_status_when_freeing_disruption_booking,
+    disruption_freed_slot_fields,
     record_freed_booking_slots,
     released_slot_status_after_booking_freed,
 )
@@ -12839,9 +12839,18 @@ def refund_booking_internal(booking, refund_notes, performed_by):
 
     with transaction.atomic():
         previous_status = booking.status
+        # A booking awaiting the user's choice after Operator Unavailable keeps its slots Operator Absent, and after
+        # Analysis Not Possible keeps them blocked with that label, as when the user takes the refund.
         booking.daily_slots.update(
             booking=None,
-            status=released_slot_status_after_booking_freed(booking.equipment),
+            **disruption_freed_slot_fields(
+                booking,
+                disrupted=(
+                    previous_status == BookingStatus.DISRUPTION_PENDING
+                    and str(booking.disruption_kind or "")
+                    in (BookingDisruptionKind.OPERATOR_ABSENT, BookingDisruptionKind.OTHER_DISRUPTION)
+                ),
+            ),
         )
 
         refund_transaction = None
@@ -13425,18 +13434,15 @@ def reschedule_booking(request, booking_id):
             keep_quota_in_original_period(booking)
             # Free up old slots
             old_slots = booking.daily_slots.all()
-            free_status = (
-                effective_slot_status_when_freeing_disruption_booking(booking)
-                if (
+            free_fields = disruption_freed_slot_fields(
+                booking,
+                disrupted=(
                     booking.status == BookingStatus.DISRUPTION_PENDING
                     or getattr(booking, "maintenance_disruption_flag", False)
-                )
-                else released_slot_status_after_booking_freed(equipment)
+                ),
+                equipment=equipment,
             )
-            old_slots.update(
-                booking=None,
-                status=free_status,
-            )
+            old_slots.update(booking=None, **free_fields)
             record_freed_booking_slots(equipment, released_slot_ids, user=request.user)
 
             # Book new slots
@@ -14333,18 +14339,15 @@ def user_reschedule_booking(request, booking_id):
                 booking.quota_period_anchor_at = None
             # Free up old slots
             old_slots = booking.daily_slots.all()
-            free_status = (
-                effective_slot_status_when_freeing_disruption_booking(booking)
-                if (
+            free_fields = disruption_freed_slot_fields(
+                booking,
+                disrupted=(
                     booking.status == BookingStatus.DISRUPTION_PENDING
                     or getattr(booking, "maintenance_disruption_flag", False)
-                )
-                else released_slot_status_after_booking_freed(equipment)
+                ),
+                equipment=equipment,
             )
-            old_slots.update(
-                booking=None,
-                status=free_status,
-            )
+            old_slots.update(booking=None, **free_fields)
             record_freed_booking_slots(equipment, released_slot_ids, user=request.user)
 
             # Book new slots

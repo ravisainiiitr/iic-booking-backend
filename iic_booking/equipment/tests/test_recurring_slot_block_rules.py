@@ -527,3 +527,92 @@ def test_list_shows_active_rules_and_removed_on_request(admin, eq):
     assert data["rules"][0]["weekday_labels"] == ["Mon"]
     data = _client(admin).get(_url(eq) + "?include_removed=1").data
     assert [r["id"] for r in data["removed_rules"]] == [gone]
+
+
+# --- Statuses other than Other Reasons ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "slot_status",
+    [
+        SlotStatus.UNDER_MAINTENANCE,
+        SlotStatus.SCHEDULED_MAINTENANCE,
+        SlotStatus.OPERATOR_ABSENT,
+        SlotStatus.NOT_AVAILABLE,
+        SlotStatus.RESERVED_EXTERNAL,
+    ],
+)
+def test_rule_gives_the_chosen_status_now_and_to_generated_slots(admin, eq, slot_status):
+    data = _create(
+        admin, eq, slot_status=slot_status, weekdays=[MONDAY], slot_times=["10:00"],
+        end_date=(MON + timedelta(days=27)).isoformat(), label="Monthly service",
+    )
+    assert data["rule"]["slot_status"] == slot_status
+    assert data["result"]["blocked_count"] == 2
+    for day in (MON, MON + timedelta(days=7)):
+        slot = _slot(eq, day, "10:00")
+        # Only Other Reasons slots carry the label.
+        assert (slot.status, slot.blocked_label) == (slot_status, None)
+    assert _slot(eq, MON, "14:00").status == SlotStatus.AVAILABLE
+
+    _generate(eq, MON + timedelta(days=14), MON + timedelta(days=27))
+    later = _slot(eq, MON + timedelta(days=14), "10:00")
+    assert later.status == slot_status
+    rule = _client(admin).get(_url(eq, f"{data['rule']['id']}/")).data["rule"]
+    assert rule["blocked_now_count"] == 4 and rule["generated_count"] == 2
+
+    res = _client(admin).post(_url(eq, f"{data['rule']['id']}/remove/"), {}, format="json")
+    assert res.status_code == 200, res.data
+    assert res.data["result"]["unblocked_count"] == 4
+    for day in (MON, MON + timedelta(days=7), MON + timedelta(days=14), MON + timedelta(days=21)):
+        assert _slot(eq, day, "10:00").status == SlotStatus.AVAILABLE
+
+
+def test_disruption_statuses_are_recorded_and_released_with_the_rule(admin, eq):
+    from iic_booking.equipment.models import DisruptionEvent, DisruptionEventSlot
+
+    data = _create(admin, eq, slot_status=SlotStatus.SCHEDULED_MAINTENANCE, weekdays=[MONDAY], slot_times=["10:00"])
+    slot_ids = {_slot(eq, d, "10:00").pk for d in (MON, MON + timedelta(days=7))}
+    links = DisruptionEventSlot.objects.filter(daily_slot_id__in=slot_ids, released_at__isnull=True)
+    assert set(links.values_list("daily_slot_id", flat=True)) == slot_ids
+    events = DisruptionEvent.objects.filter(pk__in=links.values_list("event_id", flat=True))
+    assert set(events.values_list("disruption_type", flat=True)) == {"SCHEDULED_MAINTENANCE"}
+    assert all("Calibration" in (e.reason or "") for e in events)
+
+    _client(admin).post(_url(eq, f"{data['rule']['id']}/remove/"), {}, format="json")
+    assert not DisruptionEventSlot.objects.filter(daily_slot_id__in=slot_ids, released_at__isnull=True).exists()
+
+
+def test_other_reasons_rules_are_not_recorded_as_disruptions(admin, eq):
+    from iic_booking.equipment.models import DisruptionEventSlot
+
+    _create(admin, eq, weekdays=[MONDAY], slot_times=["10:00"])
+    assert not DisruptionEventSlot.objects.filter(daily_slot=_slot(eq, MON, "10:00")).exists()
+
+
+def test_rules_of_different_statuses_do_not_share_slots(admin, eq):
+    _create(admin, eq, weekdays=[MONDAY], slot_times=["10:00"])
+    data = _create(admin, eq, slot_status=SlotStatus.UNDER_MAINTENANCE, weekdays=[MONDAY], slot_times=["10:00"])
+    # The Other Reasons rule took the slots first; the maintenance rule reports them as left unchanged.
+    assert data["result"]["blocked_count"] == 0
+    assert data["result"]["already_blocked_by_rule_count"] == 0
+    assert data["result"]["skipped_other_count"] == 2
+    assert _slot(eq, MON, "10:00").status == SlotStatus.BLOCKED
+
+
+def test_invalid_status_is_rejected_and_options_are_listed(admin, eq):
+    res = _client(admin).post(_url(eq), _payload(slot_status="BOOKED"), format="json")
+    assert res.status_code == 400 and res.data["field"] == "slot_status"
+    res = _client(admin).post(_url(eq), _payload(slot_status="BOOKING_NOT_UTILIZED"), format="json")
+    assert res.status_code == 400
+    options = _client(admin).get(_url(eq)).data["status_options"]
+    assert [o["value"] for o in options] == [
+        "BLOCKED", "UNDER_MAINTENANCE", "SCHEDULED_MAINT", "OPERATOR_ABSENT", "NOT_AVAILABLE", "RESERVED_EXTERNAL",
+    ]
+    assert options[0]["label"] == "Other Reasons"
+
+
+def test_rules_created_before_statuses_still_mean_other_reasons(admin, eq):
+    data = _create(admin, eq, weekdays=[MONDAY], slot_times=["10:00"])
+    assert data["rule"]["slot_status"] == SlotStatus.BLOCKED
+    assert data["rule"]["slot_status_display"] == "Other Reasons"

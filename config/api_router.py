@@ -1416,6 +1416,11 @@ urlpatterns = router.urls + [
     ),
     path("equipments/flash-messages/", flash_message_views.flash_message_list, name="equipment-flash-messages"),
     path(
+        "equipments/flash-messages/public/",
+        flash_message_views.flash_message_public,
+        name="equipment-flash-messages-public",
+    ),
+    path(
         "equipments/flash-messages/<int:pk>/",
         flash_message_views.flash_message_detail,
         name="equipment-flash-message-detail",

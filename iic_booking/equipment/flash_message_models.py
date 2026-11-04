@@ -1,7 +1,8 @@
 """Equipment flash messages (models). Imported at the end of ``iic_booking.equipment.models``.
 
-A short, time-boxed message staff show at the top of an equipment page and its booking page, e.g.
-"Sample submission closes at 4 PM today". Expired messages simply stop showing (filtered by time).
+A message staff show at the top of an equipment page, its booking page and (for a multi-mode instrument) the
+page listing all its modes, e.g. "Sample submission closes at 4 PM today". It runs until its end, or until it is
+changed or switched off when it has no end ("Until changed"). Expired messages simply stop showing.
 """
 
 from django.conf import settings
@@ -30,15 +31,21 @@ class EquipmentFlashMessage(models.Model):
         on_delete=models.CASCADE,
         related_name="flash_messages",
     )
-    message = models.TextField(help_text=_("Short text; bold, italic and links only (sanitised)."))
+    message = models.TextField(help_text=_("Rich text, same formatting as the Important Instruction (sanitised)."))
     tone = models.CharField(max_length=16, choices=FlashTone.choices, default=FlashTone.INFO)
     start_at = models.DateTimeField(default=timezone.now)
-    end_at = models.DateTimeField(db_index=True)
+    end_at = models.DateTimeField(
+        db_index=True, null=True, blank=True, help_text=_("Empty: runs until changed or switched off.")
+    )
     is_active = models.BooleanField(default=True, help_text=_("Off hides the message without deleting it."))
     audience = models.CharField(max_length=16, choices=FlashAudience.choices, default=FlashAudience.ALL)
     audience_user_types = models.JSONField(default=list, blank=True)
     show_on_modes = models.BooleanField(
-        default=False, help_text=_("Multi-mode base instrument: also show on the pages of all its modes.")
+        default=False,
+        help_text=_(
+            "Multi-mode base instrument: also show on the page of each mode (it always shows on the base "
+            "instrument's page and on the page listing all its modes)."
+        ),
     )
     link_url = models.URLField(max_length=500, blank=True, default="")
     link_label = models.CharField(max_length=60, blank=True, default="")

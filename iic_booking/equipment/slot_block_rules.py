@@ -1,7 +1,8 @@
 """
 Recurring slot block rules ("Repeat block" on the Change slot status page).
 
-A rule blocks slots on chosen weekdays and slot start times (local time) within a date range:
+A rule gives one status (Other Reasons by default, or another status of the Select operation list that applies to
+empty slots) to slots on chosen weekdays and slot start times (local time) within a date range:
 existing slots when the rule is created, and new slots as they are generated later. Only slots that
 are AVAILABLE, unbooked and not yet started are ever blocked; booked slots and slots in any other
 status are skipped and reported. Nothing here cancels or refunds a booking.
@@ -51,6 +52,38 @@ SKIP_REASONS = {
     SlotStatus.BOOKED: "Booked",
 }
 SHARED_REASON = "Already blocked by another repeat rule"
+
+# Statuses a repeat rule may give (all apply to empty, AVAILABLE slots only). Order = the dropdown order.
+RULE_STATUSES = (
+    SlotStatus.BLOCKED,
+    SlotStatus.UNDER_MAINTENANCE,
+    SlotStatus.SCHEDULED_MAINTENANCE,
+    SlotStatus.OPERATOR_ABSENT,
+    SlotStatus.NOT_AVAILABLE,
+    SlotStatus.RESERVED_EXTERNAL,
+)
+RULE_STATUS_LABELS = {
+    SlotStatus.BLOCKED: "Other Reasons",
+    SlotStatus.UNDER_MAINTENANCE: "Under Maintenance",
+    SlotStatus.SCHEDULED_MAINTENANCE: "Scheduled Maintenance",
+    SlotStatus.OPERATOR_ABSENT: "Operator Absent",
+    SlotStatus.NOT_AVAILABLE: "Not Available",
+    SlotStatus.RESERVED_EXTERNAL: "Reserved for External",
+}
+
+
+def rule_status_options() -> list[dict]:
+    return [{"value": s, "label": RULE_STATUS_LABELS[s]} for s in RULE_STATUSES]
+
+
+def _rule_status(rule) -> str:
+    value = str(getattr(rule, "slot_status", "") or SlotStatus.BLOCKED)
+    return value if value in RULE_STATUSES else SlotStatus.BLOCKED
+
+
+def _stored_label(slot_status: str, label: str) -> str | None:
+    """DailySlot.blocked_label: only Other Reasons slots carry the rule's label."""
+    return _label_value(label) if slot_status == SlotStatus.BLOCKED else None
 
 Source = RecurringSlotBlockRuleSlot.Source
 
@@ -147,12 +180,21 @@ def clean_rule_input(equipment: Equipment, data) -> dict:
     if len(label) > 255:
         raise RuleInputError("The label can be at most 255 characters.", "label", "label_too_long")
 
+    slot_status = str(data.get("slot_status") or SlotStatus.BLOCKED).strip().upper()
+    if slot_status not in RULE_STATUSES:
+        raise RuleInputError(
+            "Choose a status: " + ", ".join(RULE_STATUS_LABELS[s] for s in RULE_STATUSES) + ".",
+            "slot_status",
+            "invalid_slot_status",
+        )
+
     return {
         "weekdays": sorted(weekdays),
         "slot_times": sorted(slot_times),
         "start_date": start,
         "end_date": end,
         "label": label,
+        "slot_status": slot_status,
     }
 
 
@@ -211,12 +253,16 @@ class _Plan:
     other: list[tuple[DailySlot, str]] = field(default_factory=list)
 
 
-def _classify(slots: list[DailySlot], *, exclude_rule_id: int | None = None) -> _Plan:
+def _classify(
+    slots: list[DailySlot], *, slot_status: str = SlotStatus.BLOCKED, exclude_rule_id: int | None = None
+) -> _Plan:
     plan = _Plan()
-    blocked_ids = [s.pk for s in slots if s.status == SlotStatus.BLOCKED and not s.booking_id]
+    blocked_ids = [s.pk for s in slots if s.status == slot_status and not s.booking_id]
     shared_ids: set[int] = set()
     if blocked_ids:
-        links = RecurringSlotBlockRuleSlot.objects.filter(daily_slot_id__in=blocked_ids, rule__is_active=True)
+        links = RecurringSlotBlockRuleSlot.objects.filter(
+            daily_slot_id__in=blocked_ids, rule__is_active=True, rule__slot_status=slot_status
+        )
         if exclude_rule_id:
             links = links.exclude(rule_id=exclude_rule_id)
         shared_ids = set(links.values_list("daily_slot_id", flat=True))
@@ -301,14 +347,32 @@ def _plan_summary(plan: _Plan, equipment: Equipment, cleaned: dict) -> dict:
 
 def preview_rule(equipment: Equipment, cleaned: dict) -> dict:
     """Dry run of create_rule: what would be blocked and skipped. Writes nothing."""
-    plan = _classify(_candidate_slots(equipment, cleaned))
+    plan = _classify(_candidate_slots(equipment, cleaned), slot_status=cleaned.get("slot_status", SlotStatus.BLOCKED))
     return _plan_summary(plan, equipment, cleaned)
+
+
+def _record_rule_disruptions(equipment: Equipment, slot_ids: list[int], slot_status: str, label: str, actor) -> None:
+    """Under Maintenance / Operator Absent / Scheduled Maintenance slots join (or open) a disruption event."""
+    from .disruption_service import DisruptionInput, auto_recorded_slot_statuses, clean_text, record_slot_status_change
+
+    if not slot_ids or slot_status not in auto_recorded_slot_statuses():
+        return
+    slots = list(DailySlot.objects.filter(pk__in=slot_ids))
+    for slot in slots:
+        slot._disruption_old_status = SlotStatus.AVAILABLE
+    data = DisruptionInput(user=actor if getattr(actor, "pk", None) else None, source="CHANGE_SLOT_STATUS")
+    if label:
+        data.label = clean_text(label, 255)
+        if not data.reason:
+            data.reason = clean_text(label)
+    record_slot_status_change(equipment, slots, slot_status, data, log_change=False)
 
 
 def create_rule(equipment: Equipment, cleaned: dict, actor) -> tuple[RecurringSlotBlockRule, dict]:
     """Save the rule and block its matching AVAILABLE slots now, in one transaction."""
+    slot_status = cleaned.get("slot_status", SlotStatus.BLOCKED)
     with transaction.atomic():
-        plan = _classify(_candidate_slots(equipment, cleaned, lock=True))
+        plan = _classify(_candidate_slots(equipment, cleaned, lock=True), slot_status=slot_status)
         rule = RecurringSlotBlockRule.objects.create(
             equipment=equipment,
             weekdays=cleaned["weekdays"],
@@ -316,6 +380,7 @@ def create_rule(equipment: Equipment, cleaned: dict, actor) -> tuple[RecurringSl
             start_date=cleaned["start_date"],
             end_date=cleaned["end_date"],
             label=cleaned["label"],
+            slot_status=slot_status,
             created_by=actor if getattr(actor, "pk", None) else None,
         )
         block_ids = [s.pk for s in plan.to_block]
@@ -323,7 +388,7 @@ def create_rule(equipment: Equipment, cleaned: dict, actor) -> tuple[RecurringSl
         if block_ids:
             blocked = DailySlot.objects.filter(
                 pk__in=block_ids, status=SlotStatus.AVAILABLE, booking__isnull=True
-            ).update(status=SlotStatus.BLOCKED, blocked_label=_label_value(cleaned["label"]))
+            ).update(status=slot_status, blocked_label=_stored_label(slot_status, cleaned["label"]))
         links = [RecurringSlotBlockRuleSlot(rule=rule, daily_slot_id=pk, source=Source.CREATED) for pk in block_ids]
         links += [RecurringSlotBlockRuleSlot(rule=rule, daily_slot_id=s.pk, source=Source.SHARED) for s in plan.shared]
         if links:
@@ -332,6 +397,8 @@ def create_rule(equipment: Equipment, cleaned: dict, actor) -> tuple[RecurringSl
         summary["blocked_count"] = blocked
         rule.summary = {k: v for k, v in summary.items() if k != "slots_exist_until"}
         rule.save(update_fields=["summary"])
+    if blocked:
+        _record_rule_disruptions(equipment, block_ids, slot_status, cleaned["label"], actor)
 
     record_staff_action(
         actor,
@@ -342,6 +409,7 @@ def create_rule(equipment: Equipment, cleaned: dict, actor) -> tuple[RecurringSl
         slot_times=cleaned["slot_times"],
         start_date=str(cleaned["start_date"]),
         end_date=str(cleaned["end_date"]),
+        slot_status=slot_status,
         blocked=blocked,
         skipped_booked=summary["skipped_booked_count"],
         skipped_other=summary["skipped_other_count"],
@@ -366,17 +434,20 @@ def _removal_plan(rule: RecurringSlotBlockRule, *, lock: bool = False) -> _Remov
     slots_qs = DailySlot.objects.filter(pk__in=slot_ids).order_by("date", "start_datetime")
     if lock:
         slots_qs = slots_qs.select_for_update()
+    rule_status = _rule_status(rule)
     other_rule_by_slot: dict[int, RecurringSlotBlockRule] = {}
     for link in (
-        RecurringSlotBlockRuleSlot.objects.filter(daily_slot_id__in=slot_ids, rule__is_active=True)
+        RecurringSlotBlockRuleSlot.objects.filter(
+            daily_slot_id__in=slot_ids, rule__is_active=True, rule__slot_status=rule_status
+        )
         .exclude(rule_id=rule.pk)
         .select_related("rule")
         .order_by("rule__created_at", "rule_id")
     ):
         other_rule_by_slot.setdefault(link.daily_slot_id, link.rule)
-    own_label = rule.label or ""
+    own_label = _stored_label(rule_status, rule.label) or ""
     for slot in slots_qs:
-        if slot.status != SlotStatus.BLOCKED or slot.booking_id:
+        if slot.status != rule_status or slot.booking_id:
             plan.unchanged.append(slot)
         elif slot.pk in other_rule_by_slot:
             plan.kept.append((slot, other_rule_by_slot[slot.pk]))
@@ -405,22 +476,25 @@ def remove_rule(rule: RecurringSlotBlockRule, actor) -> dict:
         if not rule.is_active:
             raise RuleInputError("This repeat block was already removed.", code="already_removed")
         plan = _removal_plan(rule, lock=True)
+        rule_status = _rule_status(rule)
         restore_status = SlotGenerator._get_initial_slot_status_for_equipment(equipment)
         unblocked = 0
         if plan.unblock:
             unblocked = DailySlot.objects.filter(
-                pk__in=[s.pk for s in plan.unblock], status=SlotStatus.BLOCKED, booking__isnull=True
+                pk__in=[s.pk for s in plan.unblock], status=rule_status, booking__isnull=True
             ).update(status=restore_status, blocked_label=None)
             if unblocked:
-                _record_restored_disruptions(equipment, [s.pk for s in plan.unblock], restore_status, actor)
-        own_label = rule.label or ""
+                _record_restored_disruptions(
+                    equipment, [s.pk for s in plan.unblock], restore_status, actor, old_status=rule_status
+                )
+        own_label = _stored_label(rule_status, rule.label) or ""
         handover: dict[int, tuple[RecurringSlotBlockRule, list[int]]] = {}
         for slot, other in plan.kept:
             if (slot.blocked_label or "") == own_label:
                 handover.setdefault(other.pk, (other, []))[1].append(slot.pk)
         for other, ids in handover.values():
-            DailySlot.objects.filter(pk__in=ids, status=SlotStatus.BLOCKED).update(
-                blocked_label=_label_value(other.label)
+            DailySlot.objects.filter(pk__in=ids, status=rule_status).update(
+                blocked_label=_stored_label(rule_status, other.label)
             )
         result = {
             "unblocked_count": unblocked,
@@ -457,6 +531,8 @@ def serialize_rule(rule: RecurringSlotBlockRule, *, with_removal_preview: bool =
         "start_date": rule.start_date.isoformat(),
         "end_date": rule.end_date.isoformat(),
         "label": rule.label or "",
+        "slot_status": _rule_status(rule),
+        "slot_status_display": RULE_STATUS_LABELS[_rule_status(rule)],
         "is_active": rule.is_active,
         "created_at": rule.created_at.isoformat() if rule.created_at else None,
         "created_by_name": _name(rule.created_by),
@@ -464,7 +540,7 @@ def serialize_rule(rule: RecurringSlotBlockRule, *, with_removal_preview: bool =
         "removed_by_name": _name(rule.removed_by),
         "summary": rule.summary or {},
         "removal_summary": rule.removal_summary or {},
-        "blocked_now_count": rule.slot_links.filter(daily_slot__status=SlotStatus.BLOCKED)
+        "blocked_now_count": rule.slot_links.filter(daily_slot__status=_rule_status(rule))
         .exclude(source=Source.SHARED)
         .count(),
         "generated_count": rule.slot_links.filter(source=Source.GENERATED).count(),
@@ -503,21 +579,26 @@ def _apply_rules_to_new_rows(equipment: Equipment, rows: list[DailySlot]) -> dic
             if r.start_date <= row.date <= r.end_date and weekday in (r.weekdays or []) and hhmm in (r.slot_times or [])
         ]
         if hits:
-            row.status = SlotStatus.BLOCKED
-            row.blocked_label = _label_value(hits[0].label)
-            matches[(row.slot_master_id, row.date)] = [r.pk for r in hits]
+            first_status = _rule_status(hits[0])
+            row.status = first_status
+            row.blocked_label = _stored_label(first_status, hits[0].label)
+            matches[(row.slot_master_id, row.date)] = [r.pk for r in hits if _rule_status(r) == first_status]
     return matches
 
 
-def _link_generated_rows(matches: dict[tuple[int, date], list[int]], labels: dict[tuple[int, date], str | None]):
+def _link_generated_rows(
+    matches: dict[tuple[int, date], list[int]],
+    labels: dict[tuple[int, date], str | None],
+    statuses: dict[tuple[int, date], str],
+):
     master_ids = {k[0] for k in matches}
     dates = {k[1] for k in matches}
     links = []
-    for pk, master_id, slot_date, blocked_label in DailySlot.objects.filter(
-        slot_master_id__in=master_ids, date__in=dates, status=SlotStatus.BLOCKED, booking__isnull=True
-    ).values_list("pk", "slot_master_id", "date", "blocked_label"):
+    for pk, master_id, slot_date, slot_status, blocked_label in DailySlot.objects.filter(
+        slot_master_id__in=master_ids, date__in=dates, status__in=RULE_STATUSES, booking__isnull=True
+    ).values_list("pk", "slot_master_id", "date", "status", "blocked_label"):
         key = (master_id, slot_date)
-        if key not in matches or (blocked_label or None) != labels[key]:
+        if key not in matches or slot_status != statuses[key] or (blocked_label or None) != labels[key]:
             continue
         links.extend(
             RecurringSlotBlockRuleSlot(rule_id=rule_id, daily_slot_id=pk, source=Source.GENERATED)
@@ -536,23 +617,42 @@ def bulk_create_daily_slots(equipment: Equipment, rows: list[DailySlot]) -> list
         created = list(DailySlot.objects.bulk_create(rows, ignore_conflicts=True))
     else:
         labels = {(r.slot_master_id, r.date): r.blocked_label for r in rows if (r.slot_master_id, r.date) in matches}
+        statuses = {(r.slot_master_id, r.date): r.status for r in rows if (r.slot_master_id, r.date) in matches}
         with transaction.atomic():
             created = list(DailySlot.objects.bulk_create(rows, ignore_conflicts=True))
-            _link_generated_rows(matches, labels)
+            _link_generated_rows(matches, labels, statuses)
     _record_generated_disruptions(equipment, rows)
     return created
 
 
-def _record_restored_disruptions(equipment: Equipment, slot_ids: list[int], status: str, actor) -> None:
-    from .disruption_service import DisruptionInput, auto_recorded_slot_statuses, record_unrecorded_slots
+def _record_restored_disruptions(
+    equipment: Equipment, slot_ids: list[int], status: str, actor, *, old_status: str = SlotStatus.BLOCKED
+) -> None:
+    """Slots a removed rule gave back: the rule's disruption (Under Maintenance etc.) ends for them; slots that go
+    back Under Maintenance (equipment in repair) join that disruption."""
+    from .disruption_service import (
+        DisruptionInput,
+        auto_recorded_slot_statuses,
+        record_slot_status_change,
+        record_unrecorded_slots,
+    )
 
-    if status not in auto_recorded_slot_statuses():
+    statuses = set(auto_recorded_slot_statuses())
+    if old_status in statuses:
+        slots = list(DailySlot.objects.filter(pk__in=slot_ids))
+        for slot in slots:
+            slot._disruption_old_status = old_status
+        record_slot_status_change(
+            equipment, slots, status, DisruptionInput(user=actor, source="CHANGE_SLOT_STATUS"), log_change=False
+        )
+        return
+    if status not in statuses:
         return
     record_unrecorded_slots(
         equipment,
         DailySlot.objects.filter(pk__in=slot_ids),
         DisruptionInput(user=actor, source="CHANGE_SLOT_STATUS"),
-        old_status=SlotStatus.BLOCKED,
+        old_status=old_status,
     )
 
 

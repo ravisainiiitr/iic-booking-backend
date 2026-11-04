@@ -1312,15 +1312,17 @@ def perform_cross_equipment_reschedule(request, booking, start_time, end_time, *
                 av.keep_quota_in_original_period(booking)
             else:
                 booking.quota_period_anchor_at = None
-            free_status = (
-                av.effective_slot_status_when_freeing_disruption_booking(booking)
-                if (
+            from .maintenance_policy import disruption_freed_slot_fields
+
+            freed_fields = disruption_freed_slot_fields(
+                booking,
+                disrupted=(
                     booking.status == BookingStatus.DISRUPTION_PENDING
                     or getattr(booking, "maintenance_disruption_flag", False)
-                )
-                else av.released_slot_status_after_booking_freed(source)
+                ),
+                equipment=source,
             )
-            booking.daily_slots.all().update(booking=None, status=free_status)
+            booking.daily_slots.all().update(booking=None, **freed_fields)
             DailySlot.objects.filter(id__in=slot_ids).update(booking=booking, status=SlotStatus.BOOKED)
 
             previous_status = booking.status
