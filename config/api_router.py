@@ -14,6 +14,7 @@ from iic_booking.department_modules import urls as department_modules_urls
 from iic_booking.external_services import urls as external_services_urls
 from iic_booking.equipment import disruption_views
 from iic_booking.equipment import flash_message_views
+from iic_booking.equipment import equipment_qr
 from iic_booking.equipment.config_audit_views import (
     equipment_config_audit_detail,
     equipment_config_audit_facets,
@@ -1622,6 +1623,11 @@ urlpatterns = router.urls + [
     path("equipments/<int:pk>/book/", book_equipment, name="book-equipment"),
     path("equipments/<int:pk>/book-for-user-info/", equipment_book_for_user_info, name="equipment-book-for-user-info"),
     path("equipments/<int:pk>/", equipment_detail, name="equipment-detail"),
+    path("equipments/<int:pk>/public/", equipment_qr.public_equipment, name="equipment-public"),
+    path("equipment-qr/", equipment_qr.equipment_qr_list, name="equipment-qr-list"),
+    path("equipment-qr/batch.zip", equipment_qr.equipment_qr_zip, name="equipment-qr-zip"),
+    path("equipment-qr/<int:pk>.png", equipment_qr.equipment_qr_image, {"fmt": "png"}, name="equipment-qr-png"),
+    path("equipment-qr/<int:pk>.svg", equipment_qr.equipment_qr_image, {"fmt": "svg"}, name="equipment-qr-svg"),
     path("equipments/temporary-oic/oic-users/", temporary_oic_list_oic_users, name="temporary-oic-list-oic-users"),
     path("equipments/temporary-oic/my-equipments/", temporary_oic_my_equipments, name="temporary-oic-my-equipments"),
     path("equipments/temporary-oic/", temporary_oic_create, name="temporary-oic-create"),
