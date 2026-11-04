@@ -1,0 +1,42 @@
+name: Import ORCID Publications (dry run unless apply)
+
+on:
+  workflow_dispatch:
+    inputs:
+      user_id:
+        description: "Portal user id of the researcher"
+        required: true
+      orcid:
+        description: "ORCID iD, e.g. 0000-0002-1825-0097"
+        required: true
+      affiliation:
+        description: "Case-insensitive pattern the author affiliation must match"
+        required: true
+      since_year:
+        description: "Only papers published in or after this year"
+        required: false
+        default: "1900"
+      apply:
+        description: "Type APPLY to save the ORCID iD and the suggestions (anything else = dry run)"
+        required: false
+        default: ""
+
+jobs:
+  import:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run import_orcid_publications
+        env:
+          USER_ID: ${{ github.event.inputs.user_id }}
+          ORCID: ${{ github.event.inputs.orcid }}
+          AFFILIATION: ${{ github.event.inputs.affiliation }}
+          SINCE_YEAR: ${{ github.event.inputs.since_year }}
+          APPLY: ${{ github.event.inputs.apply }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          FLAG=""
+          if [ "$APPLY" = "APPLY" ]; then FLAG="--apply"; fi
+          docker exec -w /app "$CID" python manage.py import_orcid_publications \
+            --user-id "$USER_ID" --orcid "$ORCID" --affiliation "$AFFILIATION" --since-year "${SINCE_YEAR:-1900}" $FLAG
