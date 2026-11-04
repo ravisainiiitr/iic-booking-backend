@@ -454,7 +454,45 @@ def weekly_discovery(limit: int = 500) -> dict:
             done += 1
         except ImpactError:
             failed += 1
-    return {"checked": done, "failed": failed, "added": added}
+    out = {"checked": done, "failed": failed, "added": added}
+    if getattr(settings, "PUBLICATION_MAPPING_ENABLED", False):
+        out["mapping"] = weekly_mapping()
+    return out
+
+
+def weekly_mapping(limit_users: int = 200, papers_per_user: int = 50) -> dict:
+    """Automatic processing (only when PUBLICATION_MAPPING_ENABLED): suggest works of linked OpenAlex author records,
+    then check new suggestions' open-access acknowledgements and send equipment evidence to the OICs."""
+    from . import author_linking, facility_mapping
+    from .models import AuthorLinkStatus, ResearcherAuthorCandidate
+
+    linked = (ResearcherAuthorCandidate.objects.filter(
+        status__in=[AuthorLinkStatus.AUTO_LINKED, AuthorLinkStatus.CONFIRMED], user__is_active=True)
+        .values_list("user_id", flat=True).distinct()[:limit_users])
+    users = {u.pk: u for u in USER_MODEL().objects.filter(pk__in=list(linked))}
+    for u in users.values():
+        try:
+            author_linking.discover_linked(u)
+        except Exception as exc:  # network
+            logger.warning("linked-author discovery failed user=%s: %s", u.pk, exc)
+    with_new = (PublicationSuggestion.objects.filter(status=SuggestionStatus.NEW).exclude(doi="")
+                .values_list("user_id", flat=True).distinct()[:limit_users])
+    checked = claims = 0
+    for u in USER_MODEL().objects.filter(pk__in=list(with_new), is_active=True):
+        try:
+            s = facility_mapping.verify_user(u, apply=True, limit=papers_per_user, notify=True)
+        except Exception as exc:  # network
+            logger.warning("acknowledgement check failed user=%s: %s", u.pk, exc)
+            continue
+        checked += s["papers"]
+        claims += s["claims_created"]
+    return {"linked_users": len(users), "papers_checked": checked, "claims_created": claims}
+
+
+def USER_MODEL():  # noqa: N802 - mirrors get_user_model()
+    from django.contrib.auth import get_user_model
+
+    return get_user_model()
 
 
 # --------------------------------------------------------------------------- funder report

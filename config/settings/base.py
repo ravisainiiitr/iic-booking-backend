@@ -1043,3 +1043,14 @@ LASER_CUT_MAX_DXF_BYTES = env.int("LASER_CUT_MAX_DXF_BYTES", default=25 * 1024 *
 # Fabrication file emails attach files up to this combined size; larger files are sent as download links.
 FABRICATION_EMAIL_MAX_ATTACHMENT_BYTES = env.int("FABRICATION_EMAIL_MAX_ATTACHMENT_BYTES", default=10 * 1024 * 1024)
 FABRICATION_EMAIL_LINK_EXPIRY_SECONDS = env.int("FABRICATION_EMAIL_LINK_EXPIRY_SECONDS", default=7 * 24 * 3600)
+# Publication-to-facility mapping (iic_booking.impact.facility_mapping). Off by default: the dry-run commands and the
+# administrator-triggered pilot work either way; the flag only turns on automatic weekly processing.
+PUBLICATION_MAPPING_ENABLED = env.bool("PUBLICATION_MAPPING_ENABLED", default=False)
+# The institute's ROR ID (e.g. https://ror.org/0xxxxxxx), used to find faculty in OpenAlex by name. Empty = name search off.
+INSTITUTE_ROR_ID = env("INSTITUTE_ROR_ID", default="")
+# Names of the institute as written in acknowledgements, separated by | (e.g. "Full Name|Short Name").
+INSTITUTE_ACK_NAMES = env("INSTITUTE_ACK_NAMES", default="")
+# Equipment-level evidence at or above this confidence becomes a pending claim for the OIC.
+PUBLICATION_MAPPING_CLAIM_THRESHOLD = env.float("PUBLICATION_MAPPING_CLAIM_THRESHOLD", default=0.7)
+# Largest open-access PDF read, in bytes.
+PUBLICATION_MAPPING_MAX_PDF_BYTES = env.int("PUBLICATION_MAPPING_MAX_PDF_BYTES", default=30 * 1024 * 1024)
