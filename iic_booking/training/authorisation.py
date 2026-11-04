@@ -526,6 +526,12 @@ def create_request(user, equipment, message: str = "") -> AuthorisationRequest:
     if st["open_request"]:
         raise TrainingError("You already have an open training request for this equipment.", status=409, code="request_open",
                             extra={"request": st["open_request"]})
+    from iic_booking.learning.service import training_request_blocker
+
+    pending = training_request_blocker(user, equipment)
+    if pending:
+        raise TrainingError("Complete the online learning for this equipment first: " + "; ".join(pending) + ".",
+                            code="modules_required", extra={"modules": pending})
     try:
         with transaction.atomic():
             req = AuthorisationRequest.objects.create(user=user, equipment=equipment, message=(message or "").strip()[:2000])

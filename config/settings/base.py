@@ -124,6 +124,7 @@ THIRD_PARTY_APPS = [
 LOCAL_APPS = [
     "iic_booking.calls",
     "iic_booking.power",
+    "iic_booking.learning",
     "iic_booking.livefeed",
     "iic_booking.users",
     "iic_booking.communication",
