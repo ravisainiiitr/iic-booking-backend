@@ -1,0 +1,40 @@
+name: Probe Find User By Name (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      name_contains:
+        description: "Case-insensitive words of the user's name (all must match)"
+        required: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Matching users (SELECT only; id, type, department, active, email domain, ORCID saved)
+        env:
+          NAME_CONTAINS: ${{ github.event.inputs.name_contains }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e NAME_CONTAINS="$NAME_CONTAINS" -w /app "$CID" python - <<'PY'
+          import os
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.contrib.auth import get_user_model
+          from iic_booking.impact.models import ResearcherOrcid
+
+          words = [w for w in os.environ["NAME_CONTAINS"].split() if w]
+          qs = get_user_model().objects.all()
+          for w in words:
+              qs = qs.filter(name__icontains=w)
+          print("MATCHES", qs.count())
+          for u in qs.order_by("pk")[:20]:
+              d = getattr(u, "department", None)
+              dept = (getattr(d, "code", "") or getattr(d, "name", "")) if d else "-"
+              domain = u.email.rsplit("@", 1)[-1] if u.email else "-"
+              print(f"id={u.pk} | name={u.name} | type={u.user_type} | dept={dept} | active={u.is_active} | email@{domain} "
+                    f"| orcid_saved={ResearcherOrcid.objects.filter(user=u).exists()}")
+          PY
