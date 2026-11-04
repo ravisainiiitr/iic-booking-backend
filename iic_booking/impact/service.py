@@ -1,7 +1,9 @@
 """Research impact services: access, funding lines, acknowledgement check, ORCID discovery and the funder report.
 
-Publication discovery sends only the ORCID iD the researcher entered to OpenAlex (a free, public scholarly index);
-nothing is claimed automatically: the researcher confirms each paper through the usual publication claim form.
+Publication discovery reads the public works list of the ORCID iD the researcher entered (pub.orcid.org), then looks
+those DOIs up in OpenAlex (a free, public scholarly index) for titles, journals and author affiliations, and adds the
+works OpenAlex itself links to the iD. Only the ORCID iD and public DOIs are sent. Nothing is
+claimed automatically: the researcher confirms each paper through the usual publication claim form.
 """
 
 from __future__ import annotations
@@ -245,20 +247,112 @@ def remove_orcid(user) -> None:
     PublicationSuggestion.objects.filter(user=user, status=SuggestionStatus.NEW).delete()
 
 
-def _fetch_openalex(orcid: str, since: date) -> list[dict]:
-    params = {
-        "filter": f"author.orcid:https://orcid.org/{orcid},from_publication_date:{since.isoformat()}",
-        "per-page": "50",
-        "select": "id,doi,title,publication_year,primary_location,authorships",
-    }
+# OpenAlex work types that are research outputs a researcher would claim; peer-review records ("Author response"),
+# editorials, errata, paratext (covers, front matter), datasets and the like are skipped.
+PAPER_TYPES = frozenset({
+    "article", "review", "letter", "book-chapter", "book", "preprint", "dissertation", "conference-paper", "report",
+})
+OPENALEX_PAGE_SIZE = 200  # OpenAlex maximum per page
+OPENALEX_MAX_PAGES = 5  # at most 1000 works per lookup
+
+
+ORCID_WORKS_URL = "https://pub.orcid.org/v3.0/{orcid}/works"
+OPENALEX_DOI_BATCH = 40  # DOIs per OpenAlex OR-filter request (the API allows up to 50)
+WORK_SELECT = "id,doi,title,type,publication_year,primary_location,authorships"
+USER_AGENT = "facility-booking-portal (publication discovery)"
+
+
+def _get_json(url: str, *, accept_json: bool = False) -> dict:
+    headers = {"User-Agent": USER_AGENT}
+    if accept_json:
+        headers["Accept"] = "application/json"
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 - fixed https hosts
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _openalex_params(extra: dict) -> dict:
+    params = {"select": WORK_SELECT, **extra}
     mailto = getattr(settings, "OPENALEX_MAILTO", "")
     if mailto:
         params["mailto"] = mailto
-    url = f"{OPENALEX_URL}?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(url, headers={"User-Agent": "facility-booking-portal (publication discovery)"})
-    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 - fixed https host
-        body = json.loads(resp.read().decode("utf-8"))
-    return list(body.get("results") or [])
+    return params
+
+
+def _orcid_record_dois(orcid: str, since: date) -> list[str]:
+    """DOIs on the researcher's public ORCID record, published in or after ``since``'s year (undated ones kept)."""
+    from iic_booking.equipment.publication_dedupe import normalize_doi
+
+    body = _get_json(ORCID_WORKS_URL.format(orcid=orcid), accept_json=True)
+    dois: list[str] = []
+    for group in body.get("group") or []:
+        summaries = group.get("work-summary") or [{}]
+        year = (((summaries[0].get("publication-date") or {}).get("year") or {}).get("value"))
+        if year and str(year).isdigit() and int(year) < since.year:
+            continue
+        for ext in ((group.get("external-ids") or {}).get("external-id") or []):
+            if ext.get("external-id-type") == "doi":
+                doi = normalize_doi(ext.get("external-id-value") or "")
+                if doi and doi not in dois:
+                    dois.append(doi)
+                break
+    return dois
+
+
+def _openalex_by_doi(dois: list[str]) -> list[dict]:
+    works: list[dict] = []
+    for i in range(0, len(dois), OPENALEX_DOI_BATCH):
+        chunk = dois[i:i + OPENALEX_DOI_BATCH]
+        params = _openalex_params({"filter": "doi:" + "|".join(chunk), "per-page": "50"})
+        works.extend(_get_json(f"{OPENALEX_URL}?{urllib.parse.urlencode(params)}").get("results") or [])
+    return works
+
+
+def _openalex_by_author(orcid: str, since: date) -> list[dict]:
+    """OpenAlex's own ORCID link (less reliable: it can include other authors' papers), every page by cursor."""
+    params = _openalex_params({
+        "filter": f"author.orcid:https://orcid.org/{orcid},from_publication_date:{since.isoformat()}",
+        "per-page": str(OPENALEX_PAGE_SIZE),
+    })
+    works: list[dict] = []
+    cursor = "*"
+    for _ in range(OPENALEX_MAX_PAGES):
+        body = _get_json(f"{OPENALEX_URL}?{urllib.parse.urlencode({**params, 'cursor': cursor})}")
+        page = list(body.get("results") or [])
+        works.extend(page)
+        cursor = (body.get("meta") or {}).get("next_cursor")
+        if not page or not cursor:
+            break
+    return works
+
+
+def _fetch_openalex(orcid: str, since: date) -> list[dict]:
+    """The researcher's works since ``since``, research outputs only.
+
+    Two sources, merged: the DOIs on the researcher's ORCID record (looked up in OpenAlex for details), and the works
+    OpenAlex itself links to the iD. Either can be incomplete (a sparse ORCID record; OpenAlex missing or mixing up
+    authors), so both are used; the researcher dismisses any paper that is not theirs.
+    """
+    try:
+        dois = _orcid_record_dois(orcid, since)
+    except Exception as exc:  # network, HTTP or JSON error: OpenAlex alone
+        logger.info("orcid record lookup failed orcid=%s: %s", orcid, exc)
+        dois = []
+    works = _openalex_by_doi(dois) if dois else []
+    seen = {w.get("id") for w in works}
+    works += [w for w in _openalex_by_author(orcid, since) if w.get("id") not in seen]
+    return [w for w in works if not w.get("type") or w.get("type") in PAPER_TYPES]
+
+
+def affiliation_matches(work: dict, pattern: re.Pattern) -> str:
+    """The first author affiliation (raw string or institution name) of ``work`` matching ``pattern``, else ""."""
+    for a in work.get("authorships") or []:
+        names = list(a.get("raw_affiliation_strings") or [])
+        names += [(i or {}).get("display_name") or "" for i in a.get("institutions") or []]
+        for name in names:
+            if name and pattern.search(name):
+                return name
+    return ""
 
 
 def _claimed_dois() -> set[str]:
@@ -279,24 +373,10 @@ def _booked_equipment(user, before_year: int | None) -> list[int]:
     return sorted(set(qs.values_list("equipment_id", flat=True)))[:20]
 
 
-def discover(user, *, force: bool = False) -> dict:
-    """Ask OpenAlex for the researcher's recent works; store new ones as suggestions."""
+def store_suggestions(user, works: list[dict]) -> int:
+    """Save OpenAlex works as NEW suggestions for ``user``, skipping claimed papers and ones already suggested."""
     from iic_booking.equipment.publication_dedupe import normalize_doi
 
-    row = ResearcherOrcid.objects.filter(user=user).first()
-    if row is None:
-        raise ImpactError("Add your ORCID iD first.", code="orcid_required")
-    now = timezone.now()
-    if not force and row.last_checked_at and now - row.last_checked_at < CHECK_COOLDOWN:
-        raise ImpactError("Checked less than an hour ago; try again later.", status=429, code="too_soon")
-    since = date(timezone.localdate().year - LOOKBACK_YEARS, 1, 1)
-    try:
-        works = _fetch_openalex(row.orcid, since)
-    except Exception as exc:  # network, HTTP or JSON error
-        logger.warning("openalex lookup failed user=%s: %s", user.pk, exc)
-        row.last_checked_at, row.last_error = now, str(exc)[:300]
-        row.save(update_fields=["last_checked_at", "last_error", "updated_at"])
-        raise ImpactError("The publication index could not be reached; try again later.", status=502, code="lookup_failed") from None
     claimed = _claimed_dois()
     added = 0
     for w in works:
@@ -321,6 +401,26 @@ def discover(user, *, force: bool = False) -> dict:
             equipment_ids=_booked_equipment(user, year if isinstance(year, int) else None),
         )
         added += 1
+    return added
+
+
+def discover(user, *, force: bool = False) -> dict:
+    """Look up the researcher's recent works; store new ones as suggestions."""
+    row = ResearcherOrcid.objects.filter(user=user).first()
+    if row is None:
+        raise ImpactError("Add your ORCID iD first.", code="orcid_required")
+    now = timezone.now()
+    if not force and row.last_checked_at and now - row.last_checked_at < CHECK_COOLDOWN:
+        raise ImpactError("Checked less than an hour ago; try again later.", status=429, code="too_soon")
+    since = date(timezone.localdate().year - LOOKBACK_YEARS, 1, 1)
+    try:
+        works = _fetch_openalex(row.orcid, since)
+    except Exception as exc:  # network, HTTP or JSON error
+        logger.warning("openalex lookup failed user=%s: %s", user.pk, exc)
+        row.last_checked_at, row.last_error = now, str(exc)[:300]
+        row.save(update_fields=["last_checked_at", "last_error", "updated_at"])
+        raise ImpactError("The publication index could not be reached; try again later.", status=502, code="lookup_failed") from None
+    added = store_suggestions(user, works)
     row.last_checked_at, row.last_error = now, ""
     row.save(update_fields=["last_checked_at", "last_error", "updated_at"])
     sync_claimed(user)
