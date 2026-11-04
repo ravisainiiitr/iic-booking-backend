@@ -1,9 +1,14 @@
 """Research impact: ORCID validation and publication discovery, acknowledgement check, funding lines, funder report."""
 
+import io
+import json
+from datetime import date
 from decimal import Decimal
 from unittest import mock
 
 import pytest
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.utils import timezone
 
 from iic_booking.equipment.models import EquipmentPublication, EquipmentPublicationClaim
@@ -66,6 +71,138 @@ def test_discovery_failure_is_reported_not_raised(world):
     assert resp.status_code == 502 and resp.data["code"] == "lookup_failed"
     assert ResearcherOrcid.objects.get(user=world.student).last_error == "timeout"
     assert client_for(world.student2).post(f"{API}/me/suggestions/check/", {}, format="json").data["code"] == "orcid_required"
+
+
+class _Resp:
+    def __init__(self, body):
+        self.body = json.dumps(body).encode("utf-8")
+
+    def read(self):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _orcid_record(*works):
+    """pub.orcid.org /works body: (year, doi) pairs; doi None = no DOI listed."""
+    groups = []
+    for year, doi in works:
+        ids = [{"external-id-type": "doi", "external-id-value": doi}] if doi else []
+        groups.append({"external-ids": {"external-id": ids},
+                       "work-summary": [{"publication-date": {"year": {"value": str(year)}} if year else None}]})
+    return {"group": groups}
+
+
+def _router(orcid_body, openalex_pages, urls):
+    pages = iter(openalex_pages)
+
+    def fake_open(req, timeout):
+        urls.append(req.full_url)
+        if "pub.orcid.org" in req.full_url:
+            if isinstance(orcid_body, Exception):
+                raise orcid_body
+            return _Resp(orcid_body)
+        return _Resp(next(pages))
+
+    return fake_open
+
+
+def test_fetch_takes_papers_from_the_orcid_record_and_details_from_openalex(settings):
+    settings.OPENALEX_MAILTO = ""
+    record = _orcid_record((2025, "10.1000/A"), (2023, "https://doi.org/10.1000/b"), (2015, "10.1000/old"),
+                           (None, "10.1000/undated"), (2024, None))
+    details = {"results": [
+        {"id": "W-a", "doi": "https://doi.org/10.1000/a", "type": "article"},
+        {"id": "W-b", "doi": "https://doi.org/10.1000/b", "type": "peer-review"},
+        {"id": "W-u", "doi": "https://doi.org/10.1000/undated", "type": "review"},
+    ]}
+    linked = {"meta": {"next_cursor": None}, "results": [{"id": "W-a", "type": "article"}, {"id": "W-x", "type": "article"}]}
+    urls = []
+    with mock.patch.object(service.urllib.request, "urlopen", side_effect=_router(record, [details, linked], urls)):
+        works = service._fetch_openalex(VALID, date(2022, 1, 1))
+    assert [w["id"] for w in works] == ["W-a", "W-u", "W-x"]  # peer-review dropped, W-a not repeated
+    assert urls[0] == f"https://pub.orcid.org/v3.0/{VALID}/works"
+    assert "doi%3A10.1000%2Fa%7C10.1000%2Fb%7C10.1000%2Fundated" in urls[1]  # old paper skipped
+    assert f"author.orcid%3Ahttps%3A%2F%2Forcid.org%2F{VALID}" in urls[2] and len(urls) == 3
+
+
+def test_fetch_batches_many_dois():
+    record = _orcid_record(*[(2025, f"10.1000/p{i}") for i in range(95)])
+    urls = []
+    pages = [{"results": [{"id": f"W{i}", "type": "article"}]} for i in range(3)] + [{"results": []}]
+    with mock.patch.object(service.urllib.request, "urlopen", side_effect=_router(record, pages, urls)):
+        assert len(service._fetch_openalex(VALID, date(2022, 1, 1))) == 3
+    assert len(urls) == 5  # ORCID + ceil(95 / 40) DOI requests + OpenAlex's own ORCID link
+
+
+def test_fetch_reads_every_openalex_page_when_the_orcid_record_has_no_dois(settings):
+    settings.OPENALEX_MAILTO = ""
+    pages = [
+        {"meta": {"next_cursor": "c2"}, "results": [{"id": f"W{i}", "type": "article"} for i in range(200)]},
+        {"meta": {"next_cursor": "c3"}, "results": [
+            {"id": "W-review", "type": "review"}, {"id": "W-peer", "type": "peer-review"},
+            {"id": "W-erratum", "type": "erratum"}, {"id": "W-chapter", "type": "book-chapter"},
+            {"id": "W-untyped"},
+        ]},
+        {"meta": {"next_cursor": None}, "results": []},
+    ]
+    urls = []
+    with mock.patch.object(service.urllib.request, "urlopen", side_effect=_router({"group": []}, pages, urls)):
+        works = service._fetch_openalex(VALID, date(2022, 1, 1))
+    ids = [w["id"] for w in works]
+    assert len(ids) == 203 and "W-peer" not in ids and "W-erratum" not in ids
+    assert {"W-review", "W-chapter", "W-untyped"} <= set(ids)
+    assert "cursor=%2A" in urls[1] and "cursor=c2" in urls[2] and "cursor=c3" in urls[3]
+    assert all(f"orcid.org%2F{VALID}" in u for u in urls[1:])
+
+
+def test_fetch_falls_back_when_orcid_is_unreachable_and_stops_at_the_page_limit():
+    page = {"meta": {"next_cursor": "more"}, "results": [{"id": "W", "type": "article"}]}
+    urls = []
+    pages = [page] * (service.OPENALEX_MAX_PAGES + 3)
+    with mock.patch.object(service.urllib.request, "urlopen", side_effect=_router(OSError("down"), pages, urls)):
+        assert len(service._fetch_openalex(VALID, date(2022, 1, 1))) == service.OPENALEX_MAX_PAGES
+    assert len(urls) == 1 + service.OPENALEX_MAX_PAGES
+
+
+def _aff_work(i, aff, doi=None):
+    return {"id": f"https://openalex.org/W{i}", "doi": f"https://doi.org/{doi or f'10.1000/w{i}'}", "type": "article",
+            "title": f"Paper {i}", "publication_year": 2020 + i,
+            "authorships": [{"author": {"display_name": "A. Author"}, "raw_affiliation_strings": [aff]}]}
+
+
+def test_import_command_dry_runs_then_suggests_only_matching_papers(world):
+    EquipmentPublication.objects.create(equipment=world.equipment, title="Paper 3", doi="10.1000/w3", year=2023)
+    works = [
+        _aff_work(1, "Thin Film Lab, Central Instrumentation Centre, Some University"),
+        _aff_work(2, "Department of Physics, Some University"),
+        _aff_work(3, "Nanoscience Lab, Central Instrumentation Center"),  # already on the equipment page
+        {**_aff_work(4, ""), "authorships": [{"institutions": [{"display_name": "Central Instrumentation Centre"}]}]},
+    ]
+    args = ["--user-id", str(world.faculty.pk), "--orcid", VALID, "--affiliation", r"central\s+instrumentation\s+cent(re|er)"]
+    out = io.StringIO()
+    with mock.patch.object(service, "_fetch_openalex", return_value=works) as fetch:
+        call_command("import_orcid_publications", *args, stdout=out)
+        assert fetch.call_args[0] == (VALID, date(1900, 1, 1))
+        assert "affiliation matches=3" in out.getvalue() and "Dry run" in out.getvalue()
+        assert not ResearcherOrcid.objects.exists() and not PublicationSuggestion.objects.exists()
+
+        call_command("import_orcid_publications", *args, "--apply", stdout=io.StringIO())
+        call_command("import_orcid_publications", *args, "--apply", stdout=(again := io.StringIO()))
+    assert ResearcherOrcid.objects.get(user=world.faculty).orcid == VALID
+    assert sorted(PublicationSuggestion.objects.filter(user=world.faculty).values_list("title", flat=True)) == ["Paper 1", "Paper 4"]
+    assert "0 new suggestion(s)" in again.getvalue()
+
+
+def test_import_command_refuses_an_orcid_owned_by_someone_else(world):
+    service.set_orcid(world.student, VALID)
+    with pytest.raises(CommandError, match="another account"):
+        call_command("import_orcid_publications", "--user-id", str(world.faculty.pk), "--orcid", VALID,
+                     "--affiliation", "x", stdout=io.StringIO())
 
 
 # --------------------------------------------------------------------------- acknowledgement
