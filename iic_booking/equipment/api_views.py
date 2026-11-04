@@ -4187,7 +4187,14 @@ def _book_equipment_impl(request, pk):
         return Response(suspended, status=status.HTTP_403_FORBIDDEN)
     from iic_booking.training.authorisation import check_booking as authorisation_gate
 
-    gate = authorisation_gate(booking_user, equipment, actor=request.user, context="booking")
+    # A Beginner on a Beginner / Expert equipment books only with an eligible supervisor (supervisor_id).
+    supervisor_user = None
+    supervisor_raw = request.data.get("supervisor_id")
+    if supervisor_raw not in (None, "") and str(supervisor_raw).isdigit():
+        from iic_booking.users.models import User as _SupervisorUser
+
+        supervisor_user = _SupervisorUser.objects.filter(pk=int(supervisor_raw), is_active=True).first()
+    gate = authorisation_gate(booking_user, equipment, actor=request.user, context="booking", supervisor=supervisor_user)
     if gate is not None:
         _create_booking_attempt_log(
             request, equipment, BookingAttemptOutcome.FAILED,
@@ -5437,6 +5444,10 @@ def _book_equipment_impl(request, pk):
                     )
                 DailySlot.objects.filter(id__in=slot_ids).update(booking=booking, status=SlotStatus.BOOKED)
                 perf.mark("daily_slots_marked_booked")
+                if supervisor_user is not None:
+                    from iic_booking.training.competency import attach_supervision
+
+                    attach_supervision(booking, supervisor_user, actor=request.user)
                 created_metadata = _booking_created_event_metadata(
                     request, equipment, atmosphere_sensitive_sample=atmosphere_sensitive_sample
                 )
@@ -6162,6 +6173,10 @@ def _book_equipment_impl(request, pk):
             
             # Update daily slots to link them to the booking and mark as booked (use locked slot IDs)
             DailySlot.objects.filter(id__in=slot_ids).update(booking=booking, status=SlotStatus.BOOKED)
+            if supervisor_user is not None:
+                from iic_booking.training.competency import attach_supervision
+
+                attach_supervision(booking, supervisor_user, actor=request.user)
             
             # Refresh slots from database for response
             daily_slots = (
@@ -13344,7 +13359,7 @@ def reschedule_booking(request, booking_id):
     equipment = booking.equipment
     from iic_booking.training.authorisation import check_booking as authorisation_gate
 
-    gate = authorisation_gate(booking.user, equipment, actor=request.user, context="staff reschedule")
+    gate = authorisation_gate(booking.user, equipment, actor=request.user, context="staff reschedule", booking=booking)
     if gate is not None:
         return Response(gate, status=status.HTTP_403_FORBIDDEN)
 
@@ -14196,7 +14211,7 @@ def user_reschedule_booking(request, booking_id):
         return perform_cross_equipment_reschedule(request, booking, start_time, end_time, staff_endpoint=False)
     from iic_booking.training.authorisation import check_booking as authorisation_gate
 
-    gate = authorisation_gate(booking.user, equipment, actor=request.user, context="reschedule")
+    gate = authorisation_gate(booking.user, equipment, actor=request.user, context="reschedule", booking=booking)
     if gate is not None:
         return Response(gate, status=status.HTTP_403_FORBIDDEN)
     
@@ -17582,7 +17597,8 @@ def create_repeat_booking(request, booking_id):
         )
     from iic_booking.training.authorisation import check_booking as authorisation_gate
 
-    gate = authorisation_gate(orig_booking.user, equipment, actor=request.user, context="repeat sample booking")
+    gate = authorisation_gate(orig_booking.user, equipment, actor=request.user, context="repeat sample booking",
+                              booking=orig_booking)
     if gate is not None:
         return Response(gate, status=status.HTTP_403_FORBIDDEN)
     raw_inputs = request.data.get("input_values") if (staff_path and request.data) else None

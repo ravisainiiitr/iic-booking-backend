@@ -192,3 +192,74 @@ def award_action(request, pk: int, action: str):
     award = _get(CertificationAward, pk)
     award = authorisation.act_on_award(award, request.user, action, request.data)
     return Response(s.award_out(award))
+
+
+# ---------------------------------------------------------------------------
+# Beginner / Expert competency: trainers, supervisors, assessment requests, supervised sessions
+# ---------------------------------------------------------------------------
+@training_api(["GET", "POST"])
+def equipment_trainers(request, equipment_id: int):
+    """GET (equipment staff): designated trainers, current and past. POST (OIC / Main Admin) {user_id, note}: designate."""
+    from iic_booking.users.models import User
+
+    from . import competency
+    from .models import EquipmentTrainer
+
+    eq = _equipment(equipment_id)
+    if request.method == "POST":
+        user = _get(User, request.data.get("user_id"))
+        row = competency.designate_trainer(eq, request.user, user, str(request.data.get("note") or ""))
+        return Response(competency.trainer_out(row), status=status.HTTP_201_CREATED)
+    _require_handle(request.user, eq)
+    rows = EquipmentTrainer.objects.filter(equipment=eq).select_related("user", "user__department", "designated_by", "equipment")
+    return Response({
+        "results": [competency.trainer_out(r) for r in rows],
+        "staff": [competency.supervisor_out(p, eq) for p in competency.equipment_staff(eq)],
+        "can_configure": authorisation.can_configure(request.user, eq.equipment_id),
+    })
+
+
+@training_api(["POST"])
+def trainer_remove(request, pk: int):
+    from . import competency
+    from .models import EquipmentTrainer
+
+    row = competency.remove_trainer(_get(EquipmentTrainer, pk), request.user, str(request.data.get("reason") or ""))
+    return Response(competency.trainer_out(row))
+
+
+@training_api(["GET"])
+def equipment_supervisors(request, equipment_id: int):
+    """Eligible supervisors for a supervised booking (never the asking user)."""
+    from . import competency
+
+    eq = _equipment(equipment_id)
+    return Response({"results": [competency.supervisor_out(p, eq) for p in competency.eligible_supervisors(eq, exclude_user=request.user)]})
+
+
+@training_api(["POST"])
+def assessment_request(request):
+    from . import competency
+
+    eq = _equipment(request.data.get("equipment_id"))
+    req = competency.request_assessment(request.user, eq, str(request.data.get("message") or ""))
+    return Response(authorisation.request_out(req, request.user), status=status.HTTP_201_CREATED)
+
+
+@training_api(["GET"])
+def supervision_list(request):
+    """scope=mine (student, default) | supervising (as supervisor) | equipment (staff of the equipment)."""
+    from . import competency
+
+    scope = str(request.query_params.get("scope") or "mine")
+    rows = competency.sessions_for(request.user, scope=scope)
+    return Response({"results": [competency.session_out(r, request.user) for r in rows]})
+
+
+@training_api(["POST"])
+def supervision_action(request, pk: int, action: str):
+    from . import competency
+    from .models import SupervisedSession
+
+    row = competency.act_on_session(_get(SupervisedSession, pk), request.user, action, request.data)
+    return Response(competency.session_out(row, request.user))

@@ -6,3 +6,8 @@ class TrainingConfig(AppConfig):
     name = "iic_booking.training"
     label = "training"
     verbose_name = "Training & Certification"
+
+    def ready(self):
+        from iic_booking.training.competency import connect_signals
+
+        connect_signals()

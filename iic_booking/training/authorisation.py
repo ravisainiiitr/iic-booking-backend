@@ -183,6 +183,8 @@ def request_brief(req: AuthorisationRequest | None) -> dict | None:
     return {
         "id": req.pk,
         "reference": req.reference,
+        "kind": req.kind,
+        "kind_label": req.get_kind_display(),
         "status": req.status,
         "status_label": req.get_status_display(),
         "scheduled_start": s.iso(req.scheduled_start),
@@ -246,6 +248,11 @@ def evaluate(user, equipment, row: EquipmentAuthorisationSetting | None = None, 
     out["status_label"] = STATUS_LABELS[out["status"]]
     out["allowed"] = out["status"] in ALLOWED
     out["can_request"] = req is None and out["status"] not in ("AUTHORISED", "SUSPENDED", "REVOKED")
+    from . import competency
+
+    out.update(competency.describe(user, equipment, row, out))
+    if out.get("two_level") and out.get("stage") in ("BEGINNER", "ASSESSMENT_PENDING"):
+        out["can_request"] = False
     out["message"] = gate_message(out, equipment)
     return out
 
@@ -254,6 +261,11 @@ def gate_message(st: dict, equipment) -> str:
     name = getattr(equipment, "name", "this equipment")
     level = st.get("level_name") or "Trained"
     status = st["status"]
+    if st.get("two_level") and st.get("stage") in ("BEGINNER", "ASSESSMENT_PENDING"):
+        if not st.get("supervised_only"):
+            return f"You are a Beginner on {name}; supervised bookings are not open on this equipment. Ask the OIC."
+        return (f"You are a Beginner on {name}: book it with a supervisor (a trainer or Lab staff), "
+                "or request the Expert assessment to book independently.")
     if status == "EXPIRED":
         until = notify.fmt_dt(_parse(st.get("valid_until"))) if st.get("valid_until") else ""
         return f"Your authorisation for {name} expired{f' on {until}' if until else ''}. Request refresher training to book it again."
@@ -302,10 +314,14 @@ def may_bypass(actor) -> bool:
     return bool(actor is not None and (getattr(actor, "is_superuser", False) or getattr(actor, "user_type", None) in STAFF_BYPASS_TYPES))
 
 
-def check_booking(booking_user, equipment, *, actor=None, context: str = "booking", record: bool = True) -> dict | None:
-    """None when the booking may go ahead, else an error payload (``code`` = AUTHORISATION_REQUIRED).
+def check_booking(booking_user, equipment, *, actor=None, context: str = "booking", record: bool = True,
+                  supervisor=None, booking=None) -> dict | None:
+    """None when the booking may go ahead, else an error payload (``code`` = AUTHORISATION_REQUIRED, or
+    SUPERVISION_REQUIRED for a Beginner without an eligible supervisor).
 
     ``actor`` is who triggers it; staff acting for someone else bypass, with an audit entry when ``record``.
+    A Beginner of a two-level equipment passes only with an eligible ``supervisor`` (or, for an existing ``booking``,
+    the supervisor already on it).
     """
     try:
         row = gate_setting(equipment)
@@ -317,6 +333,14 @@ def check_booking(booking_user, equipment, *, actor=None, context: str = "bookin
         return None
     if st["allowed"]:
         return None
+    supervision_problem = ""
+    if st.get("supervised_only"):
+        from . import competency
+
+        sup = supervisor if supervisor is not None else (competency.booking_supervisor(booking) if booking is not None else None)
+        supervision_problem = competency.supervision_refusal(booking_user, equipment, sup)
+        if not supervision_problem:
+            return None
     if actor is not None and getattr(actor, "pk", None) != getattr(booking_user, "pk", None) and may_bypass(actor):
         if not record:
             return None
@@ -328,6 +352,9 @@ def check_booking(booking_user, equipment, *, actor=None, context: str = "bookin
             note=f"Staff {context} for a user who is {STATUS_LABELS[st['status']].lower()}; authorisation gate bypassed.",
         )
         return None
+    if st.get("supervised_only"):
+        return {"error": supervision_problem, "message": supervision_problem, "code": "SUPERVISION_REQUIRED",
+                "authorisation": st}
     return {"error": st["message"], "message": st["message"], "code": GATE_CODE, "authorisation": st}
 
 
@@ -367,7 +394,9 @@ def _require_configure(user, equipment_id):
 # ---------------------------------------------------------------------------
 # Setting
 # ---------------------------------------------------------------------------
-SETTING_FIELDS = ("required", "applies_to", "min_level_code", "validity_months", "grace_completed_bookings", "grace_months", "note")
+SETTING_FIELDS = ("required", "applies_to", "min_level_code", "validity_months", "grace_completed_bookings", "grace_months",
+                  "competency_levels", "beginner_supervised_allowed", "expert_requires_oic_approval", "note")
+BOOL_SETTING_FIELDS = ("competency_levels", "beginner_supervised_allowed", "expert_requires_oic_approval")
 
 
 def setting_out(equipment, row: EquipmentAuthorisationSetting | None = None) -> dict:
@@ -387,6 +416,9 @@ def setting_out(equipment, row: EquipmentAuthorisationSetting | None = None) -> 
         "validity_months": row.validity_months,
         "grace_completed_bookings": row.grace_completed_bookings,
         "grace_months": row.grace_months,
+        "competency_levels": bool(row.competency_levels),
+        "beginner_supervised_allowed": bool(row.beginner_supervised_allowed),
+        "expert_requires_oic_approval": bool(row.expert_requires_oic_approval),
         "note": row.note,
         "updated_at": s.iso(row.updated_at) if row.pk else None,
         "updated_by": s.user_brief(row.updated_by)["name"] if row.pk and row.updated_by_id else None,
@@ -425,6 +457,9 @@ def save_setting(equipment, actor, data: dict) -> dict:
             row.grace_completed_bookings = _int_in(data, "grace_completed_bookings", 0, 50, 0)
         if "grace_months" in data:
             row.grace_months = _int_in(data, "grace_months", 1, MAX_MONTHS, row.grace_months)
+        for name in BOOL_SETTING_FIELDS:
+            if name in data:
+                setattr(row, name, data[name] in (True, "true", "True", "1", 1))
         if "note" in data:
             row.note = str(data.get("note") or "")[:2000]
         after = {f: getattr(row, f) for f in SETTING_FIELDS}
@@ -567,6 +602,24 @@ def act_on_request(req: AuthorisationRequest, actor, action: str, data: dict) ->
                      + (f" at {req.location}." if req.location else "."), when=notify.fmt_window(start, end), remarks=req.staff_note)
         return req
     if action == "approve":
+        from . import competency
+        from .models import AuthorisationRequestKind
+
+        if req.kind == AuthorisationRequestKind.ASSESSMENT:
+            raise TrainingError("Record the Expert assessment to decide this request.", code="assessment_required")
+        if competency.two_level(setting_row(req.equipment)):
+            with transaction.atomic():
+                award = competency.grant_beginner(req.user, req.equipment, actor, reason=str(data.get("note") or "Induction completed"))
+                req.status = AuthorisationRequestStatus.APPROVED
+                req.award = award
+                req.decided_by, req.decided_at = actor, now
+                req.staff_note = str(data.get("note") or req.staff_note)[:2000]
+                req.save()
+                audit(actor, "authorisation.request_approved", req, after={"award": award.pk, "level": "BEGINNER"})
+            _notify_user(req, actor, "Approved",
+                         f"Induction on {req.equipment.name} recorded: you are a Beginner and may book it with a supervisor. "
+                         "Request the Expert assessment when you are ready to work independently.")
+            return req
         months = _int_in(data, "months", 1, MAX_MONTHS, None) if data.get("months") not in (None, "") else None
         with transaction.atomic():
             award, _ = grant(req.user, req.equipment, actor, months=months, reason=str(data.get("note") or "Training completed"), source="request")

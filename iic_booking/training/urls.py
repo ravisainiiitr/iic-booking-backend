@@ -93,4 +93,10 @@ urlpatterns = [
     path("authorisation/equipment/<int:equipment_id>/people/", views_auth.equipment_people, name="authorisation-people"),
     path("authorisation/equipment/<int:equipment_id>/grandfather/", views_auth.equipment_grandfather, name="authorisation-grandfather"),
     path("authorisation/awards/<int:pk>/<str:action>/", views_auth.award_action, name="authorisation-award-action"),
+    path("authorisation/equipment/<int:equipment_id>/trainers/", views_auth.equipment_trainers, name="competency-trainers"),
+    path("authorisation/trainers/<int:pk>/remove/", views_auth.trainer_remove, name="competency-trainer-remove"),
+    path("authorisation/equipment/<int:equipment_id>/supervisors/", views_auth.equipment_supervisors, name="competency-supervisors"),
+    path("authorisation/assessment-requests/", views_auth.assessment_request, name="competency-assessment-request"),
+    path("authorisation/supervision/", views_auth.supervision_list, name="competency-supervision"),
+    path("authorisation/supervision/<int:pk>/<str:action>/", views_auth.supervision_action, name="competency-supervision-action"),
 ]
