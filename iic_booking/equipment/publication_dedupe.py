@@ -115,9 +115,18 @@ def group_rows(rows: list[dict]) -> list[UniquePublication]:
 
 
 def _load() -> list[dict]:
-    from .models import EquipmentPublication
+    from .models import EquipmentPublication, EquipmentPublicationClaim, EquipmentPublicationClaimStatus
 
-    return [
+    # Approved papers that acknowledge a department/centre without a specific instrument (found automatically and
+    # approved by the Main Administrator or a Department Administrator). Negative ids keep them apart.
+    department_level = [
+        {"id": -c["claim_id"], "title": c["title"], "citation": c["citation"], "url": c["url"], "doi": c["doi"],
+         "year": c["year"], "equipment_id": None, "equipment_name": "", "equipment_code": ""}
+        for c in EquipmentPublicationClaim.objects.filter(status=EquipmentPublicationClaimStatus.APPROVED,
+                                                          equipments__isnull=True)
+        .values("claim_id", "title", "citation", "url", "doi", "year")
+    ]
+    return department_level + [
         {
             "id": r["equipment_publication_id"],
             "title": r["title"],
@@ -214,5 +223,8 @@ def connect_signals() -> None:
 
     post_save.connect(invalidate, sender=EquipmentPublication, weak=False, dispatch_uid="unique_publications_save")
     post_delete.connect(invalidate, sender=EquipmentPublication, weak=False, dispatch_uid="unique_publications_delete")
+    from .models import EquipmentPublicationClaim
+
+    post_save.connect(invalidate, sender=EquipmentPublicationClaim, weak=False, dispatch_uid="unique_publications_claim")
     # Instrument names are shown with each publication.
     post_save.connect(invalidate, sender=Equipment, weak=False, dispatch_uid="unique_publications_equipment")

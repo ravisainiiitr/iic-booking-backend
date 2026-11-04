@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import views
+from . import mapping_views, views
 
 app_name = "impact"
 
@@ -14,4 +14,13 @@ urlpatterns = [
     path("me/suggestions/check/", views.my_suggestions_check, name="my-suggestions-check"),
     path("me/suggestions/<int:pk>/dismiss/", views.suggestion_dismiss, name="suggestion-dismiss"),
     path("report/", views.funder_report, name="funder-report"),
+    path("facility-aliases/", mapping_views.facility_aliases, name="facility-aliases"),
+    path("facility-aliases/<int:pk>/", mapping_views.facility_alias_detail, name="facility-alias-detail"),
+    path("author-candidates/", mapping_views.author_candidates, name="author-candidates"),
+    path("author-candidates/<int:pk>/decide/", mapping_views.author_candidate_decide, name="author-candidate-decide"),
+    path("publication-mappings/", mapping_views.publication_mappings, name="publication-mappings"),
+    path("publication-matches/", mapping_views.publication_matches, name="publication-matches"),
+    path("publication-matches/count/", mapping_views.publication_matches_count, name="publication-matches-count"),
+    path("publication-matches/<int:pk>/approve/", mapping_views.publication_match_approve, name="publication-match-approve"),
+    path("publication-matches/<int:pk>/reject/", mapping_views.publication_match_reject, name="publication-match-reject"),
 ]
