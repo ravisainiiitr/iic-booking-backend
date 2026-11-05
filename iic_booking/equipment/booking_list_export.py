@@ -36,6 +36,7 @@ from .models import BookingSlotRange
 from .models import BookingStatus
 from .models import DailySlot
 from .models import WaitlistEntry
+from .urgent_booking_flag import urgent_filter_requested
 
 EXPORT_ROW_LIMIT = 10_000
 # The pdf has a details card (often a page) per booking; larger lists are for Excel.
@@ -293,6 +294,8 @@ def _waitlist_entries(request, *, include: bool):
         return []
     if str(params.get("results_overdue") or "").strip().lower() in ("1", "true", "yes"):
         return []
+    if urgent_filter_requested(params):
+        return []
     qs = WaitlistEntry.objects.filter(user=request.user, status="ACTIVE").select_related(
         "equipment", "equipment__internal_department", "user",
     )
@@ -399,6 +402,8 @@ def filters_summary(request, *, view: str) -> list[tuple[str, str]]:
     istem = (params.get("istem_fbr") or "").strip().lower()
     if istem in ("verified", "unverified"):
         out.append(("I-STEM FBR", istem.capitalize()))
+    if urgent_filter_requested(params):
+        out.append(("Urgent", "Urgent bookings only"))
     ordering = (params.get("ordering") or "").strip()
     key = ordering.lstrip("-")
     if ordering == DEFAULT_ORDERING:
