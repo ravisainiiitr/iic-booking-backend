@@ -54,6 +54,8 @@ jobs:
                   print(f"      app session platform={m.platform} version={m.app_version} last_used_min_ago={ago} "
                         f"access_valid={m.access_expires_at > timezone.now()} revoked={bool(m.revoked_at)}")
 
+          print("booking user:")
+          show("laptop account", u)
           ids = [e.pk] + ([e.parent_equipment_id] if e.parent_equipment_id else [])
           print("operator links:")
           for r in EquipmentOperator.objects.filter(equipment_id__in=ids).select_related("operator"):
@@ -73,3 +75,31 @@ jobs:
                   print(f"options as the booking user ({ctx}): ERROR {type(exc).__name__}")
           print("calls recorded for this booking:", CallSession.objects.filter(context_id=b.pk, context_type__in=["booking", "invoice"]).count())
           PY
+
+      - name: Calling connections seen by the web server (tokens removed)
+        run: |
+          set -euo pipefail
+          cat > /tmp/ws_calls.py <<'PY'
+          import re
+          import sys
+          from collections import Counter
+
+          LINE = re.compile(r'\[(?P<t>[^\]]+)\] "GET (?P<p>/ws/calls/)\S* [^"]*" (?P<s>\d{3}) \S+(?: "[^"]*" "(?P<ua>[^"]*)")?')
+          rows, last = Counter(), {}
+          for raw in sys.stdin:
+              m = LINE.search(raw)
+              if not m:
+                  continue
+              ua = m["ua"] or ""
+              kind = "app" if "IICBookingApp/" in ua else "browser"
+              rows[(kind, m["s"])] += 1
+              last[kind] = (m["t"], m["s"])
+          print("WS_CALLS by client and status:", sorted((k[0], k[1], n) for k, n in rows.items()))
+          print("WS_CALLS latest:", last)
+          PY
+          date -u
+          sudo -n sh -c 'tail -n 400000 /var/log/apache2/equip_access.log /var/log/apache2/equip_access.log.1 2>/dev/null' | python3 /tmp/ws_calls.py
+          rm -f /tmp/ws_calls.py
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "Socket lines in the django log (last 30 minutes, tokens removed):"
+          docker logs --since 30m "$CID" 2>&1 | grep -E 'ws/calls' | sed -E 's/token=[^ &"]*/token=REMOVED/g' | tail -n 15 || true
