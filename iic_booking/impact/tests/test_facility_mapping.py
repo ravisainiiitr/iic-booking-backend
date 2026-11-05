@@ -587,3 +587,60 @@ def test_several_instruments_of_one_kind_need_the_model_name(world):
     apreo = {m.equipment_id: m.confidence for m in fm.score_matches(
         "SEM images were taken on an Apreo at the Central Instrumentation Center.", aliases) if m.equipment_id}
     assert apreo[a.pk] >= 0.7
+
+
+# --------------------------------------------------------------------------- department names never become instrument aliases
+ACK_CENTRE_ONLY = ACK_PAPER.replace(
+    "The authors thank the Central Analytical Facility for the FESEM and Confocal Raman Spectrometer measurements.",
+    "We thank the technicians of the Central Analytical Facility (CAF) for support with the analyses.")
+
+
+def test_instrument_named_after_its_centre_does_not_take_the_centre_code(facility):
+    w = facility
+    lab = make_equipment(w.dept, name="Electronic Repair lab (CAF)", code="ERL1")
+    rows = {(r["equipment_id"], r["phrase"]) for r in fm.generate_aliases()}
+    assert (lab.pk, "CAF") not in rows and (lab.pk, "Electronic Repair lab") in rows
+    assert (None, "CAF") in rows  # still the department's code
+
+    # An alias seeded before the fix pulls the instrument into a centre-only acknowledgement ...
+    bad = FacilityAlias.objects.create(equipment=lab, phrase="CAF", source=AliasSource.DERIVED, case_sensitive=True)
+    manual = FacilityAlias.objects.create(equipment=lab, phrase="Central Analytical Facility", source=AliasSource.MANUAL)
+    ev = _queued(w, text=ACK_CENTRE_ONLY, doi="10.1000/centre")
+    assert ev.review_status == ReviewStatus.PENDING
+    assert ev.mappings.filter(equipment=lab).exists()
+    manual.delete()
+
+    # ... the dry run reports it and changes nothing; --apply switches it off and re-matches the waiting paper.
+    out = io.StringIO()
+    call_command("seed_facility_aliases", stdout=out)
+    assert "switched off: 1" in out.getvalue() and f"evidence {ev.pk}" in out.getvalue()
+    bad.refresh_from_db()
+    assert bad.is_active and ev.mappings.filter(equipment=lab).exists()
+
+    call_command("seed_facility_aliases", "--apply", stdout=io.StringIO())
+    bad.refresh_from_db()
+    ev.refresh_from_db()
+    assert not bad.is_active
+    assert not ev.mappings.filter(equipment=lab).exists()
+    assert ev.mappings.filter(level="DEPARTMENT", department=w.dept).exists()
+    assert ev.review_status == ReviewStatus.PENDING
+
+
+def test_rescore_never_touches_decided_papers(facility):
+    w = facility
+    ev = _queued(w)
+    ev.review_status = ReviewStatus.REJECTED
+    ev.save()
+    n = ev.mappings.count()
+    FacilityAlias.objects.filter(equipment=w.raman).update(is_active=False)
+    assert fm.rescore_pending(apply=True) == []
+    assert ev.mappings.count() == n
+
+
+def test_recheck_removes_mappings_the_paper_no_longer_supports(facility):
+    w = facility
+    ev = _queued(w)
+    assert ev.mappings.filter(equipment=w.raman).exists()
+    FacilityAlias.objects.filter(equipment=w.raman).update(is_active=False)
+    _verify(w.faculty, apply=True, recheck=True)
+    assert not ev.mappings.filter(equipment=w.raman).exists()
