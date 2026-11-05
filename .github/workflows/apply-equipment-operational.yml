@@ -1,6 +1,6 @@
 # Check one equipment's readiness and, only when confirm=ACTIVATE, set it to Active with a normal save so signals and
-# the configuration audit run. Prints ids, counts and flags only. Refuses unless it has an active charge profile and
-# upcoming available slots.
+# the configuration audit run; that save also reopens slots held for maintenance. Prints ids, counts and flags only.
+# Refuses unless it has an active charge profile and upcoming slots.
 name: Apply Equipment Operational
 
 on:
@@ -34,6 +34,7 @@ jobs:
           import os, django
           os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
           django.setup()
+          from collections import Counter
           from django.utils import timezone
           from iic_booking.equipment.models import ChargeProfile, DailySlot, Equipment, EquipmentManager, EquipmentStatus
           from iic_booking.equipment.oic_only_equipment import departments_of_oic
@@ -54,13 +55,15 @@ jobs:
                 f"visibility_group={eq.visibility_group_id} active_profiles={profiles} "
                 f"upcoming_slots={upcoming.count()} upcoming_available={available} "
                 f"own_oics={EquipmentManager.objects.filter(equipment=eq).count()} dept_oics={dept_oics}")
+          print("upcoming before", dict(Counter(upcoming.values_list("status", flat=True))))
           if os.environ.get("EQ_CONFIRM") != "ACTIVATE":
               print("report only")
-          elif not profiles or not available:
-              raise SystemExit("refused: needs an active charge profile and upcoming available slots")
+          elif not profiles or not upcoming.exists():
+              raise SystemExit("refused: needs an active charge profile and upcoming slots")
           else:
               eq.status = EquipmentStatus.ACTIVE
               eq.save()
               eq.refresh_from_db()
               print(f"status now {eq.status}")
+              print("upcoming after", dict(Counter(upcoming.values_list("status", flat=True))))
           PY
