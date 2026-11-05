@@ -21,3 +21,12 @@ def impact_daily_publication_scan_task() -> dict:
     result = daily_publication_scan()
     logger.info("impact.daily_publication_scan: %s", result)
     return result
+
+
+@shared_task(name="impact.author_confirmed")
+def impact_author_confirmed_task(user_id: int) -> dict:
+    from .author_review import follow_up
+
+    result = follow_up(user_id)
+    logger.info("impact.author_confirmed user=%s: %s", user_id, result)
+    return result

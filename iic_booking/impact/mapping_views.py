@@ -252,3 +252,83 @@ def publication_match_reject(request, pk: int):
         return Response(match_review.evidence_out(ev, request.user))
 
     return _review_call(run)
+
+
+# --------------------------------------------------------------------------- confirming lookalike author records
+def _author_review_call(fn):
+    from .author_review import AuthorReviewError
+
+    try:
+        return fn()
+    except AuthorReviewError as exc:
+        return Response({"detail": exc.message, "code": exc.code}, status=exc.status)
+
+
+@impact_api(["GET"])
+def author_confirmations(request):
+    """Researchers with lookalike OpenAlex records to decide: Main Admin (all), Department Admin (their faculty)."""
+    from django.db.models import Q
+
+    from . import author_review
+
+    svc.require(author_review.reviewer_department(request.user) is not None)
+    qs = author_review.waiting_users(request.user)
+    if request.query_params.get("unlinked") in ("1", "true"):
+        qs = qs.filter(has_link=False)
+    q = (request.query_params.get("q") or "").strip()
+    if q:
+        qs = qs.filter(Q(name__icontains=q) | Q(email__icontains=q) | Q(department__code__iexact=q))
+    rows = [author_review.researcher_out(u, request.user) for u in qs[:300]]
+    return Response({"results": rows, "count": len(rows), "waiting_count": author_review.waiting_count(request.user)})
+
+
+@impact_api(["GET"])
+def author_confirmations_count(request):
+    from . import author_review
+
+    if author_review.reviewer_department(request.user) is None:
+        return Response({"waiting_count": 0})
+    return Response({"waiting_count": author_review.waiting_count(request.user)})
+
+
+@impact_api(["GET"])
+def author_confirmations_mine(request):
+    """The signed-in researcher's own lookalike records (the "Is this you?" prompt)."""
+    from . import author_review
+
+    return Response(author_review.researcher_out(request.user, request.user))
+
+
+@impact_api(["POST"])
+def author_confirmations_decide(request, user_id: int):
+    from django.contrib.auth import get_user_model
+
+    from . import author_review
+
+    researcher = get_object_or_404(get_user_model(), pk=user_id)
+    data = request.data or {}
+    return _author_review_call(lambda: Response(author_review.decide(
+        request.user, researcher, confirm_ids=_ids(data.get("confirm")), reject_ids=_ids(data.get("reject")))))
+
+
+@impact_api(["GET"])
+def author_candidate_works(request, pk: int):
+    """A record's most recent papers, to tell lookalikes apart (cached for a day)."""
+    from . import author_review
+    from .openalex import OpenAlexError
+
+    c = get_object_or_404(ResearcherAuthorCandidate, pk=pk)
+    svc.require(author_review.can_decide_for(request.user, c.user))
+    try:
+        return Response({"results": author_review.recent_works(c)})
+    except OpenAlexError:
+        return Response({"detail": "OpenAlex did not answer; try again shortly.", "code": "upstream"}, status=502)
+
+
+def _ids(raw) -> list[int]:
+    if not isinstance(raw, list):
+        return []
+    try:
+        return [int(x) for x in raw][:50]
+    except (TypeError, ValueError):
+        raise svc.ImpactError("Record ids must be numbers.", status=400, code="invalid") from None
