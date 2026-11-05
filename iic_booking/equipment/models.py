@@ -8,6 +8,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.db import connection, models, transaction
 from django.utils.translation import gettext_lazy as _
+from iic_booking.equipment.booking_channel import BookingChannel
 from django.utils import timezone
 from django.utils.text import get_valid_filename
 from django.core.files.storage import storages
@@ -3957,6 +3958,15 @@ class Booking(models.Model):
     )
     
     created_at = models.DateTimeField(auto_now_add=True)
+    created_via = models.CharField(
+        max_length=16,
+        choices=BookingChannel.choices,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text=_("Where the booking was made (Android / iOS app, desktop / phone / tablet browser, system). "
+                    "Recorded from 5 Nov 2026; empty for older bookings."),
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     completed_at = models.DateTimeField(

@@ -150,6 +150,12 @@ def connect_celery_signals() -> None:
     task_postrun.connect(_on_task_postrun, weak=False, dispatch_uid="booking_audit_task_postrun")
 
 
+def current_request():
+    """The web request being served (None inside jobs and scripts)."""
+    scope = _scope.get()
+    return scope.get("request") if scope else None
+
+
 def current_actor():
     """Explicit scope actor, else the signed-in request user; None for jobs, scripts and anonymous calls."""
     scope = _scope.get()

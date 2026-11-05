@@ -17,6 +17,9 @@ class EquipmentConfig(AppConfig):
         from iic_booking.equipment.search_index import connect_signals as connect_search_index_signals
 
         connect_celery_signals()
+        from iic_booking.equipment.booking_channel import connect_signals as connect_booking_channel
+
+        connect_booking_channel()
         connect_config_audit_signals()
         from iic_booking.equipment.publication_dedupe import connect_signals as connect_publication_signals
 
