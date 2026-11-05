@@ -1,0 +1,215 @@
+# READ-ONLY audit: which platform bookings come from (Android app, iOS app, desktop browser, mobile browser) and
+# how booking volume changed after the apps were introduced. Prints aggregate counts only (no names, emails or IPs).
+#   1. Database: bookings per month (users, user types, made on someone's behalf), app releases, app sign-ins per
+#      platform (MobileDeviceSession), and app users' bookings before / after they started using the app.
+#   2. Apache access logs (as far back as they are kept): successful booking-creation requests per day by channel.
+#      The Android and iOS apps add "IICBookingApp/" to their user agent.
+# Test accounts (@iic-booking.test) are excluded from database counts. Nothing is written.
+name: Probe booking channel audit (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "First month to report (YYYY-MM)"
+        required: false
+        default: "2025-01"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Database aggregates
+        env:
+          SINCE: ${{ github.event.inputs.since }}
+        run: |
+          set -euo pipefail
+          case "$SINCE" in ([0-9][0-9][0-9][0-9]-[0-9][0-9]) ;; (*) echo "since must be YYYY-MM"; exit 1 ;; esac
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e SINCE="$SINCE" -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import json
+          import os
+          from collections import Counter, defaultdict
+          from datetime import datetime, timedelta
+
+          import django
+
+          django.setup()
+          from django.db.models import Count, F, Min, Q
+          from django.db.models.functions import TruncDate, TruncMonth
+          from django.utils import timezone
+
+          from iic_booking.deployment.models import MobileAppRelease
+          from iic_booking.equipment.models import Booking
+          from iic_booking.users.models.mobile_device_session import MobileDeviceSession
+
+          tz = timezone.get_current_timezone()
+          since = datetime.strptime(os.environ["SINCE"] + "-01", "%Y-%m-%d").replace(tzinfo=tz)
+          now = timezone.now()
+          out = {"generated_at": now.isoformat(), "since": os.environ["SINCE"], "timezone": str(tz)}
+
+          bookings = Booking.objects.exclude(user__email__iendswith=".test").filter(created_at__gte=since)
+          monthly = []
+          for r in (bookings.annotate(m=TruncMonth("created_at", tzinfo=tz)).values("m")
+                    .annotate(bookings=Count("pk"), users=Count("user", distinct=True),
+                              equipment=Count("equipment", distinct=True),
+                              on_behalf=Count("pk", filter=Q(created_by__isnull=False) & ~Q(created_by=F("user"))),
+                              cancelled=Count("pk", filter=Q(status__icontains="CANCEL")))
+                    .order_by("m")):
+              monthly.append({"month": r["m"].strftime("%Y-%m"), **{k: r[k] for k in
+                              ("bookings", "users", "equipment", "on_behalf", "cancelled")}})
+          out["bookings_monthly"] = monthly
+          by_type = defaultdict(dict)
+          for r in (bookings.annotate(m=TruncMonth("created_at", tzinfo=tz)).values("m", "user_type_snapshot")
+                    .annotate(n=Count("pk")).order_by("m")):
+              by_type[r["m"].strftime("%Y-%m")][r["user_type_snapshot"] or "unknown"] = r["n"]
+          out["bookings_monthly_by_user_type"] = by_type
+          out["bookings_daily_last_120d"] = {
+              r["d"].isoformat(): r["n"] for r in bookings.filter(created_at__gte=now - timedelta(days=120))
+              .annotate(d=TruncDate("created_at", tzinfo=tz)).values("d").annotate(n=Count("pk")).order_by("d")}
+          out["bookings_daily_on_behalf_last_120d"] = {
+              r["d"].isoformat(): r["n"] for r in bookings.filter(created_at__gte=now - timedelta(days=120))
+              .filter(created_by__isnull=False).exclude(created_by=F("user"))
+              .annotate(d=TruncDate("created_at", tzinfo=tz)).values("d").annotate(n=Count("pk")).order_by("d")}
+
+          out["app_releases"] = [
+              {"platform": r.platform, "version": r.version_name, "code": r.version_code,
+               "release_date": r.release_date.isoformat(), "downloads": r.download_count, "active": r.is_active}
+              for r in MobileAppRelease.objects.order_by("platform", "release_date", "version_code")]
+
+          sessions = MobileDeviceSession.objects.exclude(user__email__iendswith=".test")
+          first = {r["platform"]: r["first"] for r in sessions.values("platform").annotate(first=Min("created_at"))}
+          out["app_first_sign_in"] = {k: v.isoformat() for k, v in first.items() if v}
+          plat = {}
+          for p in ("android", "ios"):
+              s = sessions.filter(platform=p)
+              plat[p] = {
+                  "devices": s.values("device_id").distinct().count(),
+                  "users": s.values("user").distinct().count(),
+                  "active_users_7d": s.filter(last_used_at__gte=now - timedelta(days=7)).values("user").distinct().count(),
+                  "active_users_30d": s.filter(last_used_at__gte=now - timedelta(days=30)).values("user").distinct().count(),
+                  "signed_in_now": s.filter(revoked_at__isnull=True, absolute_expires_at__gt=now).values("user").distinct().count(),
+                  "users_by_type": dict(Counter(s.values_list("user__user_type", flat=True).distinct().order_by())),
+                  "new_users_by_month": dict(sorted(Counter(
+                      v.astimezone(tz).strftime("%Y-%m")
+                      for v in s.values("user").annotate(f=Min("created_at")).values_list("f", flat=True)).items())),
+                  "app_versions_in_use_30d": dict(Counter(
+                      s.filter(last_used_at__gte=now - timedelta(days=30)).values_list("app_version", flat=True))),
+              }
+          out["app_users"] = plat
+
+          # App users' own bookings before and after their first app sign-in (any platform).
+          first_use = dict(sessions.values("user").annotate(f=Min("created_at")).values_list("user", "f"))
+          both = set(sessions.filter(platform="android").values_list("user", flat=True)) & \
+              set(sessions.filter(platform="ios").values_list("user", flat=True))
+          out["app_users_on_both_platforms"] = len(both)
+          rows = Booking.objects.filter(user_id__in=list(first_use)).values_list("user_id", "created_at")
+          before = after = 0
+          before_users, after_users = set(), set()
+          for uid, created in rows:
+              if created >= first_use[uid]:
+                  after += 1
+                  after_users.add(uid)
+              else:
+                  before += 1
+                  before_users.add(uid)
+          out["app_users_bookings"] = {
+              "app_users": len(first_use), "bookings_before_first_app_sign_in": before,
+              "bookings_after_first_app_sign_in": after, "users_booked_before": len(before_users),
+              "users_booked_after": len(after_users), "first_time_bookers_after_app": len(after_users - before_users),
+          }
+          print("AUDIT_DB_JSON " + json.dumps(out, default=str))
+          PY
+
+      - name: Access-log channels for booking creation
+        run: |
+          set -euo pipefail
+          LOGDIR=/var/log/apache2
+          echo "Log files (name, size, modified):"
+          sudo -n ls -la --time-style=+%Y-%m-%d $LOGDIR | grep -E "access" || true
+          echo "Log format lines:"
+          sudo -n grep -rhE '^\s*(LogFormat|CustomLog)' /etc/apache2/sites-enabled /etc/apache2/apache2.conf 2>/dev/null | sed 's/^\s*//' | sort -u | head -n 10 || true
+          cat > /tmp/booking_channels.py <<'PY'
+          import json
+          import re
+          import sys
+          from collections import Counter, defaultdict
+          from datetime import datetime
+
+          LINE = re.compile(r'\[(?P<t>[^\]]+)\] "(?P<m>[A-Z]+) (?P<p>\S+)[^"]*" (?P<s>\d{3}) \S+(?: "(?P<ref>[^"]*)" "(?P<ua>[^"]*)")?')
+          CREATE = re.compile(r"^/api/(?:bookings/|equipments/\d+/book/|bookings/\d+/create-repeat-booking/)$")
+          BOT = re.compile(r"bot|crawl|spider|curl|wget|python|httpclient|go-http|uptime|monitor|okhttp", re.I)
+
+
+          def channel(ua: str) -> str:
+              if not ua or ua == "-":
+                  return "no_user_agent"
+              if "IICBookingApp/" in ua:
+                  if "Android" in ua:
+                      return "android_app"
+                  if re.search(r"iPhone|iPad|iPod|Macintosh|Mac OS X", ua):
+                      return "ios_app"
+                  return "app_other"
+              if BOT.search(ua):
+                  return "automated"
+              if re.search(r"iPad|Tablet", ua) or ("Android" in ua and "Mobile" not in ua):
+                  return "tablet_browser"
+              if re.search(r"Mobi|iPhone|iPod|Android", ua):
+                  return "mobile_browser"
+              return "desktop_browser"
+
+
+          created = defaultdict(Counter)
+          created_failed = defaultdict(Counter)
+          api_by_day = defaultdict(Counter)
+          devices_by_day = defaultdict(lambda: defaultdict(set))
+          post_paths = Counter()
+          days, bad, no_ua = set(), 0, 0
+          for raw in sys.stdin:
+              m = LINE.search(raw)
+              if not m:
+                  bad += 1
+                  continue
+              try:
+                  day = datetime.strptime(m["t"].split(":", 1)[0], "%d/%b/%Y").date().isoformat()
+              except ValueError:
+                  bad += 1
+                  continue
+              days.add(day)
+              path = m["p"].split("?", 1)[0]
+              ua = m["ua"] or ""
+              if m["ua"] is None:
+                  no_ua += 1
+              if not path.startswith("/api/"):
+                  continue
+              ch = channel(ua)
+              api_by_day[day][ch] += 1
+              ip = raw.split(" ", 2)[0] if raw[:1].isdigit() else raw.split(" ", 2)[1]
+              devices_by_day[day][ch].add(hash((ip, ua)) & 0xFFFFFFFF)
+              if m["m"] == "POST" and "book" in path:
+                  post_paths[re.sub(r"/\d+/", "/<id>/", path)] += 1
+              if m["m"] == "POST" and CREATE.match(path):
+                  (created if m["s"].startswith("2") else created_failed)[day][ch] += 1
+
+          out = {
+              "days_in_logs": [min(days), max(days)] if days else None, "unparsed_lines": bad, "lines_without_user_agent": no_ua,
+              "booking_created_by_day": {d: dict(c) for d, c in sorted(created.items())},
+              "booking_create_failed_by_day": {d: dict(c) for d, c in sorted(created_failed.items())},
+              "api_requests_by_day": {d: dict(c) for d, c in sorted(api_by_day.items())},
+              "distinct_clients_by_day": {d: {ch: len(s) for ch, s in v.items()} for d, v in sorted(devices_by_day.items())},
+              "booking_post_paths": dict(post_paths.most_common(25)),
+          }
+          print("AUDIT_LOG_JSON " + json.dumps(out))
+          PY
+          # The portal's own vhost log when present (other vhost logs would double-count the same requests).
+          FILES=$(sudo -n sh -c "ls $LOGDIR/equip_access.log* 2>/dev/null" || true)
+          [ -n "$FILES" ] || FILES=$(sudo -n sh -c "ls $LOGDIR/*access*.log* 2>/dev/null" | grep -viE "error" || true)
+          echo "Reading: $(echo $FILES | tr '\n' ' ')"
+          if [ -z "$FILES" ]; then echo "AUDIT_LOG_JSON {\"error\": \"no access logs readable\"}"; exit 0; fi
+          for f in $FILES; do
+            case "$f" in (*.gz) sudo -n zcat "$f" ;; (*) sudo -n cat "$f" ;; esac
+          done | python3 /tmp/booking_channels.py
+          rm -f /tmp/booking_channels.py
