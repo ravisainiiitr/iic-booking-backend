@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       step:
-        description: "seed_facility_aliases | link_faculty_authors | verify_publication_acknowledgements | daily_publication_scan (runs the scheduled scan now; ignores APPLY)"
+        description: "seed_facility_aliases | link_faculty_authors | verify_publication_acknowledgements | daily_publication_scan (runs the scheduled scan now; ignores APPLY) | list_matches (read-only: the review queue)"
         required: true
         default: verify_publication_acknowledgements
       user_ids:
@@ -38,11 +38,40 @@ jobs:
         run: |
           set -euo pipefail
           case "$STEP" in
-            seed_facility_aliases|link_faculty_authors|verify_publication_acknowledgements|daily_publication_scan) ;;
+            seed_facility_aliases|link_faculty_authors|verify_publication_acknowledgements|daily_publication_scan|list_matches) ;;
             *) echo "Unknown step: $STEP"; exit 1 ;;
           esac
           cd /home/ubuntu/iic-booking-backend
           CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          if [ "$STEP" = "list_matches" ]; then
+            docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import django
+
+          django.setup()
+          from collections import Counter
+
+          from iic_booking.impact.models import PublicationEvidence
+
+          qs = PublicationEvidence.objects.all()
+          print("EVIDENCE by check status:", dict(Counter(qs.values_list("status", flat=True))))
+          print("EVIDENCE by review status:", dict(Counter(qs.values_list("review_status", flat=True))))
+          pending = (qs.filter(review_status="PENDING").select_related("user", "user__department")
+                     .prefetch_related("mappings__department", "mappings__equipment").order_by("-checked_at"))
+          for ev in pending:
+              u = ev.user
+              dept = getattr(u.department, "code", "-")
+              print(f"\n#{ev.id} [{ev.year or '-'}] {ev.title[:140]}")
+              print(f"    researcher: {u.get_full_name() or u.pk} ({dept})   doi: {ev.doi or '-'}   oa: {ev.oa_status or '-'}")
+              print(f"    source: {ev.source_url[:160]}")
+              snip = " ".join((ev.acknowledgement_snippet or "").split())
+              print(f"    ack: {snip[:400]}")
+              for m in ev.mappings.all():
+                  target = m.equipment.name if m.equipment_id else f"department {m.department.code}"
+                  print(f"    -> {m.level:<10} {m.status:<15} {float(m.confidence):.2f}  {target[:70]}  phrases={m.matched_phrases[:4]}")
+          print(f"\nPENDING total: {pending.count()}")
+          PY
+            exit 0
+          fi
           if [ "$STEP" = "daily_publication_scan" ]; then
             docker exec -w /app "$CID" python manage.py shell -c "import json; from iic_booking.impact.service import daily_publication_scan; print('SCAN RESULT', json.dumps(daily_publication_scan(), default=str))"
             exit 0
