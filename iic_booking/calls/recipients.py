@@ -6,8 +6,10 @@ never a name typed by the client: the callee is always one of these candidates.
 Fallbacks: no Lab Operator reachable -> the Officer In Charge; no Accounts In Charge reachable -> the Officer In Charge
 (facility contact); nobody -> a support ticket (``fallback: "ticket"``).
 
-The other way round: the Lab Operator or Officer In Charge of a booking's equipment may call the user of that booking
-(role ``user``), and nobody else may. Staff of the equipment only, whatever else the caller can see.
+The other way round: the Lab Operator, Officer In Charge or Accounts In Charge of a booking's equipment may call the user
+of that booking (role ``user``), and nobody else may. Staff of the equipment only, whatever else the caller can see.
+
+Silent hours (calls/silent.py) stop users calling these staff; the staff themselves are never held back.
 """
 
 from __future__ import annotations
@@ -56,6 +58,7 @@ class Target:
     equipment: Any
     roles: tuple[str, ...]
     candidates: dict[str, list] = field(default_factory=dict)
+    caller_is_staff: bool = False
 
 
 def _equipment_staff(equipment) -> dict[str, list]:
@@ -118,7 +121,8 @@ def resolve_target(user, context_type: str, context_id: int) -> Target:
     from . import conf
 
     staff = _equipment_staff(target.equipment)
-    if context_type == CallContext.BOOKING and any(p.pk == user.pk for p in staff[CallRole.OPERATOR] + staff[CallRole.OIC]):
+    target.caller_is_staff = any(p.pk == user.pk for people in staff.values() for p in people)
+    if context_type == CallContext.BOOKING and target.caller_is_staff:
         target.roles += (CallRole.USER,)
         staff[CallRole.USER] = [booking.user] if booking.user.is_active else []
     for role in CallRole.values:  # all roles: a fallback may point to one the context does not offer
@@ -127,6 +131,13 @@ def resolve_target(user, context_type: str, context_id: int) -> Target:
             people = [p for p in people if getattr(p, "is_test_account", False)]
         target.candidates[role] = people
     return target
+
+
+def silent_block(target: Target) -> dict | None:
+    """The silent hours holding this caller back from the instrument's staff, if any."""
+    from .silent import blocking
+
+    return None if target.caller_is_staff else blocking(target.equipment)
 
 
 def options(user, context_type: str, context_id: int) -> dict[str, Any]:
@@ -144,4 +155,5 @@ def options(user, context_type: str, context_id: int) -> dict[str, Any]:
             other = CallRole.OIC if role in (CallRole.OPERATOR, CallRole.ACCOUNTS) else ""
             fallback = "oic" if other and any(reachable(p) for p in target.candidates.get(other, [])) else "ticket"
         roles.append({"role": role, "label": CallRole(role).label, "people": people, "fallback": fallback})
-    return {"context_type": target.context_type, "context_id": target.context_id, "label": target.label, "roles": roles}
+    return {"context_type": target.context_type, "context_id": target.context_id, "label": target.label, "roles": roles,
+            "silent_hours": silent_block(target)}

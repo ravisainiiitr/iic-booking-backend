@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import time
 
 from django.conf import settings
 from django.db import models
@@ -100,3 +101,23 @@ class CallDevice(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["platform", "device_id"], name="uniq_call_device_install")]
+
+
+class CallSilentHours(models.Model):
+    """Per instrument, set by its Officer In Charge: when users cannot call its staff (see calls/silent.py)."""
+
+    equipment = models.OneToOneField("equipment.Equipment", on_delete=models.CASCADE, related_name="call_silent_hours")
+    enabled = models.BooleanField(default=False)
+    office_start = models.TimeField(default=time(9, 0))
+    office_end = models.TimeField(default=time(17, 30))
+    silent_weekends = models.BooleanField(default=True)
+    silent_holidays = models.BooleanField(default=True)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Call silent hours"
+        verbose_name_plural = "Call silent hours"
+
+    def __str__(self) -> str:
+        return f"Silent hours for equipment {self.equipment_id}: {'on' if self.enabled else 'off'}"

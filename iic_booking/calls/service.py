@@ -22,7 +22,7 @@ from django.utils import timezone
 
 from . import conf
 from .models import ACTIVE_STATUSES, CallContext, CallEvent, CallRole, CallSession, CallStatus
-from .recipients import CallNotAllowed, calls_open_to, reachable, resolve_target
+from .recipients import CallNotAllowed, calls_open_to, reachable, resolve_target, silent_block
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +172,9 @@ def start_call(caller, *, context_type: str, context_id: int, role: str, callee_
     target = resolve_target(caller, context_type, int(context_id))
     if role not in target.roles:
         raise CallNotAllowed("invalid", "This person cannot be called about this item.", 400)
+    block = silent_block(target)
+    if block is not None:
+        raise CallNotAllowed("silent_hours", block["message"])
     candidates = target.candidates.get(role, [])
     if callee_id is not None:
         callee = next((p for p in candidates if p.pk == int(callee_id)), None)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -14,10 +14,10 @@ from django.core.cache import cache
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from iic_booking.calls import conf, service
+from iic_booking.calls import conf, service, silent
 from iic_booking.calls.consumers import CallConsumer
-from iic_booking.calls.models import CallDevice, CallSession, CallStatus
-from iic_booking.equipment.models import Booking, BookingStatus, ChargeProfile, Equipment, EquipmentManager, EquipmentOperator
+from iic_booking.calls.models import CallDevice, CallSession, CallSilentHours, CallStatus
+from iic_booking.equipment.models import Booking, BookingStatus, ChargeProfile, Equipment, EquipmentManager, EquipmentOperator, Holiday
 from iic_booking.users.models import Department
 from iic_booking.users.models.department import DepartmentType
 from iic_booking.users.models.user_type import UserType
@@ -383,6 +383,142 @@ def test_staff_overall_cap_stops_a_runaway_client(w):
             assert call(w, role="user", user=w.operator).status_code == 201
             CallSession.objects.all().delete()
         assert call(w, role="user", user=w.operator).status_code == 429
+
+
+def test_accounts_in_charge_may_call_the_user_of_a_booking_they_handle(w):
+    external = sorted(UserType.get_external_user_codes())[0]
+    Booking.objects.filter(pk=w.booking.pk).update(user_type_snapshot=external)
+    assert _roles(w.accounts, w)["user"]["people"][0]["id"] == w.student.pk
+    assert call(w, role="user", user=w.accounts, callee_id=w.student.pk).status_code == 201
+    assert "user" not in _roles(w.foreign_accounts, w)  # another department's Accounts In Charge
+
+
+# --- silent hours -----------------------------------------------------------------------------------------------------
+WEDNESDAY_11AM = timezone.make_aware(datetime(2026, 11, 4, 11, 0))
+WEDNESDAY_7PM = timezone.make_aware(datetime(2026, 11, 4, 19, 0))
+SATURDAY_11AM = timezone.make_aware(datetime(2026, 11, 7, 11, 0))
+
+
+def _silent(w, **kw):
+    return CallSilentHours.objects.create(equipment=w.eq, enabled=True, **kw)
+
+
+@pytest.fixture
+def at():
+    def _at(moment):
+        return patch("iic_booking.calls.silent._now", lambda: moment)
+    return _at
+
+
+@pytest.mark.parametrize("role", ["operator", "oic", "accounts"])
+def test_users_cannot_call_any_staff_outside_office_hours(w, at, role):
+    _silent(w)
+    with at(WEDNESDAY_7PM):
+        resp = call(w, role=role)
+    assert resp.status_code == 403 and resp.json()["code"] == "silent_hours"
+    assert "Thu 5 Nov at 9:00 AM" in resp.json()["error"]
+    assert not CallSession.objects.filter(caller=w.student).exists()
+
+
+def test_users_can_call_during_office_hours_and_edges_are_exact(w, at):
+    _silent(w)
+    with at(WEDNESDAY_11AM):
+        assert call(w).status_code == 201
+    CallSession.objects.all().delete()
+    rule = CallSilentHours.objects.get(equipment=w.eq)
+    assert silent.is_silent(rule, timezone.make_aware(datetime(2026, 11, 4, 8, 59)))
+    assert not silent.is_silent(rule, timezone.make_aware(datetime(2026, 11, 4, 9, 0)))
+    assert not silent.is_silent(rule, timezone.make_aware(datetime(2026, 11, 4, 17, 29)))
+    assert silent.is_silent(rule, timezone.make_aware(datetime(2026, 11, 4, 17, 30)))
+
+
+def test_weekends_and_holidays_are_silent_by_default_and_can_be_excluded(w, at):
+    rule = _silent(w)
+    assert silent.is_silent(rule, SATURDAY_11AM)
+    Holiday.objects.update_or_create(date=date(2026, 11, 4), defaults={"is_active": True})
+    assert silent.is_silent(rule, WEDNESDAY_11AM)
+    rule.silent_weekends = rule.silent_holidays = False
+    assert not silent.is_silent(rule, SATURDAY_11AM) and not silent.is_silent(rule, WEDNESDAY_11AM)
+
+
+def test_inactive_holiday_does_not_count(w):
+    rule = _silent(w)
+    Holiday.objects.update_or_create(date=date(2026, 11, 4), defaults={"is_active": False})
+    assert not silent.is_silent(rule, WEDNESDAY_11AM)
+
+
+def test_next_opening_skips_the_weekend_and_holidays(w):
+    rule = _silent(w)
+    Holiday.objects.update_or_create(date=date(2026, 11, 9), defaults={"is_active": True})  # the Monday
+    assert "Tue 10 Nov at 9:00 AM" in silent.describe_block(rule, SATURDAY_11AM)["message"]
+
+
+def test_off_by_default_and_when_switched_off(w, at):
+    with at(WEDNESDAY_7PM):
+        assert call(w).status_code == 201  # no rule at all
+    CallSession.objects.all().delete()
+    CallSilentHours.objects.create(equipment=w.eq, enabled=False)
+    with at(WEDNESDAY_7PM):
+        assert call(w).status_code == 201
+
+
+def test_staff_are_not_held_back(w, at):
+    _silent(w)
+    with at(WEDNESDAY_7PM):
+        assert call(w, role="user", user=w.operator, callee_id=w.student.pk).status_code == 201
+        CallSession.objects.all().delete()
+        assert call(w, role="oic", user=w.operator).status_code == 201
+        CallSession.objects.all().delete()
+        assert _roles(w.oic, w)  # still offered
+        assert api(w.oic).get("/api/calls/options/", {"context": "booking", "id": w.booking.pk}).json()["silent_hours"] is None
+
+
+def test_the_call_options_say_why(w, at):
+    _silent(w)
+    with at(WEDNESDAY_7PM):
+        data = api(w.student).get("/api/calls/options/", {"context": "booking", "id": w.booking.pk}).json()
+    assert data["silent_hours"]["active"] is True and "Thu 5 Nov" in data["silent_hours"]["message"]
+    with at(WEDNESDAY_11AM):
+        data = api(w.student).get("/api/calls/options/", {"context": "booking", "id": w.booking.pk}).json()
+    assert data["silent_hours"] is None
+
+
+def test_a_mode_follows_its_base_equipment_unless_it_has_its_own_rule(w, at):
+    mode = Equipment.objects.create(name="Mode", code=f"M{uuid.uuid4().hex[:5]}", slot_duration_minutes=60, internal_department=w.dept,
+                                    user_rating_enabled=False, status="ACTIVE", parent_equipment=w.eq)
+    _silent(w)
+    assert silent.is_silent(silent.rule_for(mode), WEDNESDAY_7PM)
+    CallSilentHours.objects.create(equipment=mode, enabled=False)
+    assert not silent.is_silent(silent.rule_for(mode), WEDNESDAY_7PM)
+
+
+def _put(user, w, **kw):
+    body = {"enabled": True, "office_start": "09:00", "office_end": "17:30", "silent_weekends": True, "silent_holidays": True, **kw}
+    return api(user).put(f"/api/calls/silent-hours/{w.eq.pk}/", body, format="json")
+
+
+def test_only_the_officer_in_charge_sets_silent_hours(w):
+    url = f"/api/calls/silent-hours/{w.eq.pk}/"
+    defaults = api(w.oic).get(url).json()
+    assert defaults["enabled"] is False and defaults["office_start"] == "09:00" and defaults["office_end"] == "17:30"
+    assert defaults["silent_weekends"] is True and defaults["silent_holidays"] is True
+
+    assert _put(w.oic, w, office_end="18:00").status_code == 200
+    rule = CallSilentHours.objects.get(equipment=w.eq)
+    assert rule.enabled and rule.office_end == time(18, 0) and rule.updated_by == w.oic
+
+    other_oic = _user(UserType.MANAGER, department=w.dept)
+    for outsider in (w.student, w.operator, w.accounts, other_oic):
+        assert _put(outsider, w, enabled=False).status_code == 403
+        assert api(outsider).get(url).status_code == 403
+    assert CallSilentHours.objects.get(equipment=w.eq).enabled is True
+
+
+@pytest.mark.parametrize("bad", [{"office_start": "18:00", "office_end": "09:00"}, {"office_start": "09:00", "office_end": "09:00"},
+                                 {"office_start": "soon"}, {"office_end": ""}, {"enabled": "yes"}, {"silent_weekends": None}])
+def test_silent_hours_reject_bad_values(w, bad):
+    resp = _put(w.oic, w, **bad)
+    assert resp.status_code == 400 and not CallSilentHours.objects.filter(equipment=w.eq).exists()
 
 
 # --- stopping the ring on a closed app ---------------------------------------------------------------------------------
