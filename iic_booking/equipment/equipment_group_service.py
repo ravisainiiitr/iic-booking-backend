@@ -282,6 +282,8 @@ def equipment_eligibility_error(
 
     if (equipment.status or "").strip() != EquipmentStatus.ACTIVE:
         return "Equipment is not operational."
+    if getattr(equipment, "oic_requests_only", False):
+        return "This equipment takes OIC requests only."
     if getattr(equipment, "profile_type", None) == EquipmentProfileType.PRINT_3D:
         return "3D printing requests are tied to a specific printer."
     if getattr(equipment, "profile_type", None) == EquipmentProfileType.LASER_CUT_2D:

@@ -1622,6 +1622,7 @@ class EquipmentAdmin(admin.ModelAdmin):
                 'department_slot_reservation_enabled',
                 'operating_day_start',
                 'oic_request_registration_enabled',
+                'oic_requests_only',
                 'skip_quota_check',
                 'auto_slot_selection_default',
                 'enable_charge_recalculation', 'user_rating_enabled',
@@ -1734,6 +1735,7 @@ class EquipmentAdmin(admin.ModelAdmin):
                 "department_slot_reservation_enabled",
                 "operating_day_start",
                 "oic_request_registration_enabled",
+                "oic_requests_only",
             ]
         return fields
     
@@ -3104,6 +3106,39 @@ class FabricationFileChangeAdmin(admin.ModelAdmin):
 
 
 from iic_booking.equipment.config_audit_models import EquipmentConfigAuditLog  # noqa: E402
+
+
+from iic_booking.equipment.oic_request_audit_models import OicRequestAuditLog  # noqa: E402
+
+
+@admin.register(OicRequestAuditLog)
+class OicRequestAuditLogAdmin(admin.ModelAdmin):
+    """Read-only: OIC request audit rows are append-only and visible to the Main Admin only here."""
+
+    list_display = ["created_at", "equipment_code", "action", "booking_reference", "event_type", "new_status", "actor_label", "ip_address"]
+    list_filter = ["action", "event_type", "is_system"]
+    search_fields = ["equipment_code", "equipment_name", "booking_reference", "actor_label", "actor_email", "detail"]
+    date_hierarchy = "created_at"
+    readonly_fields = [f.name for f in OicRequestAuditLog._meta.fields]
+
+    def _main_admin(self, request):
+        user = request.user
+        return getattr(user, "is_superuser", False) or getattr(user, "user_type", None) == "admin"
+
+    def has_view_permission(self, request, obj=None):
+        return self._main_admin(request)
+
+    def has_module_permission(self, request):
+        return self._main_admin(request)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(EquipmentConfigAuditLog)

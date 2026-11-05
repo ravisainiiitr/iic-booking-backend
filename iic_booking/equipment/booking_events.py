@@ -435,6 +435,10 @@ def create_booking_event(
     from .booking_cancellation_log import record_from_event
 
     record_from_event(event, cancellation)
+
+    from .oic_request_audit import record_booking_event
+
+    record_booking_event(event)
     
     # Send notifications after response-critical DB work: queue on commit so email/push
     # (SMTP, FCM, etc.) do not block the booking API.

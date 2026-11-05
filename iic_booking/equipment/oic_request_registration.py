@@ -23,6 +23,10 @@ def oic_registration_requested(request) -> bool:
 
 def oic_registration_refusal(user, equipment) -> str | None:
     """None when ``user`` may register a request for ``equipment``, else the reason."""
+    from .oic_only_equipment import is_oic_only, raise_refusal
+
+    if is_oic_only(equipment):
+        return raise_refusal(user, equipment)
     if not getattr(equipment, "oic_request_registration_enabled", False):
         return "Request registration by the Officer In-charge is not switched on for this equipment."
     from .api_views import _user_can_act_as_oic_for_equipment
