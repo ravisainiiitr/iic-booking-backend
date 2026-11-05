@@ -1,5 +1,5 @@
 # Show, and optionally switch off, "Authorisation required to book" (the "Training required" badge) for one
-# equipment, matched by name or code. mode=show changes nothing. mode=off sets required=False on that equipment's
+# equipment, matched by name or code. mode=show changes nothing. mode=switch_off sets required=False on that equipment's
 # training authorisation setting only when exactly one equipment matches; everything else on the setting (awards,
 # requests, levels, validity) is kept, so switching it back on in Training -> Authorisations restores the gate.
 name: Apply equipment authorisation required (show / off)
@@ -11,12 +11,12 @@ on:
         description: "Equipment name or code (case-insensitive contains, e.g. X-Ray Fluorescence)"
         required: true
       mode:
-        description: "show | off"
+        description: "show | switch_off"
         required: true
         type: choice
-        options: [show, off]
+        options: ["show", "switch_off"]
       confirm:
-        description: "Type AUTHORISATION to switch off (mode=off)"
+        description: "Type AUTHORISATION to switch off (mode=switch_off)"
         required: false
         default: ""
 
@@ -34,7 +34,7 @@ jobs:
           CONFIRM: ${{ github.event.inputs.confirm }}
         run: |
           set -euo pipefail
-          if [ "$MODE" = "off" ] && [ "$CONFIRM" != "AUTHORISATION" ]; then echo "Type AUTHORISATION to switch off"; exit 1; fi
+          if [ "$MODE" = "switch_off" ] && [ "$CONFIRM" != "AUTHORISATION" ]; then echo "Type AUTHORISATION to switch off"; exit 1; fi
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
           docker exec -i -w /app -e EQUIPMENT="$EQUIPMENT" -e MODE="$MODE" -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
           import os
@@ -69,7 +69,7 @@ jobs:
                   print(f"    required={s.required} applies_to={s.applies_to} min_level={s.min_level_code} "
                         f"validity_months={s.validity_months} competency_levels={s.competency_levels}")
                   print(f"    last changed {s.updated_at:%Y-%m-%d %H:%M} UTC by {who or 'not recorded'}; note={s.note[:200]!r}")
-          if mode != "off":
+          if mode != "switch_off":
               raise SystemExit(0)
           targets = [e for e in eqs if EquipmentAuthorisationSetting.objects.filter(equipment=e, required=True).exists()]
           if len(targets) != 1:
