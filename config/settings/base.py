@@ -992,6 +992,8 @@ WHATSAPP_TEMPLATE_LANGUAGE = env("WHATSAPP_TEMPLATE_LANGUAGE", default="en")
 WHATSAPP_PILOT_NUMBERS = env.list("WHATSAPP_PILOT_NUMBERS", default=[])
 # Android: Firebase Cloud Messaging HTTP v1 (path to the service-account JSON, kept outside the repository).
 CALLS_FCM_SERVICE_ACCOUNT_FILE = env("CALLS_FCM_SERVICE_ACCOUNT_FILE", default="")
+# The same key as one base64 line, for the production env file (takes priority over the file). Never logged.
+CALLS_FCM_SERVICE_ACCOUNT_B64 = env("CALLS_FCM_SERVICE_ACCOUNT_B64", default="")
 # iOS: APNs VoIP pushes with a token-based (.p8) key (path kept outside the repository).
 CALLS_APNS_KEY_FILE = env("CALLS_APNS_KEY_FILE", default="")
 CALLS_APNS_KEY_ID = env("CALLS_APNS_KEY_ID", default="")

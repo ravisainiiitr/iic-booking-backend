@@ -90,14 +90,16 @@ as `ws/notifications/`. No new ports or security-group rules are needed for the 
 ## Firebase (Android incoming calls) — steps for the IIC team
 
 1. https://console.firebase.google.com → **Add project** "IITR Equipment Booking" (Analytics not needed).
-2. **Add app → Android**, package name `ac.in.iitr.iicbooking`. Download `google-services.json`.
+2. **Add app → Android** twice, with package names `ac.in.iitr.iicbooking` and `ac.in.iitr.iicbooking.debug` (the debug
+   build fails if its package is missing). Then download `google-services.json`, which now lists both.
 3. Give the file to the app build **without committing it**: add it as the GitHub secret
    `ANDROID_GOOGLE_SERVICES_JSON_BASE64` (`base64 -w0 google-services.json`) in `iic-booking-android`; the build writes it
-   to `android/app/google-services.json` (CI step to add when the secret exists). Locally, copy it to
+   to `android/app/google-services.json`. Locally, copy it to
    `android/app/google-services.json` (git-ignored).
-4. **Project settings → Service accounts → Generate new private key** (JSON). Put it on the server outside the
-   repository, e.g. `/home/ubuntu/secrets/fcm-calls.json` (chmod 600), mounted read-only into the django container,
-   and set `CALLS_FCM_SERVICE_ACCOUNT_FILE` to its in-container path.
+4. **Project settings → Service accounts → Generate new private key** (JSON). Add it as the GitHub secret
+   `CALLS_FCM_SERVICE_ACCOUNT_JSON_BASE64` (`base64 -w0 key.json`) in `iic-booking-backend` and run the workflow
+   **Apply Calls FCM Key**, which sets `CALLS_FCM_SERVICE_ACCOUNT_B64` on the server. Never commit the key. Delete the
+   downloaded file afterwards.
 5. Cloud Messaging API (V1) is enabled by default for new projects; the legacy server key is not used.
 
 ## Apple (iOS incoming calls) — needs the Apple Developer account

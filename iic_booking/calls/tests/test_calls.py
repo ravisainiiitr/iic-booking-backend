@@ -277,6 +277,60 @@ def test_websocket_refuses_users_outside_the_pilot(on):
     assert asyncio.run(c._authenticate("nonsense")) is None
 
 
+# --- stopping the ring on a closed app ---------------------------------------------------------------------------------
+def test_phone_stops_ringing_when_the_call_stops_ringing(w, django_capture_on_commit_callbacks):
+    CallDevice.objects.create(user=w.operator, platform="android", device_id="a", token="good")
+    CallDevice.objects.create(user=w.operator, platform="ios", device_id="b", token="iphone")
+    sent = []
+
+    def fcm(token, data, ttl):
+        sent.append((token, data["type"], data["call_id"]))
+        return "sent"
+
+    with patch("iic_booking.calls.push.send_fcm", fcm), patch("iic_booking.calls.push.fcm_configured", lambda: True), \
+            patch("iic_booking.calls.push.send_apns_voip", lambda token, data, ttl: "sent"), \
+            django_capture_on_commit_callbacks(execute=True):
+        cid = call(w).json()["id"]
+    assert sent == [("good", "incoming_call", cid)]
+
+    sent.clear()
+    with patch("iic_booking.calls.push.send_fcm", fcm), patch("iic_booking.calls.push.fcm_configured", lambda: True), \
+            django_capture_on_commit_callbacks(execute=True):
+        service.cancel(w.student, cid)
+        service.cancel(w.student, cid)  # repeated: nothing more is sent
+    assert sent == [("good", "call_ended", cid)]  # never to iOS: a VoIP push must report a new call
+
+
+def test_answering_stops_the_other_devices_but_ending_the_call_does_not_push(w, django_capture_on_commit_callbacks):
+    CallDevice.objects.create(user=w.operator, platform="android", device_id="a", token="good")
+    sent = []
+
+    def fcm(token, data, ttl):
+        sent.append(data["type"])
+        return "sent"
+
+    with patch("iic_booking.calls.push.send_fcm", fcm), patch("iic_booking.calls.push.fcm_configured", lambda: True), \
+            django_capture_on_commit_callbacks(execute=True):
+        cid = call(w).json()["id"]
+        service.accept(w.operator, cid)
+        service.end(w.operator, cid)
+    assert sent == ["incoming_call", "call_ended"]
+
+
+def test_firebase_key_from_the_environment(settings):
+    import base64
+
+    from iic_booking.calls import push
+
+    settings.CALLS_FCM_SERVICE_ACCOUNT_FILE = ""
+    settings.CALLS_FCM_SERVICE_ACCOUNT_B64 = ""
+    assert not push.fcm_configured()
+    settings.CALLS_FCM_SERVICE_ACCOUNT_B64 = base64.b64encode(json.dumps({"project_id": "p"}).encode()).decode()
+    assert push.fcm_configured() and push._fcm_account()["project_id"] == "p"
+    settings.CALLS_FCM_SERVICE_ACCOUNT_B64 = "bm90IGpzb24="  # valid base64, not JSON
+    assert not push.fcm_configured()
+
+
 # --- who is calling, about what -------------------------------------------------------------------------------------
 def test_incoming_call_shows_the_caller_photo_department_and_instrument(w):
     from iic_booking.users.models import User
