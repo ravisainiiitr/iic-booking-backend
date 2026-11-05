@@ -6380,7 +6380,9 @@ def list_bookings(request):
     # Fast flag for UI: operator complete files OR DSA-imported result attachments.
     from iic_booking.equipment.booking_results_service import booking_has_results_annotation
 
-    queryset = queryset.annotate(has_results=booking_has_results_annotation())
+    from iic_booking.equipment.urgent_booking_flag import urgent_booking_annotation
+
+    queryset = queryset.annotate(has_results=booking_has_results_annotation(), is_urgent=urgent_booking_annotation())
     queryset = queryset.select_related(
         'user', 'user__department', 'created_by', 'equipment', 'equipment__internal_department', 'charge_profile',
     )
@@ -6756,6 +6758,13 @@ def _booking_list_queryset(request, *, min_search_chars: int = 0):
             queryset = queryset.filter(istem_fbr_applicable).exclude(
                 istem_fbr_status=IstemFbrStatus.EXECUTED
             )
+
+    # Urgent bookings only: open to every role, within the bookings the role can already see.
+    from iic_booking.equipment.urgent_booking_flag import urgent_booking_annotation as _urgent_annotation
+    from iic_booking.equipment.urgent_booking_flag import urgent_filter_requested
+
+    if urgent_filter_requested(request.query_params):
+        queryset = queryset.filter(_urgent_annotation())
 
     # Filter by date range if provided
     start_date_param = request.query_params.get('start_date')

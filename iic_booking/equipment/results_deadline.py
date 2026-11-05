@@ -22,6 +22,8 @@ receipt, whichever is later".
   The safeguard uses ``safeguard_due_at``, never ``is_results_overdue``. A booking whose sample was never
   received keeps the slot-end timing (``unreceived_safeguard_due_at``), so the existing Operator
   Unavailable outcome for such samples is unchanged.
+* No results deadline on the equipment (blank or 0): the safeguard never acts on its bookings, whichever mode applies,
+  so they are never marked Operator Absent or Operator Unavailable automatically. Staff can still mark them by hand.
 """
 
 from __future__ import annotations
@@ -627,9 +629,13 @@ def safeguard_due_at(booking, slot_end, *, legacy_hours, state: AutomationState,
     Results-deadline mode: the equipment's results deadline (or the booking's later extension); for a
     sample the lab never received, the same period counted from the slot end (``unreceived_safeguard_due_at``).
     Legacy mode: the old ``max(slot end, extension) + N hours``.
+    An equipment with no results deadline is never acted on, in either mode.
     """
     slot_end = _aware(slot_end)
-    if getattr(booking, "results_paused_at", None) is not None:
+    if (
+        getattr(booking, "results_paused_at", None) is not None
+        or equipment_deadline_config(getattr(booking, "equipment", None)) is None
+    ):
         return None, (MODE_RESULTS_DEADLINE if uses_results_deadline(slot_end, state) else MODE_LEGACY)
     if uses_results_deadline(slot_end, state):
         if not booking_sample_receipt(booking).received:

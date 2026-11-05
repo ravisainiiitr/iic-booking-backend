@@ -4765,6 +4765,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
     disruption_release_slot_status = serializers.CharField(read_only=True, allow_null=True)
     istem_fbr_status_display = serializers.SerializerMethodField()
     istem_automatic = serializers.SerializerMethodField()
+    is_urgent = serializers.SerializerMethodField()
     istem_portal_url = serializers.SerializerMethodField()
     istem_fbr_status_url = serializers.SerializerMethodField()
     require_istem_fbr = serializers.SerializerMethodField()
@@ -4849,6 +4850,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
             'rating', 'rating_feedback',
             'rated_at', 'repeat_sample_enabled', 'source_booking_id',
             'istem_fbr_number', 'istem_fbr_status', 'istem_fbr_status_display', 'istem_fbr_invalid_reason', 'istem_fbr_executed_at',
+            'is_urgent',
             'istem_automatic', 'istem_portal_url', 'istem_fbr_status_url', 'require_istem_fbr',
             'oic_contacts', 'sample_summary', 'lab_questions_open', 'results_deadline', 'results_overdue',
             'results_paused', 'fabrication_rejected_at', 'fabrication_replace_deadline',
@@ -4882,6 +4884,11 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
         if not st:
             return None
         return dict(IstemFbrStatus.choices).get(st, st)
+
+    def get_is_urgent(self, obj):
+        from .urgent_booking_flag import booking_is_urgent
+
+        return booking_is_urgent(obj)
 
     def get_istem_automatic(self, obj):
         """The I-STEM record the portal keeps for this booking when automatic FBR is on (else None)."""
