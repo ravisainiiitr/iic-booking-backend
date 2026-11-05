@@ -1,0 +1,66 @@
+# Check one equipment's readiness and, only when confirm=ACTIVATE, set it to Active with a normal save so signals and
+# the configuration audit run. Prints ids, counts and flags only. Refuses unless it has an active charge profile and
+# upcoming available slots.
+name: Apply Equipment Operational
+
+on:
+  workflow_dispatch:
+    inputs:
+      code:
+        description: Equipment code
+        required: true
+      dept_code:
+        description: Internal department code
+        required: true
+      confirm:
+        description: Type ACTIVATE to change the status; anything else only reports
+        required: false
+        default: ''
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Report and apply
+        env:
+          EQ_CODE: ${{ inputs.code }}
+          EQ_DEPT: ${{ inputs.dept_code }}
+          EQ_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          test -n "$CID"
+          docker exec -i -e EQ_CODE -e EQ_DEPT -e EQ_CONFIRM -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.utils import timezone
+          from iic_booking.equipment.models import ChargeProfile, DailySlot, Equipment, EquipmentManager, EquipmentStatus
+          from iic_booking.equipment.oic_only_equipment import departments_of_oic
+
+          eq = Equipment.objects.select_related("internal_department").get(
+              code=os.environ["EQ_CODE"], internal_department__code=os.environ["EQ_DEPT"]
+          )
+          now = timezone.now()
+          upcoming = DailySlot.objects.filter(slot_master__equipment=eq, start_datetime__gt=now)
+          profiles = ChargeProfile.objects.filter(equipment=eq, is_active=True).count()
+          available = upcoming.filter(status="AVAILABLE").count()
+          dept_oics = (
+              EquipmentManager.objects.filter(equipment__internal_department_id=eq.internal_department_id)
+              .values("manager_id").distinct().count()
+          )
+          print(f"id={eq.pk} status={eq.status} oic_requests_only={eq.oic_requests_only} "
+                f"registration={eq.oic_request_registration_enabled} test_only={eq.visible_to_test_accounts_only} "
+                f"visibility_group={eq.visibility_group_id} active_profiles={profiles} "
+                f"upcoming_slots={upcoming.count()} upcoming_available={available} "
+                f"own_oics={EquipmentManager.objects.filter(equipment=eq).count()} dept_oics={dept_oics}")
+          if os.environ.get("EQ_CONFIRM") != "ACTIVATE":
+              print("report only")
+          elif not profiles or not available:
+              raise SystemExit("refused: needs an active charge profile and upcoming available slots")
+          else:
+              eq.status = EquipmentStatus.ACTIVE
+              eq.save()
+              eq.refresh_from_db()
+              print(f"status now {eq.status}")
+          PY
