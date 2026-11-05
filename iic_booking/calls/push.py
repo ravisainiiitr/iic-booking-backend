@@ -1,11 +1,12 @@
 """Waking a callee's apps for an incoming call: Android through Firebase Cloud Messaging (HTTP v1, high-priority data
 message) and iOS through an APNs VoIP push (PushKit -> CallKit). Both are off until their credentials are configured
-(paths outside the repository). Only incoming-call events are sent this way, never ordinary notifications.
+(never in the repository). Only incoming-call events are sent this way, never ordinary notifications.
 Tokens, keys and access tokens are never logged.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -34,6 +35,13 @@ def _jwt(header: dict, claims: dict, sign) -> str:
 # --- Android: FCM HTTP v1 ---------------------------------------------------------------------------------------------
 
 def _fcm_account() -> dict | None:
+    encoded = getattr(settings, "CALLS_FCM_SERVICE_ACCOUNT_B64", "")
+    if encoded:
+        try:
+            return json.loads(base64.b64decode(encoded))
+        except ValueError as exc:
+            logger.warning("CALLS_FCM_SERVICE_ACCOUNT_B64 cannot be read: %s", type(exc).__name__)
+            return None
     path = getattr(settings, "CALLS_FCM_SERVICE_ACCOUNT_FILE", "")
     if not path or not Path(path).is_file():
         return None
@@ -156,4 +164,18 @@ def ring_devices(session, data: dict[str, str]) -> int:
         elif result == "gone":
             device.revoked_at = timezone.now()
             device.save(update_fields=["revoked_at"])
+    return sent
+
+
+def stop_ringing_devices(session) -> int:
+    """The call stopped ringing (answered, declined, cancelled, timed out): tell the callee's Android installs to stop.
+    Android only: iOS must report every VoIP push as a new call, so its CallKit screen is ended by the app itself."""
+    from .models import CallDevice, DevicePlatform
+
+    if not fcm_configured():
+        return 0
+    data = {"type": "call_ended", "call_id": str(session.id)}
+    sent = 0
+    for device in CallDevice.objects.filter(user=session.callee, platform=DevicePlatform.ANDROID, revoked_at__isnull=True):
+        sent += send_fcm(device.token, data, 60) == "sent"
     return sent

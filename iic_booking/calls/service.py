@@ -224,6 +224,7 @@ def _transition(call_id, actor, to: str, *, allowed_from, event: str, detail: st
         if session.status not in allowed_from:
             return session  # already decided by someone else
         now = timezone.now()
+        was_ringing = session.status == CallStatus.RINGING
         session.status = to
         fields = ["status"]
         if to == CallStatus.ACCEPTED:
@@ -239,7 +240,18 @@ def _transition(call_id, actor, to: str, *, allowed_from, event: str, detail: st
         session.save(update_fields=fields)
         CallEvent.objects.create(session=session, kind=event, actor=actor, detail=detail[:200])
     transaction.on_commit(lambda: _notify(session, "call.update"))
+    if was_ringing:
+        transaction.on_commit(lambda: _stop_ringing(session))
     return session
+
+
+def _stop_ringing(session: CallSession) -> None:
+    from .push import stop_ringing_devices
+
+    try:
+        stop_ringing_devices(session)
+    except Exception:  # noqa: BLE001
+        logger.warning("Calls: telling the callee's apps to stop ringing failed", exc_info=True)
 
 
 def _participant(user, *, callee_only=False, caller_only=False):
