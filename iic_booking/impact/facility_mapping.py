@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import html
 import io
-import json
 import logging
 import re
 import time
@@ -507,16 +506,14 @@ def open_access_urls(work: dict) -> list[tuple[str, str, str]]:
 def openalex_works_by_doi(dois: list[str]) -> dict[str, dict]:
     from iic_booking.equipment.publication_dedupe import normalize_doi
 
+    from . import openalex
+
     found: dict[str, dict] = {}
     for i in range(0, len(dois), DOI_BATCH):
         params = {"filter": "doi:" + "|".join(dois[i:i + DOI_BATCH]), "per-page": "50", "select": WORK_SELECT}
-        mailto = getattr(settings, "OPENALEX_MAILTO", "")
-        if mailto:
-            params["mailto"] = mailto
-        req = urllib.request.Request(f"{OPENALEX_URL}?{urllib.parse.urlencode(params)}", headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310 - fixed https host
-            for w in json.loads(resp.read().decode("utf-8")).get("results") or []:
-                found[normalize_doi(w.get("doi") or "")] = w
+        body = openalex.get_json(f"{OPENALEX_URL}?{urllib.parse.urlencode(params)}", user_agent=USER_AGENT)
+        for w in body.get("results") or []:
+            found[normalize_doi(w.get("doi") or "")] = w
     return found
 
 

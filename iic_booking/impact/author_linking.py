@@ -8,7 +8,6 @@ discovery like an ORCID iD does.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import unicodedata
@@ -76,9 +75,9 @@ def name_score(user_name: str, candidate_names: list[str]) -> tuple[float, str]:
 
 
 def _get(url: str) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310 - fixed https host
-        return json.loads(resp.read().decode("utf-8"))
+    from . import openalex
+
+    return openalex.get_json(url, user_agent=USER_AGENT)
 
 
 def search_openalex_authors(name: str, ror: str) -> list[dict]:
@@ -88,9 +87,6 @@ def search_openalex_authors(name: str, ror: str) -> list[dict]:
         "per-page": "25",
         "select": "id,display_name,display_name_alternatives,orcid,works_count,last_known_institutions,affiliations",
     }
-    mailto = getattr(settings, "OPENALEX_MAILTO", "")
-    if mailto:
-        params["mailto"] = mailto
     return list(_get(f"{AUTHORS_URL}?{urllib.parse.urlencode(params)}").get("results") or [])
 
 
