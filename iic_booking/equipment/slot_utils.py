@@ -356,8 +356,17 @@ class SlotAvailabilityChecker:
     def is_slot_available(daily_slot: DailySlot) -> bool:
         """
         Check if a daily slot is available for booking
-        (internal users: any AVAILABLE; rejects past/started slots).
+        (internal users: any AVAILABLE; rejects past/started slots and freed slots in their last hour).
         """
+        from .freed_slot_rules import freed_slot_locked_for_users
+
+        return SlotAvailabilityChecker.is_slot_available_for_staff(daily_slot) and not freed_slot_locked_for_users(
+            daily_slot
+        )
+
+    @staticmethod
+    def is_slot_available_for_staff(daily_slot: DailySlot) -> bool:
+        """AVAILABLE and not started. Staff may allocate a freed slot in its last hour."""
         if SlotAvailabilityChecker._slot_has_started(daily_slot):
             return False
         return daily_slot.status == SlotStatus.AVAILABLE

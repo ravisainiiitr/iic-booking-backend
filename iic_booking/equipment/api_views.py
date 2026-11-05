@@ -216,6 +216,7 @@ from .maintenance_policy import (
     record_freed_booking_slots,
     released_slot_status_after_booking_freed,
 )
+from .freed_slot_rules import apply_freed_slot_lock_to_slot_payloads, exclude_freed_slots_locked_for_users
 from .waitlist import (
     add_user_to_waitlist,
     notify_waitlist_slots_available,
@@ -3899,6 +3900,7 @@ def equipment_daily_slots(request, pk):
         from .disruption_service import annotate_slot_payloads_for_staff
 
         annotate_slot_payloads_for_staff(equipment, filtered_slots, slots_payload)
+    apply_freed_slot_lock_to_slot_payloads(filtered_slots, slots_payload, staff=is_admin)
 
     # Min/max times for backward compatibility (from the slot_masters we already have)
     agg = (
@@ -5137,6 +5139,7 @@ def _book_equipment_impl(request, pk):
                             "start_datetime"
                         )
                         if not is_admin:
+                            alt_qs = exclude_freed_slots_locked_for_users(alt_qs)
                             alt_qs = filter_queryset_for_home_department(
                                 alt_qs,
                                 user=booking_user,
@@ -5858,7 +5861,9 @@ def _book_equipment_impl(request, pk):
     
     # Check if all slots are available
     slot_checker = (
-        SlotAvailabilityChecker.is_slot_available_for_external
+        SlotAvailabilityChecker.is_slot_available_for_staff
+        if is_admin
+        else SlotAvailabilityChecker.is_slot_available_for_external
         if UserType.is_external_user(user_type)
         else SlotAvailabilityChecker.is_slot_available
     )
@@ -6096,7 +6101,9 @@ def _book_equipment_impl(request, pk):
                 raise ValueError(SLOTS_ALREADY_OCCUPIED_MESSAGE)
             # Re-verify availability (e.g. slot window, checker) on locked rows
             slot_checker = (
-                SlotAvailabilityChecker.is_slot_available_for_external
+                SlotAvailabilityChecker.is_slot_available_for_staff
+                if is_admin
+                else SlotAvailabilityChecker.is_slot_available_for_external
                 if UserType.is_external_user(user_type)
                 else SlotAvailabilityChecker.is_slot_available
             )
@@ -9398,7 +9405,8 @@ def create_urgent_booking_request(request):
             "status": SlotStatus.AVAILABLE,
             "start_datetime__gte": now_utc,
         }
-        available_this_week_qs = DailySlot.objects.filter(**available_slot_filter)
+        # A freed slot closed to users is not one the user could have booked instead.
+        available_this_week_qs = exclude_freed_slots_locked_for_users(DailySlot.objects.filter(**available_slot_filter))
         time_from = getattr(equip, "weekly_view_time_from", None)
         time_to = getattr(equip, "weekly_view_time_to", None)
         if time_from is None and time_to is None:
@@ -11555,6 +11563,8 @@ def _find_one_available_slot_in_window(
     if visible_week_end is not None:
         base_filter["date__lte"] = visible_week_end
     qs = DailySlot.objects.filter(**base_filter).order_by("start_datetime")
+    if not is_admin:
+        qs = exclude_freed_slots_locked_for_users(qs)
     if booking_user is not None and not is_admin:
         qs = filter_queryset_for_home_department(
             qs,
@@ -11594,6 +11604,8 @@ def _find_alternative_available_slots(
     if visible_week_end is not None:
         base_filter["date__lte"] = visible_week_end
     qs = DailySlot.objects.filter(**base_filter).order_by("start_datetime")
+    if not is_admin:
+        qs = exclude_freed_slots_locked_for_users(qs)
     if booking_user is not None and not is_admin:
         qs = filter_queryset_for_home_department(
             qs,
@@ -12910,7 +12922,6 @@ def refund_booking_internal(booking, refund_notes, performed_by):
     schedule_waitlist_slots_available_after_commit(
         booking.equipment,
         preferred_slot_ids=released_slot_ids,
-        respect_reschedule_threshold=True,
     )
     return refunded_total
 
@@ -13398,7 +13409,7 @@ def reschedule_booking(request, booking_id):
             (Q(status=SlotStatus.BLOCKED) & Q(date__in=holiday_dates))
         )
     else:
-        available_slots = slots_in_range.filter(status=SlotStatus.AVAILABLE)
+        available_slots = exclude_freed_slots_locked_for_users(slots_in_range.filter(status=SlotStatus.AVAILABLE))
 
     if not available_slots.exists():
         return Response(
@@ -13491,7 +13502,6 @@ def reschedule_booking(request, booking_id):
             notify_waitlist_slots_available(
                 equipment,
                 preferred_slot_ids=released_slot_ids,
-                respect_reschedule_threshold=True,
             )
         except Exception as e:
             logger.warning(
@@ -14396,7 +14406,6 @@ def user_reschedule_booking(request, booking_id):
             notify_waitlist_slots_available(
                 equipment,
                 preferred_slot_ids=released_slot_ids,
-                respect_reschedule_threshold=True,
             )
         except Exception as e:
             logger.warning(

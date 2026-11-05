@@ -148,7 +148,7 @@ def egs_quiet_side_effects(monkeypatch):
 
     calls = SimpleNamespace(waitlist=[], events=[])
 
-    def _notify(equipment, preferred_slot_ids=None, respect_reschedule_threshold=False):
+    def _notify(equipment, preferred_slot_ids=None):
         calls.waitlist.append((equipment.pk, list(preferred_slot_ids or [])))
         return 0
 

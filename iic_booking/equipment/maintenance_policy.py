@@ -54,7 +54,8 @@ def effective_slot_status_when_freeing_disruption_booking(booking) -> str:
     """
     When refunding or auto-cancelling under the disruption policy, honor the originally
     intended slot marking: Under Maintenance, Operator Absent, or Other Reasons labelled
-    "Analysis Not Possible" (never Operator Absent: the operator was there).
+    "Analysis Not Possible" (never Operator Absent: the operator was there). See
+    ``disruption_freed_slot_fields`` for Analysis Not Possible slots that have not started.
     """
     from .models import BookingDisruptionKind, SlotStatus
 
@@ -81,12 +82,48 @@ def freed_slot_label(booking, slot_status: str) -> str | None:
     return None
 
 
+def _analysis_not_possible_freed_fields(equipment) -> dict:
+    """``DailySlot`` update values; per slot, because a booking can span its own start time."""
+    from django.db.models import Case, CharField, Q, Value, When
+
+    from .models import SlotStatus
+
+    reopened = released_slot_status_after_booking_freed(equipment)
+    not_started = Q(start_datetime__gt=timezone.now())
+    # Reserved (External) slots go back to Reserved, as for any other release back to Available.
+    back_to_reserved = (
+        [When(not_started & Q(external_reference__isnull=False), then=Value(SlotStatus.RESERVED_EXTERNAL))]
+        if reopened == SlotStatus.AVAILABLE
+        else []
+    )
+    return {
+        "status": Case(
+            *back_to_reserved,
+            When(not_started, then=Value(reopened)),
+            default=Value(SlotStatus.BLOCKED),
+            output_field=CharField(),
+        ),
+        "blocked_label": Case(
+            When(not_started, then=Value(None)),
+            default=Value(ANALYSIS_NOT_POSSIBLE_SLOT_LABEL),
+            output_field=CharField(),
+        ),
+    }
+
+
 def disruption_freed_slot_fields(booking, *, disrupted: bool, equipment=None) -> dict:
     """``status`` and ``blocked_label`` for the slots a booking gives up (refund, cancel, reschedule, move).
 
     ``disrupted``: the booking is (or was just) in the disruption workflow, so its intended marking applies;
-    otherwise freed slots reopen (or stay Under Maintenance while the equipment is in repair)."""
+    otherwise freed slots reopen (or stay Under Maintenance while the equipment is in repair).
+
+    Analysis Not Possible concerns one booking, so its slots that have not started become free again and follow the
+    freed-slot rules (freed_slot_rules); those that have started keep the label as the record of what happened."""
+    from .models import BookingDisruptionKind
+
     if disrupted:
+        if str(getattr(booking, "disruption_kind", "") or "") == BookingDisruptionKind.OTHER_DISRUPTION:
+            return _analysis_not_possible_freed_fields(equipment or booking.equipment)
         slot_status = effective_slot_status_when_freeing_disruption_booking(booking)
     else:
         slot_status = released_slot_status_after_booking_freed(equipment or booking.equipment)
@@ -1216,7 +1253,6 @@ def auto_cancel_expired_maintenance_bookings() -> int:
                 notify_waitlist_slots_available(
                     booking.equipment,
                     preferred_slot_ids=released_slot_ids,
-                    respect_reschedule_threshold=True,
                 )
             except Exception:
                 logger.warning(
