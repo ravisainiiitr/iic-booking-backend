@@ -77,8 +77,8 @@ def build_results_zip(booking_id: int, fingerprint: str) -> str:
 @shared_task(name="equipment.clear_waitlist_before_reference")
 def clear_waitlist_before_reference() -> int:
     """
-    Clear equipment waitlist queues 60 minutes prior to each equipment's configured
-    slot window reference weekday/time.
+    Clear equipment waitlist queues shortly before each equipment's configured slot window reference
+    weekday/time (5 minutes: 8:55 PM for the Wednesday 9:00 PM opening). Runs every minute.
 
     Returns:
         Number of waitlist entries removed.
