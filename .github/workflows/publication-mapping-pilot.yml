@@ -12,7 +12,7 @@ on:
         required: false
         default: ""
       department:
-        description: "Department code (link_faculty_authors only, instead of user ids)"
+        description: "Department code, or ALL (link_faculty_authors only, instead of user ids)"
         required: false
         default: ""
       limit:
@@ -45,6 +45,18 @@ jobs:
           CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
           if [ "$STEP" = "daily_publication_scan" ]; then
             docker exec -w /app "$CID" python manage.py shell -c "import json; from iic_booking.impact.service import daily_publication_scan; print('SCAN RESULT', json.dumps(daily_publication_scan(), default=str))"
+            exit 0
+          fi
+          if [ "$STEP" = "link_faculty_authors" ] && [ "$DEPARTMENT" = "ALL" ]; then
+            CODES=$(docker exec -w /app "$CID" python manage.py shell -c "from iic_booking.users.models.user_type import UserType; from django.contrib.auth import get_user_model as g; print(' '.join(sorted(set(c for c in g().objects.filter(user_type=UserType.FACULTY, is_active=True).values_list('department__code', flat=True) if c))))" | tail -n1)
+            echo "Departments with active faculty: $CODES"
+            EXTRA=()
+            if [ "$APPLY" = "APPLY" ]; then EXTRA+=(--apply --discover); fi
+            for code in $CODES; do
+              case "$code" in (*[!A-Za-z0-9_-]*) echo "Skipping odd code: $code"; continue ;; esac
+              echo "=== $code ==="
+              docker exec -w /app "$CID" python manage.py link_faculty_authors --department "$code" --limit "${LIMIT:-200}" "${EXTRA[@]}" | grep -E "^(DRY RUN|APPLY) user=|^users=" || echo "(failed for $code)"
+            done
             exit 0
           fi
           ARGS=()
