@@ -3,6 +3,8 @@
 #             hard-coded here). The daily scan (impact-daily-publication-scan) then runs at its scheduled time.
 #   disable : PUBLICATION_MAPPING_ENABLED=False (the daily scan becomes a no-op). ROR id and names are kept.
 #   status  : changes nothing; prints the runtime values and the daily task.
+#   set_openalex_key : copies the repository secret OPENALEX_API_KEY into the env file (the key is never printed;
+#             only whether it is set).
 # django, celeryworker and celerybeat are recreated so all three read the same values. Secrets are never printed.
 name: Apply Publication Mapping Config
 
@@ -10,10 +12,10 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "enable | disable | status"
+        description: "enable | disable | status | set_openalex_key"
         required: true
         type: choice
-        options: [enable, disable, status]
+        options: [enable, disable, status, set_openalex_key]
       ror_id:
         description: "Institute ROR id, e.g. https://ror.org/xxxxxxxxx (enable only)"
         required: false
@@ -44,6 +46,7 @@ jobs:
           MODE: ${{ github.event.inputs.mode }}
           ROR_ID: ${{ github.event.inputs.ror_id }}
           ACK_NAMES: ${{ github.event.inputs.ack_names }}
+          OPENALEX_KEY: ${{ secrets.OPENALEX_API_KEY }}
         run: |
           set -euo pipefail
           DEPLOY=/home/ubuntu/iic-booking-backend
@@ -69,6 +72,11 @@ jobs:
               upsert = {"PUBLICATION_MAPPING_ENABLED": "True", "INSTITUTE_ROR_ID": ror, "INSTITUTE_ACK_NAMES": names}
           elif mode == "disable":
               upsert = {"PUBLICATION_MAPPING_ENABLED": "False"}
+          elif mode == "set_openalex_key":
+              key = os.environ.get("OPENALEX_KEY", "").strip()
+              if not re.fullmatch(r"[A-Za-z0-9_-]{8,200}", key):
+                  raise SystemExit("repository secret OPENALEX_API_KEY is missing or not a plain key")
+              upsert = {"OPENALEX_API_KEY": key}
           else:
               raise SystemExit("unknown mode")
 
@@ -121,6 +129,7 @@ jobs:
           print("RUNTIME INSTITUTE_ROR_ID=", settings.INSTITUTE_ROR_ID)
           print("RUNTIME INSTITUTE_ACK_NAMES=", settings.INSTITUTE_ACK_NAMES)
           print("RUNTIME PUBLICATION_MAPPING_CLAIM_THRESHOLD=", settings.PUBLICATION_MAPPING_CLAIM_THRESHOLD)
+          print("RUNTIME OPENALEX_API_KEY set=", bool(getattr(settings, "OPENALEX_API_KEY", "")))
           task = PeriodicTask.objects.select_related("crontab").filter(name="impact-daily-publication-scan").first()
           if task is None:
               print("daily task: MISSING")
@@ -135,6 +144,8 @@ jobs:
               assert settings.INSTITUTE_ROR_ID and settings.INSTITUTE_ACK_NAMES
           elif mode == "disable":
               assert settings.PUBLICATION_MAPPING_ENABLED is False
+          elif mode == "set_openalex_key":
+              assert getattr(settings, "OPENALEX_API_KEY", ""), "OPENALEX_API_KEY not loaded (is the new release deployed?)"
           PY
           WID="$(docker ps --format '{{.Names}}' | grep -E 'celeryworker' | head -n 1 || true)"
           if [ -n "$WID" ]; then
