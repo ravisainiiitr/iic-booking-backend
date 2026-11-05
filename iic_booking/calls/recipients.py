@@ -5,6 +5,9 @@ never a name typed by the client: the callee is always one of these candidates.
 
 Fallbacks: no Lab Operator reachable -> the Officer In Charge; no Accounts In Charge reachable -> the Officer In Charge
 (facility contact); nobody -> a support ticket (``fallback: "ticket"``).
+
+The other way round: the Lab Operator or Officer In Charge of a booking's equipment may call the user of that booking
+(role ``user``), and nobody else may. Staff of the equipment only, whatever else the caller can see.
 """
 
 from __future__ import annotations
@@ -96,8 +99,9 @@ def resolve_target(user, context_type: str, context_id: int) -> Target:
     from iic_booking.equipment.global_search import _searchable_equipment_ids
     from iic_booking.equipment.models import Equipment
 
+    booking = None
     if context_type in (CallContext.BOOKING, CallContext.INVOICE):
-        booking = bookings_visible_to(user).select_related("equipment").filter(pk=context_id).first()
+        booking = bookings_visible_to(user).select_related("equipment", "user").filter(pk=context_id).first()
         if booking is None:
             raise CallNotAllowed("not_found", "Booking not found.", 404)
         ref = booking.virtual_booking_id or f"{booking.equipment.code}-{booking.pk}"
@@ -114,6 +118,9 @@ def resolve_target(user, context_type: str, context_id: int) -> Target:
     from . import conf
 
     staff = _equipment_staff(target.equipment)
+    if context_type == CallContext.BOOKING and any(p.pk == user.pk for p in staff[CallRole.OPERATOR] + staff[CallRole.OIC]):
+        target.roles += (CallRole.USER,)
+        staff[CallRole.USER] = [booking.user] if booking.user.is_active else []
     for role in CallRole.values:  # all roles: a fallback may point to one the context does not offer
         people = [p for p in staff.get(role, []) if p.pk != user.pk]
         if conf.test_accounts_only():
@@ -133,7 +140,7 @@ def options(user, context_type: str, context_id: int) -> dict[str, Any]:
                   for p in target.candidates.get(role, [])]
         available = [p for p in people if p["available"]]
         fallback = ""
-        if not available:
+        if not available and role != CallRole.USER:  # staff calling a user have no one to fall back to
             other = CallRole.OIC if role in (CallRole.OPERATOR, CallRole.ACCOUNTS) else ""
             fallback = "oic" if other and any(reachable(p) for p in target.candidates.get(other, [])) else "ticket"
         roles.append({"role": role, "label": CallRole(role).label, "people": people, "fallback": fallback})

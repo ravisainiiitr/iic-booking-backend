@@ -16,6 +16,7 @@ class CallRole(models.TextChoices):
     OPERATOR = "operator", "Lab Operator"
     OIC = "oic", "Officer In Charge"
     ACCOUNTS = "accounts", "Accounts In Charge"
+    USER = "user", "Booking user"
 
 
 class CallContext(models.TextChoices):

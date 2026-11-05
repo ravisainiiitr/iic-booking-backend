@@ -30,6 +30,9 @@ ACTION_SALT = "iic_booking.calls.action"
 MAX_CALL_HOURS = 4
 CALLS_PER_10_MIN = 6
 SAME_CALLEE_PER_10_MIN = 3
+# Lab staff may need to call many booking users in a row: only a guard against runaway clients. Counted apart from their
+# other calls; the limit per person still applies, so nobody is called over and over.
+STAFF_CALLS_TO_USERS_PER_10_MIN = 60
 PLATFORMS = {"web", "android", "ios"}
 
 
@@ -92,6 +95,11 @@ def context_card(session: CallSession) -> dict:
     }
 
 
+def _role_label(session: CallSession, incoming: bool) -> str:
+    """"For the Lab Operator" tells staff which role was called; a user called by staff is simply being called."""
+    return "" if incoming and session.role == CallRole.USER else CallRole(session.role).label
+
+
 def serialize(session: CallSession, viewer, *, with_context: bool = True) -> dict:
     """``with_context`` adds the instrument card (one query); the history list leaves it out."""
     incoming = session.callee_id == viewer.pk
@@ -102,7 +110,7 @@ def serialize(session: CallSession, viewer, *, with_context: bool = True) -> dic
         "status_display": session.get_status_display(),
         "direction": "incoming" if incoming else "outgoing",
         "role": session.role,
-        "role_label": CallRole(session.role).label,
+        "role_label": _role_label(session, incoming),
         "other": person_card(other),
         "context": context_card(session) if with_context else None,
         "context_type": session.context_type,
@@ -128,7 +136,7 @@ def action_token(session: CallSession) -> str:
     return signing.dumps({"c": str(session.id), "u": session.callee_id}, salt=ACTION_SALT)
 
 
-def _rate_limited(caller, callee) -> bool:
+def _rate_limited(caller, callee, role: str) -> bool:
     def bump(key, limit):
         if cache.add(key, 1, timeout=600):
             return False
@@ -138,7 +146,9 @@ def _rate_limited(caller, callee) -> bool:
             cache.set(key, 1, timeout=600)
             return False
 
-    return bump(f"calls:rate:{caller.pk}", CALLS_PER_10_MIN) or bump(f"calls:rate:{caller.pk}:{callee.pk}", SAME_CALLEE_PER_10_MIN)
+    overall = (bump(f"calls:rate:{caller.pk}:users", STAFF_CALLS_TO_USERS_PER_10_MIN) if role == CallRole.USER
+               else bump(f"calls:rate:{caller.pk}", CALLS_PER_10_MIN))
+    return overall or bump(f"calls:rate:{caller.pk}:{callee.pk}", SAME_CALLEE_PER_10_MIN)
 
 
 def expire_stale(queryset=None) -> int:
@@ -171,7 +181,7 @@ def start_call(caller, *, context_type: str, context_id: int, role: str, callee_
         callee = next((p for p in candidates if reachable(p)), candidates[0] if candidates else None)
     if callee is None:
         raise CallNotAllowed("no_recipient", f"No {CallRole(role).label} is set up for this item. Raise a support ticket instead.", 404)
-    if _rate_limited(caller, callee):
+    if _rate_limited(caller, callee, role):
         raise CallNotAllowed("rate_limited", "Too many calls in a short time. Please wait a few minutes.", 429)
     expire_stale(CallSession.objects.filter(callee=callee))
     expire_stale(CallSession.objects.filter(caller=caller))
@@ -201,7 +211,7 @@ def _ring(session: CallSession) -> None:
         caller, ctx = person_card(session.caller), context_card(session)
         ring_devices(session, {
             "type": "incoming_call", "call_id": str(session.id), "caller_name": get_user_display_name(session.caller),
-            "role_label": CallRole(session.role).label, "context_label": session.context_label,
+            "role_label": _role_label(session, True), "context_label": session.context_label,
             "action_token": action_token(session), "ring_seconds": str(conf.ring_seconds()),
             "caller_photo_url": caller["photo_url"], "caller_department": caller["department"],
             "caller_type": caller["user_type_label"], "equipment_name": ctx["equipment_name"],
