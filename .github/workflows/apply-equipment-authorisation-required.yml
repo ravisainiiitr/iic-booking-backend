@@ -1,0 +1,81 @@
+# Show, and optionally switch off, "Authorisation required to book" (the "Training required" badge) for one
+# equipment, matched by name or code. mode=show changes nothing. mode=off sets required=False on that equipment's
+# training authorisation setting only when exactly one equipment matches; everything else on the setting (awards,
+# requests, levels, validity) is kept, so switching it back on in Training -> Authorisations restores the gate.
+name: Apply equipment authorisation required (show / off)
+
+on:
+  workflow_dispatch:
+    inputs:
+      equipment:
+        description: "Equipment name or code (case-insensitive contains, e.g. X-Ray Fluorescence)"
+        required: true
+      mode:
+        description: "show | off"
+        required: true
+        type: choice
+        options: [show, off]
+      confirm:
+        description: "Type AUTHORISATION to switch off (mode=off)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Show / switch off
+        env:
+          EQUIPMENT: ${{ github.event.inputs.equipment }}
+          MODE: ${{ github.event.inputs.mode }}
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = "off" ] && [ "$CONFIRM" != "AUTHORISATION" ]; then echo "Type AUTHORISATION to switch off"; exit 1; fi
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e EQUIPMENT="$EQUIPMENT" -e MODE="$MODE" -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import os
+
+          import django
+
+          django.setup()
+          from django.db import transaction
+          from django.db.models import Q
+
+          from iic_booking.equipment.models import Equipment
+          from iic_booking.training import access
+          from iic_booking.training.authorisation import gated_equipment_ids
+          from iic_booking.training.models import EquipmentAuthorisationSetting
+
+          term, mode = os.environ["EQUIPMENT"].strip(), os.environ["MODE"]
+          if len(term) < 3:
+              raise SystemExit("equipment term too short")
+          eqs = list(Equipment.objects.filter(Q(name__icontains=term) | Q(code__iexact=term)).order_by("equipment_id"))
+          print("module enabled:", access.module_enabled(), " pilot scope:", access.pilot_equipment_ids())
+          gated = gated_equipment_ids()
+          for e in eqs:
+              s = EquipmentAuthorisationSetting.objects.filter(equipment=e).select_related("updated_by").first()
+              who = ""
+              if s and s.updated_by_id:
+                  u = s.updated_by
+                  who = f"{getattr(u, 'name', '') or u.pk} ({u.user_type})"
+              print(f"equipment {e.equipment_id} {e.name!r} code={e.code!r} badge={'yes' if e.equipment_id in gated else 'no'}")
+              if s is None:
+                  print("    no authorisation setting")
+              else:
+                  print(f"    required={s.required} applies_to={s.applies_to} min_level={s.min_level_code} "
+                        f"validity_months={s.validity_months} competency_levels={s.competency_levels}")
+                  print(f"    last changed {s.updated_at:%Y-%m-%d %H:%M} UTC by {who or 'not recorded'}; note={s.note[:200]!r}")
+          if mode != "off":
+              raise SystemExit(0)
+          targets = [e for e in eqs if EquipmentAuthorisationSetting.objects.filter(equipment=e, required=True).exists()]
+          if len(targets) != 1:
+              raise SystemExit(f"Not changed: {len(targets)} matching equipment have it switched on; narrow the name.")
+          with transaction.atomic():
+              n = EquipmentAuthorisationSetting.objects.filter(equipment=targets[0], required=True).update(required=False)
+          print(f"SWITCHED OFF for equipment {targets[0].equipment_id} {targets[0].name!r}: rows={n}")
+          print("badge now:", "yes" if targets[0].equipment_id in gated_equipment_ids() else "no")
+          PY
