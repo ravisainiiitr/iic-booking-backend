@@ -1,0 +1,58 @@
+# READ-ONLY: facts behind the weekly waitlist clearing. Slot-window opening times per equipment with a waitlist, the
+# periodic task that clears it, and when current waitlist entries and recent attempts were created. Counts only.
+name: Probe waitlist window (read-only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Report
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          from collections import Counter
+
+          import django
+
+          django.setup()
+          from django.db.models import Count
+          from django.utils import timezone
+          from django_celery_beat.models import PeriodicTask
+
+          from iic_booking.equipment.models import BookingAttemptLog, Equipment, WaitlistEntry
+
+          tz = timezone.get_current_timezone()
+          print("now", timezone.localtime())
+          for r in (Equipment.objects.values("slot_window_reference_weekday", "slot_window_reference_time")
+                    .annotate(all=Count("pk")).order_by("slot_window_reference_weekday", "slot_window_reference_time")):
+              with_wl = Equipment.objects.filter(
+                  slot_window_reference_weekday=r["slot_window_reference_weekday"],
+                  slot_window_reference_time=r["slot_window_reference_time"], waitlist_queue_depth__gt=0).count()
+              print("REF weekday", r["slot_window_reference_weekday"], "time", r["slot_window_reference_time"],
+                    "equipment", r["all"], "with_waitlist", with_wl)
+          for t in PeriodicTask.objects.filter(task__icontains="waitlist"):
+              print("TASK", t.name, "|", t.task, "| enabled", t.enabled, "| interval", t.interval, "| crontab", t.crontab,
+                    "| last_run", t.last_run_at, "| runs", t.total_run_count)
+          print("ENTRIES by status", dict(Counter(WaitlistEntry.objects.values_list("status", flat=True))))
+          buckets = Counter()
+          for c in WaitlistEntry.objects.values_list("created_at", flat=True):
+              l = timezone.localtime(c, tz)
+              buckets[l.strftime("%Y-%m-%d %a %H:") + f"{l.minute // 15 * 15:02d}"] += 1
+          for k in sorted(buckets)[-40:]:
+              print("ENTRY created", k, buckets[k])
+          since = timezone.now() - timezone.timedelta(days=8)
+          buckets = Counter()
+          for c in BookingAttemptLog.objects.filter(requested_at__gte=since, failure_reason__icontains="wait").values_list("requested_at", flat=True):
+              l = timezone.localtime(c, tz)
+              if l.weekday() == 2 and 19 <= l.hour <= 21:
+                  buckets[l.strftime("%Y-%m-%d %H:") + f"{l.minute // 5 * 5:02d}"] += 1
+          for k in sorted(buckets):
+              print("ATTEMPT mentioning wait", k, buckets[k])
+          PY
