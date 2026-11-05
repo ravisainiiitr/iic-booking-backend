@@ -1,0 +1,142 @@
+# Publication mapping (automatic discovery, acknowledgement check, review queue) configuration for production.
+#   enable  : PUBLICATION_MAPPING_ENABLED=True, plus the institute's ROR id and acknowledgement names (inputs, never
+#             hard-coded here). The daily scan (impact-daily-publication-scan) then runs at its scheduled time.
+#   disable : PUBLICATION_MAPPING_ENABLED=False (the daily scan becomes a no-op). ROR id and names are kept.
+#   status  : changes nothing; prints the runtime values and the daily task.
+# django, celeryworker and celerybeat are recreated so all three read the same values. Secrets are never printed.
+name: Apply Publication Mapping Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "enable | disable | status"
+        required: true
+        type: choice
+        options: [enable, disable, status]
+      ror_id:
+        description: "Institute ROR id, e.g. https://ror.org/xxxxxxxxx (enable only)"
+        required: false
+        default: ""
+      ack_names:
+        description: "Institute names as they appear in acknowledgements, separated by | (enable only)"
+        required: false
+        default: ""
+      confirm:
+        description: "Type PUBLICATIONS to proceed"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        env:
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: test "$CONFIRM" = "PUBLICATIONS"
+
+      - name: Update env file and recreate services
+        if: github.event.inputs.mode != 'status'
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          ROR_ID: ${{ github.event.inputs.ror_id }}
+          ACK_NAMES: ${{ github.event.inputs.ack_names }}
+        run: |
+          set -euo pipefail
+          DEPLOY=/home/ubuntu/iic-booking-backend
+          ENV_FILE="$DEPLOY/.envs/.production/.django"
+          test -f "$ENV_FILE"
+          cp -p "$ENV_FILE" "$ENV_FILE.bak-publication-mapping-$(date -u +%Y%m%dT%H%M%SZ)"
+          export ENV_FILE
+          python3 <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          mode = os.environ["MODE"]
+          env_file = Path(os.environ["ENV_FILE"])
+          upsert = {}
+          if mode == "enable":
+              ror = os.environ.get("ROR_ID", "").strip()
+              names = os.environ.get("ACK_NAMES", "").strip()
+              if not re.fullmatch(r"https://ror\.org/0[a-z0-9]{8}", ror):
+                  raise SystemExit("ror_id must look like https://ror.org/0xxxxxxxx")
+              if not names or not re.fullmatch(r"[A-Za-z0-9 .,&()'|-]{3,400}", names):
+                  raise SystemExit("ack_names must be plain names separated by |")
+              upsert = {"PUBLICATION_MAPPING_ENABLED": "True", "INSTITUTE_ROR_ID": ror, "INSTITUTE_ACK_NAMES": names}
+          elif mode == "disable":
+              upsert = {"PUBLICATION_MAPPING_ENABLED": "False"}
+          else:
+              raise SystemExit("unknown mode")
+
+          out, seen = [], set()
+          for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+              key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+              if key in upsert:
+                  if key not in seen:
+                      out.append(f"{key}={upsert[key]}")
+                      seen.add(key)
+                  continue
+              out.append(line)
+          for key, value in upsert.items():
+              if key not in seen:
+                  out.append(f"{key}={value}")
+          env_file.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+          print("mode=", mode, " upserted=", sorted(upsert))
+          PY
+          grep -E '^(PUBLICATION_MAPPING_|INSTITUTE_ROR_ID|INSTITUTE_ACK_NAMES)' "$ENV_FILE" || true
+          cd "$DEPLOY"
+          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps django celeryworker celerybeat
+          for i in $(seq 1 30); do
+            CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+            if [ -n "$CID" ] && docker exec "$CID" true 2>/dev/null; then break; fi
+            sleep 2
+          done
+          sleep 8
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'django|celery' || true
+
+      - name: Runtime verification
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e MODE="$MODE" -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import os
+
+          import django
+
+          django.setup()
+
+          from django.conf import settings
+          from django_celery_beat.models import PeriodicTask
+
+          from iic_booking.impact.models import FacilityAlias, PublicationEvidence
+
+          mode = os.environ["MODE"]
+          print("RUNTIME PUBLICATION_MAPPING_ENABLED=", settings.PUBLICATION_MAPPING_ENABLED)
+          print("RUNTIME INSTITUTE_ROR_ID=", settings.INSTITUTE_ROR_ID)
+          print("RUNTIME INSTITUTE_ACK_NAMES=", settings.INSTITUTE_ACK_NAMES)
+          print("RUNTIME PUBLICATION_MAPPING_CLAIM_THRESHOLD=", settings.PUBLICATION_MAPPING_CLAIM_THRESHOLD)
+          task = PeriodicTask.objects.select_related("crontab").filter(name="impact-daily-publication-scan").first()
+          if task is None:
+              print("daily task: MISSING")
+          else:
+              c = task.crontab
+              print("daily task=", {"task": task.task, "enabled": task.enabled,
+                                    "schedule": f"{c.minute} {c.hour} {c.day_of_month} {c.month_of_year} {c.day_of_week} {c.timezone}",
+                                    "last_run_at": str(task.last_run_at)})
+          print("facility aliases=", FacilityAlias.objects.count(), " evidence rows=", PublicationEvidence.objects.count())
+          if mode == "enable":
+              assert settings.PUBLICATION_MAPPING_ENABLED is True
+              assert settings.INSTITUTE_ROR_ID and settings.INSTITUTE_ACK_NAMES
+          elif mode == "disable":
+              assert settings.PUBLICATION_MAPPING_ENABLED is False
+          PY
+          WID="$(docker ps --format '{{.Names}}' | grep -E 'celeryworker' | head -n 1 || true)"
+          if [ -n "$WID" ]; then
+            docker exec -i -w /app "$WID" python -c "import django,os;os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production');django.setup();from django.conf import settings;print('WORKER PUBLICATION_MAPPING_ENABLED=',settings.PUBLICATION_MAPPING_ENABLED)"
+          fi

@@ -1,0 +1,54 @@
+name: Publication Mapping Pilot (dry run unless APPLY)
+
+on:
+  workflow_dispatch:
+    inputs:
+      step:
+        description: "seed_facility_aliases | link_faculty_authors | verify_publication_acknowledgements"
+        required: true
+        default: verify_publication_acknowledgements
+      user_ids:
+        description: "Space-separated portal user ids (link / verify)"
+        required: false
+        default: ""
+      department:
+        description: "Department code (link_faculty_authors only, instead of user ids)"
+        required: false
+        default: ""
+      limit:
+        description: "Papers per user (verify) or users (link)"
+        required: false
+        default: "50"
+      apply:
+        description: "Type APPLY to save (anything else = dry run)"
+        required: false
+        default: ""
+
+jobs:
+  pilot:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run the pilot step
+        env:
+          STEP: ${{ github.event.inputs.step }}
+          USER_IDS: ${{ github.event.inputs.user_ids }}
+          DEPARTMENT: ${{ github.event.inputs.department }}
+          LIMIT: ${{ github.event.inputs.limit }}
+          APPLY: ${{ github.event.inputs.apply }}
+        run: |
+          set -euo pipefail
+          case "$STEP" in
+            seed_facility_aliases|link_faculty_authors|verify_publication_acknowledgements) ;;
+            *) echo "Unknown step: $STEP"; exit 1 ;;
+          esac
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          ARGS=()
+          for id in $USER_IDS; do
+            case "$id" in (*[!0-9]*|'') echo "Bad user id: $id"; exit 1 ;; esac
+            ARGS+=(--user-id "$id")
+          done
+          if [ "$STEP" = "link_faculty_authors" ] && [ -n "$DEPARTMENT" ]; then ARGS+=(--department "$DEPARTMENT"); fi
+          if [ "$STEP" != "seed_facility_aliases" ]; then ARGS+=(--limit "${LIMIT:-50}"); fi
+          if [ "$APPLY" = "APPLY" ]; then ARGS+=(--apply); fi
+          docker exec -w /app "$CID" python manage.py "$STEP" "${ARGS[@]}"
