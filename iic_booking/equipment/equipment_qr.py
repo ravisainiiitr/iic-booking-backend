@@ -213,6 +213,33 @@ def public_equipment_payload(eq: Equipment, request=None) -> dict:
         "public_url": public_equipment_url(eq.pk),
         "booking_path": f"/book-equipment?equipment_id={eq.pk}",
         "charges_path": "/analysis-charges",
+        "charges": public_charges(eq),
+    }
+
+
+def public_charges(eq: Equipment) -> dict | None:
+    """This equipment's rates for every user category, internal and external, shown to anyone who opens its page.
+
+    The all-equipment Analysis Charges catalog keeps its own rule (charge_visibility) and is not affected.
+    """
+    from django.db.models import prefetch_related_objects
+
+    from .charge_visibility import is_internal_rate_user_type
+    from .rate_cards import rate_card, rate_card_prefetches
+
+    if eq.status == EquipmentStatus.DISPOSED:
+        return None
+    prefetch_related_objects([eq], *rate_card_prefetches())
+    card = rate_card(eq, lambda _user_type: True)
+    if card is None:
+        return None
+    return {
+        "profile_type": eq.profile_type,
+        "slot_duration_minutes": eq.slot_duration_minutes,
+        "internal_user_types": sorted(
+            {cp["user_type"] for cp in card["charge_profiles"] if is_internal_rate_user_type(cp["user_type"])}
+        ),
+        **card,
     }
 
 

@@ -2132,40 +2132,14 @@ def equipment_analysis_charges(request):
       internal_department_id: optional department filter (omit or 'all' for all)
       equipment_ids: optional comma-separated equipment_id list
     """
-    from .models import (
-        ChargeProfile,
-        ChargeProfilePricingProfile,
-        DynamicInputField,
-        EquipmentStatus,
-        MultiParamDefinition,
-    )
+    from .models import ChargeProfilePricingProfile, EquipmentStatus
+    from .rate_cards import rate_card, rate_card_prefetches
 
     queryset = (
         get_charge_visible_equipment_queryset(request.user)
         .exclude(status=EquipmentStatus.DISPOSED)
         .select_related("internal_department", "category")
-        .prefetch_related(
-            Prefetch(
-                "charge_profiles",
-                queryset=ChargeProfile.objects.filter(
-                    pricing_profile=ChargeProfilePricingProfile.STANDARD,
-                    is_active=True,
-                ).order_by("user_type"),
-                to_attr="analysis_charge_profiles",
-            ),
-            Prefetch(
-                "input_fields",
-                queryset=DynamicInputField.objects.filter(field_key="B").order_by("user_type", "field_key"),
-                to_attr="analysis_input_fields_b",
-            ),
-            Prefetch(
-                "param_definitions",
-                queryset=MultiParamDefinition.objects.filter(is_active=True).order_by(
-                    "user_type", "param_code"
-                ),
-                to_attr="analysis_param_definitions",
-            ),
-        )
+        .prefetch_related(*rate_card_prefetches())
         .order_by("internal_department__name", "name")
     )
 
@@ -2212,56 +2186,10 @@ def equipment_analysis_charges(request):
     seen_user_types: set[str] = set()
     equipments = []
     for eq in queryset:
-        profiles = [
-            cp for cp in (getattr(eq, "analysis_charge_profiles", None) or []) if _visible(cp.user_type)
-        ]
-        if not profiles:
+        card = rate_card(eq, _visible)
+        if card is None:
             continue
-        charge_profiles = []
-        for cp in profiles:
-            seen_user_types.add(cp.user_type)
-            charge_profiles.append(
-                {
-                    "user_type": cp.user_type,
-                    "profile_type": cp.effective_profile_type,
-                    "is_active": cp.is_active,
-                    "primary_unit_charge": str(cp.primary_unit_charge)
-                    if cp.primary_unit_charge is not None
-                    else None,
-                    "secondary_unit_charge": str(cp.secondary_unit_charge)
-                    if cp.secondary_unit_charge is not None
-                    else None,
-                    "breakpoint": str(cp.breakpoint) if cp.breakpoint is not None else None,
-                    "display_text": cp.display_text or "",
-                }
-            )
-        input_fields = []
-        for f in getattr(eq, "analysis_input_fields_b", None) or []:
-            if not _visible(f.user_type):
-                continue
-            input_fields.append(
-                {
-                    "field_key": f.field_key,
-                    "field_label": f.field_label,
-                    "options": f.options or [],
-                    "user_type": f.user_type or "",
-                }
-            )
-        slot_options = []
-        for p in getattr(eq, "analysis_param_definitions", None) or []:
-            if not _visible(p.user_type):
-                continue
-            slot_options.append(
-                {
-                    "user_type": p.user_type,
-                    "param_name": p.param_name,
-                    "param_code": p.param_code,
-                    "unit_charge": str(p.unit_charge) if p.unit_charge is not None else None,
-                    "unit_time_minutes": p.unit_time_minutes,
-                    "display_text": getattr(p, "display_text", None) or "",
-                    "is_active": p.is_active,
-                }
-            )
+        seen_user_types.update(cp["user_type"] for cp in card["charge_profiles"])
         equipments.append(
             {
                 "equipment_id": eq.equipment_id,
@@ -2277,9 +2205,7 @@ def equipment_analysis_charges(request):
                     eq.internal_department.code if eq.internal_department_id else None
                 ),
                 "slot_duration_minutes": eq.slot_duration_minutes,
-                "charge_profiles": charge_profiles,
-                "input_fields": input_fields,
-                "slot_options": slot_options,
+                **card,
             }
         )
 
