@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       step:
-        description: "seed_facility_aliases | link_faculty_authors | verify_publication_acknowledgements"
+        description: "seed_facility_aliases | link_faculty_authors | verify_publication_acknowledgements | daily_publication_scan (runs the scheduled scan now; ignores APPLY)"
         required: true
         default: verify_publication_acknowledgements
       user_ids:
@@ -38,11 +38,15 @@ jobs:
         run: |
           set -euo pipefail
           case "$STEP" in
-            seed_facility_aliases|link_faculty_authors|verify_publication_acknowledgements) ;;
+            seed_facility_aliases|link_faculty_authors|verify_publication_acknowledgements|daily_publication_scan) ;;
             *) echo "Unknown step: $STEP"; exit 1 ;;
           esac
           cd /home/ubuntu/iic-booking-backend
           CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          if [ "$STEP" = "daily_publication_scan" ]; then
+            docker exec -w /app "$CID" python manage.py shell -c "import json; from iic_booking.impact.service import daily_publication_scan; print('SCAN RESULT', json.dumps(daily_publication_scan(), default=str))"
+            exit 0
+          fi
           ARGS=()
           for id in $USER_IDS; do
             case "$id" in (*[!0-9]*|'') echo "Bad user id: $id"; exit 1 ;; esac
