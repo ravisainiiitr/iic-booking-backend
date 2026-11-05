@@ -990,7 +990,9 @@ WHATSAPP_VERIFY_TOKEN = env("WHATSAPP_VERIFY_TOKEN", default="")
 WHATSAPP_API_VERSION = env("WHATSAPP_API_VERSION", default="v21.0")
 WHATSAPP_TEMPLATE_LANGUAGE = env("WHATSAPP_TEMPLATE_LANGUAGE", default="en")
 WHATSAPP_PILOT_NUMBERS = env.list("WHATSAPP_PILOT_NUMBERS", default=[])
-# Android: Firebase Cloud Messaging HTTP v1 (path to the service-account JSON, kept outside the repository).
+# Android: Firebase Cloud Messaging HTTP v1. The service-account key as base64 of its JSON in the environment
+# (set by the "Apply Calls Push Config" workflow from a repository secret), or a path to the JSON file.
+CALLS_FCM_SERVICE_ACCOUNT_JSON = env("CALLS_FCM_SERVICE_ACCOUNT_JSON", default="")
 CALLS_FCM_SERVICE_ACCOUNT_FILE = env("CALLS_FCM_SERVICE_ACCOUNT_FILE", default="")
 # iOS: APNs VoIP pushes with a token-based (.p8) key (path kept outside the repository).
 CALLS_APNS_KEY_FILE = env("CALLS_APNS_KEY_FILE", default="")
