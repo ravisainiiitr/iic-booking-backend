@@ -112,7 +112,6 @@ def apply_operator_unavailable_booking(booking, *, notes: str = "", actor):
         notify_waitlist_slots_available(
             booking.equipment,
             preferred_slot_ids=released_slot_ids,
-            respect_reschedule_threshold=True,
         )
     except Exception as e:
         logger.warning(

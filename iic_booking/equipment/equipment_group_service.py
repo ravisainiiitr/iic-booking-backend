@@ -1388,7 +1388,7 @@ def perform_cross_equipment_reschedule(request, booking, start_time, end_time, *
     if released_slot_ids:
         try:
             av.notify_waitlist_slots_available(
-                source, preferred_slot_ids=released_slot_ids, respect_reschedule_threshold=True
+                source, preferred_slot_ids=released_slot_ids
             )
         except Exception:
             logger.warning("Failed waitlist FCFS after cross-equipment reschedule for %s", source.pk, exc_info=True)

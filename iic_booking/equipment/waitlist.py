@@ -3,9 +3,11 @@ Waitlist queue service for equipment.
 
 - Add user to waitlist on failed booking (respects equipment.waitlist_queue_depth).
 - Send "unsuccessful booking + your position in queue" email.
-- When a booking gives slots back (cancellation, refund, operator unavailable, reschedule, hold release):
-  automatically create bookings for waitlisted users one by one (FCFS): wallet debit, BOOKED row,
-  slots assigned, and email to the booker and wallet owner (template booking_waitlist_confirmed_email).
+- When a booking gives slots back (cancellation, refund, operator unavailable, reschedule, hold release), the time
+  left until each slot starts decides what happens (see freed_slot_rules): more than 48 hours, automatically create
+  bookings for waitlisted users one by one (FCFS): wallet debit, BOOKED row, slots assigned, and email to the booker
+  and wallet owner (template booking_waitlist_confirmed_email); 48 hours down to just over 1 hour, email active
+  waitlist users instead; 1 hour or less, neither (the slot is closed to users until it starts).
   Only slots with DailySlot.released_by_booking_at count; slots made Available by OIC / admin status
   changes, maintenance ending, rule removal or slot generation never auto-confirm the waitlist.
 - Normal-booking weekly / monthly quota applies in the freed slot's period: an over-quota entry is
@@ -34,6 +36,7 @@ from iic_booking.equipment.models import (
     BookingAttemptOutcome,
     DynamicInputField,
 )
+from iic_booking.equipment.freed_slot_rules import AUTO_ALLOCATE_LEAD, USER_LOCK_LEAD
 from iic_booking.equipment.waitlist_booking import (
     create_booking_for_waitlist_user,
     reduce_waitlist_inputs_to_fit_available_slots,
@@ -49,47 +52,9 @@ logger = logging.getLogger(__name__)
 WAITLIST_CLEAR_LEAD_MINUTES = 5
 
 
-def should_trigger_waitlist_after_slot_release(
-    equipment: Equipment, preferred_slot_ids: list[int] | None = None
-) -> bool:
-    """
-    Decide whether FCFS waitlist auto-booking should run for a slot-release event.
-
-    If a released slot starts too soon (inside equipment.reschedule_hours_threshold),
-    skip FCFS so users still have enough preparation time.
-    """
-    slot_ids = [int(x) for x in (preferred_slot_ids or []) if x is not None]
-    if not slot_ids:
-        return True
-
-    threshold_hours = int(getattr(equipment, "reschedule_hours_threshold", 0) or 0)
-    if threshold_hours <= 0:
-        return True
-
-    now = timezone.now()
-    threshold_delta = timedelta(hours=threshold_hours)
-    released_slots = DailySlot.objects.filter(
-        id__in=slot_ids,
-        slot_master__equipment=equipment,
-    ).only("id", "start_datetime")
-
-    for slot in released_slots:
-        start_dt = getattr(slot, "start_datetime", None)
-        if not start_dt:
-            continue
-        if timezone.is_naive(start_dt):
-            start_dt = timezone.make_aware(start_dt)
-        lead_time = start_dt - now
-        if lead_time < threshold_delta:
-            return False
-    return True
-
-
 def schedule_waitlist_slots_available_after_commit(
     equipment: Equipment,
     preferred_slot_ids: list[int] | None = None,
-    *,
-    respect_reschedule_threshold: bool = False,
 ) -> None:
     """
     Run waitlist FCFS after the current DB transaction commits.
@@ -105,11 +70,7 @@ def schedule_waitlist_slots_available_after_commit(
     def _run():
         try:
             eq = Equipment.objects.get(pk=equipment_id)
-            notify_waitlist_slots_available(
-                eq,
-                preferred_slot_ids=slot_ids,
-                respect_reschedule_threshold=respect_reschedule_threshold,
-            )
+            notify_waitlist_slots_available(eq, preferred_slot_ids=slot_ids)
         except Exception:
             logger.exception(
                 "Failed waitlist FCFS after slot release commit for equipment %s",
@@ -483,7 +444,7 @@ def _notify_waitlist_short_notice_slot_available(
     equipment: Equipment, *, entries: list[WaitlistEntry], slot_start_dt: datetime, lead_hours: float
 ) -> int:
     """
-    Short-notice slot availability: do not auto-book; email all ACTIVE waitlist users.
+    A freed slot starting within 48 hours: do not auto-book; email all ACTIVE waitlist users.
     """
     equipment_name = getattr(equipment, "name", None) or getattr(equipment, "code", "Equipment")
     link = get_frontend_absolute_url("/equipments") or "/equipments"
@@ -533,37 +494,42 @@ def _notify_waitlist_short_notice_slot_available(
 def notify_waitlist_slots_available(
     equipment: Equipment,
     preferred_slot_ids: list[int] | None = None,
-    respect_reschedule_threshold: bool = False,
 ) -> int:
     """
     When a booking cancellation or reschedule gives slots back, automatically create bookings
     for waitlisted users one by one (first-come-first-serve). Booking confirmation is sent to
     each user and to the faculty wallet owner (via create_booking_event). Then clear the waitlist.
-    Only AVAILABLE slots with released_by_booking_at are used, with or without preferred_slot_ids.
+    Only AVAILABLE slots with released_by_booking_at starting more than 48 hours from now are allocated, with or
+    without preferred_slot_ids. Given slots starting from 48 hours down to just over 1 hour away are offered by email
+    to active waitlist users; those starting within 1 hour are left alone (freed_slot_rules).
     Returns the number of bookings created.
 
     Note: only waitlist entries we attempted to auto-book are removed. Entries that
     couldn't be booked because no slots were available for their user type remain.
     """
     preferred_slot_ids = [int(x) for x in (preferred_slot_ids or []) if x is not None]
+    now = timezone.now()
+    auto_allocate_after = now + AUTO_ALLOCATE_LEAD
+    short_notice_start = None
     if preferred_slot_ids:
-        reserved_ids = set(
+        # Slots marked Operator Absent, Under Maintenance etc. when freed are not free: neither allocated nor offered.
+        starts = dict(
             DailySlot.objects.filter(
-                id__in=preferred_slot_ids, status=SlotStatus.RESERVED_EXTERNAL
-            ).values_list("id", flat=True)
+                id__in=preferred_slot_ids,
+                slot_master__equipment=equipment,
+                status=SlotStatus.AVAILABLE,
+                booking__isnull=True,
+                released_by_booking_at__isnull=False,
+                start_datetime__isnull=False,
+            ).values_list("id", "start_datetime")
         )
-        if reserved_ids:
-            preferred_slot_ids = [sid for sid in preferred_slot_ids if sid not in reserved_ids]
-            if not preferred_slot_ids:
-                return 0
-        released_ids = set(
-            DailySlot.objects.filter(
-                id__in=preferred_slot_ids, released_by_booking_at__isnull=False
-            ).values_list("id", flat=True)
+        short_notice_start = min(
+            (s for s in starts.values() if now + USER_LOCK_LEAD < s <= auto_allocate_after), default=None
         )
-        preferred_slot_ids = [sid for sid in preferred_slot_ids if sid in released_ids]
-        if not preferred_slot_ids:
+        preferred_slot_ids = [sid for sid in preferred_slot_ids if sid in starts and starts[sid] > auto_allocate_after]
+        if not preferred_slot_ids and short_notice_start is None:
             return 0
+    targeted = bool(preferred_slot_ids)
     entries = list(
         WaitlistEntry.objects.filter(equipment=equipment, status="ACTIVE")
         .select_related("user", "equipment")
@@ -572,45 +538,19 @@ def notify_waitlist_slots_available(
     if not entries:
         return 0
 
-    if respect_reschedule_threshold and not should_trigger_waitlist_after_slot_release(
-        equipment, preferred_slot_ids
-    ):
-        # Short notice: do NOT auto-book / clear. Notify all waitlist users that a slot is available.
-        now = timezone.now()
-        start_dt = None
-        try:
-            start_dt = (
-                DailySlot.objects.filter(id__in=preferred_slot_ids, slot_master__equipment=equipment)
-                .exclude(start_datetime__isnull=True)
-                .order_by("start_datetime")
-                .values_list("start_datetime", flat=True)
-                .first()
-            )
-        except Exception:
-            start_dt = None
-        if not start_dt:
-            logger.warning(
-                "Waitlist FCFS skipped for equipment %s (short notice) but released slot start time is unavailable.",
-                getattr(equipment, "code", equipment.pk),
-            )
+    if short_notice_start is not None:
+        _notify_waitlist_short_notice_slot_available(
+            equipment,
+            entries=entries,
+            slot_start_dt=short_notice_start,
+            lead_hours=(short_notice_start - now).total_seconds() / 3600.0,
+        )
+        if not targeted:
             return 0
-        if timezone.is_naive(start_dt):
-            start_dt = timezone.make_aware(start_dt)
-        lead_hours = (start_dt - now).total_seconds() / 3600.0
-        logger.warning(
-            "Waitlist FCFS skipped for equipment %s: released slot starts in %.2f hour(s) "
-            "(inside reschedule_hours_threshold). Emailing waitlist users instead.",
-            getattr(equipment, "code", equipment.pk),
-            lead_hours,
-        )
-        return _notify_waitlist_short_notice_slot_available(
-            equipment, entries=entries, slot_start_dt=start_dt, lead_hours=lead_hours
-        )
 
     equipment_code = getattr(equipment, "code", "")
     time_from = getattr(equipment, "weekly_view_time_from", None)
     time_to = getattr(equipment, "weekly_view_time_to", None)
-    now = timezone.now()
 
     # Input field key -> label map (for readable notes).
     key_to_label: dict[str, str] = {}
@@ -629,15 +569,12 @@ def notify_waitlist_slots_available(
         """Filter slot IDs to those fully within equipment slot window (from/to inclusive)."""
         slots = list(queryset.order_by("start_datetime").only("id", "start_datetime", "end_datetime"))
         if not slots or (time_from is None and time_to is None):
-            return [
-                s.id for s in slots
-                if s.start_datetime and s.start_datetime >= now
-            ]
+            return [s.id for s in slots if s.start_datetime]
         from .slot_window import slot_in_window
 
         return [
             s.id for s in slots
-            if s.start_datetime and s.end_datetime and s.start_datetime >= now and slot_in_window(equipment, s)
+            if s.start_datetime and s.end_datetime and slot_in_window(equipment, s)
         ]
 
     def prioritize_slots(slot_ids: list[int]) -> list[int]:
@@ -654,6 +591,7 @@ def notify_waitlist_slots_available(
         status=SlotStatus.AVAILABLE,
         booking__isnull=True,
         released_by_booking_at__isnull=False,
+        start_datetime__gt=auto_allocate_after,
     )
     available_slots = prioritize_slots(slot_ids_within_window(available_qs))
     if not available_slots and available_qs.exists():

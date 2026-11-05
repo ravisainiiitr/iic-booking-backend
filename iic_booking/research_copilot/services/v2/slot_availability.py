@@ -54,6 +54,7 @@ def _call_daily_slots_view(*, user, equipment_id: int, start: date, end: date):
 
 def _home_department_allowed_ids(*, user, equipment, slot_ids: list[int]) -> set[int]:
     """Same queryset filter `_book_equipment_impl` applies to non-admin slot_ids bookings."""
+    from iic_booking.equipment.freed_slot_rules import exclude_freed_slots_locked_for_users
     from iic_booking.equipment.models import DailySlot, SlotStatus
     from iic_booking.equipment.slot_department_access import filter_queryset_for_home_department
     from iic_booking.users.models import UserType
@@ -67,10 +68,11 @@ def _home_department_allowed_ids(*, user, equipment, slot_ids: list[int]) -> set
         booking__isnull=True,
     )
     if user is None or not getattr(user, "is_authenticated", False):
-        return set(qs.values_list("id", flat=True))
+        return set(exclude_freed_slots_locked_for_users(qs).values_list("id", flat=True))
     user_type = getattr(user, "user_type", None)
     if user_type in UserType.get_admin_panel_codes():
         return set(qs.values_list("id", flat=True))
+    qs = exclude_freed_slots_locked_for_users(qs)
     qs = filter_queryset_for_home_department(
         qs,
         user=user,

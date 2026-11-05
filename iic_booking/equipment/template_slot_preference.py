@@ -261,6 +261,9 @@ def _bookable_candidates(equipment, user, *, date_from, date_to, start_after=Non
     if start_after is not None:
         qs = qs.filter(start_datetime__gte=start_after)
     if not is_admin:
+        from .freed_slot_rules import exclude_freed_slots_locked_for_users
+
+        qs = exclude_freed_slots_locked_for_users(qs)
         qs = filter_queryset_for_home_department(
             qs, user=user, equipment=equipment, is_admin=False, is_external=is_external
         )

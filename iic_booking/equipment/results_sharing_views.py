@@ -389,13 +389,18 @@ def public_equipment_availability(request):
         equipment_qs = equipment_qs.filter(Q(name__icontains=search) | Q(code__icontains=search))
     equipment = list(equipment_qs.order_by("name"))
 
-    free_slots = DailySlot.objects.filter(
-        slot_master__equipment_id__in=[e.equipment_id for e in equipment],
-        slot_master__is_active=True,
-        status=SlotStatus.AVAILABLE,
-        home_department_only=False,
-        start_datetime__gt=now,
-        date__lte=last_date,
+    from .freed_slot_rules import exclude_freed_slots_locked_for_users
+
+    free_slots = exclude_freed_slots_locked_for_users(
+        DailySlot.objects.filter(
+            slot_master__equipment_id__in=[e.equipment_id for e in equipment],
+            slot_master__is_active=True,
+            status=SlotStatus.AVAILABLE,
+            home_department_only=False,
+            start_datetime__gt=now,
+            date__lte=last_date,
+        ),
+        now,
     )
     per_date: dict[int, list[dict]] = {}
     for row in (
