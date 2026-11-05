@@ -1,0 +1,77 @@
+# Give the backend the Firebase key that lets it ring Android phones while the app is closed (docs/calls.md).
+# Copies the repository secret CALLS_FCM_SERVICE_ACCOUNT_JSON_BASE64 into the production env file as
+# CALLS_FCM_SERVICE_ACCOUNT_B64 and recreates django (only django sends call pushes). The key is never printed.
+name: Apply Calls FCM Key
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type FCM to proceed"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Update env file and recreate django
+        env:
+          CONFIRM: ${{ github.event.inputs.confirm }}
+          FCM_KEY: ${{ secrets.CALLS_FCM_SERVICE_ACCOUNT_JSON_BASE64 }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRM" = "FCM"
+          DEPLOY=/home/ubuntu/iic-booking-backend
+          ENV_FILE="$DEPLOY/.envs/.production/.django"
+          test -f "$ENV_FILE"
+          export ENV_FILE
+          python3 <<'PY'
+          import base64
+          import json
+          import os
+          from pathlib import Path
+
+          raw = "".join(os.environ.get("FCM_KEY", "").split())
+          try:
+              account = json.loads(base64.b64decode(raw, validate=True))
+          except ValueError as exc:
+              raise SystemExit(f"Secret CALLS_FCM_SERVICE_ACCOUNT_JSON_BASE64 is missing or unreadable ({type(exc).__name__})")
+          needed = {"type", "project_id", "private_key", "client_email", "token_uri"}
+          if account.get("type") != "service_account" or not needed <= set(account):
+              raise SystemExit("The secret is not a Firebase service-account key")
+          env_file = Path(os.environ["ENV_FILE"])
+          lines = [l for l in env_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                   if not l.startswith("CALLS_FCM_SERVICE_ACCOUNT_B64=")]
+          lines.append(f"CALLS_FCM_SERVICE_ACCOUNT_B64={raw}")
+          env_file.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+          print("firebase project:", account["project_id"])
+          PY
+          cd "$DEPLOY"
+          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps django
+          for i in $(seq 1 30); do
+            CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+            if [ -n "$CID" ] && docker exec "$CID" true 2>/dev/null; then break; fi
+            sleep 2
+          done
+          sleep 6
+
+      - name: Verify (fetches a Google access token; sends nothing to any phone)
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import django
+
+          django.setup()
+          from iic_booking.calls import push
+          from iic_booking.calls.models import CallDevice
+
+          print("RUNTIME fcm_configured=", push.fcm_configured())
+          assert push.fcm_configured()
+          push._fcm_access_token(push._fcm_account())
+          print("RUNTIME google accepted the key: yes")
+          print("RUNTIME registered android installs=", CallDevice.objects.filter(platform="android", revoked_at__isnull=True).count())
+          PY
