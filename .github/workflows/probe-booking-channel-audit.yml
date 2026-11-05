@@ -75,6 +75,15 @@ jobs:
               .filter(created_by__isnull=False).exclude(created_by=F("user"))
               .annotate(d=TruncDate("created_at", tzinfo=tz)).values("d").annotate(n=Count("pk")).order_by("d")}
 
+          # Booking.created_via (recorded from 5 Nov 2026, release v2.5.47.346): exact channel per booking.
+          if any(f.name == "created_via" for f in Booking._meta.get_fields()):
+              recorded = bookings.exclude(created_via="")
+              out["created_via_monthly"] = {}
+              for r in (recorded.annotate(m=TruncMonth("created_at", tzinfo=tz)).values("m", "created_via")
+                        .annotate(n=Count("pk")).order_by("m")):
+                  out["created_via_monthly"].setdefault(r["m"].strftime("%Y-%m"), {})[r["created_via"]] = r["n"]
+              out["created_via_first"] = str(recorded.aggregate(f=Min("created_at"))["f"])
+
           out["app_releases"] = [
               {"platform": r.platform, "version": r.version_name, "code": r.version_code,
                "release_date": r.release_date.isoformat(), "downloads": r.download_count, "active": r.is_active}
