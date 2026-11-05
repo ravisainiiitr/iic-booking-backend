@@ -1,0 +1,68 @@
+# READ-ONLY: why a booking does or does not offer the Call buttons. Prints ids, roles and flags only (no names, emails or
+# phone numbers). Writes nothing.
+name: Probe call options (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking_ref:
+        description: "Booking reference (virtual_booking_id)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Call options for the booking
+        env:
+          BOOKING_REF: ${{ github.event.inputs.booking_ref }}
+        run: |
+          set -euo pipefail
+          case "$BOOKING_REF" in (*[!A-Za-z0-9_-]*|'') echo "Bad reference"; exit 1 ;; esac
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e BOOKING_REF="$BOOKING_REF" -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import os
+
+          import django
+
+          django.setup()
+          from iic_booking.calls import conf
+          from iic_booking.calls.models import CallDevice, CallSession
+          from iic_booking.calls.recipients import CallNotAllowed, calls_open_to, is_online, options
+          from iic_booking.equipment.models import Booking, EquipmentManager, EquipmentOperator
+
+          print("calls enabled=", conf.enabled(), " test_accounts_only=", conf.test_accounts_only())
+          b = Booking.objects.select_related("equipment", "user").filter(virtual_booking_id=os.environ["BOOKING_REF"]).first()
+          if b is None:
+              raise SystemExit("booking not found")
+          e, u = b.equipment, b.user
+          print(f"booking pk={b.pk} status={b.status} equipment={e.pk} parent={e.parent_equipment_id} dept={e.internal_department_id}")
+          print(f"booking user id={u.pk} type={u.user_type} is_test={getattr(u, 'is_test_account', None)} active={u.is_active} calls_open={calls_open_to(u)}")
+
+          def show(label, user):
+              print(f"  {label}: user id={user.pk} type={user.user_type} is_test={getattr(user, 'is_test_account', None)} "
+                    f"active={user.is_active} calls_open={calls_open_to(user)} online_now={is_online(user.pk)} "
+                    f"push_devices={CallDevice.objects.filter(user=user, revoked_at__isnull=True).count()}")
+
+          ids = [e.pk] + ([e.parent_equipment_id] if e.parent_equipment_id else [])
+          print("operator links:")
+          for r in EquipmentOperator.objects.filter(equipment_id__in=ids).select_related("operator"):
+              show(f"equipment {r.equipment_id} role={r.role}", r.operator)
+          print("manager (OIC) links:")
+          for r in EquipmentManager.objects.filter(equipment_id__in=ids).select_related("manager"):
+              show(f"equipment {r.equipment_id}", r.manager)
+          for ctx in ("booking", "invoice"):
+              try:
+                  o = options(u, ctx, b.pk)
+                  print(f"options as the booking user ({ctx}):")
+                  for role in o["roles"]:
+                      print(f"  {role['role']}: fallback={role['fallback']!r} people=" + str([(p["id"], p["available"]) for p in role["people"]]))
+              except CallNotAllowed as exc:
+                  print(f"options as the booking user ({ctx}): REFUSED {exc}")
+              except Exception as exc:
+                  print(f"options as the booking user ({ctx}): ERROR {type(exc).__name__}")
+          print("calls recorded for this booking:", CallSession.objects.filter(context_id=b.pk, context_type__in=["booking", "invoice"]).count())
+          PY
