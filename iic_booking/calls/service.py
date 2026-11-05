@@ -21,7 +21,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from . import conf
-from .models import ACTIVE_STATUSES, CallEvent, CallRole, CallSession, CallStatus
+from .models import ACTIVE_STATUSES, CallContext, CallEvent, CallRole, CallSession, CallStatus
 from .recipients import CallNotAllowed, calls_open_to, reachable, resolve_target
 
 logger = logging.getLogger(__name__)
@@ -48,9 +48,52 @@ def _send(user_id: int, message: dict) -> None:
         logger.warning("Calls: could not reach the WebSocket layer", exc_info=True)
 
 
-def serialize(session: CallSession, viewer) -> dict:
+def person_card(user) -> dict:
+    """Who is calling / being called, for the call screens: name, photo, role and department."""
     from iic_booking.users.display import get_user_display_name
+    from iic_booking.users.models.user_type import UserType
 
+    photo = ""
+    if getattr(user, "profile_picture", None) and getattr(user.profile_picture, "name", None):
+        from iic_booking.equipment.equipment_qr import public_base_url
+        from iic_booking.users.media_utils import profile_picture_proxy_path
+
+        photo = public_base_url().rstrip("/") + profile_picture_proxy_path(user.pk)
+    dept = getattr(user, "department", None)
+    return {
+        "id": user.pk,
+        "name": get_user_display_name(user),
+        "photo_url": photo,
+        "user_type_label": str(dict(UserType.get_choices()).get(user.user_type, "")),
+        "designation": (getattr(user, "designation", "") or "").strip()[:80],
+        "department": (getattr(dept, "name", "") or "").strip(),
+    }
+
+
+def context_card(session: CallSession) -> dict:
+    """The instrument the call is about (directly, or through the booking / invoice), and its department."""
+    from iic_booking.equipment.models import Booking, Equipment
+
+    equipment, booking_ref = None, ""
+    if session.context_type == CallContext.EQUIPMENT:
+        equipment = Equipment.objects.select_related("internal_department").filter(pk=session.context_id).first()
+    else:
+        booking = (Booking.objects.select_related("equipment", "equipment__internal_department")
+                   .filter(pk=session.context_id).first())
+        if booking is not None:
+            equipment = booking.equipment
+            booking_ref = booking.virtual_booking_id or f"{booking.equipment.code}-{booking.pk}"
+    if equipment is None:
+        return {"equipment_id": None, "equipment_name": "", "equipment_department": "", "booking_ref": booking_ref}
+    dept = getattr(equipment, "internal_department", None)
+    return {
+        "equipment_id": equipment.pk, "equipment_name": equipment.name,
+        "equipment_department": (getattr(dept, "name", "") or "").strip(), "booking_ref": booking_ref,
+    }
+
+
+def serialize(session: CallSession, viewer, *, with_context: bool = True) -> dict:
+    """``with_context`` adds the instrument card (one query); the history list leaves it out."""
     incoming = session.callee_id == viewer.pk
     other = session.caller if incoming else session.callee
     return {
@@ -60,7 +103,8 @@ def serialize(session: CallSession, viewer) -> dict:
         "direction": "incoming" if incoming else "outgoing",
         "role": session.role,
         "role_label": CallRole(session.role).label,
-        "other": {"id": other.pk, "name": get_user_display_name(other)},
+        "other": person_card(other),
+        "context": context_card(session) if with_context else None,
         "context_type": session.context_type,
         "context_id": session.context_id,
         "context_label": session.context_label,
@@ -154,10 +198,14 @@ def _ring(session: CallSession) -> None:
     _send(session.callee_id, {"type": "call.incoming", "call": serialize(session, session.callee)})
     _send(session.caller_id, {"type": "call.update", "call": serialize(session, session.caller)})
     try:
+        caller, ctx = person_card(session.caller), context_card(session)
         ring_devices(session, {
             "type": "incoming_call", "call_id": str(session.id), "caller_name": get_user_display_name(session.caller),
             "role_label": CallRole(session.role).label, "context_label": session.context_label,
             "action_token": action_token(session), "ring_seconds": str(conf.ring_seconds()),
+            "caller_photo_url": caller["photo_url"], "caller_department": caller["department"],
+            "caller_type": caller["user_type_label"], "equipment_name": ctx["equipment_name"],
+            "equipment_department": ctx["equipment_department"], "booking_ref": ctx["booking_ref"],
         })
     except Exception:  # noqa: BLE001
         logger.warning("Calls: push to the callee's apps failed", exc_info=True)

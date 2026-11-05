@@ -72,8 +72,8 @@ def calls(request):
         return Response(service.serialize(session, request.user), status=status.HTTP_201_CREATED)
     mine = CallSession.objects.filter(Q(caller=request.user) | Q(callee=request.user))
     service.expire_stale(mine)
-    rows = mine.select_related("caller", "callee")[:100]
-    return Response({"results": [service.serialize(s, request.user) for s in rows]})
+    rows = mine.select_related("caller__department", "callee__department")[:100]
+    return Response({"results": [service.serialize(s, request.user, with_context=False) for s in rows]})
 
 
 @api_view(["GET"])

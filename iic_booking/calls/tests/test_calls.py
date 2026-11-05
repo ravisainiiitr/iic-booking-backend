@@ -275,3 +275,47 @@ def test_websocket_refuses_users_outside_the_pilot(on):
     assert asyncio.run(c._authenticate(Token.objects.create(user=real).key)) is None
     assert asyncio.run(c._authenticate(Token.objects.create(user=pilot).key)) == pilot
     assert asyncio.run(c._authenticate("nonsense")) is None
+
+
+# --- who is calling, about what -------------------------------------------------------------------------------------
+def test_incoming_call_shows_the_caller_photo_department_and_instrument(w):
+    from iic_booking.users.models import User
+
+    User.objects.filter(pk=w.student.pk).update(profile_picture="profile_pictures/caller.jpg", designation="PhD scholar")
+    body = call(w).json()
+    assert body["other"]["id"] == w.operator.pk and body["other"]["photo_url"] == ""  # no photo: the screen uses initials
+    assert body["context"] == {"equipment_id": w.eq.pk, "equipment_name": w.eq.name, "equipment_department": w.dept.name,
+                               "booking_ref": w.booking.virtual_booking_id}
+
+    incoming = service.serialize(CallSession.objects.get(pk=body["id"]), w.operator)
+    other = incoming["other"]
+    assert incoming["direction"] == "incoming"
+    assert other["photo_url"].endswith(f"/api/users/{w.student.pk}/profile-picture/") and other["photo_url"].startswith("http")
+    assert other["department"] == w.dept.name and other["designation"] == "PhD scholar" and other["user_type_label"]
+
+
+def test_call_about_an_instrument_has_no_booking_reference(w):
+    r = api(w.student).post("/api/calls/", {"context": "equipment", "id": w.eq.pk, "role": "oic"}, format="json")
+    assert r.status_code == 201, r.content
+    assert r.json()["context"] == {"equipment_id": w.eq.pk, "equipment_name": w.eq.name,
+                                   "equipment_department": w.dept.name, "booking_ref": ""}
+
+
+def test_push_carries_the_caller_card_and_history_leaves_out_the_instrument(w, django_capture_on_commit_callbacks):
+    CallDevice.objects.create(user=w.operator, platform="android", device_id="a", token="good")
+    seen = {}
+
+    def fcm(token, data, ttl):
+        seen.update(data)
+        return "sent"
+
+    with patch("iic_booking.calls.push.send_fcm", fcm), django_capture_on_commit_callbacks(execute=True):
+        cid = call(w).json()["id"]
+    assert seen["caller_department"] == w.dept.name and seen["equipment_name"] == w.eq.name
+    assert seen["equipment_department"] == w.dept.name and seen["booking_ref"] == w.booking.virtual_booking_id
+    assert seen["caller_photo_url"] == "" and seen["caller_type"]
+    assert all(isinstance(v, str) for v in seen.values())
+
+    service.cancel(w.student, cid)
+    history = api(w.student).get("/api/calls/").json()["results"]
+    assert history[0]["context"] is None and history[0]["other"]["department"] == w.dept.name
