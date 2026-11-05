@@ -1,0 +1,49 @@
+# READ-ONLY: which equipment anonymous visitors can see, per department, and why the rest is hidden.
+# Hidden reasons: the department's catalog is switched off, the equipment has a visibility group, or it is flagged
+# visible to test accounts only. Lists hidden equipment for every department. Nothing is written.
+name: Probe department catalog visibility (read-only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Report
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          from collections import defaultdict
+
+          import django
+
+          django.setup()
+          from django.contrib.auth.models import AnonymousUser
+
+          from iic_booking.equipment.api_views import get_visible_equipment_queryset
+          from iic_booking.equipment.models import Equipment
+
+          visible = set(get_visible_equipment_queryset(AnonymousUser(), mode_catalog_filter=False).values_list("pk", flat=True))
+          rows = defaultdict(list)
+          for e in Equipment.objects.select_related("internal_department", "visibility_group").order_by("name"):
+              rows[e.internal_department].append(e)
+          for dept, items in sorted(rows.items(), key=lambda kv: getattr(kv[0], "name", "") or ""):
+              shown = sum(e.pk in visible for e in items)
+              name = getattr(dept, "name", "(no department)")
+              code = getattr(dept, "code", "-")
+              print(f"DEPT {code} {name!r}: total={len(items)} anonymous_visible={shown} "
+                    f"catalog_enabled={getattr(dept, 'equipment_visibility_enabled', None)} "
+                    f"booking_enabled={getattr(dept, 'equipment_booking_enabled', None)} access={getattr(dept, 'access_enabled', None)}")
+              for e in items:
+                  if e.pk in visible:
+                      continue
+                  group = e.visibility_group.name if e.visibility_group_id else ""
+                  print(f"  HIDDEN {e.pk} {e.name[:60]!r} status={e.status} group={group!r} "
+                        f"test_only={e.visible_to_test_accounts_only}")
+          print("TOTAL equipment", Equipment.objects.count(), "anonymous_visible", len(visible))
+          PY
