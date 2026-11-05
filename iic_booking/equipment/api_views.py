@@ -11766,6 +11766,14 @@ def _enrich_failed_booking_response(
         return {"error": error_message}
 
     payload = {"error": error_message}
+    from .waitlist import waitlist_closed_message, waitlist_closed_window
+
+    closed = waitlist_closed_window(equipment)
+    if closed:
+        payload["error"] = f"{error_message} {waitlist_closed_message(closed)}"
+        payload["waitlist_closed"] = True
+        return payload
+
     from .waitlist_quota import waitlist_join_quota_error
 
     quota_error = waitlist_join_quota_error(equipment, booking_user)

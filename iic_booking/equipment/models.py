@@ -3735,6 +3735,11 @@ class BookingStatus(models.TextChoices):
     BOOKING_NOT_UTILIZED = 'BOOKING_NOT_UTILIZED', _('Booking Not Utilized')
 
 
+BOOKING_STATUSES_BEFORE_CONFIRMATION = frozenset({
+    BookingStatus.PENDING, BookingStatus.PENDING_PAYMENT, BookingStatus.WAITLISTED, BookingStatus.HOLD,
+})
+
+
 class Booking(models.Model):
     """Equipment booking with charge and time calculations."""
     booking_id = models.AutoField(primary_key=True)
@@ -4516,12 +4521,18 @@ class Booking(models.Model):
         update_fields = kwargs.get("update_fields")
         status_written = update_fields is None or "status" in update_fields
         saved_status = self.__dict__.get("_saved_status")
+        is_new = self._state.adding
         super().save(*args, **kwargs)
         if status_written:
             if saved_status is not None and saved_status != self.status:
                 from .booking_audit import note_status_change
 
                 note_status_change(self, saved_status, self.status)
+            # Newly confirmed (not a booking returning to BOOKED after a disruption): off this equipment's waitlist.
+            if self.status == BookingStatus.BOOKED and (is_new or saved_status in BOOKING_STATUSES_BEFORE_CONFIRMATION):
+                from .waitlist import withdraw_on_confirmed_booking
+
+                withdraw_on_confirmed_booking(self)
             self._saved_status = self.status
 
     @classmethod

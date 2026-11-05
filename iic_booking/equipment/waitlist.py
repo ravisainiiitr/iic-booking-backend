@@ -12,6 +12,10 @@ Waitlist queue service for equipment.
   skipped (stays ACTIVE, reason in cannot_fulfill_remark) and the slot goes to the next entry.
 - Before the pre-reference cutoff window, FCFS is attempted once so users with available slots are
   confirmed before remaining waitlist rows are cleared.
+- Weekly clearing: queues are cleared WAITLIST_CLEAR_LEAD_MINUTES before the equipment's slot-window reference (the
+  next week's opening, Wednesday 9:00 PM: cleared at 8:55 PM). Nobody can join from then until the opening, so the
+  new week's queue starts at the opening and nobody is WL1 ahead of it.
+- A confirmed booking silently withdraws its user from that equipment's waitlist (no email or notification).
 """
 
 import logging
@@ -41,6 +45,8 @@ from iic_booking.users.models.user_type import UserType
 from iic_booking.users.display import get_user_display_name
 
 logger = logging.getLogger(__name__)
+
+WAITLIST_CLEAR_LEAD_MINUTES = 5
 
 
 def should_trigger_waitlist_after_slot_release(
@@ -253,6 +259,47 @@ def _get_latest_waitlist_attempt_payload(
     return normalized, None, slots_requested, duration_minutes
 
 
+def waitlist_closed_window(equipment: Equipment, at=None) -> Optional[Tuple[datetime, datetime]]:
+    """(closes, opens) when ``at`` is inside this equipment's closed period before its weekly opening, else None."""
+    ref_weekday = getattr(equipment, "slot_window_reference_weekday", None)
+    ref_time = getattr(equipment, "slot_window_reference_time", None)
+    if ref_weekday is None or ref_time is None:
+        return None
+    now = timezone.localtime(at or timezone.now())
+    week_monday = now.date() - timedelta(days=now.weekday())
+    ref_date = week_monday + timedelta(days=int(ref_weekday))
+    opens = timezone.make_aware(datetime.combine(ref_date, ref_time), timezone.get_current_timezone())
+    closes = opens - timedelta(minutes=WAITLIST_CLEAR_LEAD_MINUTES)
+    return (closes, opens) if closes <= now < opens else None
+
+
+def waitlist_closed_message(window: Tuple[datetime, datetime]) -> str:
+    closes, opens = window
+    return (f"Not added to the waitlist: it is closed from {_clock(closes)} until {_clock(opens)}, "
+            "when the next week's booking opens.")
+
+
+def _clock(dt: datetime) -> str:
+    return timezone.localtime(dt).strftime("%I:%M %p").lstrip("0")
+
+
+def withdraw_on_confirmed_booking(booking) -> int:
+    """Silently remove the booking user from this equipment's waitlist: no email, notification or event.
+    An OPT_OUT row is kept (it is the record of the user's own choice). Never blocks the booking."""
+    try:
+        with transaction.atomic():
+            deleted, _ = WaitlistEntry.objects.filter(
+                equipment_id=booking.equipment_id, user_id=booking.user_id,
+            ).exclude(status="OPT_OUT").delete()
+    except Exception:
+        logger.exception("Could not withdraw waitlist entry for booking %s", booking.pk)
+        return 0
+    if deleted:
+        logger.info("Withdrew user %s from the waitlist of equipment %s: booking %s confirmed.",
+                    booking.user_id, booking.equipment_id, booking.pk)
+    return deleted
+
+
 def add_user_to_waitlist(equipment: Equipment, user) -> Tuple[bool, Optional[int]]:
     """
     Add user to the equipment waitlist if enabled and queue not full.
@@ -266,6 +313,8 @@ def add_user_to_waitlist(equipment: Equipment, user) -> Tuple[bool, Optional[int
     """
     depth = getattr(equipment, "waitlist_queue_depth", None) or 0
     if depth <= 0:
+        return False, None
+    if waitlist_closed_window(equipment):
         return False, None
     from iic_booking.training.authorisation import gate_error_text
 
@@ -820,15 +869,18 @@ def notify_waitlist_slots_available(
 
 def clear_waitlist_due_before_reference(now_dt=None) -> int:
     """
-    Clear waitlist queues for equipments that are within the 60-minute window before
-    their configured slot_window_reference_weekday/time.
+    Clear waitlist queues for equipments inside the closed period before their configured
+    slot_window_reference_weekday/time (WAITLIST_CLEAR_LEAD_MINUTES). The task runs every minute, so a queue
+    is cleared within a minute of the period starting, and any request in flight at that moment is swept too.
 
     Returns:
         Number of waitlist entries deleted across all equipments.
     """
     now = timezone.localtime(now_dt or timezone.now())
     deleted_total = 0
-    equipments = Equipment.objects.filter(waitlist_queue_depth__gt=0).exclude(
+    equipments = Equipment.objects.filter(
+        waitlist_queue_depth__gt=0, pk__in=WaitlistEntry.objects.values("equipment_id"),
+    ).exclude(
         slot_window_reference_weekday__isnull=True
     ).exclude(
         slot_window_reference_time__isnull=True
@@ -836,14 +888,7 @@ def clear_waitlist_due_before_reference(now_dt=None) -> int:
 
     for equipment in equipments:
         try:
-            ref_weekday = int(equipment.slot_window_reference_weekday)
-            ref_time = equipment.slot_window_reference_time
-            week_monday = now.date() - timedelta(days=now.weekday())
-            ref_date = week_monday + timedelta(days=ref_weekday)
-            ref_naive = datetime.combine(ref_date, ref_time)
-            ref_datetime = timezone.make_aware(ref_naive, timezone.get_current_timezone())
-            cutoff = ref_datetime - timedelta(minutes=60)
-            if cutoff <= now < ref_datetime:
+            if waitlist_closed_window(equipment, now):
                 # Attempt FCFS confirmations into slots freed by cancellations / reschedules before
                 # clearing remaining entries (staff-opened slots are never used).
                 try:

@@ -291,7 +291,7 @@ def test_pre_reference_sweep_ignores_staff_made_available_slots(egs_factory, spy
     DailySlot.objects.filter(pk=reopened.pk).update(status=SlotStatus.AVAILABLE)
 
     base = timezone.localtime()
-    now_dt = (base - timedelta(days=base.weekday() - 2)).replace(hour=10, minute=0, second=0, microsecond=0)
+    now_dt = (base - timedelta(days=base.weekday() - 2)).replace(hour=10, minute=27, second=0, microsecond=0)
     eq.slot_window_reference_weekday = 2
     eq.slot_window_reference_time = time(10, 30)
     eq.save(update_fields=["slot_window_reference_weekday", "slot_window_reference_time"])
@@ -312,7 +312,7 @@ def test_pre_reference_sweep_confirms_into_cancelled_slot(egs_factory, spy):
     egs_factory.slot(w.eq, egs_factory.future(days=4, hour=9))
 
     base = timezone.localtime()
-    now_dt = (base - timedelta(days=base.weekday() - 2)).replace(hour=10, minute=0, second=0, microsecond=0)
+    now_dt = (base - timedelta(days=base.weekday() - 2)).replace(hour=10, minute=27, second=0, microsecond=0)
     waitlist.clear_waitlist_due_before_reference(now_dt=now_dt)
 
     assert spy.booked == [[w.slots[0].pk]]
