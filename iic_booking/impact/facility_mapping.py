@@ -142,12 +142,15 @@ def generate_aliases() -> list[dict]:
 
     out: list[dict] = []
     seen: set[tuple] = set()
+    dept_words = department_phrases()
 
     def add(dept_id, eq_id, phrase, source, case_sensitive=False):
         phrase = re.sub(r"\s+", " ", (phrase or "").strip())[:200]
         key = (dept_id, eq_id, phrase.lower())
         if not phrase or key in seen:
             return
+        if eq_id is not None and phrase.lower() in dept_words:
+            return  # "IIC" from "Electronic Repair lab (IIC)" names the centre, not this instrument
         seen.add(key)
         out.append({"department_id": dept_id, "equipment_id": eq_id, "phrase": phrase, "source": source,
                     "case_sensitive": case_sensitive})
@@ -208,6 +211,42 @@ def generate_aliases() -> list[dict]:
         for a in _alternatives(f.acknowledgement_phrase):
             add(None, f.equipment_id, a, AliasSource.FUNDING, case_sensitive=len(a) <= 5 and a.isupper())
     return out
+
+
+def department_phrases() -> set[str]:
+    """Lower-cased phrases that name a department or centre: every department's name, its spelling variants and code,
+    and the acknowledgement policy's phrases. An instrument never gets one of these as its own alias."""
+    from iic_booking.users.models import Department
+
+    from .models import AcknowledgementPolicy
+
+    words: set[str] = set()
+    for d in Department.objects.values("name", "code"):
+        name, code = (d["name"] or "").strip(), (d["code"] or "").strip()
+        if name:
+            words.add(name.lower())
+            words.update(v.lower() for v in name_variants(name))
+        if code:
+            words.add(code.lower())
+    pol = AcknowledgementPolicy.objects.first()
+    for group in (pol.required_phrases if pol else []) or []:
+        words.update(a.lower() for a in _alternatives(group))
+    return {w for w in words if w}
+
+
+def department_clashes() -> list[FacilityAlias]:
+    """Active generated equipment aliases whose phrase names a department (administrators' MANUAL aliases are kept)."""
+    words = department_phrases()
+    qs = (FacilityAlias.objects.filter(is_active=True, equipment__isnull=False).exclude(source=AliasSource.MANUAL)
+          .select_related("equipment").order_by("pk"))
+    return [a for a in qs if a.phrase.strip().lower() in words]
+
+
+def switch_off_clashes(*, apply: bool) -> list[FacilityAlias]:
+    clashes = department_clashes()
+    if apply and clashes:
+        FacilityAlias.objects.filter(pk__in=[a.pk for a in clashes]).update(is_active=False)
+    return clashes
 
 
 def seed_aliases(*, apply: bool, user=None) -> dict:
@@ -609,21 +648,61 @@ def save_result(user, res: PaperResult, work: dict | None, suggestion=None) -> d
         else:
             for k, v in fields.items():
                 setattr(ev, k, v)
-        suggested = 0
-        for m in res.matches:
-            listed = m.level == MappingLevel.EQUIPMENT and _existing_equipment_publication(m.equipment_id, res.doi)
-            status = MappingStatus.SUGGESTED if m.confidence >= threshold and not listed else MappingStatus.BELOW_THRESHOLD
-            suggested += status == MappingStatus.SUGGESTED
-            key = {"evidence": ev, "level": m.level, "department_id": m.department_id, "equipment_id": m.equipment_id}
-            PublicationFacilityMapping.objects.update_or_create(**key, defaults={
-                "matched_phrases": m.phrases, "rationale": m.rationale + (" The equipment already lists this paper." if listed else ""),
-                "confidence": Decimal(str(m.confidence)), "status": status,
-            })
-            out["mappings"] += 1
+            ev.save()
+        suggested = _store_mappings(ev, res.matches, res.doi, threshold)
+        out["mappings"] = len(res.matches)
         ev.review_status = ReviewStatus.PENDING if suggested else ReviewStatus.NONE
         ev.save()
         out.update(queued=bool(suggested), evidence_id=ev.pk)
     return out
+
+
+def _store_mappings(ev, matches: list[Match], doi: str, threshold: float) -> int:
+    """Make the paper's mappings exactly this check's matches (ones no longer found are removed); returns how many
+    reach the review threshold."""
+    suggested = 0
+    keep: list[int] = []
+    for m in matches:
+        listed = m.level == MappingLevel.EQUIPMENT and _existing_equipment_publication(m.equipment_id, doi)
+        status = MappingStatus.SUGGESTED if m.confidence >= threshold and not listed else MappingStatus.BELOW_THRESHOLD
+        suggested += status == MappingStatus.SUGGESTED
+        key = {"evidence": ev, "level": m.level, "department_id": m.department_id, "equipment_id": m.equipment_id}
+        row, _ = PublicationFacilityMapping.objects.update_or_create(**key, defaults={
+            "matched_phrases": m.phrases, "rationale": m.rationale + (" The equipment already lists this paper." if listed else ""),
+            "confidence": Decimal(str(m.confidence)), "status": status,
+        })
+        keep.append(row.pk)
+    ev.mappings.exclude(pk__in=keep).delete()
+    return suggested
+
+
+def rescore_pending(*, apply: bool, skip_alias_ids: set[int] | frozenset = frozenset()) -> list[dict]:
+    """Re-match papers waiting for review against the current aliases, from their stored acknowledgement (no download).
+    Waiting papers already passed the institute check, so it is not repeated. Decided papers are never touched; a
+    paper left with nothing at the threshold leaves the queue."""
+    from .models import ReviewStatus
+
+    aliases = [a for a in load_aliases() if a.alias_id not in skip_alias_ids]
+    threshold, changes = claim_threshold(), []
+    for ev in PublicationEvidence.objects.filter(review_status=ReviewStatus.PENDING).order_by("pk"):
+        matches = score_matches(ev.acknowledgement_snippet or "", aliases, True)
+        before = {(m.level, m.department_id, m.equipment_id) for m in ev.mappings.all()}
+        after = {(m.level, m.department_id, m.equipment_id) for m in matches}
+        if before == after:
+            continue
+        change = {"evidence_id": ev.pk, "removed": sorted(before - after, key=str), "added": sorted(after - before, key=str)}
+        if apply:
+            with transaction.atomic():
+                ev = PublicationEvidence.objects.select_for_update().get(pk=ev.pk)
+                if ev.review_status != ReviewStatus.PENDING:
+                    continue
+                suggested = _store_mappings(ev, matches, ev.doi, threshold)
+                if not suggested:
+                    ev.review_status = ReviewStatus.NONE
+                    ev.save(update_fields=["review_status"])
+                change["still_pending"] = bool(suggested)
+        changes.append(change)
+    return changes
 
 
 # --------------------------------------------------------------------------- a researcher's suggestions
