@@ -10,14 +10,17 @@ from PIL import Image
 from rest_framework.test import APIClient
 
 from iic_booking.equipment import equipment_qr as qr
+from iic_booking.equipment.models import ChargeProfile
 from iic_booking.equipment.models import EquipmentAccessory
 from iic_booking.equipment.models import EquipmentCategory
 from iic_booking.equipment.models import EquipmentSpecification
+from iic_booking.equipment.models import EquipmentStatus
 from iic_booking.training.tests.conftest import client_for  # noqa: F401
 from iic_booking.training.tests.conftest import make_department  # noqa: F401
 from iic_booking.training.tests.conftest import make_equipment  # noqa: F401
 from iic_booking.training.tests.conftest import world  # noqa: F401
 from iic_booking.users.models.user_group import UserGroup
+from iic_booking.users.models.user_type import UserType
 
 pytestmark = pytest.mark.django_db
 BASE = "https://equip.example.ac.in"
@@ -88,6 +91,48 @@ PRIVATE_KEYS = {"operators", "managers", "charge_profiles", "base_charges_by_use
                 "booking_email_extra_text", "visibility_group", "input_fields", "slot_masters", "equipment_pis"}
 
 
+def _charges_for(eq):
+    return APIClient().get(f"/api/equipments/{eq.pk}/public/").json()["charges"]
+
+
+def test_public_page_shows_internal_and_external_rates_without_login(world):
+    eq = world.equipment
+    ChargeProfile.objects.filter(equipment=eq).delete()
+    ChargeProfile.objects.create(equipment=eq, user_type=UserType.STUDENT, primary_unit_charge=Decimal("100.00"))
+    ChargeProfile.objects.create(equipment=eq, user_type=UserType.FACULTY, primary_unit_charge=Decimal("200.00"))
+    ChargeProfile.objects.create(equipment=eq, user_type=UserType.EXTERNAL, primary_unit_charge=Decimal("500.00"))
+    ChargeProfile.objects.create(equipment=eq, user_type=UserType.RND, primary_unit_charge=Decimal("900.00"), is_active=False)
+
+    charges = _charges_for(eq)
+    rates = {c["user_type"]: c["primary_unit_charge"] for c in charges["charge_profiles"]}
+    assert rates == {str(UserType.STUDENT): "100.00", str(UserType.FACULTY): "200.00", str(UserType.EXTERNAL): "500.00"}
+    assert set(charges["internal_user_types"]) == {str(UserType.STUDENT), str(UserType.FACULTY)}
+
+
+def test_all_equipment_catalog_still_hides_internal_rates_when_signed_out(world):
+    eq = world.equipment
+    ChargeProfile.objects.filter(equipment=eq).delete()
+    ChargeProfile.objects.create(equipment=eq, user_type=UserType.STUDENT, primary_unit_charge=Decimal("100.00"))
+    ChargeProfile.objects.create(equipment=eq, user_type=UserType.EXTERNAL, primary_unit_charge=Decimal("500.00"))
+
+    r = APIClient().get(f"/api/equipments/analysis-charges/?equipment_ids={eq.pk}")
+    assert r.status_code == 200
+    profiles = r.json()["equipments"][0]["charge_profiles"]
+    assert [c["user_type"] for c in profiles] == [str(UserType.EXTERNAL)]
+    assert profiles[0]["primary_unit_charge"] == "500.00"
+
+
+def test_public_charges_are_empty_with_no_rates_or_for_disposed_equipment(world):
+    eq = world.equipment
+    ChargeProfile.objects.filter(equipment=eq).delete()
+    assert _charges_for(eq) is None
+    ChargeProfile.objects.create(equipment=eq, user_type=UserType.EXTERNAL, primary_unit_charge=Decimal("500.00"))
+    assert _charges_for(eq) is not None
+    eq.status = EquipmentStatus.DISPOSED
+    eq.save()
+    assert qr.public_charges(eq) is None
+
+
 def test_public_page_data_is_an_allowlist_and_needs_no_login(world):
     eq = world.equipment
     eq.description = "Field-emission SEM for imaging."
@@ -108,7 +153,7 @@ def test_public_page_data_is_an_allowlist_and_needs_no_login(world):
     d = r.json()
     assert set(d) == {"equipment_id", "code", "name", "description", "important_instruction", "status", "category",
                       "department", "make", "model", "image_url", "specifications", "accessories", "location",
-                      "directions", "enquiry_address", "contacts", "public_url", "booking_path", "charges_path"}
+                      "directions", "enquiry_address", "contacts", "public_url", "booking_path", "charges_path", "charges"}
     assert not PRIVATE_KEYS & set(d)
     body = r.content.decode()
     assert "99999" not in body and "staff@example" not in body  # equipment-level phone and notification list
