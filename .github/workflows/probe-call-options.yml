@@ -33,6 +33,9 @@ jobs:
           from iic_booking.calls.models import CallDevice, CallSession
           from iic_booking.calls.recipients import CallNotAllowed, calls_open_to, is_online, options
           from iic_booking.equipment.models import Booking, EquipmentManager, EquipmentOperator
+          from django.utils import timezone
+
+          from iic_booking.users.models.mobile_device_session import MobileDeviceSession
 
           print("calls enabled=", conf.enabled(), " test_accounts_only=", conf.test_accounts_only())
           b = Booking.objects.select_related("equipment", "user").filter(virtual_booking_id=os.environ["BOOKING_REF"]).first()
@@ -46,6 +49,10 @@ jobs:
               print(f"  {label}: user id={user.pk} type={user.user_type} is_test={getattr(user, 'is_test_account', None)} "
                     f"active={user.is_active} calls_open={calls_open_to(user)} online_now={is_online(user.pk)} "
                     f"push_devices={CallDevice.objects.filter(user=user, revoked_at__isnull=True).count()}")
+              for m in MobileDeviceSession.objects.filter(user=user).order_by("-created_at")[:3]:
+                  ago = round((timezone.now() - m.last_used_at).total_seconds() / 60, 1) if m.last_used_at else None
+                  print(f"      app session platform={m.platform} version={m.app_version} last_used_min_ago={ago} "
+                        f"access_valid={m.access_expires_at > timezone.now()} revoked={bool(m.revoked_at)}")
 
           ids = [e.pk] + ([e.parent_equipment_id] if e.parent_equipment_id else [])
           print("operator links:")
