@@ -5561,7 +5561,6 @@ class BookingCancellationRequest(models.Model):
             notify_waitlist_slots_available(
                 equipment_for_waitlist,
                 preferred_slot_ids=released_slot_ids,
-                respect_reschedule_threshold=False,
             )
         except Exception:
             logger.exception(

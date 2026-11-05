@@ -838,7 +838,6 @@ def perform_booking_cancellation(
         schedule_waitlist_slots_available_after_commit(
             booking.equipment,
             preferred_slot_ids=slot_ids,
-            respect_reschedule_threshold=True,
         )
 
     refund_transaction = None

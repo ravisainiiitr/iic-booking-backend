@@ -1,7 +1,8 @@
 """Freed slots show the action that freed them, for every way a disrupted booking ends and for every viewer.
 
-Analysis Not Possible used to release its slots as Operator Absent. Now its slots become Other Reasons labelled
-"Analysis Not Possible"; Operator Unavailable still releases them as Operator Absent.
+Analysis Not Possible concerns one booking: its slots that have not started become free again (freed_slot_rules), and
+those that have started become Other Reasons labelled "Analysis Not Possible". Operator Unavailable releases them as
+Operator Absent.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ from iic_booking.equipment import maintenance_policy
 from iic_booking.equipment.maintenance_policy import (
     ANALYSIS_NOT_POSSIBLE_SLOT_LABEL,
     auto_cancel_expired_maintenance_bookings,
-    disruption_freed_slot_fields,
 )
 from iic_booking.equipment.management.commands.fix_analysis_not_possible_slots import wrongly_marked_slots
 from iic_booking.equipment.models import (
@@ -43,8 +43,8 @@ ACTIONS = {
         "other-disruption",
         {"reason": "Sample not suitable for this probe"},
         BookingDisruptionKind.OTHER_DISRUPTION,
-        SlotStatus.BLOCKED,
-        ANALYSIS_NOT_POSSIBLE_SLOT_LABEL,
+        SlotStatus.AVAILABLE,
+        None,
     ),
 }
 
@@ -159,7 +159,7 @@ def _viewers(lab):
     }
 
 
-def test_every_viewer_sees_analysis_not_possible_and_operator_absent_as_marked(lab):
+def test_every_viewer_sees_freed_analysis_not_possible_as_available_and_operator_absent_as_marked(lab):
     anp_booking, anp_slots = _flagged(lab, "analysis_not_possible", days=3)
     oa_booking, oa_slots = _flagged(lab, "operator_unavailable", days=4)
     assert _user_refund(lab, anp_booking).status_code == 200
@@ -178,8 +178,8 @@ def test_every_viewer_sees_analysis_not_possible_and_operator_absent_as_marked(l
         for sid in anp_slots:
             row = by_id.get(sid)
             assert row is not None, (name, "analysis not possible slot missing")
-            assert row["status"] == SlotStatus.BLOCKED, (name, row["status"])
-            assert row.get("blocked_label") == ANALYSIS_NOT_POSSIBLE_SLOT_LABEL, (name, row.get("blocked_label"))
+            assert row["status"] == SlotStatus.AVAILABLE, (name, row["status"])
+            assert not row.get("blocked_label"), (name, row.get("blocked_label"))
         for sid in oa_slots:
             row = by_id.get(sid)
             assert row is not None, (name, "operator absent slot missing")
@@ -191,10 +191,6 @@ def test_bookings_flagged_before_the_fix_also_free_as_analysis_not_possible(lab)
     booking, slot_ids = _flagged(lab, "analysis_not_possible")
     Booking.objects.filter(pk=booking.pk).update(disruption_release_slot_status=SlotStatus.OPERATOR_ABSENT)
     booking.refresh_from_db()
-    assert disruption_freed_slot_fields(booking, disrupted=True) == {
-        "status": SlotStatus.BLOCKED,
-        "blocked_label": ANALYSIS_NOT_POSSIBLE_SLOT_LABEL,
-    }
     assert _staff_refund(lab, booking).status_code == 200
     _assert_freed(slot_ids, "analysis_not_possible")
 
@@ -213,7 +209,9 @@ def test_repair_command_finds_only_analysis_not_possible_slots_left_as_operator_
     call_command("fix_analysis_not_possible_slots")  # dry run
     assert set(DailySlot.objects.filter(id__in=anp_slots).values_list("status", flat=True)) == {SlotStatus.OPERATOR_ABSENT}
     call_command("fix_analysis_not_possible_slots", "--apply")
-    _assert_freed(anp_slots, "analysis_not_possible")
+    assert set(DailySlot.objects.filter(id__in=anp_slots).values_list("status", "blocked_label")) == {
+        (SlotStatus.BLOCKED, ANALYSIS_NOT_POSSIBLE_SLOT_LABEL)
+    }
     _assert_freed(oa_slots, "operator_unavailable")
 
 

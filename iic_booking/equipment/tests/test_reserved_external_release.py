@@ -239,7 +239,7 @@ def test_waitlist_short_notice_email_skipped_for_reserved_slot(egs_factory, wait
     _cancel(egs_factory, w.booking)
 
     waitlist.notify_waitlist_slots_available(
-        w.eq, preferred_slot_ids=[w.slots[0].pk], respect_reschedule_threshold=True
+        w.eq, preferred_slot_ids=[w.slots[0].pk]
     )
     assert waitlist_spy.short_notice == []
 
