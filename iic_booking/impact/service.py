@@ -272,11 +272,13 @@ def _get_json(url: str, *, accept_json: bool = False) -> dict:
 
 
 def _openalex_params(extra: dict) -> dict:
-    params = {"select": WORK_SELECT, **extra}
-    mailto = getattr(settings, "OPENALEX_MAILTO", "")
-    if mailto:
-        params["mailto"] = mailto
-    return params
+    return {"select": WORK_SELECT, **extra}
+
+
+def _openalex_json(url: str) -> dict:
+    from . import openalex
+
+    return openalex.get_json(url, user_agent=USER_AGENT, timeout=15)
 
 
 def _orcid_record_dois(orcid: str, since: date) -> list[str]:
@@ -304,7 +306,7 @@ def _openalex_by_doi(dois: list[str]) -> list[dict]:
     for i in range(0, len(dois), OPENALEX_DOI_BATCH):
         chunk = dois[i:i + OPENALEX_DOI_BATCH]
         params = _openalex_params({"filter": "doi:" + "|".join(chunk), "per-page": "50"})
-        works.extend(_get_json(f"{OPENALEX_URL}?{urllib.parse.urlencode(params)}").get("results") or [])
+        works.extend(_openalex_json(f"{OPENALEX_URL}?{urllib.parse.urlencode(params)}").get("results") or [])
     return works
 
 
@@ -317,7 +319,7 @@ def _openalex_by_author(orcid: str, since: date) -> list[dict]:
     works: list[dict] = []
     cursor = "*"
     for _ in range(OPENALEX_MAX_PAGES):
-        body = _get_json(f"{OPENALEX_URL}?{urllib.parse.urlencode({**params, 'cursor': cursor})}")
+        body = _openalex_json(f"{OPENALEX_URL}?{urllib.parse.urlencode({**params, 'cursor': cursor})}")
         page = list(body.get("results") or [])
         works.extend(page)
         cursor = (body.get("meta") or {}).get("next_cursor")

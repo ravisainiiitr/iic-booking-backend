@@ -1046,6 +1046,10 @@ FABRICATION_EMAIL_LINK_EXPIRY_SECONDS = env.int("FABRICATION_EMAIL_LINK_EXPIRY_S
 # Publication-to-facility mapping (iic_booking.impact.facility_mapping). Off by default: the dry-run commands and the
 # administrator-triggered pilot work either way; the flag only turns on automatic weekly processing.
 PUBLICATION_MAPPING_ENABLED = env.bool("PUBLICATION_MAPPING_ENABLED", default=False)
+# OpenAlex API key (free, from openalex.org/settings/api). Without one, OpenAlex shares a small daily budget among
+# everyone on the server's IP address. Set only through the environment; never logged.
+OPENALEX_API_KEY = env("OPENALEX_API_KEY", default="")
+OPENALEX_MAILTO = env("OPENALEX_MAILTO", default="")
 # The institute's ROR ID (e.g. https://ror.org/0xxxxxxx), used to find faculty in OpenAlex by name. Empty = name search off.
 INSTITUTE_ROR_ID = env("INSTITUTE_ROR_ID", default="")
 # Names of the institute as written in acknowledgements, separated by | (e.g. "Full Name|Short Name").
