@@ -2102,8 +2102,13 @@ def catalog_department_rows(user=None) -> list[dict]:
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def equipment_catalog_departments(request):
-    """List internal departments that have visible, non-disposed equipment (for catalog filters)."""
-    departments = catalog_department_rows(request.user)
+    """List internal departments that have visible, non-disposed equipment (for catalog filters).
+
+    ``available=1`` gives the departments users can actually find on the portal, whoever is asking:
+    the Main Administrator otherwise also sees departments with only hidden or test-only equipment.
+    """
+    available_only = str(request.query_params.get("available") or "").strip().lower() in ("1", "true", "yes")
+    departments = catalog_department_rows(None if available_only else request.user)
     unassigned_count = _catalog_equipment_queryset(request.user).filter(internal_department__isnull=True).count()
 
     return Response(
@@ -6355,6 +6360,7 @@ def list_bookings(request):
     Query Parameters:
         user_id: Optional. Filter by user ID (admin only)
         equipment_id: Optional. Filter by equipment ID
+        equipment_department_id: Optional. Filter by the department that owns the equipment
         booking_id: Optional. Filter by booking ID (admin/OIC only; use with limit=1 to fetch one booking).
         status: Optional. Filter by booking status (PENDING, BOOKED, COMPLETED, CANCELLED, ABSENT, REFUNDED)
         start_date: Optional. Filter bookings from this date (YYYY-MM-DD)
@@ -6615,6 +6621,17 @@ def _booking_list_queryset(request, *, min_search_chars: int = 0):
         except (ValueError, TypeError):
             return None, Response(
                 {"error": "Invalid equipment_id parameter."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    # Filter by the equipment's department if provided (within the role scope applied above)
+    equipment_department_id = request.query_params.get('equipment_department_id')
+    if equipment_department_id:
+        try:
+            queryset = queryset.filter(equipment__internal_department_id=int(equipment_department_id))
+        except (ValueError, TypeError):
+            return None, Response(
+                {"error": "Invalid equipment_department_id parameter."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
