@@ -23,6 +23,7 @@ from rest_framework.response import Response
 
 from iic_booking.users.models.user_type import UserType
 
+from .freed_slot_rules import USER_LOCK_LEAD
 from .models import (
     DailySlot,
     Equipment,
@@ -275,7 +276,7 @@ def _load_slot_rows(equipment_ids: list[int], date_from: date, date_to: date) ->
         slot_master__equipment_id__in=equipment_ids, date__gte=date_from, date__lte=date_to
     ).values_list(
         "slot_master__equipment_id", "date", "status", "start_datetime", "end_datetime", "booking_id",
-        "home_department_only",
+        "home_department_only", "released_by_booking_at",
     )
     for row in rows:
         out.setdefault((row[0], row[1]), []).append(row[2:])
@@ -341,6 +342,7 @@ def _day_status(mode, schedules, viewer, window, rule, rows, on_date, holiday, n
     open_rows = [
         r for r in rows
         if r[0] == SlotStatus.AVAILABLE and r[3] is None and r[1] is not None and r[1] > now
+        and not (viewer.kind != VIEWER_ADMIN and r[5] is not None and r[1] <= now + USER_LOCK_LEAD)
         and _slot_allowed_by_mode(mode, schedules, on_date, _local_time(r[1]))
     ]
     free = [r for r in open_rows if dept_allowed is None or dept_allowed(r)]

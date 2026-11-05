@@ -95,17 +95,20 @@ def _mode_allows(equipment, slot) -> bool:
 
 def _free_slots(equipment, earliest, until_date, *, lock: bool = True):
     from .models import DailySlot, Holiday, SlotStatus
+    from .freed_slot_rules import exclude_freed_slots_locked_for_users
     from .slot_window import slot_in_window
 
     holidays = set(Holiday.get_holidays_in_range(timezone.localtime(earliest).date(), until_date).keys())
     base = DailySlot.objects.select_for_update(of=("self",)) if lock else DailySlot.objects.all()
     slots = (
-        base.filter(
-            slot_master__equipment_id=equipment.pk,
-            status=SlotStatus.AVAILABLE,
-            booking__isnull=True,
-            start_datetime__gte=earliest,
-            date__lte=until_date,
+        exclude_freed_slots_locked_for_users(
+            base.filter(
+                slot_master__equipment_id=equipment.pk,
+                status=SlotStatus.AVAILABLE,
+                booking__isnull=True,
+                start_datetime__gte=earliest,
+                date__lte=until_date,
+            )
         )
         .order_by("start_datetime", "id")
     )

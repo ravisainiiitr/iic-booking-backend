@@ -51,6 +51,9 @@ def earliest_open_slot(equipment, user, *, now=None) -> dict[str, Any] | None:
         date__lte=window_end,
     ).order_by("start_datetime")
     if not is_admin:
+        from .freed_slot_rules import exclude_freed_slots_locked_for_users
+
+        qs = exclude_freed_slots_locked_for_users(qs)
         qs = filter_queryset_for_home_department(
             qs,
             user=user,
