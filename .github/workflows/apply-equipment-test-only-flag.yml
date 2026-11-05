@@ -1,0 +1,62 @@
+# Clear "Visible to test accounts only" on named equipment of one department, so everyone can see and book it.
+# Refuses equipment outside the named department. Uses save() so the usual signals (search index, config audit) run.
+name: Apply equipment test-only flag (clear)
+
+on:
+  workflow_dispatch:
+    inputs:
+      department_code:
+        description: "Department code the equipment must belong to (e.g. PH)"
+        required: true
+      equipment_ids:
+        description: "Space-separated equipment ids"
+        required: true
+      confirm:
+        description: "Type GOLIVE to proceed"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Clear the flag
+        env:
+          DEPARTMENT_CODE: ${{ github.event.inputs.department_code }}
+          EQUIPMENT_IDS: ${{ github.event.inputs.equipment_ids }}
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRM" = "GOLIVE"
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DEPARTMENT_CODE="$DEPARTMENT_CODE" -e EQUIPMENT_IDS="$EQUIPMENT_IDS" -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import os
+
+          import django
+
+          django.setup()
+          from django.contrib.auth.models import AnonymousUser
+          from django.db import transaction
+
+          from iic_booking.equipment.api_views import get_visible_equipment_queryset
+          from iic_booking.equipment.models import Equipment
+
+          code = os.environ["DEPARTMENT_CODE"].strip()
+          ids = [int(x) for x in os.environ["EQUIPMENT_IDS"].split()]
+          rows = list(Equipment.objects.select_related("internal_department").filter(pk__in=ids))
+          if len(rows) != len(set(ids)):
+              raise SystemExit("Not changed: some ids do not exist")
+          wrong = [e.pk for e in rows if getattr(e.internal_department, "code", None) != code]
+          if wrong:
+              raise SystemExit(f"Not changed: not in department {code}: {wrong}")
+          with transaction.atomic():
+              for e in rows:
+                  was = e.visible_to_test_accounts_only
+                  e.visible_to_test_accounts_only = False
+                  e.save(update_fields=["visible_to_test_accounts_only"])
+                  print(f"equipment {e.pk} {e.name!r}: test_only {was} -> False")
+          visible = set(get_visible_equipment_queryset(AnonymousUser(), mode_catalog_filter=False).values_list("pk", flat=True))
+          print("visible to anonymous now:", sorted(set(ids) & visible))
+          PY
