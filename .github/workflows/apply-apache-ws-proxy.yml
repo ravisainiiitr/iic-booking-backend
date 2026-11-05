@@ -1,0 +1,85 @@
+# Route the portal's WebSocket connections (/ws/calls/, /ws/notifications/) to the backend. Without this rule Apache sent
+# /ws/ to the website, which answered with its home page, so calls could never connect.
+#   1. Check the backend upgrades a WebSocket on 127.0.0.1:8080; change nothing if it does not.
+#   2. Back up the vhost outside sites-enabled, add the rule before "ProxyPass /", run configtest (restore on failure).
+#   3. Graceful reload, then check from the public address; restore and reload if it still does not connect.
+# Tokens are never sent or printed: the checks connect without signing in, so the backend refuses them with 403 or
+# closes them, which still proves the request reached it.
+name: Apply Apache WebSocket proxy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type WEBSOCKET to proceed"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Apply with rollback
+        env:
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRM" = "WEBSOCKET"
+          SITE=/etc/apache2/sites-enabled/equip.iitr.ac.in.conf
+          BACKUP="/var/backups/equip.iitr.ac.in.conf.bak-ws-$(date -u +%Y%m%dT%H%M%SZ)"
+
+          # Prints the status code; a WebSocket that stays open is cut by --max-time, which is fine.
+          probe() {
+            curl -sS -o /dev/null -D - --http1.1 --max-time 5 -H "Host: equip.iitr.ac.in" -H "Origin: https://equip.iitr.ac.in" \
+              -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" \
+              -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" "$1" 2>/dev/null | head -n 1 | awk '{print $2}' || true
+          }
+
+          echo "Apache:"; sudo -n apache2ctl -v | head -n 1
+          sudo -n apache2ctl -M 2>/dev/null | grep -E 'mpm_|proxy_wstunnel|proxy_http ' || true
+          sudo -n grep -rhE '^\s*(MaxRequestWorkers|ThreadsPerChild|ProxyTimeout)' /etc/apache2/mods-enabled /etc/apache2/apache2.conf 2>/dev/null || true
+
+          BEFORE="$(probe https://equip.iitr.ac.in/ws/calls/)"
+          BACKEND="$(probe http://127.0.0.1:8080/ws/calls/)"
+          echo "public before=$BEFORE backend direct=$BACKEND"
+          case "$BACKEND" in
+            101|403) ;;
+            *) echo "NOT CHANGED: port 8080 did not answer as a WebSocket backend ($BACKEND)."
+               docker ps --format '{{.Names}} {{.Ports}}' | grep -E '8080|8000' || true
+               exit 1 ;;
+          esac
+
+          if sudo -n grep -qE '^\s*ProxyPass\s+/ws/\s' "$SITE"; then
+            echo "Rule already present; nothing to edit."
+          else
+            sudo -n cp -pL "$SITE" "$BACKUP"
+            echo "backup=$BACKUP"
+            sudo -n sed -i -E '0,/^(\s*)ProxyPass\s+\/\s+http:\/\/127\.0\.0\.1:8000\//s##\1ProxyPass        /ws/ ws://127.0.0.1:8080/ws/\n&#' "$(readlink -f "$SITE")"
+            sudo -n grep -nE '^\s*ProxyPass\s' "$SITE"
+            sudo -n grep -qE '^\s*ProxyPass\s+/ws/\s' "$SITE" || { echo "Rule was not added"; exit 1; }
+            if ! sudo -n apache2ctl configtest; then
+              echo "configtest failed: restoring"
+              sudo -n cp -p "$BACKUP" "$(readlink -f "$SITE")"
+              exit 1
+            fi
+            sudo -n systemctl reload apache2
+            sleep 3
+          fi
+
+          AFTER="$(probe https://equip.iitr.ac.in/ws/calls/)"
+          SITE_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 https://equip.iitr.ac.in/)"
+          API_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 https://equip.iitr.ac.in/api/version/)"
+          echo "RESULT public /ws/calls/ after=$AFTER website=$SITE_STATUS api=$API_STATUS"
+          case "$AFTER:$SITE_STATUS:$API_STATUS" in
+            101:200:200|403:200:200) echo "WEBSOCKET ROUTE LIVE" ;;
+            *)
+              echo "Check failed."
+              if sudo -n test -f "$BACKUP"; then
+                echo "Restoring the backup."
+                sudo -n cp -p "$BACKUP" "$(readlink -f "$SITE")"
+                sudo -n apache2ctl configtest && sudo -n systemctl reload apache2
+              fi
+              exit 1 ;;
+          esac
