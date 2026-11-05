@@ -258,6 +258,8 @@ def create_booking_for_waitlist_user(
     """
     if not slot_ids:
         return None, "No slot IDs provided"
+    if getattr(equipment, "oic_requests_only", False):
+        return None, "This equipment takes OIC requests only."
     if getattr(equipment, "profile_type", None) == EquipmentProfileType.LASER_CUT_2D:
         # Laser charges come from uploaded DXF parts, which a waitlist entry does not carry.
         return None, "Waitlist booking is not available for 2D laser cutting. Please book a free slot directly."

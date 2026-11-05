@@ -317,6 +317,15 @@ class Equipment(models.Model):
             'calendar day, so they are dated on the next calendar day. Leave empty for calendar days (00:00).'
         ),
     )
+    oic_requests_only = models.BooleanField(
+        default=False,
+        verbose_name=_('Only Officers In-charge Can Raise Requests'),
+        help_text=_(
+            "When on, the only way to book this equipment is an OIC request raised by an Officer In-charge of "
+            "equipment in the same department. Hidden from everyone else. Every attempt and change is recorded in "
+            "the OIC request audit. Main Administrator setting."
+        ),
+    )
     oic_request_registration_enabled = models.BooleanField(
         default=False,
         verbose_name=_('Allow OIC to Register Equipment Requests'),
@@ -8034,6 +8043,7 @@ from iic_booking.equipment.slot_exchange_models import (  # noqa: E402
     SlotExchangeRequest,
     SlotExchangeStatus,
 )
+from iic_booking.equipment.oic_request_audit_models import OicRequestAuditLog  # noqa: E402,F401
 from iic_booking.equipment.config_audit_models import (  # noqa: E402
     EquipmentConfigAuditLog,
 )

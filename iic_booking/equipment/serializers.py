@@ -2160,6 +2160,7 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'department_slot_reservation_enabled',
             'operating_day_start',
             'oic_request_registration_enabled',
+            'oic_requests_only',
             'results_base_location',
             'specifications',
             'publications',
@@ -2720,7 +2721,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'slot_duration_minutes', 'slots_per_day',
             'slot_tolerance_minutes',
             'reschedule_hours_threshold', 'results_base_location', 'split_booking_enabled', 'slot_exchange_enabled',
-            'department_slot_reservation_enabled', 'operating_day_start', 'oic_request_registration_enabled',
+            'department_slot_reservation_enabled', 'operating_day_start', 'oic_request_registration_enabled', 'oic_requests_only',
             'auto_slot_selection_default', 'weekly_view_display',
             'weekly_view_time_from', 'weekly_view_time_to', 'weekly_view_max_rows', 'weekly_view_default_days',
             'slot_window_reference_weekday', 'slot_window_reference_time',
@@ -3072,6 +3073,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         "department_slot_reservation_enabled": "Department-Based Slot Reservation",
         "operating_day_start": "Operating day starts at",
         "oic_request_registration_enabled": "Allow OIC to Register Equipment Requests",
+        "oic_requests_only": "Only Officers In-charge Can Raise Requests",
     }
 
     def _validate_main_admin_settings(self, attrs, instance):

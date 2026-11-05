@@ -441,6 +441,13 @@ def _ensure_istem_fbr_initialized(booking) -> None:
     booking.istem_fbr_status = IstemFbrStatus.PENDING_FBR
     booking.save(update_fields=["istem_fbr_status", "updated_at"])
 
+def _safe_int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _user_can_act_as_oic_for_equipment(user, equipment) -> bool:
     if not user or not getattr(user, "is_authenticated", False):
         return False
@@ -1547,6 +1554,15 @@ def user_can_see_equipment(user, equipment, *, mode_rules: bool = True):
     if getattr(equipment, "visible_to_test_accounts_only", False) and not user_may_see_test_only_equipment(user):
         return False
 
+    from .oic_only_equipment import is_oic_only, may_raise_request
+
+    if is_oic_only(equipment):
+        user_type = getattr(user, "user_type", None) if user and user.is_authenticated else None
+        if user_type == UserType.MANAGER:
+            return may_raise_request(user, equipment)
+        if user_type not in (UserType.ADMIN, UserType.DEPT_ADMIN, UserType.OPERATOR):
+            return False
+
     allowed, _ = department_equipment_visibility_allowed(user, equipment)
     if not allowed:
         return False
@@ -1622,16 +1638,23 @@ def get_visible_equipment_queryset(user, *, catalog_scope: str | None = None, mo
     """
     queryset = Equipment.objects.all()
     if not user or not user.is_authenticated:
-        queryset = queryset.filter(visibility_group__isnull=True)
+        queryset = queryset.filter(visibility_group__isnull=True, oic_requests_only=False)
     elif user.user_type == UserType.MANAGER:
         scope = (catalog_scope or "").strip().lower()
         if scope == "all":
             # OIC browsing full catalog (not management scope): same rules as end users, plus their own equipment
             # even when its department catalog is hidden (apply_department_catalog_visibility skips managers).
+            from .oic_only_equipment import departments_of_oic
+
             managed_ids = get_equipment_ids_managed_by_oic(user.id)
+            oic_departments = departments_of_oic(user)
             queryset = queryset.filter(
-                (Q(visibility_group__isnull=True) | Q(visibility_group__members__user=user))
-                & (Q(internal_department__equipment_visibility_enabled=True) | Q(equipment_id__in=managed_ids))
+                (
+                    Q(oic_requests_only=False)
+                    & (Q(visibility_group__isnull=True) | Q(visibility_group__members__user=user))
+                    & (Q(internal_department__equipment_visibility_enabled=True) | Q(equipment_id__in=managed_ids))
+                )
+                | Q(oic_requests_only=True, internal_department_id__in=oic_departments)
             ).distinct()
         else:
             allowed_ids = get_equipment_ids_managed_by_oic(user.id)
@@ -1654,7 +1677,7 @@ def get_visible_equipment_queryset(user, *, catalog_scope: str | None = None, mo
         queryset = queryset.filter(
             Q(visibility_group__isnull=True) |
             Q(visibility_group__members__user=user)
-        ).distinct()
+        ).filter(oic_requests_only=False).distinct()
 
     from iic_booking.users.legacy_ledger.booking_lock import apply_department_catalog_visibility
     from iic_booking.users.test_accounts import exclude_test_only_equipment
@@ -4087,6 +4110,21 @@ def _book_equipment_impl(request, pk):
             {"error": "Equipment not found."},
             status=status.HTTP_404_NOT_FOUND,
         )
+
+    from .oic_only_equipment import booking_refusal, refused_response
+    from .oic_request_registration import oic_registration_requested
+
+    oic_only_refusal = booking_refusal(
+        request.user, equipment, oic_registration=oic_registration_requested(request)
+    )
+    if oic_only_refusal:
+        _create_booking_attempt_log(
+            request, equipment, BookingAttemptOutcome.FAILED,
+            failure_reason=oic_only_refusal,
+            number_of_samples=request.data.get("number_of_samples") or 1,
+            additional_info=_get_additional_info_from_request(request, equipment),
+        )
+        return refused_response(request, equipment, "booking", oic_only_refusal)
 
     if not user_can_see_equipment(request.user, equipment):
         return equipment_visibility_denied_response(request.user)
@@ -9314,6 +9352,12 @@ def create_urgent_booking_request(request):
     For REVIEWER_URGENT also send: reviewer_comment (required text, 10–8000 characters),
     evidence_file (optional file upload), evidence_original_name (optional).
     """
+    urgent_equipment = Equipment.objects.filter(pk=_safe_int_or_none(request.data.get("equipment_id"))).first()
+    if urgent_equipment is not None and urgent_equipment.oic_requests_only:
+        from .oic_only_equipment import refused_response
+
+        return refused_response(request, urgent_equipment, "urgent_request")
+
     if not _is_internal_user(request.user):
         return Response(
             {"error": "Only internal users (students/faculty) can request urgent booking."},
@@ -17610,6 +17654,10 @@ def create_repeat_booking(request, booking_id):
         orig_booking = Booking.objects.select_related("user", "equipment", "charge_profile").get(booking_id=booking_id)
     except Booking.DoesNotExist:
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+    if orig_booking.equipment.oic_requests_only:
+        from .oic_only_equipment import refused_response
+
+        return refused_response(request, orig_booking.equipment, "repeat_sample")
     staff_path = orig_booking.user_id != request.user.id
     if staff_path:
         denied = _repeat_sample_staff_denied(request.user, orig_booking)

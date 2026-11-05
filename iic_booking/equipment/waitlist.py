@@ -262,6 +262,8 @@ def withdraw_on_confirmed_booking(booking) -> int:
 
 
 def add_user_to_waitlist(equipment: Equipment, user) -> Tuple[bool, Optional[int]]:
+    if getattr(equipment, "oic_requests_only", False):
+        return False, None
     """
     Add user to the equipment waitlist if enabled and queue not full.
     Uses (equipment, user) unique - if user already in list, return (False, position).
