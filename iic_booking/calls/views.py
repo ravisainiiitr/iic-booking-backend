@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status
@@ -9,8 +11,8 @@ from rest_framework.decorators import api_view, authentication_classes, permissi
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from . import conf, service
-from .models import CallDevice, CallSession, DevicePlatform
+from . import conf, service, silent
+from .models import CallDevice, CallSession, CallSilentHours, DevicePlatform
 from .recipients import CallNotAllowed, calls_open_to, options
 
 
@@ -124,6 +126,46 @@ def call_decline_from_device(request, call_id):
     except CallNotAllowed as exc:
         return _refusal(exc)
     return Response({"status": session.status if session else "unknown"})
+
+
+def _silent_payload(equipment) -> dict:
+    rule = CallSilentHours.objects.filter(equipment_id=equipment.pk).first()
+    values = silent.DEFAULTS if rule is None else {
+        "enabled": rule.enabled, "office_start": rule.office_start.strftime("%H:%M"), "office_end": rule.office_end.strftime("%H:%M"),
+        "silent_weekends": rule.silent_weekends, "silent_holidays": rule.silent_holidays,
+    }
+    in_force = silent.rule_for(equipment)  # a mode without its own rule follows its base equipment
+    return {**values, "active_now": silent.is_silent(in_force),
+            "follows_base_equipment": rule is None and in_force is not None}
+
+
+@api_view(["GET", "PUT"])
+@permission_classes([IsAuthenticated])
+def call_silent_hours(request, equipment_id):
+    """An instrument's silent hours, for its Officer In Charge (and the admins who manage it)."""
+    from iic_booking.equipment.flash_message_service import can_manage_equipment_flash
+    from iic_booking.equipment.models import Equipment
+
+    equipment = Equipment.objects.filter(pk=equipment_id).first()
+    if equipment is None:
+        return Response({"error": "Equipment not found.", "code": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+    if not can_manage_equipment_flash(request.user, equipment):
+        return Response({"error": "Only the Officer In Charge can change silent hours.", "code": "forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    if request.method == "GET":
+        return Response(_silent_payload(equipment))
+    try:
+        start = datetime.strptime(str(request.data.get("office_start") or ""), "%H:%M").time()
+        end = datetime.strptime(str(request.data.get("office_end") or ""), "%H:%M").time()
+    except ValueError:
+        return Response({"error": "Enter office hours as a start and end time.", "code": "invalid"}, status=status.HTTP_400_BAD_REQUEST)
+    if start >= end:
+        return Response({"error": "Office hours must end after they start.", "code": "invalid"}, status=status.HTTP_400_BAD_REQUEST)
+    flags = {key: request.data.get(key) for key in ("enabled", "silent_weekends", "silent_holidays")}
+    if not all(isinstance(value, bool) for value in flags.values()):
+        return Response({"error": "Choose on or off for each option.", "code": "invalid"}, status=status.HTTP_400_BAD_REQUEST)
+    CallSilentHours.objects.update_or_create(equipment=equipment, defaults={
+        **flags, "office_start": start, "office_end": end, "updated_by": request.user})
+    return Response(_silent_payload(equipment))
 
 
 @api_view(["POST", "DELETE"])

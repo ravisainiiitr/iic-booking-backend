@@ -156,3 +156,20 @@ Rollback: `CALLS_ENABLED=False` (buttons disappear, the WebSocket refuses, pushe
 - Android app lock: answering from a locked phone still shows the app lock prompt first when app lock is on.
 - iOS: built and type-checked in CI for the simulator only; CallKit/PushKit and WKWebView audio need a real iPhone
   and a signed build to verify.
+
+## Lab staff calling the booking user
+
+The Lab Operator, Officer In Charge or Accounts In Charge of a booking's equipment can call that booking's user (role
+`user`, booking context only; Accounts In Charge for the bookings they can see). Other staff, including admins who can see the booking, cannot. The user rings only with the portal open
+or the app installed; otherwise the booking card says they cannot take a call right now.
+
+Limits per 10 minutes: 60 calls to booking users for one staff member (a guard against runaway clients, counted apart
+from their other calls), and 3 calls to the same person for everyone. All other calls stay at 6 per caller.
+
+## Silent hours
+
+The Officer In Charge can switch on silent hours per instrument on its page (`calls/silent-hours/<equipment_id>/`).
+Off by default. Once on, users cannot call the Lab Operator, Officer In Charge or Accounts In Charge about that
+instrument outside office hours (default 9:00 AM to 5:30 PM, India time), at weekends or on active `Holiday` dates; the
+last two can be turned off. The server refuses with code `silent_hours` and says when calls reopen. The instrument's
+own staff are not held back, and a mode with no rule of its own follows its base equipment.
