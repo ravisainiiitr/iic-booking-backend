@@ -1,4 +1,6 @@
 # WhatsApp notifications (docs/whatsapp.md): switch them on for a pilot, for everyone who opted in, or off.
+#   webhook_only : the four secrets go on the server, WHATSAPP_ENABLED=False: Meta can verify the webhook and STOP is
+#              honoured, but nothing can be sent to anyone. Any pilot list is removed.
 #   pilot    : WHATSAPP_ENABLED=True, messages only to the numbers in pilot_numbers (comma-separated, +91...)
 #   everyone : WHATSAPP_ENABLED=True, every user who opted in on their profile
 #   off      : WHATSAPP_ENABLED=False (nothing is sent; the profile card disappears)
@@ -11,10 +13,10 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "pilot | everyone | off"
+        description: "webhook_only | pilot | everyone | off"
         required: true
         type: choice
-        options: [pilot, everyone, "off"]
+        options: [webhook_only, pilot, everyone, "off"]
       pilot_numbers:
         description: "pilot only: comma-separated WhatsApp numbers (+9198...) that alone receive messages"
         required: false
@@ -56,7 +58,7 @@ jobs:
           mode = os.environ["MODE"]
           env_file = Path(os.environ["ENV_FILE"])
           upsert, remove = {}, set()
-          if mode in ("pilot", "everyone"):
+          if mode in ("webhook_only", "pilot", "everyone"):
               secrets = {
                   "WHATSAPP_PHONE_NUMBER_ID": os.environ.get("WA_PHONE_NUMBER_ID", ""),
                   "WHATSAPP_ACCESS_TOKEN": os.environ.get("WA_ACCESS_TOKEN", ""),
@@ -66,16 +68,21 @@ jobs:
               missing = [k for k, v in secrets.items() if not v.strip()]
               if missing:
                   raise SystemExit("repository secrets not set: " + ", ".join(missing))
-              upsert = {**secrets, "WHATSAPP_ENABLED": "True"}
-              if mode == "pilot":
+              upsert = {**secrets, "WHATSAPP_ENABLED": "False" if mode == "webhook_only" else "True"}
+              if mode == "webhook_only":
+                  remove |= {"WHATSAPP_PILOT_NUMBERS", "WHATSAPP_ALLOW_ALL"}
+              elif mode == "pilot":
                   numbers = [n.strip() for n in os.environ.get("PILOT_NUMBERS", "").split(",") if n.strip()]
                   if not numbers or not all(re.fullmatch(r"\+\d{11,15}", n) for n in numbers):
                       raise SystemExit("pilot needs pilot_numbers like +919876543210,+919812345678")
                   upsert["WHATSAPP_PILOT_NUMBERS"] = ",".join(numbers)
+                  remove.add("WHATSAPP_ALLOW_ALL")
               else:
                   remove.add("WHATSAPP_PILOT_NUMBERS")
+                  upsert["WHATSAPP_ALLOW_ALL"] = "True"
           else:
               upsert = {"WHATSAPP_ENABLED": "False"}
+              remove.add("WHATSAPP_ALLOW_ALL")
           out, seen = [], set()
           for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
               key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
@@ -121,7 +128,7 @@ jobs:
           summary = status_summary()
           print("RUNTIME whatsapp enabled=", summary["enabled"], " missing=", summary["missing_settings"],
                 " pilot_numbers=", summary["pilot_numbers"], " opted_in_users=", summary["opted_in_users"])
-          if conf.enabled():
+          if conf.access_token() and conf.phone_number_id():
               try:
                   r = requests.get(f"{conf.GRAPH_BASE}/{conf.api_version()}/{conf.phone_number_id()}",
                                    params={"fields": "display_phone_number,verified_name,quality_rating"},
@@ -134,4 +141,35 @@ jobs:
                       print("Meta check failed: HTTP", r.status_code, str((data.get("error") or {}).get("message"))[:200])
               except Exception as exc:  # only the class, never credentials
                   print("Meta check failed:", type(exc).__name__)
+
+          # The webhook, as Meta will call it. Only PASS / FAIL and HTTP codes are printed, never a value.
+          import hashlib
+          import hmac
+          import secrets as pysecrets
+
+          url = "https://equip.iitr.ac.in/api/whatsapp/webhook/"
+          results = []
+
+          def check(name, passed, code):
+              results.append(passed)
+              print("WEBHOOK", "PASS" if passed else "FAIL", name, "HTTP", code)
+
+          try:
+              challenge = pysecrets.token_hex(8)
+              r = requests.get(url, params={"hub.mode": "subscribe", "hub.verify_token": conf.verify_token(), "hub.challenge": challenge}, timeout=20)
+              check("right verify token returns the challenge", r.status_code == 200 and r.text == challenge, r.status_code)
+              r = requests.get(url, params={"hub.mode": "subscribe", "hub.verify_token": "wrong-" + challenge, "hub.challenge": challenge}, timeout=20)
+              check("wrong verify token is refused", r.status_code == 403, r.status_code)
+              body = b'{"entry": []}'
+              r = requests.post(url, data=body, headers={"Content-Type": "application/json"}, timeout=20)
+              check("unsigned POST is refused", r.status_code == 403, r.status_code)
+              r = requests.post(url, data=body, headers={"Content-Type": "application/json", "X-Hub-Signature-256": "sha256=" + "0" * 64}, timeout=20)
+              check("wrongly signed POST is refused", r.status_code == 403, r.status_code)
+              sig = hmac.new(conf.app_secret().encode(), body, hashlib.sha256).hexdigest()
+              r = requests.post(url, data=body, headers={"Content-Type": "application/json", "X-Hub-Signature-256": "sha256=" + sig}, timeout=20)
+              check("correctly signed POST is accepted", r.status_code == 200, r.status_code)
+          except Exception as exc:  # only the class, never a URL with the token in it
+              results.append(False)
+              print("WEBHOOK FAIL could not run:", type(exc).__name__)
+          print("WEBHOOK READY FOR META" if results and all(results) else "WEBHOOK NOT READY")
           PY
