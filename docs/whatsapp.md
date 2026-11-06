@@ -57,6 +57,7 @@ conversations a month are free). The portal sends only the three utility templat
 - Sending fails closed: while `WHATSAPP_PILOT_NUMBERS` is set, only those numbers receive messages; with no list, nobody does unless `WHATSAPP_ALLOW_ALL` is on. Checked when queued and again when sent.
 - Every consent change is kept in `WhatsAppConsentEvent` with its time and source.
 - Meta events are handled once (`WhatsAppWebhookEvent`, no content or number stored). Incoming messages from people with an opt-in record are kept in `WhatsAppInbound`, readable only by the Main Administrator (`/api/whatsapp/inbound/`). Both are deleted after `WHATSAPP_RETENTION_DAYS` (default 90) by the daily `whatsapp.purge_expired` task; consent history is kept.
+- An incoming message keeps two times: `meta_timestamp` (when Meta says it was sent, in UTC; empty if Meta's value is missing or malformed, and on rows stored before this field existed) and `received_at` (when this server stored it). The message is stored either way.
 - A user who replies **STOP** is opted out (START opts them back in); opting out before a queued message is sent
   cancels it.
 - Delivery status (sent → delivered → read, or failed with Meta's reason) arrives on the webhook, which only accepts
