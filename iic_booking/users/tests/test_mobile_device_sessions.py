@@ -466,10 +466,18 @@ def test_web_logout_of_a_channel_i_account_points_to_channel_i_log_out(settings)
     assert resp.data["omniport_logout_url"] == "https://channel-i.example/auth/logout"
 
 
-def test_channel_i_log_out_page_is_the_one_channel_i_itself_links_to():
+def test_channel_i_log_out_page_cannot_be_overridden_by_a_stale_server_setting(monkeypatch):
+    import importlib
+
     from config.settings import base
 
-    assert not base.OMNIPORT_LOGOUT_URL.endswith("/accounts/logout/")
+    monkeypatch.setenv("OMNIPORT_AUTH_URL", "https://channel-i.example/oauth/authorise/")
+    monkeypatch.setenv("OMNIPORT_LOGOUT_URL", "https://channel-i.example/accounts/logout/")
+    try:
+        assert importlib.reload(base).OMNIPORT_LOGOUT_URL == "https://channel-i.example/auth/logout"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(base)
 
 
 def test_web_logout_of_an_email_account_has_no_channel_i_step():

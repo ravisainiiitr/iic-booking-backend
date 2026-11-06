@@ -5,6 +5,7 @@ import logging
 import os
 import ssl
 from pathlib import Path
+from urllib.parse import urljoin
 
 import environ
 
@@ -716,10 +717,9 @@ CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM = env(
     default="",
 )
 # Channel i's own Log out page: it ends the Channel i session, then shows its sign-in page. It ignores a "next" address.
-OMNIPORT_LOGOUT_URL = env(
-    "OMNIPORT_LOGOUT_URL",
-    default="https://channeli.in/auth/logout",
-)
+# Taken from the sign-in address and never from the environment: a stale server value kept sending users to a Channel i
+# page that shows 404 and leaves them signed in.
+OMNIPORT_LOGOUT_URL = urljoin(OMNIPORT_AUTH_URL, "/auth/logout")
 # Base URL of the frontend app. Used for redirects after auth and for links in emails
 # (booking confirmation, wallet balance, results available, etc.). Must match where users access the app.
 FRONTEND_URL = env(
