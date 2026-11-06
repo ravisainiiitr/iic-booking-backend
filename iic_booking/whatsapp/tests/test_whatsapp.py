@@ -436,6 +436,81 @@ def test_incoming_messages_are_for_the_main_admin_only(on):
     assert resp.status_code == 200 and resp.data["results"][0]["text"] == "hello"
 
 
+VALID_META_TIME = "2023-11-14T22:13:20+00:00"  # 1700000000
+
+
+@pytest.mark.parametrize("raw", ["1700000000", " 1700000000 ", 1700000000])
+def test_meta_timestamp_is_stored_in_utc(on, raw):
+    _opted_in()
+    service.handle_webhook(_incoming(type="text", text={"body": "hello"}, timestamp=raw))
+    row = WhatsAppInbound.objects.get()
+    assert row.meta_timestamp.isoformat() == VALID_META_TIME
+    assert row.meta_timestamp != row.received_at
+
+
+def test_a_missing_meta_timestamp_does_not_lose_the_message(on):
+    _opted_in()
+    assert service.handle_webhook(_incoming(type="text", text={"body": "hello"}))["inbound"] == 1
+    row = WhatsAppInbound.objects.get()
+    assert row.text == "hello" and row.meta_timestamp is None and row.received_at is not None
+
+
+@pytest.mark.parametrize("raw", [
+    None, "", "   ", "soon", "-1", "0", 0, -5, "1700000000.5", 1700000000.5, "1e9", "٣٤٥", "99999999999999999999",
+    "999999999999", True, [], {}, ["1700000000"],
+])
+def test_a_malformed_meta_timestamp_does_not_lose_the_message(on, raw):
+    _opted_in()
+    assert service.handle_webhook(_incoming(type="text", text={"body": "hello"}, timestamp=raw))["inbound"] == 1
+    row = WhatsAppInbound.objects.get()
+    assert row.text == "hello" and row.meta_timestamp is None and row.received_at is not None
+
+
+def test_stop_still_works_with_a_malformed_meta_timestamp(on):
+    user = _opted_in()
+    assert service.handle_webhook(_incoming(type="text", text={"body": "STOP"}, timestamp="soon"))["replies"] == 1
+    assert WhatsAppOptIn.objects.get(user=user).opted_in is False
+    assert WhatsAppInbound.objects.get().action == "opt_out"
+
+
+def test_the_main_admin_sees_both_times_separately(on):
+    _opted_in()
+    service.handle_webhook(_incoming(type="text", text={"body": "hello"}, timestamp="1700000000"))
+    admin = UserFactory(user_type=UserType.ADMIN, is_staff=True, is_superuser=True)
+    result = _api(admin).get("/api/whatsapp/inbound/").json()["results"][0]
+    assert result["meta_timestamp"] == "2023-11-14T22:13:20Z"
+    assert result["received_at"] and result["received_at"] != result["meta_timestamp"]
+
+
+def test_older_rows_without_a_meta_timestamp_stay_readable_and_are_purged(on):
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    user = _opted_in()
+    old = WhatsAppInbound.objects.create(wamid="wamid.OLD", user=user, from_e164="+919876543210", text="older")
+    assert old.meta_timestamp is None
+    admin = UserFactory(user_type=UserType.ADMIN, is_staff=True, is_superuser=True)
+    result = _api(admin).get("/api/whatsapp/inbound/").json()["results"][0]
+    assert result["text"] == "older" and result["meta_timestamp"] is None
+    WhatsAppInbound.objects.filter(pk=old.pk).update(received_at=timezone.now() - timedelta(days=400))
+    assert service.purge_expired()["inbound"] == 1
+
+
+def test_storing_a_meta_timestamp_grants_no_consent_and_sends_nothing(settings):
+    settings.WHATSAPP_ENABLED = False
+    settings.WHATSAPP_PILOT_NUMBERS = []
+    settings.WHATSAPP_ALLOW_ALL = False
+    user = UserFactory()
+    WhatsAppOptIn.objects.create(user=user, phone_e164="+919876543210", opted_in=False)
+    service.handle_webhook(_incoming(type="text", text={"body": "hello"}, timestamp="1700000000"))
+    row = WhatsAppOptIn.objects.get(user=user)
+    assert (row.opted_in, row.opted_in_at) == (False, None)
+    assert WhatsAppInbound.objects.get().meta_timestamp is not None
+    assert not WhatsAppConsentEvent.objects.exists() and not WhatsAppMessage.objects.exists()
+    assert service.notify(user, "booking_confirmed", ["a", "b", "c"], event_key="k") is None
+
+
 def test_retention_removes_old_messages_and_records_but_keeps_consent(on):
     from datetime import timedelta
 

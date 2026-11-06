@@ -68,7 +68,9 @@ class WhatsAppInbound(models.Model):
     kind = models.CharField(max_length=20, blank=True, default="", help_text=_("text, button, interactive, image, ..."))
     text = models.TextField(blank=True, default="")
     action = models.CharField(max_length=10, blank=True, default="", help_text=_("opt_out or opt_in when it changed the consent"))
-    received_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    meta_timestamp = models.DateTimeField(null=True, blank=True,
+                                          help_text=_("When Meta says the message was sent. Empty if missing or malformed, and on older rows."))
+    received_at = models.DateTimeField(auto_now_add=True, db_index=True)  # when this server stored it
 
     class Meta:
         ordering = ["-received_at"]

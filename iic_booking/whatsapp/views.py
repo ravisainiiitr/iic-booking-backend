@@ -54,7 +54,7 @@ def whatsapp_inbound(request):
     rows = WhatsAppInbound.objects.select_related("user")[:100]
     return Response({"retention_days": conf.retention_days(), "results": [
         {"id": r.pk, "user_id": r.user_id, "from": r.from_e164, "kind": r.kind, "text": r.text, "action": r.action,
-         "received_at": r.received_at} for r in rows]})
+         "meta_timestamp": r.meta_timestamp, "received_at": r.received_at} for r in rows]})
 
 
 @api_view(["GET", "POST"])

@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
 
 from django.conf import settings
 from django.db import DatabaseError, IntegrityError, transaction
@@ -268,6 +269,20 @@ def _apply_reply(m: dict) -> str:
     return ""
 
 
+def _meta_timestamp(raw) -> datetime | None:
+    """Meta's message time, whole Unix seconds as a string, in UTC. None when missing or malformed: never raises, so a
+    bad value cannot cost us the message."""
+    if isinstance(raw, bool) or not isinstance(raw, (str, int)):
+        return None
+    text = str(raw).strip()
+    if not re.fullmatch(r"[0-9]{1,12}", text) or int(text) <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(int(text), tz=dt_timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def _record_inbound(m: dict, action: str) -> int:
     """Keep a message from someone with an opt-in record, once (Meta re-sends). Strangers' messages are not stored.
     A failure here never undoes the opt-out above, and the webhook still answers Meta."""
@@ -285,7 +300,7 @@ def _record_inbound(m: dict, action: str) -> int:
                 return 0
             _, created = WhatsAppInbound.objects.get_or_create(wamid=wamid, defaults={
                 "user_id": row.user_id, "from_e164": phone, "kind": str(m.get("type") or "")[:20],
-                "text": _message_text(m)[:2000], "action": action,
+                "text": _message_text(m)[:2000], "action": action, "meta_timestamp": _meta_timestamp(m.get("timestamp")),
             })
     except DatabaseError as exc:
         logger.warning("whatsapp incoming message not stored: %s", type(exc).__name__)
