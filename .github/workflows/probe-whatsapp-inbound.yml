@@ -1,0 +1,100 @@
+# READ-ONLY: did Meta's incoming WhatsApp events reach production, and what was stored? Sends nothing, writes nothing and
+# changes no setting. Phone numbers are masked, message ids shortened and no token or secret is read out.
+name: Probe WhatsApp inbound (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: "How many hours back to look"
+        required: false
+        default: "72"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Database and settings
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import django
+
+          django.setup()
+          import requests
+          from django.utils import timezone
+
+          from iic_booking.whatsapp import conf
+          from iic_booking.whatsapp.models import WhatsAppConsentEvent, WhatsAppInbound, WhatsAppMessage, WhatsAppOptIn, WhatsAppWebhookEvent
+
+
+          def mask(number):
+              number = str(number or "")
+              return f"{number[:3]}*****{number[-2:]}" if len(number) > 5 else "*****"
+
+
+          def short(wamid):
+              wamid = str(wamid or "")
+              return f"{wamid[:10]}...{wamid[-6:]} (len {len(wamid)})" if wamid else ""
+
+
+          print("now_utc=", timezone.now().isoformat())
+          print("sending_enabled=", conf.enabled(), " missing_settings=", conf.missing_settings(),
+                " pilot_numbers=", len(conf.pilot_numbers()), " allow_all=", conf.allow_all(),
+                " retention_days=", conf.retention_days())
+          try:
+              r = requests.get(f"https://graph.facebook.com/{conf.api_version()}/{conf.phone_number_id()}",
+                               params={"fields": "display_phone_number,verified_name,quality_rating"},
+                               headers={"Authorization": f"Bearer {conf.access_token()}"}, timeout=20)
+              data = r.json() if r.ok else {}
+              print("meta_lookup_http=", r.status_code, " configured_sender=", data.get("display_phone_number"),
+                    " verified_name=", data.get("verified_name"), " quality=", data.get("quality_rating"))
+          except Exception as exc:
+              print("meta_lookup_error=", type(exc).__name__)
+
+          print("opt_in_records=", WhatsAppOptIn.objects.count(),
+                " opted_in=", WhatsAppOptIn.objects.filter(opted_in=True).count(),
+                " consent_events=", WhatsAppConsentEvent.objects.count(),
+                " messages_sent_records=", WhatsAppMessage.objects.count())
+          print("webhook_events_total=", WhatsAppWebhookEvent.objects.count(),
+                " of_kind_message=", WhatsAppWebhookEvent.objects.filter(kind="message").count(),
+                " of_kind_status=", WhatsAppWebhookEvent.objects.filter(kind="status").count())
+          for e in WhatsAppWebhookEvent.objects.order_by("-received_at")[:15]:
+              print("  event", e.received_at.isoformat(), "kind=", e.kind, "detail=", e.detail)
+          print("inbound_total=", WhatsAppInbound.objects.count())
+          for m in WhatsAppInbound.objects.order_by("-received_at")[:10]:
+              print("  inbound", m.received_at.isoformat(), "from=", mask(m.from_e164), "linked_user=", bool(m.user_id),
+                    "kind=", m.kind, "action=", m.action or "-", "wamid=", short(m.wamid),
+                    "text_len=", len(m.text or ""), "text_start=", repr((m.text or "")[:30]))
+          PY
+      - name: Application logs
+        env:
+          HOURS: ${{ github.event.inputs.hours }}
+        run: |
+          set -uo pipefail
+          case "$HOURS" in (*[!0-9]*|'') echo "Bad hours"; exit 1 ;; esac
+          for c in $(docker ps --format '{{.Names}}' | grep -E 'django|asgi|uvicorn|daphne|gunicorn'); do
+            echo "=== $c"
+            docker logs --since "${HOURS}h" "$c" 2>&1 \
+              | grep -E 'whatsapp' -i \
+              | sed -E 's/\+?[0-9]{10,15}/[number]/g; s/wamid\.[A-Za-z0-9=_-]+/[wamid]/g; s/([0-9]{1,3}\.){3}[0-9]{1,3}(:[0-9]+)?/[ip]/g' \
+              | cut -c1-220 | tail -n 40
+          done
+      - name: Web server access log
+        env:
+          HOURS: ${{ github.event.inputs.hours }}
+        run: |
+          set -uo pipefail
+          # Client address removed. Query strings removed, since Meta's verify request carries the token there.
+          for f in /var/log/apache2/*access*.log /var/log/apache2/*access*.log.1; do
+            [ -e "$f" ] || continue
+            n="$(sudo -n grep -c '/api/whatsapp/webhook' "$f" 2>/dev/null || echo unreadable)"
+            echo "=== $f matches=$n"
+            sudo -n grep '/api/whatsapp/webhook' "$f" 2>/dev/null \
+              | sed -E 's/^[^[]*//; s/\?[^ "]*//' | cut -c1-200 | tail -n 30
+          done
+          exit 0
