@@ -1,0 +1,173 @@
+# One WhatsApp test contact on production, so an incoming test message is stored. opted_in stays False and opted_in_at
+# stays empty, so the record gives no sending permission and a START reply cannot turn it on. This workflow sends nothing
+# and changes no setting.
+# Run logs are public: accounts are given by user id, and only the number's last two digits, the length and hash of the
+# message, and a hash of Meta's message id are printed (the id itself can encode the sender's number).
+name: WhatsApp test contact
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "verify (read-only), create or remove"
+        required: true
+        default: "verify"
+        type: choice
+        options:
+          - verify
+          - create
+          - remove
+      confirm:
+        description: "For create or remove, type CONFIRM"
+        required: false
+        default: ""
+      account_id:
+        description: "For create: user id of a test account with force_inactive on, not staff or superuser"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  contact:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run
+        env:
+          ACTION: ${{ inputs.action }}
+          CONFIRM: ${{ inputs.confirm }}
+          ACCOUNT_ID: ${{ inputs.account_id }}
+          CONTACT_NUMBER: ${{ secrets.WHATSAPP_TEST_CONTACT_NUMBER }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e ACTION -e CONFIRM -e ACCOUNT_ID -e CONTACT_NUMBER \
+            -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import hashlib
+          import os
+          import sys
+
+          import django
+
+          django.setup()
+          from django.contrib.auth import get_user_model
+          from django.db import transaction
+          from django.utils import timezone
+
+          from iic_booking.whatsapp import conf
+          from iic_booking.whatsapp.models import WhatsAppConsentEvent, WhatsAppInbound, WhatsAppMessage, WhatsAppOptIn
+          from iic_booking.whatsapp.service import OptInError, normalize_phone
+
+          SOURCE = "admin_test"
+          failed = []
+
+
+          def check(ok, label):
+              print(("PASS " if ok else "FAIL ") + label)
+              if not ok:
+                  failed.append(label)
+
+
+          def stop(message):
+              print("STOP " + message)
+              sys.exit(1)
+
+
+          def mask(number):
+              number = str(number or "")
+              return f"*****{number[-2:]}" if len(number) > 5 else "*****"
+
+
+          def digest(value):
+              return hashlib.sha256(str(value or "").encode()).hexdigest()[:12]
+
+
+          def account_problems(user):
+              problems = []
+              if not getattr(user, "is_test_account", False):
+                  problems.append("is_test_account is off")
+              if not user.force_inactive:
+                  problems.append("force_inactive is off")
+              if user.is_active:
+                  problems.append("the account is active")
+              if user.is_staff:
+                  problems.append("the account is staff")
+              if user.is_superuser:
+                  problems.append("the account is a superuser")
+              return problems
+
+
+          def safety_checks():
+              check(not conf.enabled(), "sending is off")
+              check(len(conf.pilot_numbers()) == 0, "pilot list is empty")
+              check(not conf.allow_all(), "allow-all is off")
+              check(not WhatsAppOptIn.objects.filter(opted_in=True).exists(), "nobody is opted in")
+              check(WhatsAppMessage.objects.count() == 0, "no outgoing message records")
+              check(WhatsAppConsentEvent.objects.count() == 0, "no consent was recorded")
+
+
+          action = os.environ["ACTION"]
+          if action in ("create", "remove") and os.environ.get("CONFIRM") != "CONFIRM":
+              stop("type CONFIRM to create or remove")
+          try:
+              phone = normalize_phone(os.environ.get("CONTACT_NUMBER", ""))
+          except OptInError:
+              stop("WHATSAPP_TEST_CONTACT_NUMBER is missing or not a number with country code")
+
+          print("now_utc=", timezone.now().isoformat(), " contact=", mask(phone))
+          rows = WhatsAppOptIn.objects.filter(phone_e164=phone, source=SOURCE)
+
+          if action == "create":
+              safety_checks()
+              if failed:
+                  stop("safety checks failed, nothing created")
+              if WhatsAppOptIn.objects.exists():
+                  stop("an opt-in record already exists, nothing created")
+              account_id = os.environ.get("ACCOUNT_ID", "").strip()
+              if not (account_id.isascii() and account_id.isdigit()):
+                  stop("account_id must be a user id, nothing created")
+              user = get_user_model().objects.filter(pk=int(account_id)).first()
+              if user is None:
+                  stop("no such user id, nothing created")
+              problems = account_problems(user)
+              if problems:
+                  stop("that account is not eligible (" + "; ".join(problems) + "), nothing created")
+              with transaction.atomic():
+                  row = WhatsAppOptIn.objects.create(user=user, phone_e164=phone, opted_in=False, opted_in_at=None,
+                                                     opted_out_at=None, source=SOURCE)
+              print("CREATED record", row.pk, "on test account id", user.pk)
+
+          elif action == "remove":
+              inbound = WhatsAppInbound.objects.filter(from_e164=phone)
+              print("REMOVED inbound=", inbound.delete()[0], " contact=", rows.delete()[0])
+
+          row = rows.select_related("user").first()
+          print("--- record")
+          check(row is not None or action == "remove", "test contact record exists")
+          if row is not None:
+              check(row.opted_in is False, "opted_in is False")
+              check(row.opted_in_at is None, "opted_in_at is empty, so START cannot turn it on")
+              check(WhatsAppOptIn.objects.count() == 1, "it is the only opt-in record")
+              print("holder account id", row.user_id)
+              for problem in account_problems(row.user):
+                  check(False, "holder account: " + problem)
+          print("--- safety")
+          safety_checks()
+          print("--- incoming messages from the test number")
+          latest = WhatsAppInbound.objects.filter(from_e164=phone).order_by("-received_at").first()
+          print("count=", WhatsAppInbound.objects.filter(from_e164=phone).count())
+          if action == "verify":
+              check(latest is not None, "message saved")
+          if latest is not None:
+              check(latest.from_e164 == phone, f"sender number matches the secret ({mask(latest.from_e164)})")
+              check(bool(latest.text), f"message text saved (length {len(latest.text)}, sha256 {digest(latest.text)})")
+              check(latest.wamid.startswith("wamid."), f"Meta message ID saved (length {len(latest.wamid)}, sha256 {digest(latest.wamid)})")
+              check(latest.received_at is not None, f"server receipt time saved ({latest.received_at.isoformat()})")
+              if hasattr(latest, "meta_timestamp"):
+                  check(latest.meta_timestamp is not None, f"Meta timestamp saved ({latest.meta_timestamp})")
+              else:
+                  check(False, "Meta timestamp saved (this release has no such field)")
+          print("RESULT", "FAIL: " + str(len(failed)) if failed else "PASS")
+          sys.exit(1 if failed else 0)
+          PY
