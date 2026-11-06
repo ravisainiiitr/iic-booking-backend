@@ -98,7 +98,7 @@ def test_outside_audience_cannot_enroll(user_type):
     assert resp.status_code == 403
     assert resp.data["code"] == "APP_AUDIENCE"
     assert resp.data["error"] == (
-        "The IIC Booking app is currently available to Officers In Charge and Lab Operators. "
+        "The IIT Roorkee Equipment Booking app is currently available to Officers In Charge and Lab Operators. "
         "Please use https://equip.iitr.ac.in in your browser."
     )
     assert not MobileDeviceSession.objects.filter(user=user).exists()
@@ -361,7 +361,7 @@ def test_main_admin_can_open_the_app_to_everyone():
     resp = web_client(admin).patch(SETTINGS_URL, {"audience_user_types": "everyone"}, format="json")
     assert resp.status_code == 200, resp.data
     assert resp.data["everyone"] is True
-    assert resp.data["refusal_message"] == "The IIC Booking app is available to every portal user."
+    assert resp.data["refusal_message"] == "The IIT Roorkee Equipment Booking app is available to every portal user."
     for user_type in (UserType.EXTERNAL, UserType.RND, UserType.INSTITUTE, UserType.EXTERNAL_STARTUP_MSME,
                       UserType.STARTUP_INCUBATED_IITR, UserType.OTHER, UserType.FACULTY, UserType.STUDENT,
                       UserType.DEPT_ADMIN, UserType.FINANCE):
