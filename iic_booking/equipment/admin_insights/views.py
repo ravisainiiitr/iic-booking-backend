@@ -47,6 +47,15 @@ def admin_insights_cancellations(request):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+def admin_insights_service_levels(request):
+    """GET /api/admin/insights/service-levels/ — lead time, results turnaround, no-shows and ratings per instrument."""
+    from .service_levels import build_service_levels
+
+    return _respond(request, build_service_levels)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
 def admin_insights_refund_requests(request):
     """GET /api/admin/insights/refund-requests/ — users cancelling their own bookings for a refund before the slot."""
     from .refund_requests import build_refund_request_insights

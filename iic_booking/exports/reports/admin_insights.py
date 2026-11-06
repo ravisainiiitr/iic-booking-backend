@@ -279,6 +279,50 @@ def _flatten_booking_row(row) -> None:
     )
 
 
+@register("admin-service-levels")
+def service_levels(request):
+    rows, first = collect_rows(request, "admin-insights-service-levels", page_param="page", limit_param="page_size")
+    data = first or {}
+    summary = data.get("summary") or {}
+    previous = summary.get("previous") or {}
+    columns = [
+        SNO,
+        C("name", "Equipment", width=1.8, link=_equipment_path(), align="left"),
+        C("code", "Code", width=0.8),
+        C("department", "Department", width=1.1),
+        C("bookings", "Bookings", spec.INTEGER, 0.7, total=True),
+        C("carried_out", "Carried out", spec.INTEGER, 0.7, total=True),
+        C("lead_days", "Booking lead (days)", spec.NUMBER, 0.8),
+        C("turnaround_hours", "Results turnaround (h)", spec.NUMBER, 0.9),
+        C("results_timed", "Results timed", spec.INTEGER, 0.7, total=True),
+        C("results_awaited", "Results awaited", spec.INTEGER, 0.7, total=True),
+        C("no_show_rate", "No-show rate", spec.PERCENT, 0.7),
+        C("cancellation_rate", "Cancellation rate", spec.PERCENT, 0.8),
+        C("lab_stopped_rate", "Lab-stopped rate", spec.PERCENT, 0.8),
+        C("rating", "Rating", spec.NUMBER, 0.6),
+        C("rated", "Ratings", spec.INTEGER, 0.6, total=True),
+        C("utilisation", "Utilisation", spec.PERCENT, 0.7),
+    ]
+    table = spec.Table("service-levels", "Service levels", columns, numbered(rows), sheet_name="Service levels")
+    kpis = [
+        spec.Kpi("Bookings", summary.get("bookings", 0), spec.INTEGER, f"{previous.get('bookings', 0)} previous period"),
+        spec.Kpi("Booking lead (days)", summary.get("lead_days") or 0, spec.NUMBER),
+        spec.Kpi("Results turnaround (h)", summary.get("turnaround_hours") or 0, spec.NUMBER,
+                 f"{summary.get('results_timed', 0)} results timed"),
+        spec.Kpi("No-show rate", summary.get("no_show_rate") or 0, spec.PERCENT),
+        spec.Kpi("Utilisation", summary.get("utilisation") or 0, spec.PERCENT),
+    ]
+    filters = [("Dates", f"{data.get('date_from', '')} to {data.get('date_to', '')}")]
+    filters += filter_pairs(request, [
+        ("dept", "Showing department", "department"),
+        ("equipment", "Equipment", "equipment"),
+    ])
+    return make_document(
+        request, title="Service levels", slug="service-levels", tables=[table], filters=filters, kpis=kpis,
+        landscape=True,
+    )
+
+
 @register("admin-refund-requests")
 def refund_requests(request):
     rows, first = collect_rows(request, "admin-insights-refund-requests", page_param="page", limit_param="page_size")
