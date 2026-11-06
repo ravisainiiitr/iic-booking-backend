@@ -1,5 +1,6 @@
 """WhatsApp endpoints: the signed-in user's opt-in, the Main Administrator's status, and Meta's webhook."""
 
+import hmac
 import json
 import logging
 
@@ -40,14 +41,32 @@ def whatsapp_status(request):
     return Response(status_summary())
 
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def whatsapp_inbound(request):
+    """Main Administrator only: the latest incoming messages. They are personal data, so no other role can read them."""
+    from iic_booking.department_modules.access import is_main_admin
+
+    from .models import WhatsAppInbound
+
+    if not is_main_admin(request.user):
+        return Response({"error": "Only the Main Administrator can see incoming WhatsApp messages."}, status=status.HTTP_403_FORBIDDEN)
+    rows = WhatsAppInbound.objects.select_related("user")[:100]
+    return Response({"retention_days": conf.retention_days(), "results": [
+        {"id": r.pk, "user_id": r.user_id, "from": r.from_e164, "kind": r.kind, "text": r.text, "action": r.action,
+         "received_at": r.received_at} for r in rows]})
+
+
 @api_view(["GET", "POST"])
 @authentication_classes([])
 @permission_classes([AllowAny])
 def whatsapp_webhook(request):
-    """Meta's webhook. GET: subscription check (hub.verify_token). POST: signed delivery statuses and replies."""
+    """Meta's webhook. GET: subscription check (hub.verify_token). POST: signed delivery statuses and replies.
+    Works while sending is off (WHATSAPP_ENABLED), so the webhook can be verified and STOP honoured before any pilot."""
     if request.method == "GET":
         token = request.query_params.get("hub.verify_token", "")
-        if conf.verify_token() and token == conf.verify_token() and request.query_params.get("hub.mode") == "subscribe":
+        expected = conf.verify_token()
+        if expected and hmac.compare_digest(token.encode(), expected.encode()) and request.query_params.get("hub.mode") == "subscribe":
             return HttpResponse(request.query_params.get("hub.challenge", ""), content_type="text/plain")
         return HttpResponse(status=403)
     raw = request.body

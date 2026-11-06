@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from django.db import transaction
 from django.utils import timezone
 
 from . import conf
@@ -39,6 +40,8 @@ def booking_event(event) -> None:
         chosen = mapping.get(event.event_type)
         if chosen is None:
             return
-        notify(booking.user, chosen[0], chosen[1], event_key=f"booking:{booking.pk}:{chosen[0]}:{event.event_id}")
+        # A savepoint: a database error here must not break a transaction the booking code is still using.
+        with transaction.atomic():
+            notify(booking.user, chosen[0], chosen[1], event_key=f"booking:{booking.pk}:{chosen[0]}:{event.event_id}")
     except Exception:  # noqa: BLE001 - a WhatsApp problem must never affect the booking
         logger.exception("whatsapp hook failed for booking event %s", getattr(event, "pk", None))

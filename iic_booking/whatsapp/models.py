@@ -22,6 +22,63 @@ class WhatsAppOptIn(models.Model):
         return f"{self.user_id} {'in' if self.opted_in else 'out'}"
 
 
+class WhatsAppConsentEvent(models.Model):
+    """Every change of consent, for the record: who, which number, when and how. Not deleted by the retention job."""
+
+    class Action(models.TextChoices):
+        OPT_IN = "opt_in", _("Opted in")
+        OPT_OUT = "opt_out", _("Opted out")
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                             related_name="whatsapp_consent_events")
+    phone_e164 = models.CharField(max_length=20)
+    action = models.CharField(max_length=10, choices=Action.choices)
+    source = models.CharField(max_length=20, help_text=_("profile, reply_stop, reply_start, admin"))
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self):
+        return f"{self.action} {self.phone_e164[:6]}… ({self.source})"
+
+
+class WhatsAppWebhookEvent(models.Model):
+    """One Meta event already handled, so a repeat is ignored. Holds no message content or phone number."""
+
+    event_key = models.CharField(max_length=64, unique=True, help_text=_("SHA-256 of the event's kind, id and status"))
+    kind = models.CharField(max_length=10)
+    detail = models.CharField(max_length=20, blank=True, default="")
+    received_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-received_at"]
+
+    def __str__(self):
+        return f"{self.kind} {self.detail}"
+
+
+class WhatsAppInbound(models.Model):
+    """A message someone with an opt-in record sent to the portal's WhatsApp number. Kept once per Meta message id."""
+
+    wamid = models.CharField(max_length=128, unique=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                             related_name="whatsapp_inbound")
+    from_e164 = models.CharField(max_length=20)
+    kind = models.CharField(max_length=20, blank=True, default="", help_text=_("text, button, interactive, image, ..."))
+    text = models.TextField(blank=True, default="")
+    action = models.CharField(max_length=10, blank=True, default="", help_text=_("opt_out or opt_in when it changed the consent"))
+    received_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-received_at"]
+        verbose_name = _("WhatsApp incoming message")
+        verbose_name_plural = _("WhatsApp incoming messages")
+
+    def __str__(self):
+        return f"{self.kind} from {self.from_e164[:6]}…"
+
+
 class WhatsAppMessage(models.Model):
     """One template message to one user, with Meta's delivery status (from the webhook)."""
 
