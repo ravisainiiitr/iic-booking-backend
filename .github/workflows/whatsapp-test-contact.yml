@@ -1,6 +1,8 @@
 # One WhatsApp test contact on production, so an incoming test message is stored. opted_in stays False and opted_in_at
 # stays empty, so the record gives no sending permission and a START reply cannot turn it on. This workflow sends nothing
-# and changes no setting. The number comes from a secret and is only ever printed masked.
+# and changes no setting.
+# Run logs are public: accounts are given by user id, and only the number's last two digits, the length and hash of the
+# message, and a hash of Meta's message id are printed (the id itself can encode the sender's number).
 name: WhatsApp test contact
 
 on:
@@ -19,9 +21,10 @@ on:
         description: "For create or remove, type CONFIRM"
         required: false
         default: ""
-      account_email:
-        description: "Dedicated test account that holds the record: flagged as a test account, inactive, not staff"
-        required: true
+      account_id:
+        description: "For create: user id of a test account with force_inactive on, not staff or superuser"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -32,15 +35,16 @@ jobs:
     steps:
       - name: Run
         env:
-          ACTION: ${{ github.event.inputs.action }}
-          CONFIRM: ${{ github.event.inputs.confirm }}
-          ACCOUNT_EMAIL: ${{ github.event.inputs.account_email }}
+          ACTION: ${{ inputs.action }}
+          CONFIRM: ${{ inputs.confirm }}
+          ACCOUNT_ID: ${{ inputs.account_id }}
           CONTACT_NUMBER: ${{ secrets.WHATSAPP_TEST_CONTACT_NUMBER }}
         run: |
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
-          docker exec -i -w /app -e ACTION -e CONFIRM -e ACCOUNT_EMAIL -e CONTACT_NUMBER \
+          docker exec -i -w /app -e ACTION -e CONFIRM -e ACCOUNT_ID -e CONTACT_NUMBER \
             -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import hashlib
           import os
           import sys
 
@@ -72,12 +76,26 @@ jobs:
 
           def mask(number):
               number = str(number or "")
-              return f"{number[:3]}*****{number[-2:]}" if len(number) > 5 else "*****"
+              return f"*****{number[-2:]}" if len(number) > 5 else "*****"
 
 
-          def short(wamid):
-              wamid = str(wamid or "")
-              return f"{wamid[:10]}...{wamid[-6:]} (len {len(wamid)})" if wamid else ""
+          def digest(value):
+              return hashlib.sha256(str(value or "").encode()).hexdigest()[:12]
+
+
+          def account_problems(user):
+              problems = []
+              if not getattr(user, "is_test_account", False):
+                  problems.append("is_test_account is off")
+              if not user.force_inactive:
+                  problems.append("force_inactive is off")
+              if user.is_active:
+                  problems.append("the account is active")
+              if user.is_staff:
+                  problems.append("the account is staff")
+              if user.is_superuser:
+                  problems.append("the account is a superuser")
+              return problems
 
 
           def safety_checks():
@@ -106,12 +124,15 @@ jobs:
                   stop("safety checks failed, nothing created")
               if WhatsAppOptIn.objects.exists():
                   stop("an opt-in record already exists, nothing created")
-              user = get_user_model().objects.filter(email__iexact=os.environ["ACCOUNT_EMAIL"].strip()).first()
-              if user is None or not getattr(user, "is_test_account", False):
-                  stop("that account is not a flagged test account, nothing created")
-              # Anyone signed in to the account could read the number, so nobody may be able to sign in to it.
-              if user.is_active or user.is_staff or user.is_superuser:
-                  stop("that account must be inactive and not staff, nothing created")
+              account_id = os.environ.get("ACCOUNT_ID", "").strip()
+              if not (account_id.isascii() and account_id.isdigit()):
+                  stop("account_id must be a user id, nothing created")
+              user = get_user_model().objects.filter(pk=int(account_id)).first()
+              if user is None:
+                  stop("no such user id, nothing created")
+              problems = account_problems(user)
+              if problems:
+                  stop("that account is not eligible (" + "; ".join(problems) + "), nothing created")
               with transaction.atomic():
                   row = WhatsAppOptIn.objects.create(user=user, phone_e164=phone, opted_in=False, opted_in_at=None,
                                                      opted_out_at=None, source=SOURCE)
@@ -121,13 +142,16 @@ jobs:
               inbound = WhatsAppInbound.objects.filter(from_e164=phone)
               print("REMOVED inbound=", inbound.delete()[0], " contact=", rows.delete()[0])
 
-          row = rows.first()
+          row = rows.select_related("user").first()
           print("--- record")
           check(row is not None or action == "remove", "test contact record exists")
           if row is not None:
               check(row.opted_in is False, "opted_in is False")
               check(row.opted_in_at is None, "opted_in_at is empty, so START cannot turn it on")
               check(WhatsAppOptIn.objects.count() == 1, "it is the only opt-in record")
+              print("holder account id", row.user_id)
+              for problem in account_problems(row.user):
+                  check(False, "holder account: " + problem)
           print("--- safety")
           safety_checks()
           print("--- incoming messages from the test number")
@@ -137,8 +161,8 @@ jobs:
               check(latest is not None, "message saved")
           if latest is not None:
               check(latest.from_e164 == phone, f"sender number matches the secret ({mask(latest.from_e164)})")
-              check(bool(latest.text), f"message text saved (length {len(latest.text)}, starts {latest.text[:30]!r})")
-              check(bool(latest.wamid), f"Meta message ID saved ({short(latest.wamid)})")
+              check(bool(latest.text), f"message text saved (length {len(latest.text)}, sha256 {digest(latest.text)})")
+              check(latest.wamid.startswith("wamid."), f"Meta message ID saved (length {len(latest.wamid)}, sha256 {digest(latest.wamid)})")
               check(latest.received_at is not None, f"server receipt time saved ({latest.received_at.isoformat()})")
               if hasattr(latest, "meta_timestamp"):
                   check(latest.meta_timestamp is not None, f"Meta timestamp saved ({latest.meta_timestamp})")
