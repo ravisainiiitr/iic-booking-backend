@@ -627,7 +627,7 @@ from iic_booking.istem.api_views import (
     istem_institute,
 )
 
-from iic_booking.whatsapp.views import whatsapp_me, whatsapp_status, whatsapp_webhook
+from iic_booking.whatsapp.views import whatsapp_inbound, whatsapp_me, whatsapp_status, whatsapp_webhook
 
 router = DefaultRouter() if settings.DEBUG else SimpleRouter()
 router.register("users", UserViewSet, basename="user")
@@ -1071,6 +1071,7 @@ urlpatterns = router.urls + [
     path("calls/", calls, name="calls"),
     path("whatsapp/me/", whatsapp_me, name="whatsapp-me"),
     path("whatsapp/status/", whatsapp_status, name="whatsapp-status"),
+    path("whatsapp/inbound/", whatsapp_inbound, name="whatsapp-inbound"),
     path("whatsapp/webhook/", whatsapp_webhook, name="whatsapp-webhook"),
     path("calls/config/", call_config, name="calls-config"),
     path("calls/options/", call_options, name="calls-options"),

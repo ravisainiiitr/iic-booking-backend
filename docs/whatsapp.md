@@ -54,6 +54,9 @@ conversations a month are free). The portal sends only the three utility templat
 
 - Opt-in: `GET/PUT /api/whatsapp/me/` (the profile card). The number defaults to the profile phone, normalised to
   E.164 (ten digits are read as an Indian mobile).
+- Sending fails closed: while `WHATSAPP_PILOT_NUMBERS` is set, only those numbers receive messages; with no list, nobody does unless `WHATSAPP_ALLOW_ALL` is on. Checked when queued and again when sent.
+- Every consent change is kept in `WhatsAppConsentEvent` with its time and source.
+- Meta events are handled once (`WhatsAppWebhookEvent`, no content or number stored). Incoming messages from people with an opt-in record are kept in `WhatsAppInbound`, readable only by the Main Administrator (`/api/whatsapp/inbound/`). Both are deleted after `WHATSAPP_RETENTION_DAYS` (default 90) by the daily `whatsapp.purge_expired` task; consent history is kept.
 - A user who replies **STOP** is opted out (START opts them back in); opting out before a queued message is sent
   cancels it.
 - Delivery status (sent → delivered → read, or failed with Meta's reason) arrives on the webhook, which only accepts

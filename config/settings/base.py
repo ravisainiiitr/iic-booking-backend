@@ -991,6 +991,10 @@ WHATSAPP_VERIFY_TOKEN = env("WHATSAPP_VERIFY_TOKEN", default="")
 WHATSAPP_API_VERSION = env("WHATSAPP_API_VERSION", default="v21.0")
 WHATSAPP_TEMPLATE_LANGUAGE = env("WHATSAPP_TEMPLATE_LANGUAGE", default="en")
 WHATSAPP_PILOT_NUMBERS = env.list("WHATSAPP_PILOT_NUMBERS", default=[])
+# Sending to every opted-in user needs this explicit switch: an empty pilot list alone sends to nobody.
+WHATSAPP_ALLOW_ALL = env.bool("WHATSAPP_ALLOW_ALL", default=False)
+# Incoming messages and webhook records are deleted after this many days. Consent history is kept.
+WHATSAPP_RETENTION_DAYS = env.int("WHATSAPP_RETENTION_DAYS", default=90)
 # Android: Firebase Cloud Messaging HTTP v1 (path to the service-account JSON, kept outside the repository).
 CALLS_FCM_SERVICE_ACCOUNT_FILE = env("CALLS_FCM_SERVICE_ACCOUNT_FILE", default="")
 # The same key as one base64 line, for the production env file (takes priority over the file). Never logged.

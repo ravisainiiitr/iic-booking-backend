@@ -57,5 +57,19 @@ def pilot_numbers() -> set[str]:
     return {str(x).strip() for x in items if str(x).strip()}
 
 
+def allow_all() -> bool:
+    return bool(_s("WHATSAPP_ALLOW_ALL", False))
+
+
+def may_send_to(phone_e164: str) -> bool:
+    """Fails closed: while a pilot list is set only those numbers; with no list, nobody unless WHATSAPP_ALLOW_ALL is on."""
+    pilot = pilot_numbers()
+    return phone_e164 in pilot if pilot else allow_all()
+
+
+def retention_days() -> int:
+    return max(1, int(_s("WHATSAPP_RETENTION_DAYS", 90) or 90))
+
+
 def portal_url() -> str:
     return str(_s("FRONTEND_URL", "") or _s("PORTAL_BASE_URL", "") or "https://equip.iitr.ac.in").rstrip("/")
