@@ -9,20 +9,21 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "verify (read-only), create or remove"
+        description: "verify (read-only), prepare_account, create or remove"
         required: true
         default: "verify"
         type: choice
         options:
           - verify
+          - prepare_account
           - create
           - remove
       confirm:
-        description: "For create or remove, type CONFIRM"
+        description: "For prepare_account, create or remove, type CONFIRM"
         required: false
         default: ""
       account_id:
-        description: "For create: user id of a test account with force_inactive on, not staff or superuser"
+        description: "For prepare_account and create: user id of an inactive test account, not staff or superuser"
         required: false
         default: ""
 
@@ -108,8 +109,8 @@ jobs:
 
 
           action = os.environ["ACTION"]
-          if action in ("create", "remove") and os.environ.get("CONFIRM") != "CONFIRM":
-              stop("type CONFIRM to create or remove")
+          if action in ("prepare_account", "create", "remove") and os.environ.get("CONFIRM") != "CONFIRM":
+              stop("type CONFIRM to prepare an account, create or remove")
           try:
               phone = normalize_phone(os.environ.get("CONTACT_NUMBER", ""))
           except OptInError:
@@ -117,6 +118,26 @@ jobs:
 
           print("now_utc=", timezone.now().isoformat(), " contact=", mask(phone))
           rows = WhatsAppOptIn.objects.filter(phone_e164=phone, source=SOURCE)
+
+          if action == "prepare_account":
+              # Only keeps an already inactive test account inactive. update() skips save(), so nothing else about the
+              # account (wallet, lifecycle records, activation) can change.
+              account_id = os.environ.get("ACCOUNT_ID", "").strip()
+              if not (account_id.isascii() and account_id.isdigit()):
+                  stop("account_id must be a user id, nothing changed")
+              users = get_user_model().objects.filter(pk=int(account_id))
+              user = users.first()
+              if user is None:
+                  stop("no such user id, nothing changed")
+              problems = [p for p in account_problems(user) if p != "force_inactive is off"]
+              if problems:
+                  stop("that account cannot be prepared (" + "; ".join(problems) + "), nothing changed")
+              print("account", user.pk, "force_inactive before=", user.force_inactive)
+              users.update(force_inactive=True)
+              user.refresh_from_db()
+              print("account", user.pk, "force_inactive after=", user.force_inactive, " is_active=", user.is_active)
+              print("account problems:", account_problems(user) or "none")
+              sys.exit(0 if not account_problems(user) else 1)
 
           if action == "create":
               safety_checks()
