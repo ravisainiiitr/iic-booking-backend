@@ -110,6 +110,9 @@ def invalidate_audience_cache() -> None:
 def user_in_app_audience(user) -> bool:
     if user is None or not getattr(user, "is_authenticated", False):
         return False
+    # Test accounts of any type may always try the app, so it can be tested without opening it to real users of that type.
+    if getattr(user, "is_test_account", False):
+        return True
     return getattr(user, "user_type", None) in set(audience_user_types())
 
 
