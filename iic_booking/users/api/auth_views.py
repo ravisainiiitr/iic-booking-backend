@@ -3132,18 +3132,12 @@ def logout(request):
     try:
         user = request.user
         
-        # Check if user logged in via Omniport
-        omniport_logout_url = None
-        if user.uses_omniport_auth():
-            # Build Omniport logout URL with redirect to frontend
-            frontend_url = settings.FRONTEND_URL.rstrip('/')
-            logout_params = {
-                "next": frontend_url,  # Redirect back to frontend after logout
-            }
-            omniport_logout_url = f"{settings.OMNIPORT_LOGOUT_URL}?{urlencode(logout_params)}"
-            logger.info(f"User {user.email} logged in via Omniport, providing logout URL: {omniport_logout_url}")
-        
         from iic_booking.users.mobile_sessions import REASON_LOGOUT, is_mobile_session, revoke_session
+
+        # A browser sign-in through Channel i also has to end there; the app signs out of this device only.
+        omniport_logout_url = None
+        if user.uses_omniport_auth() and not is_mobile_session(request.auth):
+            omniport_logout_url = settings.OMNIPORT_LOGOUT_URL
 
         if is_mobile_session(request.auth):
             # App sign-out ends only this device session; the web Token stays valid.

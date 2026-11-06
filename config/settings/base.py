@@ -715,9 +715,10 @@ CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM = env(
     "CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM",
     default="",
 )
+# Channel i's own Log out page: it ends the Channel i session, then shows its sign-in page. It ignores a "next" address.
 OMNIPORT_LOGOUT_URL = env(
     "OMNIPORT_LOGOUT_URL",
-    default="https://channeli.in/accounts/logout/",
+    default="https://channeli.in/auth/logout",
 )
 # Base URL of the frontend app. Used for redirects after auth and for links in emails
 # (booking confirmation, wallet balance, results available, etc.). Must match where users access the app.
