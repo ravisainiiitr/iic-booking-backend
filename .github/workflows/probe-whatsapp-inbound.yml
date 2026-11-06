@@ -1,5 +1,6 @@
 # READ-ONLY: did Meta's incoming WhatsApp events reach production, and what was stored? Sends nothing, writes nothing and
-# changes no setting. Phone numbers are masked, message ids shortened and no token or secret is read out.
+# changes no setting. Run logs are public: only a number's last two digits, the length and hash of a message and a hash of
+# Meta's message id are printed (the id itself can encode the sender's number). No token or secret is read out.
 name: Probe WhatsApp inbound (read-only)
 
 on:
@@ -22,6 +23,8 @@ jobs:
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
           docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import hashlib
+
           import django
 
           django.setup()
@@ -34,12 +37,11 @@ jobs:
 
           def mask(number):
               number = str(number or "")
-              return f"{number[:3]}*****{number[-2:]}" if len(number) > 5 else "*****"
+              return f"*****{number[-2:]}" if len(number) > 5 else "*****"
 
 
-          def short(wamid):
-              wamid = str(wamid or "")
-              return f"{wamid[:10]}...{wamid[-6:]} (len {len(wamid)})" if wamid else ""
+          def digest(value):
+              return hashlib.sha256(str(value or "").encode()).hexdigest()[:12]
 
 
           print("now_utc=", timezone.now().isoformat())
@@ -68,8 +70,9 @@ jobs:
           print("inbound_total=", WhatsAppInbound.objects.count())
           for m in WhatsAppInbound.objects.order_by("-received_at")[:10]:
               print("  inbound", m.received_at.isoformat(), "from=", mask(m.from_e164), "linked_user=", bool(m.user_id),
-                    "kind=", m.kind, "action=", m.action or "-", "wamid=", short(m.wamid),
-                    "text_len=", len(m.text or ""), "text_start=", repr((m.text or "")[:30]))
+                    "kind=", m.kind, "action=", m.action or "-", "wamid_len=", len(m.wamid), "wamid_sha256=", digest(m.wamid),
+                    "text_len=", len(m.text or ""), "text_sha256=", digest(m.text),
+                    "meta_timestamp=", getattr(m, "meta_timestamp", "not in this release"))
           PY
       - name: Application logs
         env:
@@ -88,13 +91,13 @@ jobs:
         env:
           HOURS: ${{ github.event.inputs.hours }}
         run: |
-          set -uo pipefail
+          set +e  # grep exits 1 when a file has no match, which is a normal answer here
           # Client address removed. Query strings removed, since Meta's verify request carries the token there.
           for f in /var/log/apache2/*access*.log /var/log/apache2/*access*.log.1; do
             [ -e "$f" ] || continue
-            n="$(sudo -n grep -c '/api/whatsapp/webhook' "$f" 2>/dev/null || echo unreadable)"
-            echo "=== $f matches=$n"
+            n="$(sudo -n grep -c '/api/whatsapp/webhook' "$f" 2>/dev/null)"
+            echo "=== $f matches=${n:-unreadable}"
             sudo -n grep '/api/whatsapp/webhook' "$f" 2>/dev/null \
-              | sed -E 's/^[^[]*//; s/\?[^ "]*//' | cut -c1-200 | tail -n 30
+              | sed -E 's/^[^[]*//; s/\?[^ "]*//g' | cut -c1-200 | tail -n 30
           done
           exit 0
