@@ -20,9 +20,8 @@ on:
         required: false
         default: ""
       account_email:
-        description: "Flagged test account that holds the record"
+        description: "Dedicated test account that holds the record: flagged as a test account, inactive, not staff"
         required: true
-        default: "test.student@iic-booking.test"
 
 permissions:
   contents: read
@@ -110,6 +109,9 @@ jobs:
               user = get_user_model().objects.filter(email__iexact=os.environ["ACCOUNT_EMAIL"].strip()).first()
               if user is None or not getattr(user, "is_test_account", False):
                   stop("that account is not a flagged test account, nothing created")
+              # Anyone signed in to the account could read the number, so nobody may be able to sign in to it.
+              if user.is_active or user.is_staff or user.is_superuser:
+                  stop("that account must be inactive and not staff, nothing created")
               with transaction.atomic():
                   row = WhatsAppOptIn.objects.create(user=user, phone_e164=phone, opted_in=False, opted_in_at=None,
                                                      opted_out_at=None, source=SOURCE)
