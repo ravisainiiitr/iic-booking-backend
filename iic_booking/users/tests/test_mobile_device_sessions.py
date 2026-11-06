@@ -458,6 +458,34 @@ def test_web_logout_with_web_token_keeps_mobile_sessions():
     assert token_client(data["access_token"]).get(USER_URL).status_code == 200
 
 
+def test_web_logout_of_a_channel_i_account_points_to_channel_i_log_out(settings):
+    settings.OMNIPORT_LOGOUT_URL = "https://channel-i.example/auth/logout"
+    client, _ = web_client(make_user(user_type=UserType.FACULTY))
+    resp = client.post(LOGOUT_URL)
+    assert resp.status_code == 200
+    assert resp.data["omniport_logout_url"] == "https://channel-i.example/auth/logout"
+
+
+def test_channel_i_log_out_page_is_the_one_channel_i_itself_links_to():
+    from config.settings import base
+
+    assert not base.OMNIPORT_LOGOUT_URL.endswith("/accounts/logout/")
+
+
+def test_web_logout_of_an_email_account_has_no_channel_i_step():
+    client, _ = web_client(make_user(user_type=UserType.EXTERNAL))
+    resp = client.post(LOGOUT_URL)
+    assert resp.status_code == 200
+    assert "omniport_logout_url" not in resp.data
+
+
+def test_app_logout_of_a_channel_i_account_has_no_channel_i_step():
+    data = enroll(make_user(user_type=UserType.FACULTY))
+    resp = token_client(data["access_token"]).post(LOGOUT_URL)
+    assert resp.status_code == 200
+    assert "omniport_logout_url" not in resp.data
+
+
 def test_mobile_logout_endpoint():
     user = make_user()
     data = enroll(user)
