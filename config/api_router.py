@@ -538,6 +538,7 @@ from iic_booking.equipment.admin_insights.views import (
     admin_insights_cancellations,
     admin_insights_equipment,
     admin_insights_refund_requests,
+    admin_insights_service_levels,
     admin_insights_staff_proficiency,
     admin_insights_user_card,
     admin_insights_users,
@@ -2020,6 +2021,7 @@ urlpatterns = router.urls + [
     path("admin/insights/equipment/", admin_insights_equipment, name="admin-insights-equipment"),
     path("admin/insights/users/", admin_insights_users, name="admin-insights-users"),
     path("admin/insights/cancellations/", admin_insights_cancellations, name="admin-insights-cancellations"),
+    path("admin/insights/service-levels/", admin_insights_service_levels, name="admin-insights-service-levels"),
     path(
         "admin/insights/refund-requests/", admin_insights_refund_requests, name="admin-insights-refund-requests"
     ),
