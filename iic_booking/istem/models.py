@@ -96,7 +96,7 @@ class IstemLinkOtp(models.Model):
     email_masked = models.CharField(max_length=255)
     code_hash = models.CharField(max_length=64)
     whatsapp_code_hash = models.CharField(max_length=64, blank=True, default="", help_text=_(
-        "The separate code sent on WhatsApp, when the user asked for it, so the record shows which one proved the account."))
+        "No longer used: the same code now goes to email and WhatsApp."))
     whatsapp_masked = models.CharField(max_length=30, blank=True, default="")
     state = models.CharField(max_length=20, choices=LinkOtpState.choices, default=LinkOtpState.PENDING)
     attempts = models.PositiveSmallIntegerField(default=0)

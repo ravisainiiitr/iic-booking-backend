@@ -36,7 +36,7 @@ def istem_link_find_account(request):
 def istem_link_send_otp(request):
     """Send an OTP to the email registered on I-STEM for the user's existing I-STEM account."""
     try:
-        sent = send_otp(request.user, whatsapp=request.data.get("whatsapp") is True)
+        sent = send_otp(request.user)
     except OtpLinkError as exc:
         return _refusal(exc)
     also = f" and on WhatsApp ({sent['whatsapp_masked']})" if sent["whatsapp_masked"] else ""
@@ -91,7 +91,7 @@ def istem_register_lookup(request):
 
     try:
         sent = start(str(request.data.get("email") or ""), str(request.data.get("mobile") or ""),
-                     client_ip=_client_ip(request), test_key=_test_key(request), whatsapp=request.data.get("whatsapp") is True)
+                     client_ip=_client_ip(request), test_key=_test_key(request))
     except RegistrationLookupError as exc:
         return _registration_refusal(exc)
     also = f" and on WhatsApp ({sent['whatsapp_masked']})" if sent["whatsapp_masked"] else ""

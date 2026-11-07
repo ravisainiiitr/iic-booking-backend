@@ -77,7 +77,7 @@ Before this there was no mobile OTP on the portal: every OTP went by email, and 
 |---|---|---|
 | Proving a number: `POST /api/whatsapp/me/verify/send/`, then `POST /api/whatsapp/me/verify/confirm/` with `otp` (profile card) | The user's opted-in number | The opt-in |
 | Sign-in OTP (`auth/login/request-otp/`) | Only a number the user proved, while it is still their current number and they are opted in. The profile phone number alone never gets one, because it has never been checked | The opt-in |
-| I-STEM registration and account link | The mobile number on I-STEM, only when the person ticked the box for this request, and only with `ISTEM_WHATSAPP_OTP_ENABLED` on | That request, kept in `WhatsAppConsentEvent` with source `otp_request`. Someone who replied STOP is not sent one |
+| I-STEM registration and account link | The same OTP as the email, to the mobile number on I-STEM when there is one, with `ISTEM_WHATSAPP_OTP_ENABLED` on | The person asking for the OTP; the screen says it also goes on WhatsApp. Kept in `WhatsAppConsentEvent`. STOP is honoured |
 
 Forgot-password and wallet OTPs stay email-only on purpose: a password change lasts, and wallet codes authorise money.
 
@@ -86,7 +86,7 @@ Forgot-password and wallet OTPs stay email-only on purpose: a password change la
 - **Changing the number undoes the proof.** A code for the old number cannot prove the new one. STOP ends sign-in codes.
 - **Migrations:** `whatsapp` 0007 and `istem` 0011.
 
-**Decision before turning on `ISTEM_WHATSAPP_OTP_ENABLED` (default off).** The 31 Oct 2026 committee rule sends the OTP to the email on I-STEM. With this setting, a separate WhatsApp code proves the same account, recorded as evidence `WHATSAPP_OTP`. Direct registration then creates an approved account with `email_verified=True` although the email was not proved, so whoever holds a recycled I-STEM mobile number could take that account. The institute should accept that, or keep the setting off.
+**Before turning on `ISTEM_WHATSAPP_OTP_ENABLED` (default off).** The 31 Oct 2026 committee rule sent the OTP to the email on I-STEM. With this setting the same code also goes to the mobile on I-STEM, so holding that number is enough to prove the account, and a direct registration then creates an approved account with the email marked verified. A reassigned number is the risk. The record cannot show which channel was used: it notes that the code went to both (`EMAIL_OR_WHATSAPP_OTP`). I-STEM's Approved template states 10 minutes, while these codes last 5.
 
 ## Template management
 

@@ -272,45 +272,55 @@ def istem_on(on):
     return on
 
 
-def test_registration_stays_email_only_unless_the_person_asks(istem_on, mailoutbox):
-    with patch("iic_booking.whatsapp.otp.send_code_template") as send:
-        sent = reg.start("asha@lab.example.com", "", client_factory=_istem_factory())
-    assert sent["whatsapp_masked"] == "" and not send.called and mailoutbox
+def _email_code(mailoutbox) -> str:
+    return re.search(r"\b(\d{6})\b", mailoutbox[-1].body).group(1)
 
 
 def test_registration_stays_email_only_until_it_is_switched_on(istem_on, mailoutbox):
     istem_on.ISTEM_WHATSAPP_OTP_ENABLED = False
     with patch("iic_booking.whatsapp.otp.send_code_template") as send:
-        sent = reg.start("asha@lab.example.com", "", client_factory=_istem_factory(), whatsapp=True)
+        sent = reg.start("asha@lab.example.com", "", client_factory=_istem_factory())
     assert sent["whatsapp_masked"] == "" and not send.called and mailoutbox
 
 
-def test_the_whatsapp_code_registers_and_the_record_says_so(istem_on, mailoutbox):
+def test_the_same_code_goes_to_email_and_whatsapp_and_works(istem_on, mailoutbox):
     with patch("iic_booking.whatsapp.otp.send_code_template", return_value="wamid.unit") as send:
-        sent = reg.start("asha@lab.example.com", "", client_factory=_istem_factory(), whatsapp=True)
+        sent = reg.start("asha@lab.example.com", "", client_factory=_istem_factory())
     assert sent["whatsapp_masked"] == "number ending 10"
-    email_code = re.search(r"\b(\d{6})\b", mailoutbox[-1].body).group(1)
-    assert send.call_args.args[2] != email_code  # two codes, so the record can show which one was used
+    code = _email_code(mailoutbox)
+    assert send.call_args.args[2] == code
     assert WhatsAppConsentEvent.objects.filter(phone_e164=PHONE, source="otp_request", user__isnull=True).exists()
-    result = reg.verify(sent["token"], send.call_args.args[2])
+    result = reg.verify(sent["token"], code)
     user = UserFactory(email="asha@lab.example.com")
     assert reg.link_new_user(user, result["link_token"]) is True
     link = IstemUserLink.objects.get(user=user)
     assert link.public_user_id == ROW["user_id"]
-    assert IstemSyncEvent.objects.filter(user_link=link, evidence_type=EvidenceType.WHATSAPP_OTP).exists()
+    assert IstemSyncEvent.objects.filter(user_link=link, evidence_type=EvidenceType.EMAIL_OR_WHATSAPP_OTP).exists()
 
 
-def test_the_email_code_still_records_email_when_both_were_sent(istem_on, mailoutbox):
-    with patch("iic_booking.whatsapp.otp.send_code_template", return_value="wamid.unit"):
-        sent = reg.start("asha@lab.example.com", "", client_factory=_istem_factory(), whatsapp=True)
-    result = reg.verify(sent["token"], re.search(r"\b(\d{6})\b", mailoutbox[-1].body).group(1))
+def test_when_whatsapp_fails_the_email_still_works_and_the_record_says_email(istem_on, mailoutbox):
+    with patch("iic_booking.whatsapp.otp.send_code_template", side_effect=WhatsAppError("refused")):
+        sent = reg.start("asha@lab.example.com", "", client_factory=_istem_factory())
+    assert sent["whatsapp_masked"] == ""
+    result = reg.verify(sent["token"], _email_code(mailoutbox))
     user = UserFactory(email="asha@lab.example.com")
     assert reg.link_new_user(user, result["link_token"]) is True
     assert IstemSyncEvent.objects.filter(user_link__user=user, evidence_type=EvidenceType.EMAIL_OTP).exists()
 
 
-def test_someone_who_replied_stop_gets_no_code_on_request(istem_on, mailoutbox):
+def test_no_mobile_on_istem_means_email_only(istem_on, mailoutbox):
+    def factory():
+        clear_token_cache()
+        row = {**ROW, "user_contactno": ""}
+        return IstemClient(FakeTransport(token_response(), json_response({"status": "SUCCESS", "message": "User found", "result": row})))
+
+    with patch("iic_booking.whatsapp.otp.send_code_template") as send:
+        sent = reg.start("asha@lab.example.com", "", client_factory=factory)
+    assert sent["whatsapp_masked"] == "" and not send.called and mailoutbox
+
+
+def test_someone_who_replied_stop_gets_no_code_on_whatsapp(istem_on, mailoutbox):
     WhatsAppOptIn.objects.create(user=UserFactory(), phone_e164=PHONE, opted_in=False, opted_out_at="2026-11-01T00:00:00Z")
     with patch("iic_booking.whatsapp.otp.send_code_template") as send:
-        sent = reg.start("asha@lab.example.com", "", client_factory=_istem_factory(), whatsapp=True)
+        sent = reg.start("asha@lab.example.com", "", client_factory=_istem_factory())
     assert sent["whatsapp_masked"] == "" and not send.called and mailoutbox

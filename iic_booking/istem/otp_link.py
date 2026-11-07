@@ -250,9 +250,9 @@ def _send_email(user, email: str, code: str) -> None:
     )
 
 
-def send_otp(user, *, whatsapp: bool = False) -> dict:
-    """Send a new OTP to the candidate's I-STEM email (any earlier unused code stops working), and a separate one on
-    WhatsApp to the mobile on I-STEM when the user asked for it."""
+def send_otp(user) -> dict:
+    """Send a new OTP to the candidate's I-STEM email (any earlier unused code stops working), and the same OTP on WhatsApp
+    to the mobile on I-STEM when there is one."""
     refused = False
     with transaction.atomic():
         link = _locked_awaiting_link(user)
@@ -283,17 +283,15 @@ def send_otp(user, *, whatsapp: bool = False) -> dict:
                 # Rolls the OTP back: nothing was sent, so nothing is recorded as sent.
                 raise OtpLinkError("send_failed", "The OTP email could not be sent. Please try again later.", http_status=502)
             mobile = _whatsapp_mobile(link)
-            if whatsapp and mobile and conf.whatsapp_otp_enabled():
-                from iic_booking.whatsapp.otp import new_code, send_on_request
+            if mobile and conf.whatsapp_otp_enabled():
+                from iic_booking.whatsapp.otp import send_on_request
 
-                whatsapp_code = new_code()
-                sent_to = send_on_request(mobile, whatsapp_code, purpose="istem_link", user=user)
+                sent_to = send_on_request(mobile, code, purpose="istem_link", user=user)
                 if sent_to:
-                    otp.whatsapp_code_hash = _hash(link, link.candidate_public_user_id, f"whatsapp:{whatsapp_code}")
                     otp.whatsapp_masked = sent_to
-                    otp.save(update_fields=["whatsapp_code_hash", "whatsapp_masked"])
+                    otp.save(update_fields=["whatsapp_masked"])
                     record_event(user_link=link, from_state=link.state, to_state=link.state,
-                                 reason=f"WhatsApp OTP {otp.pk} sent to {sent_to}")
+                                 reason=f"OTP {otp.pk} also sent on WhatsApp to {sent_to}")
     if refused:
         raise OtpLinkError("linked_elsewhere", "This I-STEM account is already linked to another portal account. "
                            "The IIC office will review it.", http_status=409)
@@ -313,14 +311,12 @@ def verify_otp(user, code: str) -> IstemUserLink:
         otp = link.otps.select_for_update().filter(state=LinkOtpState.PENDING).order_by("-sent_at").first()
         if otp is None:
             raise OtpLinkError("no_otp", "No OTP is waiting. Please ask for a new one.")
-        by_whatsapp = bool(otp.whatsapp_code_hash) and constant_time_compare(
-            _hash(link, otp.public_user_id, f"whatsapp:{code}"), otp.whatsapp_code_hash)
         if otp.expires_at <= now:
             otp.state = LinkOtpState.EXPIRED
             otp.finished_at = now
             otp.save(update_fields=["state", "finished_at"])
             error = OtpLinkError("expired", "This OTP has expired. Please ask for a new one.")
-        elif not by_whatsapp and not constant_time_compare(_hash(link, otp.public_user_id, code), otp.code_hash):
+        elif not constant_time_compare(_hash(link, otp.public_user_id, code), otp.code_hash):
             otp.attempts += 1
             left = MAX_ATTEMPTS - otp.attempts
             reason = f"wrong email OTP {otp.pk} (attempt {otp.attempts} of {MAX_ATTEMPTS})"
@@ -349,9 +345,10 @@ def verify_otp(user, code: str) -> IstemUserLink:
             profile = dict(link.candidate_profile or {})
             if profile:
                 link.istem_profile, link.candidate_profile = profile, {}
-            if by_whatsapp:
-                _link_user(link, otp.public_user_id, reason=f"existing I-STEM user linked by WhatsApp OTP {otp.pk}",
-                           evidence_type=EvidenceType.WHATSAPP_OTP, evidence_reference=f"OTP {otp.pk} on WhatsApp to {otp.whatsapp_masked}")
+            if otp.whatsapp_masked:
+                _link_user(link, otp.public_user_id, reason=f"existing I-STEM user linked by OTP {otp.pk}, sent to email and WhatsApp",
+                           evidence_type=EvidenceType.EMAIL_OR_WHATSAPP_OTP,
+                           evidence_reference=f"OTP {otp.pk} to {otp.email_masked} and on WhatsApp to {otp.whatsapp_masked}")
             else:
                 _link_user(link, otp.public_user_id, reason=f"existing I-STEM user linked by email OTP {otp.pk}",
                            evidence_type=EvidenceType.EMAIL_OTP, evidence_reference=f"OTP {otp.pk} to {otp.email_masked}")

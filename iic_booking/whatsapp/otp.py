@@ -3,7 +3,7 @@
 Three uses:
 - proving a WhatsApp number from the profile (``start_verification`` / ``confirm_verification``);
 - sign-in codes, only to a proved number of a user who is opted in (``send_sign_in_code``);
-- I-STEM codes, only when the person ticked the box for this request (``send_on_request``).
+- I-STEM OTPs, the same code as the email, when the person asks for one (``send_on_request``).
 
 The code is never stored: the message row keeps no parameters, and it is sent at once with no retry, because a code that
 arrives late is useless and the email has it anyway. Nothing here raises into the caller's sign-in or registration.
@@ -110,8 +110,8 @@ def send_sign_in_code(user, code: str, *, session=None) -> str:
 
 
 def send_on_request(raw_phone: str, code: str, *, purpose: str, user=None, session=None) -> str:
-    """The person asked for this code on WhatsApp just now, on a number another service holds for them. That request is
-    the consent, kept in the consent history. Someone who replied STOP is not sent anything."""
+    """The person asked for this code just now, on a screen saying it also goes on WhatsApp, to a number another service holds
+    for them. That request is the consent, kept in the consent history. Someone who replied STOP is not sent anything."""
     try:
         phone = normalize_phone(raw_phone)
     except OptInError:
