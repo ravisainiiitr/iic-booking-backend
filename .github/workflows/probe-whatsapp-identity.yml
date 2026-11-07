@@ -25,5 +25,7 @@ jobs:
           case "$TARGET_ID" in (*[!0-9]*|'') echo "WHATSAPP_DIAGNOSTIC_PHONE_NUMBER_ID must be set and numeric"; exit 1 ;; esac
           case "$WABA_ID" in (*[!0-9]*) echo "WHATSAPP_DIAGNOSTIC_WABA_ID must be numeric"; exit 1 ;; esac
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
-          docker exec -i -w /app -e TARGET_ID -e WABA_ID -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
-            python - < scripts/ops/whatsapp_identity_probe.py
+          # The runner's checkout is sparse, so the script is read from git rather than from disk.
+          git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/whatsapp_identity_probe.py \
+            | docker exec -i -w /app -e TARGET_ID -e WABA_ID -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+              python -
