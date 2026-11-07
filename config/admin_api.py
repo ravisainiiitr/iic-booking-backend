@@ -3893,6 +3893,12 @@ def admin_api_router():
         def waitlist_clear(self, request, pk=None):
             """Clear the waitlist for this equipment (Admin, OIC, Lab Operator, Department Administrator)."""
             equipment = self.get_object()
+            from iic_booking.equipment.operations_audit import record_waitlist_entries
+
+            record_waitlist_entries(
+                WaitlistEntry.objects.filter(equipment=equipment).exclude(status="OPT_OUT").select_related("equipment", "user"),
+                "waitlist_staff_cleared", actor=request.user,
+            )
             deleted, _ = WaitlistEntry.objects.filter(equipment=equipment).delete()
             record_staff_action(request.user, "waitlist.clear", equipment_id=equipment.equipment_id, deleted=deleted)
             return Response({
@@ -4138,6 +4144,9 @@ def admin_api_router():
                 booking_id=booking.booking_id,
                 over_quota=bool(quota_info["quota_warning"]),
             )
+            from iic_booking.equipment.operations_audit import record
+
+            record("waitlist_staff_confirmed", equipment=equipment, subject=entry.user, actor=request.user, booking=booking)
             entry.delete()
             return Response(
                 {

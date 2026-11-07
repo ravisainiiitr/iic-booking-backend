@@ -8043,6 +8043,7 @@ from iic_booking.equipment.slot_exchange_models import (  # noqa: E402
     SlotExchangeRequest,
     SlotExchangeStatus,
 )
+from iic_booking.equipment.operations_audit_models import OperationsAuditEvent  # noqa: E402,F401
 from iic_booking.equipment.oic_request_audit_models import OicRequestAuditLog  # noqa: E402,F401
 from iic_booking.equipment.config_audit_models import (  # noqa: E402
     EquipmentConfigAuditLog,

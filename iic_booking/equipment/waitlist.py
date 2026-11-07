@@ -103,6 +103,12 @@ def active_waitlist_position(entry: WaitlistEntry) -> int | None:
     )
 
 
+def _audit(entries, action: str, *, actor=None, detail: str = "") -> None:
+    from iic_booking.equipment.operations_audit import record_waitlist_entries
+
+    record_waitlist_entries(entries, action, actor=actor, detail=detail)
+
+
 def opt_out_of_waitlist(entry: WaitlistEntry) -> WaitlistEntry:
     """
     Soft-opt-out: keep the row for audit, exclude from promotion, compress ACTIVE queue.
@@ -111,6 +117,7 @@ def opt_out_of_waitlist(entry: WaitlistEntry) -> WaitlistEntry:
     entry.status = "OPT_OUT"
     entry.opted_out_at = timezone.now()
     entry.save(update_fields=["status", "opted_out_at"])
+    _audit([entry], "waitlist_user_withdrew", actor=entry.user)
     return entry
 
 
@@ -249,9 +256,11 @@ def withdraw_on_confirmed_booking(booking) -> int:
     An OPT_OUT row is kept (it is the record of the user's own choice). Never blocks the booking."""
     try:
         with transaction.atomic():
-            deleted, _ = WaitlistEntry.objects.filter(
+            leaving = WaitlistEntry.objects.filter(
                 equipment_id=booking.equipment_id, user_id=booking.user_id,
-            ).exclude(status="OPT_OUT").delete()
+            ).exclude(status="OPT_OUT")
+            _audit(leaving.select_related("equipment", "user"), "waitlist_user_booked", detail=f"Booking {booking.pk}")
+            deleted, _ = leaving.delete()
     except Exception:
         logger.exception("Could not withdraw waitlist entry for booking %s", booking.pk)
         return 0
@@ -723,6 +732,9 @@ def notify_waitlist_slots_available(
                 used_slots.add(sid)
             bookings_created += 1
             processed_entry_ids.append(entry.id)
+            from iic_booking.equipment.operations_audit import record
+
+            record("waitlist_auto_confirmed", equipment=equipment, subject=entry.user, booking=booking)
             # Carry over sample submitted while waitlisted onto the confirmed booking.
             if getattr(entry, "sample_submitted", False):
                 try:
@@ -785,6 +797,7 @@ def notify_waitlist_slots_available(
         try:
             now_mark = timezone.now()
             for entry_id, remark in cannot_fulfill_remark_by_id.items():
+                _audit(WaitlistEntry.objects.filter(equipment=equipment, id=entry_id).select_related("equipment", "user"), "waitlist_cannot_fulfill", detail=remark)
                 WaitlistEntry.objects.filter(equipment=equipment, id=entry_id).update(
                     status="CANNOT_FULFILL",
                     cannot_fulfill_remark=(remark or "")[:2000],
@@ -841,6 +854,8 @@ def clear_waitlist_due_before_reference(now_dt=None) -> int:
                         "Pre-reference waitlist clear: notify_waitlist_slots_available failed for equipment %s",
                         getattr(equipment, "code", equipment.pk),
                     )
+                remaining = WaitlistEntry.objects.filter(equipment=equipment).exclude(status="OPT_OUT").select_related("equipment", "user")
+                _audit(remaining, "waitlist_auto_cleared", detail="Cleared before the weekly slot opening")
                 deleted, _ = WaitlistEntry.objects.filter(equipment=equipment).delete()
                 if deleted:
                     deleted_total += deleted

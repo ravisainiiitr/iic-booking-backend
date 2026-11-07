@@ -10606,6 +10606,10 @@ def update_urgent_booking_request(request, request_id):
         record_staff_action(
             request.user, "urgent_request.delete", equipment_id=urg.equipment_id, urgent_request_id=urg.id
         )
+        from .operations_audit import URGENT_TYPE_LABELS, record
+
+        record("urgent_deleted", equipment=urg.equipment, subject=urg.user, actor=request.user,
+               detail=f"{URGENT_TYPE_LABELS.get(urg.request_type, urg.request_type)}, status {urg.status}, requested {timezone.localtime(urg.requested_at):%d %b %Y %H:%M}")
         urg.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
