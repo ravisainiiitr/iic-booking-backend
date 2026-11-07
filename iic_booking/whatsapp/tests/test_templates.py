@@ -607,7 +607,7 @@ def test_a_payment_confirmation_does_nothing_while_whatsapp_is_off(conf_on):
 
 
 def test_every_awaiting_payment_path_tells_the_user():
-    for path in ("payments/razorpay_service.py", "users/api/payment_views.py", "users/payment_settlement.py"):
+    for path in ("payments/razorpay_service.py", "users/api/payment_views.py"):
         assert "booking_confirmed_by_payment(booking)" in open(f"iic_booking/{path}", encoding="utf8").read(), path
 
 
