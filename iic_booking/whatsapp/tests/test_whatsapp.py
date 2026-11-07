@@ -20,16 +20,26 @@ from iic_booking.whatsapp.models import (
     WhatsAppInbound,
     WhatsAppMessage,
     WhatsAppOptIn,
+    WhatsAppTemplate,
     WhatsAppWebhookEvent,
 )
+from iic_booking.whatsapp.template_catalogue import CATALOGUE
 
 pytestmark = pytest.mark.django_db
 
 SECRET = "unit-test-app-secret-not-real"
 
 
+# booking_confirmed takes five values, in the order the template at Meta declares them.
+CONFIRMED_VALUES = ["Asha Verma", "B1", "XRD", "10 Nov 2026", "10:00 AM"]
+WABA = "3000000000000333"
+
+
 @pytest.fixture
-def on(settings):
+def on(settings, db):
+    settings.WHATSAPP_WABA_ID = WABA
+    for template in CATALOGUE:  # sending needs an approved template: see test_templates.py for the gate itself
+        WhatsAppTemplate.objects.create(waba_id=WABA, name=template.name, language=template.language, status="APPROVED")
     settings.WHATSAPP_ENABLED = True
     settings.WHATSAPP_PHONE_NUMBER_ID = "1234567890"
     settings.WHATSAPP_ACCESS_TOKEN = "unit-test-token-not-real"
@@ -94,25 +104,25 @@ def test_users_opt_in_and_out_from_their_profile(on):
 def test_nothing_is_queued_while_whatsapp_is_off(settings):
     settings.WHATSAPP_ENABLED = False
     user = _opted_in()
-    assert service.notify(user, "booking_confirmed", ["B1", "XRD", "Mon"], event_key="k1") is None
+    assert service.notify(user, "booking_confirmed", CONFIRMED_VALUES, event_key="k1") is None
 
 
 def test_nothing_is_queued_without_opt_in(on):
     user = UserFactory(user_type=UserType.STUDENT)
-    assert service.notify(user, "booking_confirmed", ["B1", "XRD", "Mon"], event_key="k1") is None
+    assert service.notify(user, "booking_confirmed", CONFIRMED_VALUES, event_key="k1") is None
 
 
 def test_pilot_numbers_limit_who_receives(on):
     on.WHATSAPP_PILOT_NUMBERS = ["+911111111111"]
     user = _opted_in()
-    assert service.notify(user, "booking_confirmed", ["B1", "XRD", "Mon"], event_key="k1") is None
+    assert service.notify(user, "booking_confirmed", CONFIRMED_VALUES, event_key="k1") is None
 
 
 def test_a_message_is_sent_once_per_event(on):
     user = _opted_in()
     with patch("iic_booking.whatsapp.tasks.deliver_whatsapp.delay") as delay:
-        first = service.notify(user, "booking_confirmed", ["B1", "XRD", "Mon"], event_key="k1")
-        again = service.notify(user, "booking_confirmed", ["B1", "XRD", "Mon"], event_key="k1")
+        first = service.notify(user, "booking_confirmed", CONFIRMED_VALUES, event_key="k1")
+        again = service.notify(user, "booking_confirmed", CONFIRMED_VALUES, event_key="k1")
     assert first is not None and again is None
     assert first.template == "iic_booking_confirmed" and first.to_e164 == "+919876543210"
 
@@ -120,7 +130,7 @@ def test_a_message_is_sent_once_per_event(on):
 def test_delivery_sends_the_template_and_records_the_message_id(on):
     user = _opted_in()
     with patch("iic_booking.whatsapp.tasks.deliver_whatsapp.delay"):
-        msg = service.notify(user, "booking_confirmed", ["B1", "XRD", "Mon 10:00"], event_key="k1")
+        msg = service.notify(user, "booking_confirmed", CONFIRMED_VALUES, event_key="k1")
     session = FakeSession(FakeResponse(200, {"messages": [{"id": "wamid.ABC"}]}))
     assert service.deliver(msg.pk, session=session) == "sent"
     msg.refresh_from_db()
@@ -128,13 +138,14 @@ def test_delivery_sends_the_template_and_records_the_message_id(on):
     sent = session.calls[0]
     assert sent["url"].endswith("/1234567890/messages") and sent["headers"]["Authorization"].startswith("Bearer ")
     assert sent["json"]["to"] == "919876543210" and sent["json"]["template"]["name"] == "iic_booking_confirmed"
-    assert [p["text"] for p in sent["json"]["template"]["components"][0]["parameters"]] == ["B1", "XRD", "Mon 10:00"]
+    assert [p["text"] for p in sent["json"]["template"]["components"][0]["parameters"]] == CONFIRMED_VALUES
+    assert sent["json"]["template"]["language"]["code"] == "en"
 
 
 def test_a_refused_message_is_marked_failed_and_a_server_error_is_retried(on):
     user = _opted_in()
     with patch("iic_booking.whatsapp.tasks.deliver_whatsapp.delay"):
-        msg = service.notify(user, "booking_cancelled", ["B1", "XRD", "Mon"], event_key="k1")
+        msg = service.notify(user, "booking_cancelled", CONFIRMED_VALUES[:4], event_key="k1")
     refused = FakeSession(FakeResponse(400, {"error": {"code": 132001, "message": "Template name does not exist"}}))
     assert service.deliver(msg.pk, session=refused) == "failed"
     msg.refresh_from_db()
@@ -147,7 +158,7 @@ def test_a_refused_message_is_marked_failed_and_a_server_error_is_retried(on):
 def test_a_user_who_opts_out_before_delivery_gets_nothing(on):
     user = _opted_in()
     with patch("iic_booking.whatsapp.tasks.deliver_whatsapp.delay"):
-        msg = service.notify(user, "booking_confirmed", ["B1", "XRD", "Mon"], event_key="k1")
+        msg = service.notify(user, "booking_confirmed", CONFIRMED_VALUES, event_key="k1")
     service.set_opt_in(user, opted_in=False)
     assert service.deliver(msg.pk, session=FakeSession()) == "skipped"
 
@@ -259,7 +270,7 @@ def test_webhook_works_while_sending_is_off(on):
     raw, sig = _signed(_incoming(type="text", text={"body": "STOP"}))
     assert _api().post("/api/whatsapp/webhook/", raw, content_type="application/json", HTTP_X_HUB_SIGNATURE_256=sig).status_code == 200
     assert WhatsAppOptIn.objects.get(user=user).opted_in is False
-    assert service.notify(_opted_in("+919811111111"), "booking_confirmed", ["a", "b", "c"], event_key="k") is None
+    assert service.notify(_opted_in("+919811111111"), "booking_confirmed", CONFIRMED_VALUES, event_key="k") is None
 
 
 def test_webhook_refuses_unsigned_posts_and_a_missing_verify_token(on):
@@ -292,19 +303,19 @@ def test_messaging_is_off_and_closed_by_default(settings):
 
 def test_an_empty_pilot_list_sends_to_nobody_without_the_explicit_switch(on):
     on.WHATSAPP_ALLOW_ALL = False
-    assert service.notify(_opted_in(), "booking_confirmed", ["a", "b", "c"], event_key="k") is None
+    assert service.notify(_opted_in(), "booking_confirmed", CONFIRMED_VALUES, event_key="k") is None
 
 
 def test_a_pilot_list_wins_over_the_allow_all_switch(on):
     on.WHATSAPP_PILOT_NUMBERS = ["+919800000001"]
-    assert service.notify(_opted_in(), "booking_confirmed", ["a", "b", "c"], event_key="k") is None
+    assert service.notify(_opted_in(), "booking_confirmed", CONFIRMED_VALUES, event_key="k") is None
 
 
 def test_a_queued_message_is_not_sent_once_the_number_leaves_the_pilot(on):
     on.WHATSAPP_PILOT_NUMBERS = ["+919876543210"]
     user = _opted_in()
     with patch("iic_booking.whatsapp.service._enqueue"):
-        msg = service.notify(user, "booking_confirmed", ["a", "b", "c"], event_key="k")
+        msg = service.notify(user, "booking_confirmed", CONFIRMED_VALUES, event_key="k")
     on.WHATSAPP_PILOT_NUMBERS = ["+919800000001"]
     session = FakeSession()
     assert service.deliver(msg.pk, session=session) == "skipped"
@@ -324,12 +335,12 @@ def test_consent_history_records_who_when_and_how(on):
 def test_stop_covers_every_account_on_the_number_and_anything_queued(on):
     first, second = _opted_in(), _opted_in()
     with patch("iic_booking.whatsapp.service._enqueue"):
-        queued = service.notify(first, "booking_confirmed", ["a", "b", "c"], event_key="k")
+        queued = service.notify(first, "booking_confirmed", CONFIRMED_VALUES, event_key="k")
     service.handle_webhook(_incoming(type="text", text={"body": "STOP"}))
     assert not WhatsAppOptIn.objects.filter(user__in=[first, second], opted_in=True).exists()
     queued.refresh_from_db()
     assert queued.status == "skipped"
-    assert service.notify(second, "booking_confirmed", ["a", "b", "c"], event_key="k2") is None
+    assert service.notify(second, "booking_confirmed", CONFIRMED_VALUES, event_key="k2") is None
 
 
 def test_a_repeated_old_stop_does_not_undo_a_later_start(on):
@@ -379,7 +390,7 @@ def test_temporary_failures_are_retried_then_recorded(on):
 
     user = _opted_in()
     with patch("iic_booking.whatsapp.service._enqueue"):
-        msg = service.notify(user, "booking_confirmed", ["a", "b", "c"], event_key="k")
+        msg = service.notify(user, "booking_confirmed", CONFIRMED_VALUES, event_key="k")
     boom = WhatsAppError("Meta answered HTTP 503", retryable=True)
     with patch("iic_booking.whatsapp.client.send_template", side_effect=boom):
         with pytest.raises(Retry):
@@ -400,7 +411,7 @@ def test_a_queue_that_is_down_does_not_reach_the_booking(on, django_capture_on_c
     user = _opted_in()
     with patch("iic_booking.whatsapp.tasks.deliver_whatsapp.delay", side_effect=ConnectionError("broker down")):
         with django_capture_on_commit_callbacks(execute=True):
-            assert service.notify(user, "booking_confirmed", ["a", "b", "c"], event_key="k") is not None
+            assert service.notify(user, "booking_confirmed", CONFIRMED_VALUES, event_key="k") is not None
 
 
 def test_a_whatsapp_database_error_does_not_break_the_booking_transaction(on):
@@ -413,7 +424,7 @@ def test_a_whatsapp_database_error_does_not_break_the_booking_transaction(on):
     from iic_booking.whatsapp.hooks import booking_event
 
     user = _opted_in()
-    booking = SimpleNamespace(pk=1, virtual_booking_id="R1", equipment=SimpleNamespace(name="E"), user=user, daily_slots=None)
+    booking = SimpleNamespace(pk=1, virtual_booking_id="R1", equipment=SimpleNamespace(name="E"), user=user, status="BOOKED", daily_slots=None)
 
     def fails(*a, **k):
         with connection.cursor() as cur:
@@ -421,7 +432,7 @@ def test_a_whatsapp_database_error_does_not_break_the_booking_transaction(on):
         raise DatabaseError("unreachable")
 
     with transaction.atomic():
-        with patch("iic_booking.whatsapp.service.notify", fails), patch("iic_booking.whatsapp.hooks._slot_text", lambda b: "x"):
+        with patch("iic_booking.whatsapp.service.notify", fails), patch("iic_booking.whatsapp.hooks._first_slot", lambda b: None):
             booking_event(SimpleNamespace(booking=booking, event_type=BookingEventType.CREATED, event_id="e1", pk=1))
         assert get_user_model().objects.filter(pk=user.pk).exists()  # the outer transaction still works
 
@@ -508,7 +519,7 @@ def test_storing_a_meta_timestamp_grants_no_consent_and_sends_nothing(settings):
     assert (row.opted_in, row.opted_in_at) == (False, None)
     assert WhatsAppInbound.objects.get().meta_timestamp is not None
     assert not WhatsAppConsentEvent.objects.exists() and not WhatsAppMessage.objects.exists()
-    assert service.notify(user, "booking_confirmed", ["a", "b", "c"], event_key="k") is None
+    assert service.notify(user, "booking_confirmed", CONFIRMED_VALUES, event_key="k") is None
 
 
 def test_retention_removes_old_messages_and_records_but_keeps_consent(on):
@@ -557,6 +568,7 @@ def test_booking_events_queue_the_matching_template(on):
 
     class Booking:
         pk, virtual_booking_id, equipment, daily_slots = 9, "IICXRF202600009", Eq(), Slots()
+        status = "BOOKED"
 
     Booking.user = user
 
@@ -568,4 +580,4 @@ def test_booking_events_queue_the_matching_template(on):
         Event.event_type = BookingEventType.COMMENT
         booking_event(Event())
     (msg,) = WhatsAppMessage.objects.all()
-    assert msg.event == "booking_confirmed" and msg.params[:2] == ["IICXRF202600009", "X-Ray Fluorescence (XRF)"]
+    assert msg.event == "booking_confirmed" and msg.params[1:3] == ["IICXRF202600009", "X-Ray Fluorescence (XRF)"] and len(msg.params) == 5

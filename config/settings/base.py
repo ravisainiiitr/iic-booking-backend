@@ -995,6 +995,10 @@ WHATSAPP_PILOT_NUMBERS = env.list("WHATSAPP_PILOT_NUMBERS", default=[])
 WHATSAPP_ALLOW_ALL = env.bool("WHATSAPP_ALLOW_ALL", default=False)
 # Incoming messages and webhook records are deleted after this many days. Consent history is kept.
 WHATSAPP_RETENTION_DAYS = env.int("WHATSAPP_RETENTION_DAYS", default=90)
+# The account whose message templates the portal manages (manage.py whatsapp_sync_templates). Unset: nothing is managed,
+# and no message can be sent because no template counts as approved. The name is checked at Meta before any change.
+WHATSAPP_WABA_ID = env("WHATSAPP_WABA_ID", default="")
+WHATSAPP_WABA_EXPECTED_NAME = env("WHATSAPP_WABA_EXPECTED_NAME", default="Indian Institute of Technology Roorkee")
 # Android: Firebase Cloud Messaging HTTP v1 (path to the service-account JSON, kept outside the repository).
 CALLS_FCM_SERVICE_ACCOUNT_FILE = env("CALLS_FCM_SERVICE_ACCOUNT_FILE", default="")
 # The same key as one base64 line, for the production env file (takes priority over the file). Never logged.

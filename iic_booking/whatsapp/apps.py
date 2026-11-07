@@ -6,3 +6,6 @@ class WhatsAppConfig(AppConfig):
     name = "iic_booking.whatsapp"
     label = "whatsapp"
     verbose_name = "WhatsApp"
+
+    def ready(self):
+        from . import signals  # noqa: F401

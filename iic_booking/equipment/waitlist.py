@@ -484,6 +484,9 @@ def _notify_waitlist_short_notice_slot_available(
                 },
             )
             sent += 1
+            from iic_booking.whatsapp.hooks import waitlist_slot_available as whatsapp_waitlist_slot
+
+            whatsapp_waitlist_slot(entry, equipment, slot_start_dt)  # nothing unless WhatsApp is on; never raises
         except Exception:
             logger.exception(
                 "Failed to send short-notice slot-available email to %s (equipment %s)",
