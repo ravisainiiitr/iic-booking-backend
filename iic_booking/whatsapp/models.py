@@ -12,6 +12,9 @@ class WhatsAppOptIn(models.Model):
     opted_in_at = models.DateTimeField(null=True, blank=True)
     opted_out_at = models.DateTimeField(null=True, blank=True)
     source = models.CharField(max_length=20, blank=True, default="", help_text=_("profile, reply_stop, admin"))
+    phone_verified_e164 = models.CharField(max_length=20, blank=True, default="", help_text=_(
+        "The number this user proved with a WhatsApp code. Sign-in codes go only while it equals phone_e164."))
+    phone_verified_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

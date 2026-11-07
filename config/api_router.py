@@ -623,7 +623,14 @@ from iic_booking.istem.api_views import (
     istem_institute,
 )
 
-from iic_booking.whatsapp.views import whatsapp_inbound, whatsapp_me, whatsapp_status, whatsapp_webhook
+from iic_booking.whatsapp.views import (
+    whatsapp_inbound,
+    whatsapp_me,
+    whatsapp_status,
+    whatsapp_verify_confirm,
+    whatsapp_verify_send,
+    whatsapp_webhook,
+)
 
 router = DefaultRouter() if settings.DEBUG else SimpleRouter()
 router.register("users", UserViewSet, basename="user")
@@ -1066,6 +1073,8 @@ urlpatterns = router.urls + [
     path("live/peers/<int:peer_id>/", live_peer_detail, name="live-peer"),
     path("calls/", calls, name="calls"),
     path("whatsapp/me/", whatsapp_me, name="whatsapp-me"),
+    path("whatsapp/me/verify/send/", whatsapp_verify_send, name="whatsapp-verify-send"),
+    path("whatsapp/me/verify/confirm/", whatsapp_verify_confirm, name="whatsapp-verify-confirm"),
     path("whatsapp/status/", whatsapp_status, name="whatsapp-status"),
     path("whatsapp/inbound/", whatsapp_inbound, name="whatsapp-inbound"),
     path("whatsapp/webhook/", whatsapp_webhook, name="whatsapp-webhook"),

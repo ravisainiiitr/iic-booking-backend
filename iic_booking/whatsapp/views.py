@@ -30,6 +30,31 @@ def whatsapp_me(request):
         return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def whatsapp_verify_send(request):
+    """Send a code to the user's opted-in number, to prove that it is theirs."""
+    from .otp import VerificationError, start_verification
+
+    try:
+        return Response(start_verification(request.user))
+    except VerificationError as exc:
+        return Response({"error": exc.message, "code": exc.code}, status=exc.http_status)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def whatsapp_verify_confirm(request):
+    """Body: ``otp``. A correct code marks the number as proved, so sign-in codes may also go to it."""
+    from .otp import VerificationError, confirm_verification
+
+    try:
+        confirm_verification(request.user, str(request.data.get("otp") or ""))
+    except VerificationError as exc:
+        return Response({"error": exc.message, "code": exc.code}, status=exc.http_status)
+    return Response(opt_in_status(request.user))
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def whatsapp_status(request):

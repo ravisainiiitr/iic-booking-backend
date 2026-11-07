@@ -1704,8 +1704,12 @@ def request_login_otp(request):
             {"error": "Failed to send OTP. Please try again later."},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+    from iic_booking.whatsapp.otp import send_sign_in_code
+
+    on_whatsapp = send_sign_in_code(user, otp)
+    where = f"your email address and on WhatsApp ({on_whatsapp})" if on_whatsapp else "your email address"
     return Response(
-        {"message": "OTP has been sent to your email address. It expires in 10 minutes."},
+        {"message": f"OTP has been sent to {where}. It expires in 10 minutes."},
         status=status.HTTP_200_OK,
     )
 

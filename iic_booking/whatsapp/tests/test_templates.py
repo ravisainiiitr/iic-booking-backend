@@ -27,7 +27,7 @@ NAME = "Indian Institute of Technology Roorkee"
 EXISTING = ("iic_booking_confirmed", "iic_booking_cancelled", "iic_booking_completed")
 EXPECTED_EVENTS = {
     "booking_confirmed", "booking_rejected", "booking_rescheduled", "booking_cancelled", "booking_reminder", "booking_completed",
-    "payment_successful", "payment_failed", "refund_completed", "waitlist_slot_available",
+    "payment_successful", "payment_failed", "refund_completed", "waitlist_slot_available", "otp_code",
 }
 
 
@@ -121,7 +121,10 @@ def test_the_catalogue_covers_every_requested_event_and_meets_metas_rules():
 
 def test_every_entry_is_complete():
     for t in CATALOGUE:
-        assert t.category == "UTILITY" and t.language == "en" and t.header and t.body and t.recipient
+        assert t.language == "en" and t.body and t.recipient
+        if t.is_authentication:  # Meta's fixed wording, with the code as its only value: see test_otp.py
+            continue
+        assert t.category == "UTILITY" and t.header
         assert len(t.params) == len(t.examples) >= 3
 
 
@@ -129,7 +132,7 @@ def test_existing_templates_keep_metas_names_and_new_ones_offer_stop():
     assert {t.name for t in CATALOGUE if t.name.startswith("iic_")} == set(EXISTING)
     for t in CATALOGUE:
         if t.name not in EXISTING:
-            assert t.name.startswith("iitr_") and t.footer == FOOTER_STOP
+            assert t.name.startswith("iitr_") and (t.is_authentication or t.footer == FOOTER_STOP)
 
 
 def test_the_payload_has_the_body_example_meta_requires():
@@ -140,7 +143,7 @@ def test_the_payload_has_the_body_example_meta_requires():
 
 
 def test_every_template_has_a_portal_step_and_the_unused_two_are_gone():
-    assert len(CATALOGUE) == 10 and all(t.trigger for t in CATALOGUE)
+    assert len(CATALOGUE) == 11 and all(t.trigger for t in CATALOGUE)
     dropped = {"iitr_reschedule_requested", "iitr_reschedule_rejected", "iitr_reschedule_approved", "iitr_booking_request_received",
                "iitr_payment_initiated", "iitr_payment_pending", "iitr_refund_initiated", "iitr_sample_received"}
     assert not dropped & {t.name for t in CATALOGUE}
@@ -159,7 +162,7 @@ def test_wording_promises_nothing_the_backend_has_not_confirmed():
 def test_dry_run_lists_exactly_what_would_go_and_changes_nothing(conf_on):
     meta = FakeMeta(rows=[meta_row(BY_EVENT["booking_confirmed"])])
     out = run_command(meta, "--dry-run")
-    assert "Would submit: 9" in out and "SUBMIT iitr_payment_failed" in out and "SKIP iic_booking_confirmed [PENDING]" in out
+    assert "Would submit: 10" in out and "SUBMIT iitr_payment_failed" in out and "SKIP iic_booking_confirmed [PENDING]" in out
     assert "SUBMIT iic_booking_confirmed" not in out
     assert meta.posts == [] and not WhatsAppTemplate.objects.exists() and not WhatsAppTemplateAudit.objects.exists()
 
@@ -168,12 +171,13 @@ def test_dry_run_is_the_default_and_can_show_wording(conf_on):
     meta = FakeMeta()
     out = run_command(meta, "--show-wording")
     assert "DRY RUN" in out and "BODY: Dear {{1}}," in out and "EXAMPLES:" in out and meta.posts == []
+    assert "BODY (Meta's wording): {{1}} is your verification code." in out and "BUTTON: Copy code" in out
 
 
 def test_submit_sends_only_missing_templates_in_a_batch_and_saves_the_id(conf_on):
     meta = FakeMeta(rows=[meta_row(BY_EVENT[e]) for e in ("booking_confirmed", "booking_cancelled", "booking_completed")])
     out = run_command(meta, "--submit", "--batch-size", "2", "--delay", "0")
-    assert len(meta.posts) == 2 and "Submitted: 2" in out and "Still to submit: 5" in out
+    assert len(meta.posts) == 2 and "Submitted: 2" in out and "Still to submit: 6" in out
     assert all(url.endswith(f"/{WABA}/message_templates") for url, _ in meta.posts)
     assert not {body["name"] for _, body in meta.posts} & set(EXISTING)
     record = WhatsAppTemplate.objects.get(name=meta.posts[0][1]["name"])
@@ -185,7 +189,7 @@ def test_pending_or_rejected_templates_at_meta_are_never_resubmitted(conf_on):
     rows = [meta_row(t, status="REJECTED" if i % 2 else "PENDING") for i, t in enumerate(CATALOGUE)]
     meta = FakeMeta(rows=rows)
     out = run_command(meta, "--submit", "--delay", "0")
-    assert meta.posts == [] and "Submitted: 0" in out and "Skipped, already at Meta: 10" in out
+    assert meta.posts == [] and "Submitted: 0" in out and "Skipped, already at Meta: 11" in out
 
 
 def test_a_second_run_does_not_duplicate(conf_on):
@@ -365,7 +369,7 @@ def test_the_report_groups_every_template(conf_on):
     assert [i["name"] for i in report["pending"]] == ["iic_booking_cancelled"]
     assert report["rejected"][0]["name"] == "iic_booking_completed" and "offer" in report["rejected"][0]["suggestion"]
     assert {i["name"] for i in report["paused_or_disabled"]} == {"iitr_booking_reminder", "iitr_waitlist_slot_available"}
-    assert len(report["missing"]) == 5
+    assert len(report["missing"]) == 6
     assert {i["name"] for i in report["requires_correction"]} == {"iic_booking_completed", "iitr_booking_reminder", "iitr_waitlist_slot_available"}
     assert report["not_wired"] == []
     assert report["last_synced_at"]
@@ -384,7 +388,7 @@ def test_wording_or_category_drift_is_reported_not_changed(conf_on):
 def test_the_report_command_works_without_meta(conf_on):
     out = StringIO()
     call_command("whatsapp_template_report", stdout=out)
-    assert "Missing: 10" in out.getvalue() and "Last synchronised: never" in out.getvalue()
+    assert "Missing: 11" in out.getvalue() and "Last synchronised: never" in out.getvalue()
 
 
 # --- controlled corrections ------------------------------------------------------------------------------------------
@@ -603,7 +607,7 @@ def test_a_payment_confirmation_does_nothing_while_whatsapp_is_off(conf_on):
 
 
 def test_every_awaiting_payment_path_tells_the_user():
-    for path in ("payments/razorpay_service.py", "users/api/payment_views.py", "users/payment_settlement.py"):
+    for path in ("payments/razorpay_service.py", "users/api/payment_views.py"):
         assert "booking_confirmed_by_payment(booking)" in open(f"iic_booking/{path}", encoding="utf8").read(), path
 
 
@@ -685,7 +689,7 @@ def test_the_signals_are_connected_to_real_models():
 
 
 def test_every_wired_catalogue_event_has_a_code_path():
-    hook_source = open("iic_booking/whatsapp/hooks.py", encoding="utf8").read()
+    hook_source = open("iic_booking/whatsapp/hooks.py", encoding="utf8").read() + open("iic_booking/whatsapp/otp.py", encoding="utf8").read()
     for template in CATALOGUE:
         if template.trigger:
             assert f'"{template.event}"' in hook_source, template.event

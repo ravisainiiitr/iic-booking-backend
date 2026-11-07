@@ -145,4 +145,5 @@ class EvidenceType(models.TextChoices):
     ISTEM_PORTAL = "ISTEM_PORTAL", _("Checked on the I-STEM portal")
     ISTEM_TEAM = "ISTEM_TEAM", _("Written confirmation from the I-STEM team")
     EMAIL_OTP = "EMAIL_OTP", _("OTP sent to the I-STEM email, entered by the user")
+    WHATSAPP_OTP = "WHATSAPP_OTP", _("OTP sent on WhatsApp to the I-STEM mobile number, entered by the user")
     OTHER = "OTHER", _("Other")

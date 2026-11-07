@@ -104,9 +104,21 @@ def _send_otp(email: str, code: str) -> None:
               fail_silently=False)
 
 
-def start(email: str, mobile: str, *, client_ip: str = "", test_key: str = "", client_factory=None) -> dict:
+def _send_whatsapp_code(token: str, pending: dict, mobile: str) -> str:
+    """The person ticked "also on WhatsApp". A separate code, so the record shows which one proved the account."""
+    from iic_booking.whatsapp.otp import new_code, send_on_request
+
+    code = new_code()
+    sent_to = send_on_request(mobile, code, purpose="istem_register")
+    if sent_to:
+        pending["whatsapp_code_hash"] = _hash(token, f"whatsapp:{code}")
+        cache.set(_KEY.format(token), pending, timeout=int(OTP_TTL.total_seconds()))
+    return sent_to
+
+
+def start(email: str, mobile: str, *, client_ip: str = "", test_key: str = "", client_factory=None, whatsapp: bool = False) -> dict:
     """Find the I-STEM account registered with ``email`` or ``mobile`` (both must match when both are given) and send
-    an OTP to the email registered on I-STEM."""
+    an OTP to the email registered on I-STEM, and also on WhatsApp to the mobile on I-STEM when the person asked."""
     from .models import IstemUserLink
     from .service import default_client
 
@@ -149,10 +161,11 @@ def start(email: str, mobile: str, *, client_ip: str = "", test_key: str = "", c
                                       "account. Sign in instead, or contact the IIC office.", http_status=409)
     token = secrets.token_urlsafe(24)
     code = f"{secrets.randbelow(10 ** 6):06d}"
-    cache.set(_KEY.format(token), {
+    pending = {
         "public_user_id": row["user_id"], "email": email, "code_hash": _hash(token, code), "attempts": 0,
         "profile": row["profile"], "test_account": bool(_test_key()),
-    }, timeout=int(OTP_TTL.total_seconds()))
+    }
+    cache.set(_KEY.format(token), pending, timeout=int(OTP_TTL.total_seconds()))
     try:
         _send_otp(email, code)
     except Exception:
@@ -160,7 +173,10 @@ def start(email: str, mobile: str, *, client_ip: str = "", test_key: str = "", c
         logger.exception("I-STEM registration OTP email failed")
         raise RegistrationLookupError("send_failed", "The OTP email could not be sent. Please try again later.",
                                       http_status=502)
-    return {"token": token, "email_masked": mask(email), "expires_in": int(OTP_TTL.total_seconds())}
+    on_whatsapp = ""
+    if whatsapp and conf.whatsapp_otp_enabled():
+        on_whatsapp = _send_whatsapp_code(token, pending, str(row["profile"].get("mobile") or ""))
+    return {"token": token, "email_masked": mask(email), "whatsapp_masked": on_whatsapp, "expires_in": int(OTP_TTL.total_seconds())}
 
 
 def verify(token: str, code: str) -> dict:
@@ -171,8 +187,11 @@ def verify(token: str, code: str) -> dict:
         raise RegistrationLookupError("expired", "This OTP has expired. Please look up your I-STEM account again.")
     code = "".join(ch for ch in (code or "") if ch.isdigit())
     if len(code) != 6:
-        raise RegistrationLookupError("invalid_code", "Enter the 6-digit OTP from the email.")
-    if not constant_time_compare(pending["code_hash"], _hash(token, code)):
+        raise RegistrationLookupError("invalid_code", "Enter the 6-digit OTP.")
+    by_email = constant_time_compare(pending["code_hash"], _hash(token, code))
+    by_whatsapp = bool(pending.get("whatsapp_code_hash")) and constant_time_compare(
+        pending["whatsapp_code_hash"], _hash(token, f"whatsapp:{code}"))
+    if not (by_email or by_whatsapp):
         pending["attempts"] += 1
         if pending["attempts"] >= MAX_ATTEMPTS:
             cache.delete(key)
@@ -184,7 +203,7 @@ def verify(token: str, code: str) -> dict:
     profile = pending["profile"]
     link_token = signing.dumps(
         {"public_user_id": pending["public_user_id"], "email": pending["email"], "profile": profile,
-         "test_account": bool(pending.get("test_account"))}, salt=_SALT
+         "test_account": bool(pending.get("test_account")), "channel": "email" if by_email else "whatsapp"}, salt=_SALT
     )
     return {"profile": profile, "link_token": link_token}
 
@@ -209,8 +228,13 @@ def link_new_user(user, link_token: str) -> bool:
     link, _ = IstemUserLink.objects.get_or_create(user=user)
     link.istem_profile = data.get("profile") or {}
     link.save(update_fields=["istem_profile", "updated_at"])
-    _link_user(link, str(data["public_user_id"]), reason="existing I-STEM user registered with email OTP",
-               evidence_type=EvidenceType.EMAIL_OTP, evidence_reference=f"registration OTP to {mask(user.email)}")
+    if data.get("channel") == "whatsapp":
+        mobile = str((data.get("profile") or {}).get("mobile") or "")
+        _link_user(link, str(data["public_user_id"]), reason="existing I-STEM user registered with WhatsApp OTP",
+                   evidence_type=EvidenceType.WHATSAPP_OTP, evidence_reference=f"registration OTP on WhatsApp to number ending {mobile[-2:]}")
+    else:
+        _link_user(link, str(data["public_user_id"]), reason="existing I-STEM user registered with email OTP",
+                   evidence_type=EvidenceType.EMAIL_OTP, evidence_reference=f"registration OTP to {mask(user.email)}")
     apply_istem_profile(user, link.istem_profile)
     if data.get("test_account") and not user.is_test_account:
         user.is_test_account = True  # registered through the I-STEM test link

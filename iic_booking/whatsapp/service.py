@@ -46,11 +46,15 @@ def opt_in_status(user) -> dict:
         default_phone = normalize_phone(getattr(user, "phone_number", "") or "")
     except OptInError:
         pass
+    from .otp import available as codes_available  # imported here: otp.py builds on this module
+
     return {
         "available": conf.enabled(),
         "opted_in": bool(row and row.opted_in),
         "phone": row.phone_e164 if row else default_phone,
         "opted_in_at": row.opted_in_at if row else None,
+        "phone_verified": bool(row and row.phone_e164 and row.phone_verified_e164 == row.phone_e164),
+        "codes_available": codes_available(),
     }
 
 

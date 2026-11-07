@@ -1,6 +1,6 @@
 # WhatsApp template catalogue
 
-Generated from `iic_booking/whatsapp/template_catalogue.py`, which is what the code submits. All are language `en`, category `UTILITY`. The first three already exist at Meta with this wording.
+Generated from `iic_booking/whatsapp/template_catalogue.py`, which is what the code submits. All are language `en`. All are category `UTILITY` except `iitr_verification_code`, which is `AUTHENTICATION`. The first three already exist at Meta with this wording.
 
 ## iic_booking_confirmed
 
@@ -294,4 +294,21 @@ Time: {{4}}
 Slots are not held. To book it, please visit the IIT Roorkee Equipment Booking Portal.
 
 IIT Roorkee
+```
+
+## iitr_verification_code
+
+- **Django event:** `otp_code`
+- **Trigger:** Proving a WhatsApp number, signing in with a proved number, or an I-STEM OTP the person asked to get on WhatsApp
+- **Recipient:** The person who asked for the code
+- **Language / category:** en / AUTHENTICATION
+- **Header:** (none)
+- **Footer:** This code expires in 10 minutes.
+- **Button:** Copy code
+- **Placeholders:**
+  - `{{1}}` one-time code, for example: 482913
+- **Body:** Meta writes this wording itself; the template only switches on the security line and the expiry. The portal cannot add its own name to it.
+
+```
+{{1}} is your verification code. For your security, do not share this code.
 ```

@@ -34,8 +34,19 @@ class Template:
     recipient: str
     trigger: str | None
     language: str = LANGUAGE
+    code_expiry_minutes: int = 0  # set only on an authentication template
+
+    @property
+    def is_authentication(self) -> bool:
+        return self.category == "AUTHENTICATION"
 
     def payload(self) -> dict:
+        if self.is_authentication:  # Meta writes the wording itself: a template only chooses these options
+            return {"name": self.name, "language": self.language, "category": self.category, "components": [
+                {"type": "BODY", "add_security_recommendation": True},
+                {"type": "FOOTER", "code_expiration_minutes": self.code_expiry_minutes},
+                {"type": "BUTTONS", "buttons": [{"type": "OTP", "otp_type": "COPY_CODE", "text": "Copy code"}]},
+            ]}
         components: list[dict] = []
         if self.header:
             components.append({"type": "HEADER", "format": "TEXT", "text": self.header})
@@ -118,6 +129,14 @@ CATALOGUE: tuple[Template, ...] = (
          "A slot has become available for equipment you are waitlisted for.",
          f"Slots are not held. To book it, please visit {_PORTAL}.", trigger="Freed slot within 48 hours, same step as the email",
          recipient="Each active waitlist user for that equipment", **_SLOT),
+    Template(
+        event="otp_code", name="iitr_verification_code", category="AUTHENTICATION", header="",
+        body="{{1}} is your verification code. For your security, do not share this code.",
+        footer="This code expires in 10 minutes.", params=("one-time code",), examples=("482913",),
+        recipient="The person who asked for the code",
+        trigger="Proving a WhatsApp number, signing in with a proved number, or an I-STEM OTP the person asked to get on WhatsApp",
+        code_expiry_minutes=10,
+    ),
 )
 BY_EVENT = {t.event: t for t in CATALOGUE}
 
@@ -146,7 +165,10 @@ def validate() -> list[str]:
             problems.append(f"{label}: variables must be in order from 1")
         if len(numbers) != len(t.params) or len(numbers) != len(t.examples):
             problems.append(f"{label}: variables, params and examples differ")
-        if t.body.lstrip().startswith("{{") or t.body.rstrip().endswith("}}"):
+        if t.is_authentication:  # Meta's fixed wording starts with the code, so the variable rule below does not apply
+            if not 1 <= t.code_expiry_minutes <= 90:
+                problems.append(f"{label}: code expiry must be 1 to 90 minutes")
+        elif t.body.lstrip().startswith("{{") or t.body.rstrip().endswith("}}"):
             problems.append(f"{label}: body must not start or end with a variable")
         if "{{" in t.header or "{{" in t.footer:
             problems.append(f"{label}: variable outside the body")
