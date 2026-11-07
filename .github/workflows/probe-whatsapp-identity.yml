@@ -1,18 +1,12 @@
-# READ-ONLY: what Meta reports about the WhatsApp sender's identity. GET requests only: sends nothing and changes no
-# name, registration, setting or record. Run logs are public: tokens are never printed, phone numbers show their last two
-# digits, and long numbers inside Meta's replies are hidden.
+# READ-ONLY: what Meta reports about the WhatsApp sender's identity. GET requests only: sends nothing and changes no name,
+# registration, setting or record. Script and rules: scripts/ops/whatsapp_identity_probe.py. Run logs are public, so the
+# Phone Number ID and the optional WABA ID come from secrets, not inputs: inputs would appear in the log.
+#   WHATSAPP_DIAGNOSTIC_PHONE_NUMBER_ID  the sender to investigate (required)
+#   WHATSAPP_DIAGNOSTIC_WABA_ID          the WABA from WhatsApp Manager (optional; otherwise the token's scopes are asked)
 name: Probe WhatsApp identity (read-only)
 
 on:
   workflow_dispatch:
-    inputs:
-      phone_number_id:
-        description: "Phone Number ID to inspect, as well as the one configured on production"
-        required: true
-      waba_id:
-        description: "Optional WABA ID. If empty, it is looked up from the token's scopes"
-        required: false
-        default: ""
 
 permissions:
   contents: read
@@ -21,132 +15,15 @@ jobs:
   probe:
     runs-on: [self-hosted, Linux]
     steps:
+      - uses: actions/checkout@v4
       - name: Ask Meta
         env:
-          TARGET_ID: ${{ inputs.phone_number_id }}
-          WABA_ID: ${{ inputs.waba_id }}
+          TARGET_ID: ${{ secrets.WHATSAPP_DIAGNOSTIC_PHONE_NUMBER_ID }}
+          WABA_ID: ${{ secrets.WHATSAPP_DIAGNOSTIC_WABA_ID }}
         run: |
           set -euo pipefail
-          case "$TARGET_ID$WABA_ID" in (*[!0-9]*|'') echo "IDs must be numbers"; exit 1 ;; esac
+          case "$TARGET_ID" in (*[!0-9]*|'') echo "WHATSAPP_DIAGNOSTIC_PHONE_NUMBER_ID must be set and numeric"; exit 1 ;; esac
+          case "$WABA_ID" in (*[!0-9]*) echo "WHATSAPP_DIAGNOSTIC_WABA_ID must be numeric"; exit 1 ;; esac
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
-          docker exec -i -w /app -e TARGET_ID -e WABA_ID -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
-          import json
-          import os
-          import re
-
-          import django
-
-          django.setup()
-          import requests
-
-          from iic_booking.whatsapp import conf
-
-          FIELDS = ["id", "display_phone_number", "verified_name", "name_status", "new_name_status", "new_display_name",
-                    "status", "quality_rating", "code_verification_status", "search_visibility", "platform_type",
-                    "messaging_limit_tier", "account_mode", "is_official_business_account", "official_business_account",
-                    "health_status", "throughput"]
-          LIST_FIELDS = "id,display_phone_number,verified_name,name_status,status,quality_rating,code_verification_status,platform_type"
-          LIST_FALLBACK = "id,display_phone_number,verified_name,quality_rating"
-          BASE = f"{conf.GRAPH_BASE}/{conf.api_version()}"
-          HEADERS = {"Authorization": f"Bearer {conf.access_token()}"}
-
-
-          def hide(text):
-              """Long digit runs in Meta's text may be numbers or ids. The token must never appear."""
-              text = str(text).replace(conf.access_token() or "\0", "[token]")
-              return re.sub(r"\+?\d[\d\s()-]{7,}\d", "[number]", text)
-
-
-          def mask_number(number):
-              digits = re.sub(r"\D", "", str(number or ""))
-              return f"*****{digits[-2:]}" if digits else "(none)"
-
-
-          def tail(value):
-              value = str(value or "")
-              return f"...{value[-4:]}" if value else "(none)"
-
-
-          def get(path, params=None):
-              """Returns (data, error text). Only GET is ever used. Exceptions print their type alone: their text can hold the URL."""
-              try:
-                  r = requests.get(f"{BASE}/{path}", params=params or {}, headers=HEADERS, timeout=25)
-                  data = r.json()
-              except Exception as exc:  # noqa: BLE001
-                  return None, f"request failed: {type(exc).__name__}"
-              if isinstance(data, dict) and "error" in data:
-                  e = data["error"] if isinstance(data["error"], dict) else {}
-                  return None, f"http={r.status_code} code={e.get('code')} subcode={e.get('error_subcode')} {hide(e.get('message', ''))[:160]}"
-              return data, ""
-
-
-          def show(field, value):
-              if field == "display_phone_number":
-                  return mask_number(value)
-              if field == "id":
-                  return tail(value)
-              return hide(json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else value)[:400]
-
-
-          def inspect(label, phone_id):
-              print(f"--- {label}: phone number id {tail(phone_id)}")
-              unsupported = []
-              for field in FIELDS:
-                  data, error = get(phone_id, {"fields": field})
-                  if error:
-                      unsupported.append(field)
-                      print(f"  {field}: ERROR {error}")
-                  elif field in (data or {}):
-                      print(f"  {field}: {show(field, data[field])}")
-                  else:
-                      unsupported.append(field)
-                      print(f"  {field}: not returned")
-              print("  no value from Meta for:", ", ".join(unsupported) or "none")
-
-
-          def waba_ids():
-              if os.environ.get("WABA_ID"):
-                  return [os.environ["WABA_ID"]], "workflow input"
-              data, error = get("debug_token", {"input_token": conf.access_token()})
-              if error:
-                  print("debug_token: ERROR", error)
-                  return [], "not found"
-              info = (data or {}).get("data") or {}
-              print("token: valid=", info.get("is_valid"), " type=", info.get("type"), " expires_at=", info.get("expires_at"),
-                    " scopes=", info.get("scopes"))
-              found = []
-              for scope in info.get("granular_scopes") or []:
-                  print("  scope", scope.get("scope"), "targets=", len(scope.get("target_ids") or []))
-                  if scope.get("scope") in ("whatsapp_business_management", "whatsapp_business_messaging"):
-                      found += [str(t) for t in scope.get("target_ids") or []]
-              return sorted(set(found)), "token scopes"
-
-
-          target, configured = os.environ["TARGET_ID"], conf.phone_number_id()
-          print("graph_api_version=", conf.api_version())
-          print("sending_enabled=", conf.enabled())
-          print("configured phone number id:", tail(configured), " target:", tail(target), " MATCH=", configured == target)
-          inspect("target", target)
-          if configured and configured != target:
-              inspect("configured on production", configured)
-
-          print("--- WABA")
-          ids, source = waba_ids()
-          print("waba candidates:", len(ids), "from", source)
-          for waba in ids:
-              data, error = get(waba, {"fields": "id,name,account_review_status,business_verification_status"})
-              print("waba", tail(waba), ":", f"ERROR {error}" if error else hide(json.dumps({k: v for k, v in data.items() if k != "id"}, sort_keys=True)))
-              data, error = get(f"{waba}/phone_numbers", {"fields": LIST_FIELDS})
-              if error:
-                  print("  list with name_status: ERROR", error)
-                  data, error = get(f"{waba}/phone_numbers", {"fields": LIST_FALLBACK})
-              if error:
-                  print("  list: ERROR", error)
-                  continue
-              rows = (data or {}).get("data") or []
-              print("  numbers in this waba:", len(rows), " contains target=", any(str(r.get("id")) == target for r in rows),
-                    " contains configured=", any(str(r.get("id")) == configured for r in rows))
-              for r in rows:
-                  print("  number", " ".join(f"{k}={show(k, v)}" for k, v in sorted(r.items())))
-          print("done: GET requests only")
-          PY
+          docker exec -i -w /app -e TARGET_ID -e WABA_ID -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python - < scripts/ops/whatsapp_identity_probe.py

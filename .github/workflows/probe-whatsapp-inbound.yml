@@ -44,6 +44,11 @@ jobs:
               return hashlib.sha256(str(value or "").encode()).hexdigest()[:12]
 
 
+          def mask_sender(number):
+              digits = "".join(ch for ch in str(number or "") if ch.isdigit())
+              return f"*****{digits[-2:]}" if len(digits) > 2 else "(none)"
+
+
           print("now_utc=", timezone.now().isoformat())
           print("sending_enabled=", conf.enabled(), " missing_settings=", conf.missing_settings(),
                 " pilot_numbers=", len(conf.pilot_numbers()), " allow_all=", conf.allow_all(),
@@ -53,7 +58,7 @@ jobs:
                                params={"fields": "display_phone_number,verified_name,quality_rating"},
                                headers={"Authorization": f"Bearer {conf.access_token()}"}, timeout=20)
               data = r.json() if r.ok else {}
-              print("meta_lookup_http=", r.status_code, " configured_sender=", data.get("display_phone_number"),
+              print("meta_lookup_http=", r.status_code, " configured_sender=", mask_sender(data.get("display_phone_number")),
                     " verified_name=", data.get("verified_name"), " quality=", data.get("quality_rating"))
           except Exception as exc:
               print("meta_lookup_error=", type(exc).__name__)
