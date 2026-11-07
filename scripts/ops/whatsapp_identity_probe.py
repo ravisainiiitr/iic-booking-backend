@@ -25,6 +25,8 @@ HEALTH_FIELD = "health_status"
 LIST_FIELDS = "id,display_phone_number,verified_name,name_status,status,quality_rating,code_verification_status"
 LIST_FALLBACK = "id,display_phone_number,verified_name,quality_rating"
 WABA_FIELDS = "name,account_review_status,business_verification_status,ownership_type,country"
+TEMPLATE_FIELDS = "name,language,status,category,rejected_reason"
+TEMPLATE_PAGES = 20
 BUSINESS_EDGES = ("owned_whatsapp_business_accounts", "client_whatsapp_business_accounts")
 WHATSAPP_SCOPES = ("whatsapp_business_management", "whatsapp_business_messaging")
 EXPECTED_NAME = "Indian Institute of Technology Roorkee"
@@ -205,6 +207,28 @@ class Probe:
                 ordered.setdefault(waba, source)
         return list(ordered.items())
 
+    def report_templates(self, waba) -> None:
+        """Every template of a WABA: name, status, category, language and rejection reason. Bodies are not printed."""
+        rows, after, error = [], "", None
+        for _ in range(TEMPLATE_PAGES):
+            params = {"fields": TEMPLATE_FIELDS, "limit": 100}
+            if after:
+                params["after"] = after
+            data, error = self.get(f"{waba}/message_templates", params)
+            if error:
+                break
+            rows += (data or {}).get("data") or []
+            after = (((data or {}).get("paging") or {}).get("cursors") or {}).get("after")
+            if not (((data or {}).get("paging") or {}).get("next") and after):
+                break
+        if error:
+            self.out(f"  templates: {error['text']}")
+            return
+        self.out(f"  templates: {len(rows)}")
+        for row in rows:
+            fields = " ".join(f"{k}={self.clean(row.get(k))}" for k in ("name", "language", "status", "category", "rejected_reason"))
+            self.out(f"  template {fields}")
+
     def check_waba(self) -> tuple[str, str, str]:
         """(association of the investigated sender, of the configured sender, whether they share a WABA)."""
         target, configured = self.cfg.target_id, self.cfg.configured_id
@@ -228,6 +252,7 @@ class Probe:
                 self.out(f"  {HEALTH_FIELD}: {error['text']}")
             elif isinstance(data, dict) and isinstance(data.get(HEALTH_FIELD), dict):
                 self.report_health(f"waba {index}", data[HEALTH_FIELD])
+            self.report_templates(waba)
             data, error = self.get(f"{waba}/phone_numbers", {"fields": LIST_FIELDS})
             if error:
                 self.out(f"  list with name_status: {error['text']}")

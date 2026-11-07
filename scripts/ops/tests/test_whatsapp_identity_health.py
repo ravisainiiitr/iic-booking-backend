@@ -65,6 +65,8 @@ class Meta:
         self.requests.append((path, fields))
         if path == "debug_token":
             return Response({"data": {"is_valid": True, "type": "SYSTEM_USER", "granular_scopes": [{"scope": "whatsapp_business_management"}]}})
+        if path.endswith("/message_templates"):
+            return Response({"data": []})
         if path.endswith("_whatsapp_business_accounts"):
             return Response(self.business, 400 if "error" in self.business else 200)
         if path.endswith("/phone_numbers"):
@@ -220,6 +222,37 @@ def test_the_waba_secret_skips_other_lookups_but_still_needs_the_list():
     _, out = run(meta, waba=WABA)
     assert "debug_token" not in [p for p, _ in meta.requests] and "candidates: 1 (secret)" in out
     assert "waba_association: CONFIRMED" in out
+
+
+def test_templates_are_listed_across_pages_without_their_bodies():
+    class Paged(Meta):
+        def __call__(self, url, params=None, headers=None, timeout=None):
+            path = url.split("/v21.0/", 1)[1]
+            if path.endswith("/message_templates"):
+                self.requests.append((path, params.get("after", "")))
+                if not params.get("after"):
+                    return Response({"data": [{"id": WABA, "name": "hello_world", "language": "en_US", "status": "APPROVED",
+                                               "category": "UTILITY", "components": [{"text": "SECRET BODY"}]}],
+                                     "paging": {"cursors": {"after": "CURSOR"}, "next": "https://graph/next"}})
+                return Response({"data": [{"name": "second_one", "language": "en", "status": "REJECTED", "category": "UTILITY",
+                                           "rejected_reason": f"INVALID_FORMAT {TARGET_NUMBER}"}], "paging": {"cursors": {"after": "END"}}})
+            return super().__call__(url, params=params, headers=headers, timeout=timeout)
+
+    _, out = run(Paged())
+    assert "templates: 2" in out and "name=hello_world language=en_US status=APPROVED category=UTILITY" in out
+    assert "name=second_one language=en status=REJECTED" in out and "rejected_reason=INVALID_FORMAT" in out
+    assert "SECRET BODY" not in out
+
+
+def test_a_template_list_error_does_not_stop_the_waba_check():
+    class Refused(Meta):
+        def __call__(self, url, params=None, headers=None, timeout=None):
+            if url.endswith("/message_templates"):
+                return Response(NO_PERMISSION, 403)
+            return super().__call__(url, params=params, headers=headers, timeout=timeout)
+
+    _, out = run(Refused())
+    assert "templates: permission_denied" in out and "waba_association: CONFIRMED" in out
 
 
 def test_no_certificate_or_credential_field_is_ever_requested():

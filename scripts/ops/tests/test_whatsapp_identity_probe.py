@@ -73,6 +73,8 @@ class Meta:
             return Response({field: node[field]} if field in node else {"id": path})
         if path == WABA:
             return Response({"id": WABA, "name": NAME, "business_verification_status": "verified"}) if self.waba_ok else Response(NOT_ACCESSIBLE, 400)
+        if path.endswith("/message_templates"):
+            return Response({"data": []})
         if path == f"{WABA}/phone_numbers":
             return Response({"data": self.rows}) if self.waba_ok else Response(NOT_ACCESSIBLE, 400)
         raise AssertionError(f"unexpected request: {path}")
