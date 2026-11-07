@@ -303,7 +303,7 @@ IIT Roorkee
 - **Recipient:** The person who asked for the code
 - **Language / category:** en / AUTHENTICATION
 - **Header:** (none)
-- **Footer:** This code expires in 10 minutes.
+- **Footer:** This code expires in 5 minutes.
 - **Button:** Copy code
 - **Placeholders:**
   - `{{1}}` one-time code, for example: 482913
