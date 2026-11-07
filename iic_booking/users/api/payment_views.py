@@ -317,12 +317,17 @@ def finance_payment_receipt_process(request, receipt_id: int):
             # recorded for Finance and never revives the booking (no effect on any other booking).
             confirm = settlement_hook(booking, realised_at=receipt.created_at, source="offline")
             booking.payment_settled_at = timezone.now()
-            if confirm and booking.status == BookingStatus.PENDING_PAYMENT:
+            newly_confirmed = confirm and booking.status == BookingStatus.PENDING_PAYMENT
+            if newly_confirmed:
                 booking.status = BookingStatus.BOOKED
             if not booking.istem_fbr_status and charge_profile_requires_istem_fbr(booking.charge_profile):
                 for k, v in initial_istem_fbr_fields_for_charge_profile(booking.charge_profile).items():
                     setattr(booking, k, v)
             booking.save(update_fields=["payment_settled_at", "status", "istem_fbr_status", "updated_at"])
+            if newly_confirmed:
+                from iic_booking.whatsapp.hooks import booking_confirmed_by_payment
+
+                booking_confirmed_by_payment(booking)  # nothing unless WhatsApp is on and the user opted in; never raises
 
         elif receipt.purpose == DepartmentPaymentReceiptPurpose.WALLET_RECHARGE:
             wallet = receipt.user.get_accessible_wallet()

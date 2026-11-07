@@ -115,6 +115,13 @@ def booking_event(event) -> None:
 
 
 @_guarded
+def booking_confirmed_by_payment(booking) -> None:
+    """A booking awaiting payment became Booked. These paths record no booking event, so they call this directly. The key
+    is per booking, so whichever path confirms it, the user is told once."""
+    _notify(booking.user, "booking_confirmed", _with_slot_time(booking), f"booking:{booking.pk}:booking_confirmed:payment")
+
+
+@_guarded
 def booking_rejected(booking) -> None:
     """The laboratory rejected a fabrication job. Each rejection has its own time, so a second one is a new message."""
     stamp = booking.fabrication_rejected_at.isoformat() if booking.fabrication_rejected_at else ""

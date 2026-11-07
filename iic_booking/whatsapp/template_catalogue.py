@@ -79,7 +79,7 @@ CATALOGUE: tuple[Template, ...] = (
         body=("Dear {{1}},\n\nYour equipment booking has been confirmed.\n\nBooking ID: {{2}}\nEquipment: {{3}}\nDate: {{4}}\n"
               f"Time: {{{{5}}}}\n\nPlease visit {_PORTAL} for booking details.{SIGN_OFF}"),
         footer="", params=("user name", "booking ID", "equipment", "date", "time"), examples=(_NAME, _REF, _EQ, _DATE, _TIME),
-        recipient=_BOOKER, trigger="Booking created as Booked, or moved from Pending or Awaiting payment to Booked",
+        recipient=_BOOKER, trigger="Booking created as Booked, or moved to Booked from Pending or Awaiting payment, including by online or offline payment",
     ),
     Template(
         event="booking_cancelled", name="iic_booking_cancelled", category="UTILITY", header="Booking Cancellation",

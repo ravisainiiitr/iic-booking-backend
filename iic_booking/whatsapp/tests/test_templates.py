@@ -583,6 +583,30 @@ def test_a_hook_problem_never_reaches_the_caller(sending):
         hooks.booking_event(fake_event(fake_booking(), "CREATED"))
 
 
+def test_a_payment_confirmation_uses_the_confirmed_template_once(sending):
+    approve("booking_confirmed")
+    booking = fake_booking()
+    booking.user = opted_in()
+    booking.pk = 1
+    with patch("iic_booking.whatsapp.service._enqueue"):
+        hooks.booking_confirmed_by_payment(booking)
+        hooks.booking_confirmed_by_payment(booking)
+    msg = WhatsAppMessage.objects.get()
+    assert msg.event == "booking_confirmed" and len(msg.params) == 5 and msg.status == WhatsAppMessage.Status.QUEUED
+
+
+def test_a_payment_confirmation_does_nothing_while_whatsapp_is_off(conf_on):
+    conf_on.WHATSAPP_ENABLED = False
+    with patch("iic_booking.whatsapp.service.notify") as notify:
+        hooks.booking_confirmed_by_payment(fake_booking())
+    notify.assert_not_called()
+
+
+def test_every_awaiting_payment_path_tells_the_user():
+    for path in ("payments/razorpay_service.py", "users/api/payment_views.py", "users/payment_settlement.py"):
+        assert "booking_confirmed_by_payment(booking)" in open(f"iic_booking/{path}", encoding="utf8").read(), path
+
+
 def test_rejection_reminder_and_waitlist_map_correctly(sending):
     booking = fake_booking()
     with patch("iic_booking.whatsapp.service.notify") as notify:

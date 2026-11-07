@@ -5,7 +5,7 @@ Generated from `iic_booking/whatsapp/template_catalogue.py`, which is what the c
 ## iic_booking_confirmed
 
 - **Django event:** `booking_confirmed`
-- **Trigger:** Booking created as Booked, or moved from Pending or Awaiting payment to Booked
+- **Trigger:** Booking created as Booked, or moved to Booked from Pending or Awaiting payment, including by online or offline payment
 - **Recipient:** The user who made the booking
 - **Language / category:** en / UTILITY
 - **Header:** Booking Confirmation
