@@ -25,7 +25,7 @@ HEALTH_FIELD = "health_status"
 LIST_FIELDS = "id,display_phone_number,verified_name,name_status,status,quality_rating,code_verification_status"
 LIST_FALLBACK = "id,display_phone_number,verified_name,quality_rating"
 WABA_FIELDS = "name,account_review_status,business_verification_status,ownership_type,country"
-TEMPLATE_FIELDS = "name,language,status,category,rejected_reason"
+TEMPLATE_FIELDS = "name,language,status,category,rejected_reason,components"
 TEMPLATE_PAGES = 20
 BUSINESS_EDGES = ("owned_whatsapp_business_accounts", "client_whatsapp_business_accounts")
 WHATSAPP_SCOPES = ("whatsapp_business_management", "whatsapp_business_messaging")
@@ -208,7 +208,7 @@ class Probe:
         return list(ordered.items())
 
     def report_templates(self, waba) -> None:
-        """Every template of a WABA: name, status, category, language and rejection reason. Bodies are not printed."""
+        """Every template of a WABA: name, status, category, language and rejection reason, with its wording (template text is not personal)."""
         rows, after, error = [], "", None
         for _ in range(TEMPLATE_PAGES):
             params = {"fields": TEMPLATE_FIELDS, "limit": 100}
@@ -228,6 +228,9 @@ class Probe:
         for row in rows:
             fields = " ".join(f"{k}={self.clean(row.get(k))}" for k in ("name", "language", "status", "category", "rejected_reason"))
             self.out(f"  template {fields}")
+            for part in row.get("components") or []:
+                if isinstance(part, dict) and part.get("text"):
+                    self.out(f"    {self.clean(part.get('type'))}: {self.clean(part['text'], limit=None)}")
 
     def check_waba(self) -> tuple[str, str, str]:
         """(association of the investigated sender, of the configured sender, whether they share a WABA)."""

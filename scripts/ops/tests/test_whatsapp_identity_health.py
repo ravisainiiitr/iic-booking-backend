@@ -224,7 +224,7 @@ def test_the_waba_secret_skips_other_lookups_but_still_needs_the_list():
     assert "waba_association: CONFIRMED" in out
 
 
-def test_templates_are_listed_across_pages_without_their_bodies():
+def test_templates_are_listed_across_pages_with_their_wording():
     class Paged(Meta):
         def __call__(self, url, params=None, headers=None, timeout=None):
             path = url.split("/v21.0/", 1)[1]
@@ -232,7 +232,7 @@ def test_templates_are_listed_across_pages_without_their_bodies():
                 self.requests.append((path, params.get("after", "")))
                 if not params.get("after"):
                     return Response({"data": [{"id": WABA, "name": "hello_world", "language": "en_US", "status": "APPROVED",
-                                               "category": "UTILITY", "components": [{"text": "SECRET BODY"}]}],
+                                               "category": "UTILITY", "components": [{"type": "BODY", "text": "Booking {{1}} is ready"}, {"type": "BUTTONS"}]}],
                                      "paging": {"cursors": {"after": "CURSOR"}, "next": "https://graph/next"}})
                 return Response({"data": [{"name": "second_one", "language": "en", "status": "REJECTED", "category": "UTILITY",
                                            "rejected_reason": f"INVALID_FORMAT {TARGET_NUMBER}"}], "paging": {"cursors": {"after": "END"}}})
@@ -241,7 +241,7 @@ def test_templates_are_listed_across_pages_without_their_bodies():
     _, out = run(Paged())
     assert "templates: 2" in out and "name=hello_world language=en_US status=APPROVED category=UTILITY" in out
     assert "name=second_one language=en status=REJECTED" in out and "rejected_reason=INVALID_FORMAT" in out
-    assert "SECRET BODY" not in out
+    assert "BODY: Booking {{1}} is ready" in out
 
 
 def test_a_template_list_error_does_not_stop_the_waba_check():
