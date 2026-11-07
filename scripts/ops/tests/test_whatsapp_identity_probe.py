@@ -243,6 +243,12 @@ def test_the_workflow_takes_ids_from_secrets_and_has_no_inputs():
     assert "set -x" not in text and "echo \"$TARGET_ID" not in text
 
 
+def test_the_workflow_reads_the_script_from_git_because_the_runner_checkout_is_sparse():
+    text = (WORKFLOWS / "probe-whatsapp-identity.yml").read_text(encoding="utf8")
+    assert 'git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/whatsapp_identity_probe.py' in text
+    assert "< scripts/ops/" not in text
+
+
 @pytest.mark.parametrize("name", ["probe-whatsapp-inbound.yml", "apply-whatsapp-config.yml"])
 def test_other_workflows_print_no_full_sender_number(name):
     text = (WORKFLOWS / name).read_text(encoding="utf8")
