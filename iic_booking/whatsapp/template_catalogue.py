@@ -2,7 +2,8 @@
 
 The three iic_booking_* entries repeat, word for word, what is already at Meta; their names stay as they are because Meta
 keys templates by name. New templates carry a line about STOP in the footer. ``trigger`` says what in the portal sends the
-message; None means the portal has no such step yet, so the template exists but nothing can send it.
+message. A template belongs here only when the portal has that step: no reschedule request or refusal exists, so neither does
+a template for one.
 """
 
 from __future__ import annotations
@@ -95,20 +96,14 @@ CATALOGUE: tuple[Template, ...] = (
         recipient=_BOOKER, trigger="Booking event Completed",
     ),
     _new("booking_request_received", "iitr_booking_request_received", "Booking Request Received",
-         "We have received your equipment booking request. It is waiting for review.",
+         "We have received your equipment booking request. It is pending approval.",
          f"You can follow its status on {_PORTAL}.", trigger="Booking created with status Pending"),
     _new("booking_rejected", "iitr_booking_rejected", "Booking Not Accepted",
          "Your equipment booking could not be accepted by the laboratory.",
          f"The reason and the next steps are shown on {_PORTAL}.", trigger="Laboratory rejects a 3D printing or laser cutting job"),
-    _new("reschedule_requested", "iitr_reschedule_requested", "Reschedule Request Received",
-         "We have received your request to reschedule this equipment booking.",
-         f"You can follow its status on {_PORTAL}."),
     _new("reschedule_approved", "iitr_reschedule_approved", "Booking Rescheduled",
          "Your equipment booking has been rescheduled. The new slot is shown below.",
          f"Please check the updated details on {_PORTAL}.", trigger="Booking event Rescheduled", **_WITH_TIME),
-    _new("reschedule_rejected", "iitr_reschedule_rejected", "Reschedule Request Declined",
-         "Your request to reschedule this equipment booking could not be accepted. Your original slot stays as booked.",
-         f"The details are shown on {_PORTAL}."),
     _new("booking_reminder", "iitr_booking_reminder", "Booking Reminder",
          "This is a reminder of your equipment booking.",
          f"The booking details are on {_PORTAL}.", trigger="Daily booking reminder task", **_WITH_TIME),
@@ -117,13 +112,13 @@ CATALOGUE: tuple[Template, ...] = (
          f"The payment status is shown on {_PORTAL}.", trigger="Online payment order created for a booking", **_WITH_AMOUNT),
     _new("payment_successful", "iitr_payment_successful", "Payment Received",
          "We have received the payment for your equipment booking.",
-         f"The receipt details are on {_PORTAL}.", trigger="Online payment order marked Paid", **_WITH_AMOUNT),
+         f"The payment details are on {_PORTAL}.", trigger="Online payment order marked Paid", **_WITH_AMOUNT),
     _new("payment_failed", "iitr_payment_failed", "Payment Not Completed",
          "The payment for your equipment booking was not completed.",
          f"You can check the booking and try again on {_PORTAL}.", trigger="Online payment order marked Failed", **_WITH_AMOUNT),
-    _new("payment_pending", "iitr_payment_pending", "Payment Due",
+    _new("payment_pending", "iitr_payment_pending", "Awaiting Payment",
          "Your equipment booking is waiting for payment.",
-         f"Please complete the payment on {_PORTAL} to keep this booking.", trigger="Booking created with status Awaiting payment",
+         f"Please complete the payment on {_PORTAL} to confirm this booking.", trigger="Booking created with status Awaiting payment",
          **_WITH_AMOUNT),
     _new("refund_initiated", "iitr_refund_initiated", "Refund Started",
          "A refund has been started for your equipment booking.",

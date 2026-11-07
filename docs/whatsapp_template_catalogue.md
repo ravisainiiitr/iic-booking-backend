@@ -109,7 +109,7 @@ IIT Roorkee
 ```
 Dear {{1}},
 
-We have received your equipment booking request. It is waiting for review.
+We have received your equipment booking request. It is pending approval.
 
 Booking ID: {{2}}
 Equipment: {{3}}
@@ -149,35 +149,6 @@ The reason and the next steps are shown on the IIT Roorkee Equipment Booking Por
 IIT Roorkee
 ```
 
-## iitr_reschedule_requested
-
-- **Django event:** `reschedule_requested`
-- **Trigger:** None: the portal has no such step, so nothing sends it
-- **Recipient:** The user who made the booking
-- **Language / category:** en / UTILITY
-- **Header:** Reschedule Request Received
-- **Footer:** Reply STOP to stop WhatsApp messages.
-- **Placeholders:**
-  - `{{1}}` user name, for example: Asha Verma
-  - `{{2}}` booking ID, for example: XRD202600123
-  - `{{3}}` equipment, for example: X-Ray Diffractometer
-  - `{{4}}` date, for example: 10 Nov 2026
-- **Body:**
-
-```
-Dear {{1}},
-
-We have received your request to reschedule this equipment booking.
-
-Booking ID: {{2}}
-Equipment: {{3}}
-Date: {{4}}
-
-You can follow its status on the IIT Roorkee Equipment Booking Portal.
-
-IIT Roorkee
-```
-
 ## iitr_reschedule_approved
 
 - **Django event:** `reschedule_approved`
@@ -205,35 +176,6 @@ Date: {{4}}
 Time: {{5}}
 
 Please check the updated details on the IIT Roorkee Equipment Booking Portal.
-
-IIT Roorkee
-```
-
-## iitr_reschedule_rejected
-
-- **Django event:** `reschedule_rejected`
-- **Trigger:** None: the portal has no such step, so nothing sends it
-- **Recipient:** The user who made the booking
-- **Language / category:** en / UTILITY
-- **Header:** Reschedule Request Declined
-- **Footer:** Reply STOP to stop WhatsApp messages.
-- **Placeholders:**
-  - `{{1}}` user name, for example: Asha Verma
-  - `{{2}}` booking ID, for example: XRD202600123
-  - `{{3}}` equipment, for example: X-Ray Diffractometer
-  - `{{4}}` date, for example: 10 Nov 2026
-- **Body:**
-
-```
-Dear {{1}},
-
-Your request to reschedule this equipment booking could not be accepted. Your original slot stays as booked.
-
-Booking ID: {{2}}
-Equipment: {{3}}
-Date: {{4}}
-
-The details are shown on the IIT Roorkee Equipment Booking Portal.
 
 IIT Roorkee
 ```
@@ -322,7 +264,7 @@ Booking ID: {{2}}
 Equipment: {{3}}
 Amount: {{4}}
 
-The receipt details are on the IIT Roorkee Equipment Booking Portal.
+The payment details are on the IIT Roorkee Equipment Booking Portal.
 
 IIT Roorkee
 ```
@@ -362,7 +304,7 @@ IIT Roorkee
 - **Trigger:** Booking created with status Awaiting payment
 - **Recipient:** The user who made the booking
 - **Language / category:** en / UTILITY
-- **Header:** Payment Due
+- **Header:** Awaiting Payment
 - **Footer:** Reply STOP to stop WhatsApp messages.
 - **Placeholders:**
   - `{{1}}` user name, for example: Asha Verma
@@ -380,7 +322,7 @@ Booking ID: {{2}}
 Equipment: {{3}}
 Amount: {{4}}
 
-Please complete the payment on the IIT Roorkee Equipment Booking Portal to keep this booking.
+Please complete the payment on the IIT Roorkee Equipment Booking Portal to confirm this booking.
 
 IIT Roorkee
 ```
