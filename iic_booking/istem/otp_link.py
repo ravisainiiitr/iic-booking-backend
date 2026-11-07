@@ -19,7 +19,6 @@ import secrets
 from datetime import timedelta
 
 from django.conf import settings
-from django.core.mail import send_mail
 from django.db import transaction
 from django.utils import timezone
 from django.utils.crypto import constant_time_compare, salted_hmac
@@ -34,7 +33,7 @@ from .service import _link_user, linked_elsewhere
 
 logger = logging.getLogger("iic_booking.istem")
 
-OTP_TTL = timedelta(minutes=10)
+OTP_TTL = timedelta(minutes=5)
 MAX_ATTEMPTS = 5
 RESEND_INTERVAL = timedelta(seconds=60)
 MAX_SENDS_PER_HOUR = 5
@@ -229,13 +228,26 @@ def _refuse_linked_elsewhere(link: IstemUserLink, otp: IstemLinkOtp | None = Non
 def _send_email(user, email: str, code: str) -> None:
     from iic_booking.users.test_accounts import redirect_email_for_user
 
-    subject = "OTP to link your I-STEM account - IIC Booking Portal, IIT Roorkee"
-    body = (f"Your one-time password to link your I-STEM account with the IIC Booking Portal is: {code}\n\n"
-            f"It expires in {int(OTP_TTL.total_seconds() // 60)} minutes. Do not share it with anyone.\n\n"
-            "If you did not ask to link your I-STEM account, ignore this email.")
+    from iic_booking.communication.utils import get_frontend_absolute_url
+    from iic_booking.users.display import get_user_display_name
+
+    from .otp_email import PORTAL_NAME, send_otp_email
+
+    minutes = int(OTP_TTL.total_seconds() // 60)
+    subject = "Your OTP to link your I-STEM account"
     recipients, delivery_subject = redirect_email_for_user(user, original_email=email, subject=subject)
-    send_mail(subject=delivery_subject or subject, message=body, from_email=settings.DEFAULT_FROM_EMAIL,
-              recipient_list=recipients or [email], fail_silently=False)
+    wrap = None
+    if delivery_subject and delivery_subject != subject:  # a test account: the mail is redirected, and says so in its subject
+        wrap = lambda rendered: delivery_subject  # noqa: E731
+    send_otp_email(
+        "istem_account_link_otp_email", recipients=recipients or [email], subject_wrap=wrap,
+        context={"name": get_user_display_name(user) or "there", "otp": code, "minutes": minutes, "masked_email": mask(email),
+                 "user_email": user.email, "link": get_frontend_absolute_url("/profile")},
+        fallback_subject=subject,
+        fallback_body=(f"Your one-time password to link your I-STEM account with the {PORTAL_NAME} is: {code}\n\n"
+                       f"It expires in {minutes} minutes. Do not share it with anyone.\n\n"
+                       "If you did not ask to link your I-STEM account, ignore this email."),
+    )
 
 
 def send_otp(user, *, whatsapp: bool = False) -> dict:
