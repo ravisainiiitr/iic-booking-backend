@@ -86,7 +86,7 @@ Forgot-password and wallet OTPs stay email-only on purpose: a password change la
 - **Changing the number undoes the proof.** A code for the old number cannot prove the new one. STOP ends sign-in codes.
 - **Migrations:** `whatsapp` 0007 and `istem` 0011.
 
-**Before turning on `ISTEM_WHATSAPP_OTP_ENABLED` (default off).** The 31 Oct 2026 committee rule sent the OTP to the email on I-STEM. With this setting the same code also goes to the mobile on I-STEM, so holding that number is enough to prove the account, and a direct registration then creates an approved account with the email marked verified. A reassigned number is the risk. The record cannot show which channel was used: it notes that the code went to both (`EMAIL_OR_WHATSAPP_OTP`). The WhatsApp template `iitr_verification_code` states 10 minutes, while these codes last 5.
+**Before turning on `ISTEM_WHATSAPP_OTP_ENABLED` (default off).** The 31 Oct 2026 committee rule sent the OTP to the email on I-STEM. With this setting the same code also goes to the mobile on I-STEM, so holding that number is enough to prove the account, and a direct registration then creates an approved account with the email marked verified. A reassigned number is the risk. The record cannot show which channel was used: it notes that the code went to both (`EMAIL_OR_WHATSAPP_OTP`). The WhatsApp template `iitr_verification_code` states 5 minutes. Sign-in and number-proving codes last 10, so for them it errs on the short side.
 
 ## Template management
 

@@ -78,7 +78,7 @@ def test_the_template_is_what_meta_requires_for_authentication():
     assert payload["category"] == "AUTHENTICATION" and payload["name"] == "iitr_verification_code"
     kinds = {c["type"]: c for c in payload["components"]}
     assert kinds["BODY"] == {"type": "BODY", "add_security_recommendation": True}
-    assert kinds["FOOTER"]["code_expiration_minutes"] == 10
+    assert kinds["FOOTER"]["code_expiration_minutes"] == 5
     assert kinds["BUTTONS"]["buttons"] == [{"type": "OTP", "otp_type": "COPY_CODE", "text": "Copy code"}]
     assert not validate()
 

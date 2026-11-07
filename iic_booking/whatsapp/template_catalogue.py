@@ -132,10 +132,10 @@ CATALOGUE: tuple[Template, ...] = (
     Template(
         event="otp_code", name="iitr_verification_code", category="AUTHENTICATION", header="",
         body="{{1}} is your verification code. For your security, do not share this code.",
-        footer="This code expires in 10 minutes.", params=("one-time code",), examples=("482913",),
+        footer="This code expires in 5 minutes.", params=("one-time code",), examples=("482913",),
         recipient="The person who asked for the code",
         trigger="Proving a WhatsApp number, signing in with a proved number, or an I-STEM OTP the person asked to get on WhatsApp",
-        code_expiry_minutes=10,
+        code_expiry_minutes=5,
     ),
 )
 BY_EVENT = {t.event: t for t in CATALOGUE}
