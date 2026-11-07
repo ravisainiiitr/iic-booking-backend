@@ -35,6 +35,8 @@ on:
           - recheck-review-apply
           - sync-schedule-dry-run
           - sync-schedule
+          - ledger-status-dry-run
+          - ledger-status-apply
       test_sender:
         description: "test-sender-dry-run / e2e: the one test sender address for this run (not saved)"
         required: false
