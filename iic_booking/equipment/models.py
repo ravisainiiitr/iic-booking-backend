@@ -3823,7 +3823,7 @@ class Booking(models.Model):
         help_text=_('Booking status')
     )
 
-    # Payment (external: wallet partial + SBIePay / offline UTR for remainder)
+    # Payment (external: wallet partial + online / offline UTR for remainder)
     wallet_amount_applied = models.DecimalField(
         max_digits=10,
         decimal_places=2,

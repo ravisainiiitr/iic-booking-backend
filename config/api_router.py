@@ -232,10 +232,6 @@ from iic_booking.users.api.project_views import (
 )
 from iic_booking.users.api.billing_views import external_billing_profile_me
 from iic_booking.users.api.payment_views import (
-    sbiepay_initiate,
-    sbiepay_return_success,
-    sbiepay_return_failure,
-    sbiepay_transaction_status,
     submit_payment_utr,
     submit_wallet_recharge_receipt,
     finance_payment_receipts_list,
@@ -1168,11 +1164,6 @@ urlpatterns = router.urls + [
         name="admin-payments-fee-settings",
     ),
 
-    # SBIePay payment gateway (initiate deprecated — use Razorpay)
-    path("payments/sbiepay/initiate/", sbiepay_initiate, name="sbiepay-initiate"),
-    path("payments/sbiepay/success/", sbiepay_return_success, name="sbiepay-success"),
-    path("payments/sbiepay/failure/", sbiepay_return_failure, name="sbiepay-failure"),
-    path("payments/sbiepay/status/", sbiepay_transaction_status, name="sbiepay-status"),
     path("payments/utr/submit/", submit_payment_utr, name="payment-utr-submit"),
     path(
         "payments/wallet-recharge-receipt/",

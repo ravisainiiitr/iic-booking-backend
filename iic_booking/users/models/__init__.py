@@ -112,7 +112,6 @@ from .user_type_inactivity import UserTypeInactivityTimeout
 from .billing import ExternalBillingProfile
 from .payment import (
     DepartmentPaymentReceipt,
-    PaymentGatewayTransaction,
     SricTransferRequest,
 )
 from .equipment_supply_chain_role import (
@@ -231,7 +230,6 @@ __all__ = [
     "TestAccountEmailSettings",
     "UserTypeInactivityTimeout",
     "ExternalBillingProfile",
-    "PaymentGatewayTransaction",
     "DepartmentPaymentReceipt",
     "SricTransferRequest",
     "EquipmentSupplyChainRole",

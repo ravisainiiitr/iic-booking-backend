@@ -1,4 +1,4 @@
-"""SBIePay, UTR receipts, and finance payment APIs."""
+"""UTR receipts and finance payment APIs."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -20,10 +20,6 @@ from iic_booking.users.models.payment import (
     DepartmentPaymentReceipt,
     DepartmentPaymentReceiptPurpose,
     DepartmentPaymentReceiptStatus,
-    PaymentGateway,
-    PaymentGatewayStatus,
-    PaymentGatewayTransaction,
-    PaymentPurpose,
 )
 from iic_booking.users.models.wallet import WalletRechargeRequest
 from iic_booking.users.repositories.wallet_repository import resolve_internal_department_for_wallet_recharge
@@ -66,61 +62,6 @@ def _serialize_receipt(r: DepartmentPaymentReceipt) -> dict:
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
-def sbiepay_initiate(request):
-    """Deprecated: online payments use Razorpay. Returns 410 Gone."""
-    return Response(
-        {
-            "error": "SBIePay initiate is deprecated. Use POST /api/payments/razorpay/create-order/ instead.",
-            "code": "SBIEPAY_DEPRECATED",
-        },
-        status=status.HTTP_410_GONE,
-    )
-
-
-def _sbiepay_retired() -> Response:
-    return Response(
-        {"error": "SBIePay is no longer in use.", "code": "SBIEPAY_RETIRED"},
-        status=status.HTTP_410_GONE,
-    )
-
-
-@api_view(["GET", "POST"])
-@authentication_classes([])
-@permission_classes([])
-def sbiepay_return_success(request):
-    """Retired with SBIePay: a return address never settles anything."""
-    return _sbiepay_retired()
-
-
-@api_view(["GET", "POST"])
-@authentication_classes([])
-@permission_classes([])
-def sbiepay_return_failure(request):
-    """Retired with SBIePay: a return address never changes a transaction."""
-    return _sbiepay_retired()
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def sbiepay_transaction_status(request):
-    ref = (request.query_params.get("ref") or "").strip()
-    if not ref:
-        return Response({"error": "ref is required."}, status=status.HTTP_400_BAD_REQUEST)
-    txn = get_object_or_404(PaymentGatewayTransaction, merchant_order_ref=ref, user=request.user)
-    return Response(
-        {
-            "merchant_order_ref": txn.merchant_order_ref,
-            "status": txn.status,
-            "amount": str(txn.amount),
-            "purpose": txn.purpose,
-            "booking_id": txn.booking_id,
-            "verified_at": txn.verified_at.isoformat() if txn.verified_at else None,
-        }
-    )
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
 def submit_payment_utr(request):
     """
     Offline UTR for wallet recharge or booking shortfall (govt / bank deposit).
@@ -159,6 +100,13 @@ def submit_payment_utr(request):
     department = resolve_internal_department_for_wallet_recharge(wallet, int(department_id))
     if not department:
         return Response({"error": "Invalid department."}, status=status.HTTP_400_BAD_REQUEST)
+    if purpose == DepartmentPaymentReceiptPurpose.WALLET_RECHARGE:
+        # A wallet recharge by bank reference is a Direct Cash Deposit / Bank Transfer: the same switch decides.
+        from iic_booking.users.api.wallet_views import _direct_cash_recharge_disabled_response
+        from iic_booking.users.models.wallet_sric_settings import direct_cash_recharge_enabled
+
+        if not direct_cash_recharge_enabled(department=department.pk):
+            return _direct_cash_recharge_disabled_response()
 
     booking = None
     recharge_req = None

@@ -51,10 +51,7 @@ class Command(BaseCommand):
             UrgentBookingRequest,
             WaitlistEntry,
         )
-        from iic_booking.users.models.payment import (
-            DepartmentPaymentReceipt,
-            PaymentGatewayTransaction,
-        )
+        from iic_booking.users.models.payment import DepartmentPaymentReceipt
 
         # Tables / querysets to clear (order matters for PROTECT FKs).
         steps: list[tuple[str, object]] = [
@@ -68,10 +65,6 @@ class Command(BaseCommand):
             ("urgent_booking_requests", UrgentBookingRequest.objects.all()),
             ("waitlist_entries", WaitlistEntry.objects.all()),
             ("booking_attempt_logs", BookingAttemptLog.objects.all()),
-            (
-                "payment_gateway_txns (booking-linked)",
-                PaymentGatewayTransaction.objects.filter(booking__isnull=False),
-            ),
             (
                 "payment_receipts (booking-linked)",
                 DepartmentPaymentReceipt.objects.filter(booking__isnull=False),

@@ -64,7 +64,6 @@ class Command(BaseCommand):
         from iic_booking.users.models import User
         from iic_booking.users.models.payment import (
             DepartmentPaymentReceipt,
-            PaymentGatewayTransaction,
             SricTransferRequest,
         )
         from iic_booking.users.models.wallet import (
@@ -117,10 +116,6 @@ class Command(BaseCommand):
                 BookingAttemptLog.objects.filter(
                     Q(user_id__in=test_user_ids) | Q(booking_id__in=booking_ids)
                 ),
-            ),
-            (
-                "payment_gateway_txns (booking-linked)",
-                PaymentGatewayTransaction.objects.filter(booking_id__in=booking_ids),
             ),
             (
                 "payment_receipts (booking-linked)",

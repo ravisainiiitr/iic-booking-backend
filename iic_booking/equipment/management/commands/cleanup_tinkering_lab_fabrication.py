@@ -119,7 +119,6 @@ MONEY_MODELS = (
     ("users.SubWalletTransaction", "amount"),
     ("users.SubWallet", "balance"),
     ("users.Wallet", "balance"),
-    ("users.PaymentGatewayTransaction", "amount"),
     ("users.DepartmentPaymentReceipt", "amount"),
     ("users.MigrationBookingSettlement", "refund_amount"),
     ("payments.PaymentOrder", "amount"),

@@ -34,9 +34,7 @@ Main Admin → Equipment → Booking Charge Settings → **Razorpay convenience 
 
 ## Deprecations
 
-- `POST /api/payments/sbiepay/initiate/` → **410 Gone** (use Razorpay create-order).
 - Offline UTR / finance receipt path unchanged.
-- Historical SBIePay `PaymentGatewayTransaction` rows remain read-only.
 - Legacy `POST /api/wallet/razorpay/*` still exists; UI uses `/api/payments/razorpay/`.
 
 ## Settlements sync (optional)

@@ -330,8 +330,18 @@ def credit_row(
             raise SricRechargeError("This Ledger ID was already credited this financial year.", status=409, code="DUPLICATE") from exc
         row_pk = rec.pk
         transaction.on_commit(lambda: send_credit_confirmation(row_pk))
+        transaction.on_commit(lambda: _settle_waiting_approval(row_pk))
     logger.info("SRIC wallet recharge row %s credited to sub-wallet %s (txn %s)", rec.pk, sub.pk, txn.pk)
     return rec, True
+
+
+def _settle_waiting_approval(row_id: int) -> None:
+    try:
+        from iic_booking.users.sric_ledger_status import settle_waiting_for_row
+
+        settle_waiting_for_row(row_id)
+    except Exception as exc:  # noqa: BLE001 - the credit is done; reconciliation can be run again
+        logger.warning("SRIC ledger approval not linked to row %s (%s)", row_id, type(exc).__name__)
 
 
 def reject_row(row_id: int, *, actor, reason: str) -> SricWalletRecharge:
@@ -564,6 +574,29 @@ def _attachments(msg, expected: str) -> list[tuple[str, bytes]]:
     return out
 
 
+def _process_ledger_status(msg, record: dict, summary: dict, finish, config, *, dry_run: bool) -> dict[str, Any]:
+    """A status email has no attachment by design. Compare it with the wallet credit; it never moves money."""
+    from iic_booking.users import sric_ledger_status as ledger_status
+
+    parsed = ledger_status.parse(msg)
+    if parsed is None:
+        summary["error"] = "No Ledger ID in the email."
+        return finish(SricWalletMailStatus.PARSE_ERROR, error=summary["error"])
+    auth = check_message(msg, config)
+    summary["authenticated"] = auth.authenticated
+    if dry_run:
+        summary["ledger_result"] = str(ledger_status.assess(parsed, origin_verified=auth.authenticated)[0])
+        summary["status"] = str(SricWalletMailStatus.DRY_RUN)
+        return summary
+    with transaction.atomic():
+        obj = SricWalletMailMessage.objects.create(status=SricWalletMailStatus.LEDGER_STATUS, authenticated=auth.authenticated, auth_verdict=auth.verdict[:500], **record)
+        item = ledger_status.record(obj, parsed)
+    summary.update(status=str(SricWalletMailStatus.LEDGER_STATUS), message_record_id=obj.pk, ledger_result=str(item.result))
+    if item.result != ledger_status.R.SETTLED:
+        summary["ledger_problem_id"] = item.pk
+    return summary
+
+
 def process_message(
     raw: bytes, *, uid: str, folder: str, config: SricWalletRechargeSettings, dry_run: bool = False, trigger: str = ""
 ) -> dict[str, Any]:
@@ -590,6 +623,10 @@ def process_message(
         return finish(SricWalletMailStatus.DUPLICATE_MESSAGE)
     files = _attachments(msg, config.attachment_name)
     if not files:
+        from iic_booking.users import sric_ledger_status as ledger_status
+
+        if ledger_status.is_ledger_status_email(msg):
+            return _process_ledger_status(msg, record, summary, finish, config, dry_run=dry_run)
         return finish(SricWalletMailStatus.NO_ATTACHMENT)
     filename, content = files[0]
     sha = hashlib.sha256(content).hexdigest()
@@ -910,6 +947,10 @@ def scan_mailbox(*, trigger: str = "schedule", dry_run: bool = False, max_messag
                 send_new_row_notices(result["review_row_ids"])
             except Exception as exc:  # noqa: BLE001
                 logger.warning("SRIC sign-in reminders failed (%s)", type(exc).__name__)
+        if result.get("ledger_problem_ids"):
+            from iic_booking.users.sric_ledger_status import send_problem_alert
+
+            send_problem_alert(result["ledger_problem_ids"])
         unreadable = [m for m in result.get("messages", []) if m.get("status") in UNREADABLE_MAIL_STATUSES]
         if unreadable:
             send_unreadable_mail_alert(unreadable)
@@ -933,6 +974,7 @@ def _scan(config, imap: dict, *, trigger: str, dry_run: bool, max_messages: int)
         "credited": 0,
         "statuses": {},
         "review_row_ids": [],
+        "ledger_problem_ids": [],
         "messages": [],
     }
     try:
@@ -970,6 +1012,8 @@ def _scan(config, imap: dict, *, trigger: str, dry_run: bool, max_messages: int)
                 result["statuses"][status] = result["statuses"].get(status, 0) + n
             result["credited"] += summary.get("statuses", {}).get(S.CREDITED, 0) if not dry_run else 0
             result["review_row_ids"] += summary.get("review_row_ids", [])
+            if summary.get("ledger_problem_id"):
+                result["ledger_problem_ids"].append(summary["ledger_problem_id"])
             result["messages"].append({k: v for k, v in summary.items() if k not in ("row_ids", "review_row_ids")})
     finally:
         try:
