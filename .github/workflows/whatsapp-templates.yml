@@ -1,0 +1,57 @@
+# WhatsApp message templates (manage.py whatsapp_sync_templates). Sends no WhatsApp messages and deletes no templates.
+# dry-run : changes nothing, here or at Meta. Lists exactly what would be submitted.
+# status  : GET from Meta, stores statuses, prints the report.
+# submit  : submits one batch of missing templates; needs confirm = SUBMIT. Run it again for the next batch.
+# Run logs are public: the WABA ID comes from a secret, and the commands print names, statuses and wording only.
+name: WhatsApp templates
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "dry-run, status or submit"
+        required: true
+        default: "dry-run"
+        type: choice
+        options:
+          - dry-run
+          - status
+          - submit
+      batch_size:
+        description: "submit: how many in this batch (at most 20)"
+        required: false
+        default: "5"
+      confirm:
+        description: "submit only: type SUBMIT"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  templates:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run
+        env:
+          ACTION: ${{ inputs.action }}
+          BATCH_SIZE: ${{ inputs.batch_size }}
+          CONFIRM: ${{ inputs.confirm }}
+          WHATSAPP_WABA_ID: ${{ secrets.WHATSAPP_WABA_ID }}
+        run: |
+          set -euo pipefail
+          case "$WHATSAPP_WABA_ID" in (*[!0-9]*|'') echo "WHATSAPP_WABA_ID must be set and numeric"; exit 1 ;; esac
+          case "$BATCH_SIZE" in (*[!0-9]*|'') echo "batch_size must be a number"; exit 1 ;; esac
+          ARGS=()
+          case "$ACTION" in
+            dry-run) ARGS=(--dry-run --show-wording) ;;
+            status) ARGS=(--status) ;;
+            submit)
+              if [ "$CONFIRM" != "SUBMIT" ]; then echo "Type SUBMIT to submit"; exit 1; fi
+              ARGS=(--submit --batch-size "$BATCH_SIZE") ;;
+            *) echo "Unknown action"; exit 1 ;;
+          esac
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e WHATSAPP_WABA_ID -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python manage.py whatsapp_sync_templates "${ARGS[@]}"
