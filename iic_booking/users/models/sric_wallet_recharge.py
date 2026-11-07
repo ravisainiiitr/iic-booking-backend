@@ -170,6 +170,7 @@ class SricWalletMailStatus(models.TextChoices):
     BEFORE_CUTOFF = "before_cutoff", _("Sent before the cutoff date")
     DUPLICATE_MESSAGE = "duplicate_message", _("Same email already processed")
     WRONG_SENDER = "wrong_sender", _("Not from the SRIC sender")
+    LEDGER_STATUS = "ledger_status", _("SRIC ledger status email")
     ERROR = "error", _("Error")
 
 
@@ -202,6 +203,15 @@ class SricWalletMailMessage(models.Model):
 
     def __str__(self) -> str:
         return f"{self.folder}#{self.uid} ({self.status})"
+
+
+class SricLedgerStatusResult(models.TextChoices):
+    SETTLED = "settled", _("Agrees with the wallet credit: settled")
+    NO_WALLET_CREDIT = "no_wallet_credit", _("No wallet credit for this ledger")
+    MISMATCH = "mismatch", _("Differs from the wallet credit")
+    NOT_APPROVED = "not_approved", _("Status is not Approved")
+    NOT_CREDITED = "not_credited", _("Row is not a live wallet credit")
+    ORIGIN_UNVERIFIED = "origin_unverified", _("Email origin not verified")
 
 
 class SricWalletRechargeStatus(models.TextChoices):
@@ -280,6 +290,7 @@ class SricWalletRecharge(models.Model):
     )
     fund_receipt_verified_at = models.DateTimeField(_("Fund receipt verified at"), null=True, blank=True)
     fund_receipt_verification_remarks = models.TextField(_("Verification remarks"), blank=True)
+    settlement_alert_sent_at = models.DateTimeField(_("Settlement overdue alert sent at"), null=True, blank=True)
     rejected_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
     )
@@ -319,3 +330,30 @@ class SricWalletRecharge(models.Model):
     @property
     def amount_value(self) -> Decimal:
         return self.amount or Decimal("0.00")
+
+
+class SricLedgerStatusEmail(models.Model):
+    """What one SRIC "Ledger Request Status" email said, and how it compared with the wallet credit. Never moves money."""
+
+    message = models.OneToOneField(SricWalletMailMessage, on_delete=models.PROTECT, related_name="ledger_status")
+    ledger_id = models.CharField(_("Ledger ID"), max_length=80, db_index=True)
+    status_text = models.CharField(_("Status in the email"), max_length=60, blank=True)
+    direction = models.CharField(_("Dr or Cr"), max_length=4, blank=True)
+    amount = models.DecimalField(_("Amount"), max_digits=12, decimal_places=2, null=True, blank=True)
+    party_code = models.CharField(_("Party Name"), max_length=80, blank=True)
+    project_number = models.CharField(_("Project No"), max_length=120, blank=True)
+    bill_token = models.CharField(_("Bill Token No"), max_length=60, blank=True)
+    origin_verified = models.BooleanField(_("Email origin verified"), default=False)
+    result = models.CharField(_("Result"), max_length=20, choices=SricLedgerStatusResult.choices, db_index=True)
+    detail = models.CharField(_("Details"), max_length=200, blank=True)
+    recharge = models.ForeignKey(SricWalletRecharge, on_delete=models.SET_NULL, null=True, blank=True, related_name="ledger_status_emails")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        verbose_name = _("SRIC ledger status email")
+        verbose_name_plural = _("SRIC ledger status emails")
+
+    def __str__(self) -> str:
+        return f"Ledger status #{self.pk} ({self.result})"

@@ -1,4 +1,4 @@
-"""Booking payment split: wallet first, remainder via SBIePay or offline UTR."""
+"""Booking payment split: wallet first, remainder online or by offline UTR."""
 
 from __future__ import annotations
 

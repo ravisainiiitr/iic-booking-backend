@@ -35,6 +35,8 @@ class Command(BaseCommand):
                 "recheck-review-apply",
                 "sync-schedule-dry-run",
                 "sync-schedule",
+                "ledger-status-dry-run",
+                "ledger-status-apply",
             ],
         )
         parser.add_argument("--employee-id", default="")
@@ -44,6 +46,7 @@ class Command(BaseCommand):
         parser.add_argument("--test-user-id", default="")
         parser.add_argument("--row-id", default="")
         parser.add_argument("--actor-id", default="")
+        parser.add_argument("--since", default="2026-10-01", help="ledger-status: first email date to go through (YYYY-MM-DD)")
 
     @staticmethod
     def _int(value):
@@ -169,11 +172,26 @@ class Command(BaseCommand):
                 f"balance_after={getattr(rec, 'balance_after', None)} confirmation_sent={bool(getattr(rec, 'confirmation_sent_at', None))}"
             )
 
+    def _ledger_status(self, options, *, apply: bool):
+        from datetime import date
+
+        from iic_booking.users.sric_ledger_status import reconcile_mailbox
+
+        result = reconcile_mailbox(since=date.fromisoformat(options["since"]), apply=apply)
+        w = self.stdout.write
+        w(f"ledger-status {'apply' if apply else 'dry-run'}: " + " ".join(f"{k}={result[k]}" for k in result if k not in ("rows", "credited_rows_awaiting_sric")))
+        for row in result.get("rows", []):
+            w(f"  mail_record={row['mail_record']} row_id={row['row_id']} result={row['result']}")
+        w(f"  awaiting SRIC approval, row ids: {result.get('credited_rows_awaiting_sric', [])}")
+
     def handle(self, *args, **options):
         from django.db.models import Count
 
         if options["action"].startswith(("test-sender-", "test-employee-id-", "test-reversal-link-")) or options["action"] == "find-test-faculty":
             self._test_sender(options)
+            return
+        if options["action"].startswith("ledger-status-"):
+            self._ledger_status(options, apply=options["action"] == "ledger-status-apply")
             return
         if options["action"].startswith("auto-credit-"):
             self._auto_credit(options["action"])

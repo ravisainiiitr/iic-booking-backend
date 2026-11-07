@@ -16,7 +16,7 @@ class WalletStudentRechargeSettings(models.Model):
         _("Enable IITR Student wallet recharge"),
         default=False,
         help_text=_(
-            "When on, IITR Students may recharge via SBIePay or Offline Request "
+            "When on, IITR Students may recharge online or by Offline Request "
             "(payment receipt upload). Funds park in the concerned faculty wallet. "
             "Individual Students keep their own wallet and are not gated by this flag."
         ),

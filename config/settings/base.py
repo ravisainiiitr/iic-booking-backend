@@ -1016,17 +1016,6 @@ RAZORPAY_KEY_SECRET = env("RAZORPAY_KEY_SECRET", default="")
 RAZORPAY_WEBHOOK_SECRET = env("RAZORPAY_WEBHOOK_SECRET", default="")
 
 
-# SBIePay (legacy — new online payments use Razorpay)
-SBIEPAY_MERCHANT_ID = env("SBIEPAY_MERCHANT_ID", default="")
-SBIEPAY_ENCRYPTION_KEY = env("SBIEPAY_ENCRYPTION_KEY", default="")
-SBIEPAY_GATEWAY_URL = env(
-    "SBIEPAY_GATEWAY_URL",
-    default="https://test.sbiepay.sbi/secure/AggregatorHostedListener",
-)
-SBIEPAY_SUCCESS_URL = env("SBIEPAY_SUCCESS_URL", default="")
-SBIEPAY_FAILURE_URL = env("SBIEPAY_FAILURE_URL", default="")
-SBIEPAY_PUSH_URL = env("SBIEPAY_PUSH_URL", default="")
-
 # SRIC office integration API (replaces email when key is set)
 SRIC_API_KEY = env("SRIC_API_KEY", default="")
 SRIC_EMAIL_FALLBACK = env.bool("SRIC_EMAIL_FALLBACK", default=False)
