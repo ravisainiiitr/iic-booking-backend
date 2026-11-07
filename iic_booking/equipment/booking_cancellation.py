@@ -3,6 +3,7 @@
 from decimal import Decimal
 from typing import Any
 
+from django.db import transaction
 from django.utils import timezone
 
 from iic_booking.communication.utils import booking_display_id_for_email
@@ -761,6 +762,7 @@ def ensure_partial_cancel_plan(
     return compute_partial_cancel_plan(booking, slot_ids_to_cancel=slot_ids)
 
 
+@transaction.atomic
 def perform_booking_cancellation(
     booking: Booking,
     *,
@@ -780,7 +782,12 @@ def perform_booking_cancellation(
     Full booking cancellation when all slots are selected and no partial_plan.
     Partial cancellation always uses a ``partial_plan`` (recalculated charge) so
     tiered pricing is respected — never equal per-slot refund splits.
+
+    The booking row is locked first, so a cancellation or refund running at the same moment is seen and only one credits.
     """
+    current = Booking.objects.select_for_update().values_list("status", flat=True).get(pk=booking.pk)
+    if current == BookingStatus.REFUNDED or (current == BookingStatus.CANCELLED and booking.status != current):
+        raise CancellationValidationError("This booking has already been cancelled or refunded.")
     all_slot_ids = list(booking.daily_slots.values_list("id", flat=True))
     is_full_cancel = set(slot_ids) == set(all_slot_ids) and partial_plan is None
     cancelled_slots = (

@@ -12811,6 +12811,7 @@ def mark_booking_not_utilized(request, booking_id):
         status=status.HTTP_200_OK,
     )
 
+@transaction.atomic
 def refund_booking_internal(booking, refund_notes, performed_by):
     """
     Refund a booking (free slots, credit wallet, set REFUNDED, create event, send notifications).
@@ -12819,7 +12820,14 @@ def refund_booking_internal(booking, refund_notes, performed_by):
 
     Refunds always go to the wallet, also for a balance paid through Razorpay: refunds through the payment
     gateway are not supported (see ``razorpay_service.create_refund``).
+
+    The booking row is locked and read again first, so a refund running at the same moment is seen and only one credits.
     """
+    booking.status, booking.total_charge, booking.charge_recalculation_pending_amount = (
+        Booking.objects.select_for_update()
+        .values_list("status", "total_charge", "charge_recalculation_pending_amount")
+        .get(pk=booking.pk)
+    )
     if booking.status == BookingStatus.REFUNDED:
         raise ValueError("Booking has already been refunded.")
     if booking.status == BookingStatus.BOOKING_NOT_UTILIZED:
