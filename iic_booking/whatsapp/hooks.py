@@ -96,9 +96,7 @@ def booking_event(event) -> None:
     kind = event.event_type
     chosen = None
     if kind == BookingEventType.CREATED:
-        if booking.status == BookingStatus.PENDING:
-            chosen = ("booking_request_received", _with_slot_date(booking))
-        elif booking.status == BookingStatus.PENDING_PAYMENT:
+        if booking.status == BookingStatus.PENDING_PAYMENT:
             chosen = ("payment_pending", [*_base(booking), _money(booking.amount_due)])
         elif booking.status == BookingStatus.BOOKED:
             chosen = ("booking_confirmed", _with_slot_time(booking))
@@ -139,14 +137,13 @@ def waitlist_slot_available(entry, equipment, slot_start) -> None:
 
 @_guarded
 def payment_order_saved(order, created: bool) -> None:
-    """Online payment orders for a booking. Wallet recharges and external checkouts with no booking yet are not covered."""
+    """The outcome of an online payment for a booking. Opening checkout sends nothing: many are abandoned, and the user is
+    there on the page. Wallet recharges and external checkouts with no booking yet are not covered."""
     from iic_booking.payments.models import PaymentOrderStatus
 
     if not order.booking_id:
         return
-    if created and order.status == PaymentOrderStatus.CREATED:
-        event = "payment_initiated"
-    elif order.status == PaymentOrderStatus.PAID:
+    if order.status == PaymentOrderStatus.PAID:
         event = "payment_successful"
     elif order.status == PaymentOrderStatus.FAILED:
         event = "payment_failed"

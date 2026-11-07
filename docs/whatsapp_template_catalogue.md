@@ -91,35 +91,6 @@ Thank you for using the IIT Roorkee Equipment Booking Portal.
 IIT Roorkee
 ```
 
-## iitr_booking_request_received
-
-- **Django event:** `booking_request_received`
-- **Trigger:** Booking created with status Pending
-- **Recipient:** The user who made the booking
-- **Language / category:** en / UTILITY
-- **Header:** Booking Request Received
-- **Footer:** Reply STOP to stop WhatsApp messages.
-- **Placeholders:**
-  - `{{1}}` user name, for example: Asha Verma
-  - `{{2}}` booking ID, for example: XRD202600123
-  - `{{3}}` equipment, for example: X-Ray Diffractometer
-  - `{{4}}` date, for example: 10 Nov 2026
-- **Body:**
-
-```
-Dear {{1}},
-
-We have received your equipment booking request. It is pending approval.
-
-Booking ID: {{2}}
-Equipment: {{3}}
-Date: {{4}}
-
-You can follow its status on the IIT Roorkee Equipment Booking Portal.
-
-IIT Roorkee
-```
-
 ## iitr_booking_rejected
 
 - **Django event:** `booking_rejected`
@@ -207,35 +178,6 @@ Date: {{4}}
 Time: {{5}}
 
 The booking details are on the IIT Roorkee Equipment Booking Portal.
-
-IIT Roorkee
-```
-
-## iitr_payment_initiated
-
-- **Django event:** `payment_initiated`
-- **Trigger:** Online payment order created for a booking
-- **Recipient:** The user who made the booking
-- **Language / category:** en / UTILITY
-- **Header:** Payment Started
-- **Footer:** Reply STOP to stop WhatsApp messages.
-- **Placeholders:**
-  - `{{1}}` user name, for example: Asha Verma
-  - `{{2}}` booking ID, for example: XRD202600123
-  - `{{3}}` equipment, for example: X-Ray Diffractometer
-  - `{{4}}` amount, for example: Rs. 1,500.00
-- **Body:**
-
-```
-Dear {{1}},
-
-A payment has been started for your equipment booking.
-
-Booking ID: {{2}}
-Equipment: {{3}}
-Amount: {{4}}
-
-The payment status is shown on the IIT Roorkee Equipment Booking Portal.
 
 IIT Roorkee
 ```
