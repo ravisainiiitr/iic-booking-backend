@@ -1,7 +1,8 @@
 # WhatsApp notifications (docs/whatsapp.md): switch them on for a pilot, for everyone who opted in, or off.
 #   webhook_only : the four secrets go on the server, WHATSAPP_ENABLED=False: Meta can verify the webhook and STOP is
 #              honoured, but nothing can be sent to anyone. Any pilot list is removed.
-#   pilot    : WHATSAPP_ENABLED=True, messages only to the numbers in pilot_numbers (comma-separated, +91...)
+#   pilot    : WHATSAPP_ENABLED=True, messages only to the numbers in the WHATSAPP_PILOT_NUMBERS secret (comma-separated, +91...).
+#              A secret, because run logs and inputs are public and these are personal numbers.
 #   everyone : WHATSAPP_ENABLED=True, every user who opted in on their profile
 #   off      : WHATSAPP_ENABLED=False (nothing is sent; the profile card disappears)
 # pilot / everyone need repository secrets WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_ACCESS_TOKEN, WHATSAPP_APP_SECRET and
@@ -17,10 +18,12 @@ on:
         required: true
         type: choice
         options: [webhook_only, pilot, everyone, "off"]
-      pilot_numbers:
-        description: "pilot only: comma-separated WhatsApp numbers (+9198...) that alone receive messages"
-        required: false
-        default: ""
+      istem_otp:
+        description: "pilot / everyone: also send I-STEM registration and link OTPs on WhatsApp"
+        required: true
+        type: choice
+        default: "off"
+        options: ["off", "on"]
       confirm:
         description: "Type WHATSAPP to proceed"
         required: true
@@ -38,7 +41,9 @@ jobs:
       - name: Update env file and recreate django and the worker
         env:
           MODE: ${{ github.event.inputs.mode }}
-          PILOT_NUMBERS: ${{ github.event.inputs.pilot_numbers }}
+          PILOT_NUMBERS: ${{ secrets.WHATSAPP_PILOT_NUMBERS }}
+          ISTEM_OTP: ${{ github.event.inputs.istem_otp }}
+          WA_WABA_ID: ${{ secrets.WHATSAPP_WABA_ID }}
           WA_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
           WA_ACCESS_TOKEN: ${{ secrets.WHATSAPP_ACCESS_TOKEN }}
           WA_APP_SECRET: ${{ secrets.WHATSAPP_APP_SECRET }}
@@ -69,19 +74,22 @@ jobs:
               if missing:
                   raise SystemExit("repository secrets not set: " + ", ".join(missing))
               upsert = {**secrets, "WHATSAPP_ENABLED": "False" if mode == "webhook_only" else "True"}
+              upsert["ISTEM_WHATSAPP_OTP_ENABLED"] = "True" if mode != "webhook_only" and os.environ.get("ISTEM_OTP") == "on" else "False"
+              if os.environ.get("WA_WABA_ID", "").strip():  # sending checks the template's approval for this account
+                  upsert["WHATSAPP_WABA_ID"] = os.environ["WA_WABA_ID"].strip()
               if mode == "webhook_only":
                   remove |= {"WHATSAPP_PILOT_NUMBERS", "WHATSAPP_ALLOW_ALL"}
               elif mode == "pilot":
                   numbers = [n.strip() for n in os.environ.get("PILOT_NUMBERS", "").split(",") if n.strip()]
                   if not numbers or not all(re.fullmatch(r"\+\d{11,15}", n) for n in numbers):
-                      raise SystemExit("pilot needs pilot_numbers like +919876543210,+919812345678")
+                      raise SystemExit("pilot needs the WHATSAPP_PILOT_NUMBERS secret, like +919876543210,+919812345678")
                   upsert["WHATSAPP_PILOT_NUMBERS"] = ",".join(numbers)
                   remove.add("WHATSAPP_ALLOW_ALL")
               else:
                   remove.add("WHATSAPP_PILOT_NUMBERS")
                   upsert["WHATSAPP_ALLOW_ALL"] = "True"
           else:
-              upsert = {"WHATSAPP_ENABLED": "False"}
+              upsert = {"WHATSAPP_ENABLED": "False", "ISTEM_WHATSAPP_OTP_ENABLED": "False"}
               remove.add("WHATSAPP_ALLOW_ALL")
           out, seen = [], set()
           for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
