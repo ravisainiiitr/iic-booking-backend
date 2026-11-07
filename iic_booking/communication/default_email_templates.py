@@ -159,6 +159,9 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "booking_equipment_maintenance_rescheduled_email",
     "booking_equipment_maintenance_staff_summary_email",
     "booking_equipment_maintenance_hold_update_email",
+    "istem_registration_otp_email",
+    "istem_account_link_otp_email",
+    "external_service_notice",
 ]
 
 
@@ -3274,6 +3277,58 @@ def _maintenance_hold_templates(period_rows, bookings_html: str, bookings_text: 
     return [notice, day, rescheduled, staff, hold_update]
 
 
+def _external_user_templates() -> list[dict[str, Any]]:
+    """I-STEM OTP emails and the notice for external-user services. The OTP emails are sent by ``istem.otp_email``, not logged."""
+    otp_warning = "This code expires in {{ minutes }} minutes. Do not share it with anyone. IIT Roorkee staff will never ask for it."
+    registration = _simple_email(
+        code="istem_registration_otp_email",
+        title="Verify Your I-STEM Account",
+        subject="Your OTP to register with your I-STEM account",
+        subtitle="Registration using I-STEM",
+        intro=(
+            "You asked to register on the {{ portal_name }} using your existing I-STEM account. Your one-time password (OTP) is "
+            "<strong>{{ otp }}</strong>. Enter it on the registration page to continue. " + otp_warning
+        ),
+        description="Sent to the email registered on I-STEM when a person registers with their I-STEM account. Keep {{ otp }} in the wording.",
+        detail_rows=[optional_detail_row("I-STEM account", "masked_email")],
+        details_heading="Registration details",
+        name_var="name",
+        cta_label="Open the portal",
+        cta_var="link",
+        variable_help="{{ name }}, {{ otp }}, {{ minutes }}, {{ masked_email }}, {{ portal_name }}, {{ link }}",
+    )
+    link = _simple_email(
+        code="istem_account_link_otp_email",
+        title="Link Your I-STEM Account",
+        subject="Your OTP to link your I-STEM account",
+        subtitle="I-STEM account linking",
+        intro=(
+            "We found an I-STEM account for you and need your confirmation to link it to your {{ portal_name }} account. Your one-time "
+            "password (OTP) is <strong>{{ otp }}</strong>. " + otp_warning + " If you did not ask for this, ignore this email and nothing will change."
+        ),
+        description="Sent when a signed-in user links an existing I-STEM account. Keep {{ otp }} in the wording.",
+        detail_rows=[optional_detail_row("I-STEM account", "masked_email"), optional_detail_row("Portal account", "user_email")],
+        details_heading="Accounts being linked",
+        name_var="name",
+        cta_label="Open my profile",
+        cta_var="link",
+        variable_help="{{ name }}, {{ otp }}, {{ minutes }}, {{ masked_email }}, {{ user_email }}, {{ portal_name }}, {{ link }}",
+    )
+    notice = _simple_email(
+        code="external_service_notice",
+        title="{{ title }}",
+        subject="{{ title }}",
+        subtitle="External user services",
+        intro="{{ message }}",
+        description="Message for external-user services: special requests, payment deadlines, invoices, dispatch and refunds.",
+        name_var="user_name",
+        cta_label="Open in the portal",
+        cta_var="link",
+        variable_help="{{ user_name }}, {{ title }}, {{ message }}, {{ link }}",
+    )
+    return [registration, link, notice]
+
+
 def get_default_email_template(code: str) -> Optional[dict[str, Any]]:
     """Catalog spec for one code without building (and validating) the whole catalog."""
     for spec in _training_templates():
@@ -3307,6 +3362,7 @@ def get_default_email_templates() -> list[dict]:
     templates.extend(_oic_substitute_templates())
     templates.extend(_monthly_report_templates())
     templates.extend(_maintenance_templates())
+    templates.extend(_external_user_templates())
 
     by_code = {t["code"]: t for t in templates}
     missing = [c for c in DEFAULT_EMAIL_TEMPLATE_CODES if c not in by_code]

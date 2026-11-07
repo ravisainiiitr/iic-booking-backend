@@ -228,7 +228,7 @@ def test_failed_email_records_no_otp(otp_on, monkeypatch):
     def fail(*args, **kwargs):
         raise OSError("smtp down")
 
-    monkeypatch.setattr(otp_link, "send_mail", fail)
+    monkeypatch.setattr("iic_booking.istem.otp_email.send_mail", fail)
     with pytest.raises(OtpLinkError) as exc:
         otp_link.send_otp(link.user)
     assert exc.value.code == "send_failed"

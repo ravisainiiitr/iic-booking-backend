@@ -19,7 +19,6 @@ import secrets
 from datetime import timedelta
 
 from django.conf import settings
-from django.core.mail import send_mail
 from django.db import transaction
 from django.utils import timezone
 from django.utils.crypto import constant_time_compare, salted_hmac
@@ -34,7 +33,7 @@ from .service import _link_user, linked_elsewhere
 
 logger = logging.getLogger("iic_booking.istem")
 
-OTP_TTL = timedelta(minutes=10)
+OTP_TTL = timedelta(minutes=5)
 MAX_ATTEMPTS = 5
 RESEND_INTERVAL = timedelta(seconds=60)
 MAX_SENDS_PER_HOUR = 5
@@ -229,18 +228,31 @@ def _refuse_linked_elsewhere(link: IstemUserLink, otp: IstemLinkOtp | None = Non
 def _send_email(user, email: str, code: str) -> None:
     from iic_booking.users.test_accounts import redirect_email_for_user
 
-    subject = "OTP to link your I-STEM account - IIC Booking Portal, IIT Roorkee"
-    body = (f"Your one-time password to link your I-STEM account with the IIC Booking Portal is: {code}\n\n"
-            f"It expires in {int(OTP_TTL.total_seconds() // 60)} minutes. Do not share it with anyone.\n\n"
-            "If you did not ask to link your I-STEM account, ignore this email.")
+    from iic_booking.communication.utils import get_frontend_absolute_url
+    from iic_booking.users.display import get_user_display_name
+
+    from .otp_email import PORTAL_NAME, send_otp_email
+
+    minutes = int(OTP_TTL.total_seconds() // 60)
+    subject = "Your OTP to link your I-STEM account"
     recipients, delivery_subject = redirect_email_for_user(user, original_email=email, subject=subject)
-    send_mail(subject=delivery_subject or subject, message=body, from_email=settings.DEFAULT_FROM_EMAIL,
-              recipient_list=recipients or [email], fail_silently=False)
+    wrap = None
+    if delivery_subject and delivery_subject != subject:  # a test account: the mail is redirected, and says so in its subject
+        wrap = lambda rendered: delivery_subject  # noqa: E731
+    send_otp_email(
+        "istem_account_link_otp_email", recipients=recipients or [email], subject_wrap=wrap,
+        context={"name": get_user_display_name(user) or "there", "otp": code, "minutes": minutes, "masked_email": mask(email),
+                 "user_email": user.email, "link": get_frontend_absolute_url("/profile")},
+        fallback_subject=subject,
+        fallback_body=(f"Your one-time password to link your I-STEM account with the {PORTAL_NAME} is: {code}\n\n"
+                       f"It expires in {minutes} minutes. Do not share it with anyone.\n\n"
+                       "If you did not ask to link your I-STEM account, ignore this email."),
+    )
 
 
-def send_otp(user, *, whatsapp: bool = False) -> dict:
-    """Send a new OTP to the candidate's I-STEM email (any earlier unused code stops working), and a separate one on
-    WhatsApp to the mobile on I-STEM when the user asked for it."""
+def send_otp(user) -> dict:
+    """Send a new OTP to the candidate's I-STEM email (any earlier unused code stops working), and the same OTP on WhatsApp
+    to the mobile on I-STEM when there is one."""
     refused = False
     with transaction.atomic():
         link = _locked_awaiting_link(user)
@@ -271,17 +283,15 @@ def send_otp(user, *, whatsapp: bool = False) -> dict:
                 # Rolls the OTP back: nothing was sent, so nothing is recorded as sent.
                 raise OtpLinkError("send_failed", "The OTP email could not be sent. Please try again later.", http_status=502)
             mobile = _whatsapp_mobile(link)
-            if whatsapp and mobile and conf.whatsapp_otp_enabled():
-                from iic_booking.whatsapp.otp import new_code, send_on_request
+            if mobile and conf.whatsapp_otp_enabled():
+                from iic_booking.whatsapp.otp import send_on_request
 
-                whatsapp_code = new_code()
-                sent_to = send_on_request(mobile, whatsapp_code, purpose="istem_link", user=user)
+                sent_to = send_on_request(mobile, code, purpose="istem_link", user=user)
                 if sent_to:
-                    otp.whatsapp_code_hash = _hash(link, link.candidate_public_user_id, f"whatsapp:{whatsapp_code}")
                     otp.whatsapp_masked = sent_to
-                    otp.save(update_fields=["whatsapp_code_hash", "whatsapp_masked"])
+                    otp.save(update_fields=["whatsapp_masked"])
                     record_event(user_link=link, from_state=link.state, to_state=link.state,
-                                 reason=f"WhatsApp OTP {otp.pk} sent to {sent_to}")
+                                 reason=f"OTP {otp.pk} also sent on WhatsApp to {sent_to}")
     if refused:
         raise OtpLinkError("linked_elsewhere", "This I-STEM account is already linked to another portal account. "
                            "The IIC office will review it.", http_status=409)
@@ -301,14 +311,12 @@ def verify_otp(user, code: str) -> IstemUserLink:
         otp = link.otps.select_for_update().filter(state=LinkOtpState.PENDING).order_by("-sent_at").first()
         if otp is None:
             raise OtpLinkError("no_otp", "No OTP is waiting. Please ask for a new one.")
-        by_whatsapp = bool(otp.whatsapp_code_hash) and constant_time_compare(
-            _hash(link, otp.public_user_id, f"whatsapp:{code}"), otp.whatsapp_code_hash)
         if otp.expires_at <= now:
             otp.state = LinkOtpState.EXPIRED
             otp.finished_at = now
             otp.save(update_fields=["state", "finished_at"])
             error = OtpLinkError("expired", "This OTP has expired. Please ask for a new one.")
-        elif not by_whatsapp and not constant_time_compare(_hash(link, otp.public_user_id, code), otp.code_hash):
+        elif not constant_time_compare(_hash(link, otp.public_user_id, code), otp.code_hash):
             otp.attempts += 1
             left = MAX_ATTEMPTS - otp.attempts
             reason = f"wrong email OTP {otp.pk} (attempt {otp.attempts} of {MAX_ATTEMPTS})"
@@ -337,9 +345,10 @@ def verify_otp(user, code: str) -> IstemUserLink:
             profile = dict(link.candidate_profile or {})
             if profile:
                 link.istem_profile, link.candidate_profile = profile, {}
-            if by_whatsapp:
-                _link_user(link, otp.public_user_id, reason=f"existing I-STEM user linked by WhatsApp OTP {otp.pk}",
-                           evidence_type=EvidenceType.WHATSAPP_OTP, evidence_reference=f"OTP {otp.pk} on WhatsApp to {otp.whatsapp_masked}")
+            if otp.whatsapp_masked:
+                _link_user(link, otp.public_user_id, reason=f"existing I-STEM user linked by OTP {otp.pk}, sent to email and WhatsApp",
+                           evidence_type=EvidenceType.EMAIL_OR_WHATSAPP_OTP,
+                           evidence_reference=f"OTP {otp.pk} to {otp.email_masked} and on WhatsApp to {otp.whatsapp_masked}")
             else:
                 _link_user(link, otp.public_user_id, reason=f"existing I-STEM user linked by email OTP {otp.pk}",
                            evidence_type=EvidenceType.EMAIL_OTP, evidence_reference=f"OTP {otp.pk} to {otp.email_masked}")

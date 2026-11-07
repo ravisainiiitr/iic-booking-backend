@@ -888,7 +888,7 @@ ISTEM_USER_CREATION_ENABLED = env.bool("ISTEM_USER_CREATION_ENABLED", default=Fa
 ISTEM_ACCEPT_DUPLICATE_USER_ID = env.bool("ISTEM_ACCEPT_DUPLICATE_USER_ID", default=False)
 # A user already registered on I-STEM proves the account by an OTP sent to its I-STEM email (no staff step).
 ISTEM_OTP_LINKING_ENABLED = env.bool("ISTEM_OTP_LINKING_ENABLED", default=False)
-# Offer I-STEM registration and linking codes on WhatsApp too, to the mobile number registered on I-STEM. Off by default:
+# Send I-STEM registration and linking OTPs on WhatsApp too, to the mobile number registered on I-STEM. Off by default:
 # it lets holding that number stand in for the email as proof of the I-STEM account (docs/whatsapp.md).
 ISTEM_WHATSAPP_OTP_ENABLED = env.bool("ISTEM_WHATSAPP_OTP_ENABLED", default=False)
 # While set, "Already registered on I-STEM?" on the registration form works only with this key (the test link
