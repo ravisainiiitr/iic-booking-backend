@@ -14,16 +14,11 @@ from django.utils import timezone
 
 from . import conf
 from .models import WhatsAppConsentEvent, WhatsAppInbound, WhatsAppMessage, WhatsAppOptIn, WhatsAppWebhookEvent
+from .template_catalogue import BY_EVENT
+from .templates import is_approved
 
 logger = logging.getLogger(__name__)
 
-# Portal events with a WhatsApp template. Body parameters, in order, as the template must declare them
-# ({{1}}, {{2}}, ...): see docs/whatsapp.md for the exact wording submitted to Meta.
-EVENTS = {
-    "booking_confirmed": ("booking ID", "equipment", "slot"),
-    "booking_cancelled": ("booking ID", "equipment", "slot"),
-    "booking_completed": ("booking ID", "equipment", "link"),
-}
 STOP_WORDS = {"stop", "unsubscribe", "stop all", "cancel"}
 START_WORDS = {"start", "subscribe"}
 
@@ -93,22 +88,31 @@ def set_opt_in(user, *, opted_in: bool, phone: str = "", source: str = "profile"
 
 def notify(user, event: str, params: list[str], *, event_key: str) -> WhatsAppMessage | None:
     """Queue one template message for a portal event, once per ``event_key``. Does nothing while WhatsApp is off,
-    for users who have not opted in, or (during a pilot) for numbers outside WHATSAPP_PILOT_NUMBERS."""
-    if event not in EVENTS or user is None or not conf.enabled():
+    for users who have not opted in, or (during a pilot) for numbers outside WHATSAPP_PILOT_NUMBERS. A template that is
+    not approved at Meta sends nothing: the attempt is recorded as skipped."""
+    entry = BY_EVENT.get(event)
+    if entry is None or user is None or not conf.enabled():
+        return None
+    if len(params) != len(entry.params):
+        logger.error("whatsapp %s got %d values, its template needs %d", event, len(params), len(entry.params))
         return None
     row = WhatsAppOptIn.objects.filter(user=user, opted_in=True).first()
     if row is None or not row.phone_e164:
         return None
     if not conf.may_send_to(row.phone_e164):
         return None
+    template = conf.template_name(event)
+    approved = is_approved(template, entry.language)
     try:
         with transaction.atomic():
-            msg = WhatsAppMessage.objects.create(user=user, to_e164=row.phone_e164, event=event,
-                                                 template=conf.template_name(event), params=[str(p) for p in params],
-                                                 event_key=event_key[:120])
+            msg = WhatsAppMessage.objects.create(
+                user=user, to_e164=row.phone_e164, event=event, template=template, params=[str(p) for p in params],
+                event_key=event_key[:120], status=WhatsAppMessage.Status.QUEUED if approved else WhatsAppMessage.Status.SKIPPED,
+                error="" if approved else "template is not approved at Meta")
     except IntegrityError:
         return None  # already sent for this event
-    transaction.on_commit(lambda: _enqueue(msg.pk))
+    if approved:
+        transaction.on_commit(lambda: _enqueue(msg.pk))
     return msg
 
 
@@ -141,8 +145,14 @@ def deliver(message_id: int, *, session=None) -> str:
         msg.status, msg.error = WhatsAppMessage.Status.SKIPPED, "number not allowed to receive messages"
         msg.save(update_fields=["status", "error", "updated_at"])
         return msg.status
+    entry = BY_EVENT.get(msg.event)
+    language = entry.language if entry else conf.template_language()
+    if not is_approved(msg.template, language):  # checked again: Meta may have paused or disabled it since it was queued
+        msg.status, msg.error = WhatsAppMessage.Status.SKIPPED, "template is not approved at Meta"
+        msg.save(update_fields=["status", "error", "updated_at"])
+        return msg.status
     try:
-        wamid = send_template(msg.to_e164, msg.template, list(msg.params or []), session=session)
+        wamid = send_template(msg.to_e164, msg.template, list(msg.params or []), language=language, session=session)
     except WhatsAppError as exc:
         if exc.retryable:
             raise

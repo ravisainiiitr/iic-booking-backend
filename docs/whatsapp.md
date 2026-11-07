@@ -1,5 +1,8 @@
 # WhatsApp notifications (Meta WhatsApp Business Cloud API)
 
+> Templates are now managed from the catalogue in code: see **Template management** at the end of this page. Template
+> names and wording in the sections below are history; `iic_booking/whatsapp/template_catalogue.py` is what counts.
+
 Built 3 Nov 2026. **Off by default.** Nothing is sent until the switch and the four Meta values below are set, and then
 only to users who opted in under *Profile → WhatsApp notifications*.
 
@@ -65,3 +68,28 @@ conversations a month are free). The portal sends only the three utility templat
 - Network errors and Meta 5xx / 429 are retried with backoff (Celery task `whatsapp.deliver`); a refusal (e.g. a
   template that is not approved) is recorded as failed and not retried.
 - `GET /api/whatsapp/status/` (Main Administrator): whether it is configured and on, opted-in users, messages by status.
+
+## Template management
+
+`iic_booking/whatsapp/template_catalogue.py` is the approved list: 17 templates, each with its name, wording, values, examples, recipient and trigger. It sends nothing; these commands only talk to Meta's template API.
+
+| Command | What it does |
+|---|---|
+| `manage.py whatsapp_sync_templates --dry-run` | The default. Lists exactly what would be submitted. Changes nothing, here or at Meta. Add `--show-wording` for the text |
+| `manage.py whatsapp_sync_templates --status` | Stores Meta's status, category, language and rejection reason, then prints the report |
+| `manage.py whatsapp_sync_templates --submit --batch-size 5` | Submits missing templates, one batch. Run it again for the next batch |
+| `manage.py whatsapp_sync_templates --correct <name>` | One edit of one rejected template, after its wording changed in the catalogue |
+| `manage.py whatsapp_template_report [--refresh]` | Approved, pending, rejected, paused or disabled, missing, requiring correction, and not wired |
+
+**Settings:** `WHATSAPP_WABA_ID` has no default. Every command first checks that this account's name at Meta equals `WHATSAPP_WABA_EXPECTED_NAME`, so templates cannot go to the test account by mistake. The token is the existing `WHATSAPP_ACCESS_TOKEN`.
+
+**Rules:**
+- A name and language already at Meta is never submitted again, whatever its status. Meta refuses it anyway (error 100, subcode 2388024).
+- A rejected template is never resubmitted automatically. `--correct` needs someone to ask, a changed wording, and fewer than 3 earlier corrections. It edits the existing template, because Meta refuses a new one with that name.
+- A rate limit, token, permission, network or server error stops the batch. Meta allows 100 new templates an hour per account.
+- Every action goes in `WhatsAppTemplateAudit`, with no token, ID or number.
+- The daily task `whatsapp.sync_template_statuses` refreshes statuses (GET only).
+
+**Sending:** `notify` and `deliver` both require an `APPROVED` row for the configured account. Anything else is recorded as skipped. Opt-in, the pilot list and `WHATSAPP_ENABLED` still apply first. Approved templates belong to their account: the sender must be in the same WABA as `WHATSAPP_WABA_ID` before a message can succeed.
+
+**Not wired, because the portal has no such step:** `reschedule_requested` and `reschedule_rejected`, since reschedules happen at once with no request. Also not covered: wallet recharges, and payments on external checkouts before the booking exists.

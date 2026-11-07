@@ -259,6 +259,9 @@ def reject_fabrication_booking(booking_id, actor, reason, *, now=None) -> Bookin
         )
         booking_pk = booking.pk
         transaction.on_commit(lambda: _safely(send_rejection_email, booking_pk))
+        from iic_booking.whatsapp.hooks import booking_rejected as whatsapp_booking_rejected
+
+        whatsapp_booking_rejected(booking)  # nothing unless WhatsApp is on and the user opted in; never raises
     return booking
 
 

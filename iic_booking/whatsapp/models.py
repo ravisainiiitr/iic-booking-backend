@@ -111,3 +111,63 @@ class WhatsAppMessage(models.Model):
 
     def __str__(self):
         return f"{self.event} → {self.to_e164[:6]}… ({self.status})"
+
+
+class WhatsAppTemplate(models.Model):
+    """What Meta last reported about one template. Only an APPROVED row for the configured WABA allows sending."""
+
+    class Status(models.TextChoices):
+        NOT_SUBMITTED = "NOT_SUBMITTED", _("Not submitted")
+        PENDING = "PENDING", _("Pending")
+        IN_APPEAL = "IN_APPEAL", _("In appeal")
+        APPROVED = "APPROVED", _("Approved")
+        REJECTED = "REJECTED", _("Rejected")
+        PAUSED = "PAUSED", _("Paused")
+        DISABLED = "DISABLED", _("Disabled")
+        PENDING_DELETION = "PENDING_DELETION", _("Pending deletion")
+        DELETED = "DELETED", _("Deleted")
+        UNKNOWN = "UNKNOWN", _("Unknown")
+
+    waba_id = models.CharField(max_length=32)
+    name = models.CharField(max_length=512)
+    language = models.CharField(max_length=20)
+    event = models.CharField(max_length=40, blank=True, default="", help_text=_("Portal event, when it is in the catalogue"))
+    category = models.CharField(max_length=30, blank=True, default="")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.NOT_SUBMITTED, db_index=True)
+    rejected_reason = models.CharField(max_length=200, blank=True, default="")
+    meta_id = models.CharField(max_length=64, blank=True, default="")
+    wording_hash = models.CharField(max_length=64, blank=True, default="", help_text=_("Catalogue wording last sent to Meta"))
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    submission_attempts = models.PositiveSmallIntegerField(default=0)
+    correction_attempts = models.PositiveSmallIntegerField(default=0)
+    last_error = models.TextField(blank=True, default="")
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["waba_id", "name", "language"], name="whatsapp_template_unique")]
+        ordering = ["name", "language"]
+
+    def __str__(self):
+        return f"{self.name} ({self.language}): {self.status}"
+
+
+class WhatsAppTemplateAudit(models.Model):
+    """Every template action, successful or not. Holds no token, ID or phone number. Nothing in the code deletes these."""
+
+    action = models.CharField(max_length=30, db_index=True)
+    template_name = models.CharField(max_length=512, blank=True, default="")
+    language = models.CharField(max_length=20, blank=True, default="")
+    actor = models.CharField(max_length=100, blank=True, default="")
+    ok = models.BooleanField(default=True)
+    http_status = models.PositiveSmallIntegerField(null=True, blank=True)
+    meta_code = models.CharField(max_length=20, blank=True, default="")
+    detail = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self):
+        return f"{self.action} {self.template_name}"

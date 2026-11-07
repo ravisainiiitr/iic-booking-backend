@@ -44,10 +44,22 @@ def template_language() -> str:
     return str(_s("WHATSAPP_TEMPLATE_LANGUAGE", "en") or "en")
 
 
+def waba_id() -> str:
+    """The WhatsApp Business Account whose templates the portal manages. No default: it must be set on purpose."""
+    return str(_s("WHATSAPP_WABA_ID") or "").strip()
+
+
+def expected_waba_name() -> str:
+    return str(_s("WHATSAPP_WABA_EXPECTED_NAME") or "").strip()
+
+
 def template_name(event: str) -> str:
-    """The Meta-approved template for a portal event; WHATSAPP_TEMPLATES may rename them."""
+    """The Meta template for a portal event, from the catalogue; WHATSAPP_TEMPLATES may rename them."""
+    from .template_catalogue import BY_EVENT
+
     names = dict(_s("WHATSAPP_TEMPLATES", {}) or {})
-    return str(names.get(event) or f"iic_{event}")
+    entry = BY_EVENT.get(event)
+    return str(names.get(event) or (entry.name if entry else ""))
 
 
 def pilot_numbers() -> set[str]:
