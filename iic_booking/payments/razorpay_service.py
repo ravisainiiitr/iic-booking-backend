@@ -286,7 +286,8 @@ def _settle_booking_shortfall(order: PaymentOrder) -> None:
         return
     booking.payment_settled_at = timezone.now()
     booking.amount_due = Decimal("0.00")
-    if booking.status == BookingStatus.PENDING_PAYMENT:
+    was_awaiting_payment = booking.status == BookingStatus.PENDING_PAYMENT
+    if was_awaiting_payment:
         booking.status = BookingStatus.BOOKED
     update_fields = ["payment_settled_at", "amount_due", "status", "updated_at"]
     if not booking.istem_fbr_status and charge_profile_requires_istem_fbr(booking.charge_profile):
@@ -295,6 +296,10 @@ def _settle_booking_shortfall(order: PaymentOrder) -> None:
             setattr(booking, k, v)
         update_fields.append("istem_fbr_status")
     booking.save(update_fields=update_fields)
+    if was_awaiting_payment:
+        from iic_booking.whatsapp.hooks import booking_confirmed_by_payment
+
+        booking_confirmed_by_payment(booking)  # nothing unless WhatsApp is on and the user opted in; never raises
 
 
 def _settle_wallet_recharge(order: PaymentOrder, payment: Payment) -> None:

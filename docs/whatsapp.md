@@ -71,7 +71,7 @@ conversations a month are free). The portal sends only the three utility templat
 
 ## Template management
 
-`iic_booking/whatsapp/template_catalogue.py` is the approved list: 15 templates, each with its name, wording, values, examples, recipient and trigger. It sends nothing; these commands only talk to Meta's template API.
+`iic_booking/whatsapp/template_catalogue.py` is the approved list: 10 templates, each with its name, wording, values, examples, recipient and trigger. It sends nothing; these commands only talk to Meta's template API.
 
 | Command | What it does |
 |---|---|
@@ -92,4 +92,4 @@ conversations a month are free). The portal sends only the three utility templat
 
 **Sending:** `notify` and `deliver` both require an `APPROVED` row for the configured account. Anything else is recorded as skipped. Opt-in, the pilot list and `WHATSAPP_ENABLED` still apply first. Approved templates belong to their account: the sender must be in the same WABA as `WHATSAPP_WABA_ID` before a message can succeed.
 
-**Not in the catalogue, because the portal has no such step:** a reschedule request or refusal, since reschedules happen at once. Also not covered: wallet recharges, payments on external checkouts before the booking exists, and internal wallet refunds as "refund completed".
+**Not in the catalogue, because the portal has no such step:** a reschedule request or refusal, since users cannot request one. **Left out on purpose:** bookings created as Pending or Awaiting payment, checkout opening, a refund starting, and a sample being accepted; email and in-portal notices cover these. Also not covered: wallet recharges, payments on external checkouts before the booking exists, and internal wallet refunds as "refund completed".

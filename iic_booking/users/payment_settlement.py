@@ -43,7 +43,8 @@ def settle_payment_gateway_transaction(txn: PaymentGatewayTransaction) -> Paymen
 
             confirm = settlement_hook(booking, source="gateway")  # True for every non-special booking
             booking.payment_settled_at = timezone.now()
-            if confirm and booking.status == BookingStatus.PENDING_PAYMENT:
+            newly_confirmed = confirm and booking.status == BookingStatus.PENDING_PAYMENT
+            if newly_confirmed:
                 booking.status = BookingStatus.BOOKED
             if not booking.istem_fbr_status and charge_profile_requires_istem_fbr(booking.charge_profile):
                 fbr_defaults = initial_istem_fbr_fields_for_charge_profile(booking.charge_profile)
@@ -57,6 +58,10 @@ def settle_payment_gateway_transaction(txn: PaymentGatewayTransaction) -> Paymen
                     "updated_at",
                 ]
             )
+            if newly_confirmed:
+                from iic_booking.whatsapp.hooks import booking_confirmed_by_payment
+
+                booking_confirmed_by_payment(booking)  # nothing unless WhatsApp is on and the user opted in; never raises
 
     txn.status = PaymentGatewayStatus.SUCCESS
     txn.verified_at = timezone.now()
