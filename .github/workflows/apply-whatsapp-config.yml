@@ -128,6 +128,16 @@ jobs:
           summary = status_summary()
           print("RUNTIME whatsapp enabled=", summary["enabled"], " missing=", summary["missing_settings"],
                 " pilot_numbers=", summary["pilot_numbers"], " opted_in_users=", summary["opted_in_users"])
+          def mask_sender(number):
+              digits = "".join(ch for ch in str(number or "") if ch.isdigit())
+              return f"*****{digits[-2:]}" if len(digits) > 2 else "(none)"
+
+
+          def hide_numbers(text):
+              import re
+              return re.sub(r"\+?\d[\d\s().-]{5,}\d", "[number]", str(text))
+
+
           if conf.access_token() and conf.phone_number_id():
               try:
                   r = requests.get(f"{conf.GRAPH_BASE}/{conf.api_version()}/{conf.phone_number_id()}",
@@ -135,10 +145,10 @@ jobs:
                                    headers={"Authorization": f"Bearer {conf.access_token()}"}, timeout=15)
                   data = r.json() if r.content else {}
                   if r.ok:
-                      print("Meta sender:", data.get("verified_name"), data.get("display_phone_number"),
+                      print("Meta sender:", data.get("verified_name"), mask_sender(data.get("display_phone_number")),
                             "quality", data.get("quality_rating"))
                   else:
-                      print("Meta check failed: HTTP", r.status_code, str((data.get("error") or {}).get("message"))[:200])
+                      print("Meta check failed: HTTP", r.status_code, hide_numbers((data.get("error") or {}).get("message"))[:200])
               except Exception as exc:  # only the class, never credentials
                   print("Meta check failed:", type(exc).__name__)
 
