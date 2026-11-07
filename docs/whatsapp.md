@@ -69,9 +69,28 @@ conversations a month are free). The portal sends only the three utility templat
   template that is not approved) is recorded as failed and not retried.
 - `GET /api/whatsapp/status/` (Main Administrator): whether it is configured and on, opted-in users, messages by status.
 
+## One-time codes
+
+Before this there was no mobile OTP on the portal: every OTP went by email, and `CommunicationService.send_sms` is still an unfinished stub. WhatsApp codes (`iic_booking/whatsapp/otp.py`) are always in addition to the email, never instead of it, so nobody is locked out when WhatsApp is off or fails.
+
+| Use | Who gets it | Consent |
+|---|---|---|
+| Proving a number: `POST /api/whatsapp/me/verify/send/`, then `POST /api/whatsapp/me/verify/confirm/` with `otp` (profile card) | The user's opted-in number | The opt-in |
+| Sign-in OTP (`auth/login/request-otp/`) | Only a number the user proved, while it is still their current number and they are opted in. The profile phone number alone never gets one, because it has never been checked | The opt-in |
+| I-STEM registration and account link | The mobile number on I-STEM, only when the person ticked the box for this request, and only with `ISTEM_WHATSAPP_OTP_ENABLED` on | That request, kept in `WhatsAppConsentEvent` with source `otp_request`. Someone who replied STOP is not sent one |
+
+Forgot-password and wallet OTPs stay email-only on purpose: a password change lasts, and wallet codes authorise money.
+
+- **Gates:** `WHATSAPP_ENABLED` and the settings above, the pilot list or `WHATSAPP_ALLOW_ALL`, and `iitr_verification_code` approved at Meta for the configured account. At most 5 codes per number in 15 minutes.
+- **The code is not stored.** `WhatsAppMessage` keeps no parameters for these rows, and the code is removed from any Meta error text. It is sent once with no retry and a short timeout (3 s to connect, 6 s to read), because the email already carries it.
+- **Changing the number undoes the proof.** A code for the old number cannot prove the new one. STOP ends sign-in codes.
+- **Migrations:** `whatsapp` 0007 and `istem` 0011.
+
+**Decision before turning on `ISTEM_WHATSAPP_OTP_ENABLED` (default off).** The 31 Oct 2026 committee rule sends the OTP to the email on I-STEM. With this setting, a separate WhatsApp code proves the same account, recorded as evidence `WHATSAPP_OTP`. Direct registration then creates an approved account with `email_verified=True` although the email was not proved, so whoever holds a recycled I-STEM mobile number could take that account. The institute should accept that, or keep the setting off.
+
 ## Template management
 
-`iic_booking/whatsapp/template_catalogue.py` is the approved list: 10 templates, each with its name, wording, values, examples, recipient and trigger. It sends nothing; these commands only talk to Meta's template API.
+`iic_booking/whatsapp/template_catalogue.py` is the approved list: 11 templates, each with its name, wording, values, examples, recipient and trigger. It sends nothing; these commands only talk to Meta's template API.
 
 | Command | What it does |
 |---|---|

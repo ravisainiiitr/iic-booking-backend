@@ -56,8 +56,13 @@ class Command(BaseCommand):
         for template in plan.to_submit:
             self.stdout.write(f"  SUBMIT {template.name} [{template.language}, {template.category}] event={template.event}")
             if options["show_wording"]:
-                for part in template.payload()["components"]:
-                    self.stdout.write(f"    {part['type']}: {part['text']}")
+                if template.is_authentication:  # Meta writes this wording itself: the payload carries only options
+                    self.stdout.write(f"    BODY (Meta's wording): {template.body}")
+                    self.stdout.write(f"    FOOTER (Meta's wording): {template.footer}")
+                    self.stdout.write("    BUTTON: Copy code")
+                else:
+                    for part in template.payload()["components"]:
+                        self.stdout.write(f"    {part['type']}: {part['text']}")
                 self.stdout.write(f"    EXAMPLES: {list(template.examples)}")
         self.stdout.write(f"Already at Meta, would skip: {len(plan.existing)}")
         for template, row in plan.existing:

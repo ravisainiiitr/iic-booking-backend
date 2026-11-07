@@ -36,10 +36,11 @@ def istem_link_find_account(request):
 def istem_link_send_otp(request):
     """Send an OTP to the email registered on I-STEM for the user's existing I-STEM account."""
     try:
-        sent = send_otp(request.user)
+        sent = send_otp(request.user, whatsapp=request.data.get("whatsapp") is True)
     except OtpLinkError as exc:
         return _refusal(exc)
-    return Response({"message": f"OTP sent to {sent['email_masked']}.", **sent})
+    also = f" and on WhatsApp ({sent['whatsapp_masked']})" if sent["whatsapp_masked"] else ""
+    return Response({"message": f"OTP sent to {sent['email_masked']}{also}.", **sent})
 
 
 @api_view(["POST"])
@@ -74,9 +75,11 @@ def _registration_refusal(exc) -> Response:
 @permission_classes([AllowAny])
 def istem_register_availability(request):
     """Whether the registration form may offer "Already registered on I-STEM?" (I-STEM API and OTP linking on)."""
+    from . import conf
     from .registration_lookup import available
 
-    return Response({"available": available(_test_key(request))})
+    is_available = available(_test_key(request))
+    return Response({"available": is_available, **({"whatsapp_otp": True} if is_available and conf.whatsapp_otp_enabled() else {})})
 
 
 @api_view(["POST"])
@@ -88,10 +91,11 @@ def istem_register_lookup(request):
 
     try:
         sent = start(str(request.data.get("email") or ""), str(request.data.get("mobile") or ""),
-                     client_ip=_client_ip(request), test_key=_test_key(request))
+                     client_ip=_client_ip(request), test_key=_test_key(request), whatsapp=request.data.get("whatsapp") is True)
     except RegistrationLookupError as exc:
         return _registration_refusal(exc)
-    return Response({"message": f"OTP sent to {sent['email_masked']}.", **sent})
+    also = f" and on WhatsApp ({sent['whatsapp_masked']})" if sent["whatsapp_masked"] else ""
+    return Response({"message": f"OTP sent to {sent['email_masked']}{also}.", **sent})
 
 
 @api_view(["POST"])

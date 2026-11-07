@@ -98,6 +98,8 @@ def _meta_wording(row: dict) -> dict:
 
 
 def wording_differs(template: Template, row: dict) -> bool:
+    if template.is_authentication:  # Meta writes this wording itself, so there is nothing of ours to compare
+        return False
     meta = _meta_wording(row)
     return (meta["header"], meta["body"], meta["footer"]) != (template.header, template.body, template.footer)
 

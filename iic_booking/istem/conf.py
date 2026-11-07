@@ -86,6 +86,15 @@ def accept_duplicate_user_id() -> bool:
     return bool(_setting("ISTEM_ACCEPT_DUPLICATE_USER_ID", False))
 
 
+def whatsapp_otp_enabled() -> bool:
+    """Offer the OTP on WhatsApp as well, to the mobile number on I-STEM. Also needs the portal's WhatsApp to be ready."""
+    if not _setting("ISTEM_WHATSAPP_OTP_ENABLED", False):
+        return False
+    from iic_booking.whatsapp.otp import available
+
+    return available()
+
+
 def otp_linking_enabled() -> bool:
     """Link a user I-STEM reports as already registered once they enter an OTP sent to the I-STEM email. Takes
     precedence over ``ISTEM_ACCEPT_DUPLICATE_USER_ID`` whenever the I-STEM email is known."""
