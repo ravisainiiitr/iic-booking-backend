@@ -545,6 +545,31 @@ def test_phone_stops_ringing_when_the_call_stops_ringing(w, django_capture_on_co
     assert sent == [("good", "call_ended", cid)]  # never to iOS: a VoIP push must report a new call
 
 
+def test_stop_ringing_says_how_the_call_ended_and_who_rang(w, django_capture_on_commit_callbacks):
+    """The phone shows "Missed call" from these; an answered call must not read as missed."""
+    CallDevice.objects.create(user=w.operator, platform="android", device_id="a", token="good")
+    sent = []
+
+    def fcm(token, data, ttl):
+        if data["type"] == "call_ended":
+            sent.append(data)
+        return "sent"
+
+    with patch("iic_booking.calls.push.send_fcm", fcm), patch("iic_booking.calls.push.fcm_configured", lambda: True), \
+            django_capture_on_commit_callbacks(execute=True):
+        unanswered = call(w).json()["id"]
+        service.cancel(w.student, unanswered, timeout=True)
+    assert sent[-1]["status"] == "missed"
+    assert sent[-1]["caller_name"]
+
+    with patch("iic_booking.calls.push.send_fcm", fcm), patch("iic_booking.calls.push.fcm_configured", lambda: True), \
+            django_capture_on_commit_callbacks(execute=True):
+        answered = call(w).json()["id"]
+        service.accept(w.operator, answered)
+    assert sent[-1]["status"] == "accepted"
+    assert sent[-1]["call_id"] == answered
+
+
 def test_answering_stops_the_other_devices_but_ending_the_call_does_not_push(w, django_capture_on_commit_callbacks):
     CallDevice.objects.create(user=w.operator, platform="android", device_id="a", token="good")
     sent = []
