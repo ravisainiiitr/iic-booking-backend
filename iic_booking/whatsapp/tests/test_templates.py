@@ -26,8 +26,8 @@ TEMPLATE_ID = "9000000000000999"
 NAME = "Indian Institute of Technology Roorkee"
 EXISTING = ("iic_booking_confirmed", "iic_booking_cancelled", "iic_booking_completed")
 EXPECTED_EVENTS = {
-    "booking_confirmed", "booking_rejected", "reschedule_approved", "booking_cancelled", "booking_reminder", "booking_completed", "payment_successful",
-    "payment_failed", "payment_pending", "refund_initiated", "refund_completed", "waitlist_slot_available", "sample_received",
+    "booking_confirmed", "booking_rejected", "booking_rescheduled", "booking_cancelled", "booking_reminder", "booking_completed",
+    "payment_successful", "payment_failed", "refund_completed", "waitlist_slot_available",
 }
 
 
@@ -140,17 +140,17 @@ def test_the_payload_has_the_body_example_meta_requires():
 
 
 def test_every_template_has_a_portal_step_and_the_unused_two_are_gone():
-    assert len(CATALOGUE) == 13 and all(t.trigger for t in CATALOGUE)
-    dropped = {"iitr_reschedule_requested", "iitr_reschedule_rejected", "iitr_booking_request_received", "iitr_payment_initiated"}
+    assert len(CATALOGUE) == 10 and all(t.trigger for t in CATALOGUE)
+    dropped = {"iitr_reschedule_requested", "iitr_reschedule_rejected", "iitr_reschedule_approved", "iitr_booking_request_received",
+               "iitr_payment_initiated", "iitr_payment_pending", "iitr_refund_initiated", "iitr_sample_received"}
     assert not dropped & {t.name for t in CATALOGUE}
 
 
 def test_wording_promises_nothing_the_backend_has_not_confirmed():
-    assert "completed" not in BY_EVENT["refund_initiated"].body.lower()
-    assert "received the payment" not in BY_EVENT["payment_pending"].body
+    assert "request" not in BY_EVENT["booking_rescheduled"].body.lower() and "approved" not in BY_EVENT["booking_rescheduled"].body.lower()
+    assert "received the payment" not in BY_EVENT["payment_failed"].body
     assert "confirmed" not in BY_EVENT["payment_successful"].body.lower()
     assert "receipt" not in " ".join(t.body.lower() for t in CATALOGUE)
-    assert "accepted your sample" in BY_EVENT["sample_received"].body
 
 
 # --- dry run and submission ------------------------------------------------------------------------------------------
@@ -159,7 +159,7 @@ def test_wording_promises_nothing_the_backend_has_not_confirmed():
 def test_dry_run_lists_exactly_what_would_go_and_changes_nothing(conf_on):
     meta = FakeMeta(rows=[meta_row(BY_EVENT["booking_confirmed"])])
     out = run_command(meta, "--dry-run")
-    assert "Would submit: 12" in out and "SUBMIT iitr_payment_failed" in out and "SKIP iic_booking_confirmed [PENDING]" in out
+    assert "Would submit: 9" in out and "SUBMIT iitr_payment_failed" in out and "SKIP iic_booking_confirmed [PENDING]" in out
     assert "SUBMIT iic_booking_confirmed" not in out
     assert meta.posts == [] and not WhatsAppTemplate.objects.exists() and not WhatsAppTemplateAudit.objects.exists()
 
@@ -173,7 +173,7 @@ def test_dry_run_is_the_default_and_can_show_wording(conf_on):
 def test_submit_sends_only_missing_templates_in_a_batch_and_saves_the_id(conf_on):
     meta = FakeMeta(rows=[meta_row(BY_EVENT[e]) for e in ("booking_confirmed", "booking_cancelled", "booking_completed")])
     out = run_command(meta, "--submit", "--batch-size", "2", "--delay", "0")
-    assert len(meta.posts) == 2 and "Submitted: 2" in out and "Still to submit: 8" in out
+    assert len(meta.posts) == 2 and "Submitted: 2" in out and "Still to submit: 5" in out
     assert all(url.endswith(f"/{WABA}/message_templates") for url, _ in meta.posts)
     assert not {body["name"] for _, body in meta.posts} & set(EXISTING)
     record = WhatsAppTemplate.objects.get(name=meta.posts[0][1]["name"])
@@ -185,7 +185,7 @@ def test_pending_or_rejected_templates_at_meta_are_never_resubmitted(conf_on):
     rows = [meta_row(t, status="REJECTED" if i % 2 else "PENDING") for i, t in enumerate(CATALOGUE)]
     meta = FakeMeta(rows=rows)
     out = run_command(meta, "--submit", "--delay", "0")
-    assert meta.posts == [] and "Submitted: 0" in out and "Skipped, already at Meta: 13" in out
+    assert meta.posts == [] and "Submitted: 0" in out and "Skipped, already at Meta: 10" in out
 
 
 def test_a_second_run_does_not_duplicate(conf_on):
@@ -358,15 +358,15 @@ def test_an_unknown_status_never_counts_as_approved(conf_on):
 def test_the_report_groups_every_template(conf_on):
     rows = [meta_row(BY_EVENT["booking_confirmed"], "APPROVED"), meta_row(BY_EVENT["booking_cancelled"], "PENDING"),
             meta_row(BY_EVENT["booking_completed"], "REJECTED", rejected_reason="PROMOTIONAL"),
-            meta_row(BY_EVENT["booking_reminder"], "PAUSED"), meta_row(BY_EVENT["sample_received"], "DISABLED")]
+            meta_row(BY_EVENT["booking_reminder"], "PAUSED"), meta_row(BY_EVENT["waitlist_slot_available"], "DISABLED")]
     plan = templates.sync_statuses(TemplateClient(session=FakeMeta(rows=rows)))
     report = templates.build_report(meta_rows=plan.meta_rows)
     assert [i["name"] for i in report["approved"]] == ["iic_booking_confirmed"]
     assert [i["name"] for i in report["pending"]] == ["iic_booking_cancelled"]
     assert report["rejected"][0]["name"] == "iic_booking_completed" and "offer" in report["rejected"][0]["suggestion"]
-    assert {i["name"] for i in report["paused_or_disabled"]} == {"iitr_booking_reminder", "iitr_sample_received"}
-    assert len(report["missing"]) == 8
-    assert {i["name"] for i in report["requires_correction"]} == {"iic_booking_completed", "iitr_booking_reminder", "iitr_sample_received"}
+    assert {i["name"] for i in report["paused_or_disabled"]} == {"iitr_booking_reminder", "iitr_waitlist_slot_available"}
+    assert len(report["missing"]) == 5
+    assert {i["name"] for i in report["requires_correction"]} == {"iic_booking_completed", "iitr_booking_reminder", "iitr_waitlist_slot_available"}
     assert report["not_wired"] == []
     assert report["last_synced_at"]
 
@@ -384,7 +384,7 @@ def test_wording_or_category_drift_is_reported_not_changed(conf_on):
 def test_the_report_command_works_without_meta(conf_on):
     out = StringIO()
     call_command("whatsapp_template_report", stdout=out)
-    assert "Missing: 13" in out.getvalue() and "Last synchronised: never" in out.getvalue()
+    assert "Missing: 10" in out.getvalue() and "Last synchronised: never" in out.getvalue()
 
 
 # --- controlled corrections ------------------------------------------------------------------------------------------
@@ -534,13 +534,12 @@ def fake_event(booking, kind, *, previous="", new=""):
 
 @pytest.mark.parametrize("status, kind, previous, new, expected", [
     ("BOOKED", "CREATED", "", "", "booking_confirmed"),
-    ("PENDING_PAYMENT", "CREATED", "", "", "payment_pending"),
     ("BOOKED", "CONFIRMED", "", "", "booking_confirmed"),
     ("BOOKED", "STATUS_CHANGED", "PENDING", "BOOKED", "booking_confirmed"),
     ("BOOKED", "STATUS_CHANGED", "PENDING_PAYMENT", "BOOKED", "booking_confirmed"),
     ("CANCELLED", "CANCELLED", "", "", "booking_cancelled"),
     ("REFUNDED", "REFUNDED", "", "", "booking_cancelled"),
-    ("BOOKED", "RESCHEDULED", "", "", "reschedule_approved"),
+    ("BOOKED", "RESCHEDULED", "", "", "booking_rescheduled"),
     ("COMPLETED", "COMPLETED", "", "", "booking_completed"),
 ])
 def test_each_booking_event_maps_to_its_template_with_the_right_values(sending, status, kind, previous, new, expected):
@@ -557,6 +556,7 @@ def test_each_booking_event_maps_to_its_template_with_the_right_values(sending, 
     ("HOLD", "STATUS_CHANGED", "BOOKED", "HOLD"),
     ("WAITLISTED", "CREATED", "", ""),
     ("PENDING", "CREATED", "", ""),
+    ("PENDING_PAYMENT", "CREATED", "", ""),
 ])
 def test_other_booking_events_send_nothing(sending, status, kind, previous, new):
     with patch("iic_booking.whatsapp.service.notify") as notify:
@@ -575,7 +575,6 @@ def test_every_hook_does_nothing_while_whatsapp_is_off(conf_on):
         hooks.payment_order_saved(SimpleNamespace(booking_id=None), True)
         hooks.payment_refund_saved(SimpleNamespace(), True)
         hooks.external_refund_saved(SimpleNamespace(), True)
-        hooks.sample_trace_saved(SimpleNamespace(), True)
     notify.assert_not_called()
 
 
@@ -616,7 +615,7 @@ def test_a_wallet_recharge_order_sends_nothing(sending):
 
 
 @pytest.mark.parametrize("created, status, expected", [
-    (True, "queued", "refund_initiated"), (True, "closed", "refund_completed"), (False, "closed", "refund_completed"), (False, "sent", None),
+    (True, "queued", None), (True, "closed", "refund_completed"), (False, "closed", "refund_completed"), (False, "sent", None),
 ])
 def test_external_refund_mapping(sending, created, status, expected):
     booking = fake_booking()
@@ -630,7 +629,7 @@ def test_external_refund_mapping(sending, created, status, expected):
 
 
 @pytest.mark.parametrize("created, status, expected", [
-    (True, "PENDING", "refund_initiated"), (False, "PROCESSED", "refund_completed"), (False, "PENDING", None), (False, "FAILED", None),
+    (True, "PENDING", None), (False, "PROCESSED", "refund_completed"), (False, "PENDING", None), (False, "FAILED", None),
 ])
 def test_gateway_refund_mapping(sending, created, status, expected):
     booking = fake_booking()
@@ -644,25 +643,14 @@ def test_gateway_refund_mapping(sending, created, status, expected):
         assert notify.call_args.args[1] == expected
 
 
-def test_sample_received_only_on_a_new_accepted_trace(sending):
-    booking = fake_booking()
-    accepted = SimpleNamespace(pk=8, booking=booking, status="SAMPLE_ACCEPTED", created_at=timezone.now())
-    with patch("iic_booking.whatsapp.service.notify") as notify:
-        hooks.sample_trace_saved(accepted, True)
-        hooks.sample_trace_saved(accepted, False)
-        hooks.sample_trace_saved(SimpleNamespace(pk=9, booking=booking, status="PROCESSING", created_at=timezone.now()), True)
-    assert notify.call_count == 1 and notify.call_args.args[1] == "sample_received"
-
-
 def test_the_signals_are_connected_to_real_models():
     from django.db.models.signals import post_save
 
-    from iic_booking.equipment.models import BookingSampleTrace
     from iic_booking.external_services.models import ExternalRefund
     from iic_booking.payments.models import PaymentOrder, PaymentRefund
 
     for model, hook in ((PaymentOrder, "payment_order_saved"), (PaymentRefund, "payment_refund_saved"),
-                        (ExternalRefund, "external_refund_saved"), (BookingSampleTrace, "sample_trace_saved")):
+                        (ExternalRefund, "external_refund_saved")):
         instance = model()
         with patch(f"iic_booking.whatsapp.hooks.{hook}") as called:
             post_save.send(sender=model, instance=instance, created=True, raw=False)

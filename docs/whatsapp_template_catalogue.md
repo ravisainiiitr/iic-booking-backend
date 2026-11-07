@@ -120,9 +120,9 @@ The reason and the next steps are shown on the IIT Roorkee Equipment Booking Por
 IIT Roorkee
 ```
 
-## iitr_reschedule_approved
+## iitr_booking_rescheduled
 
-- **Django event:** `reschedule_approved`
+- **Django event:** `booking_rescheduled`
 - **Trigger:** Booking event Rescheduled
 - **Recipient:** The user who made the booking
 - **Language / category:** en / UTILITY
@@ -240,62 +240,6 @@ You can check the booking and try again on the IIT Roorkee Equipment Booking Por
 IIT Roorkee
 ```
 
-## iitr_payment_pending
-
-- **Django event:** `payment_pending`
-- **Trigger:** Booking created with status Awaiting payment
-- **Recipient:** The user who made the booking
-- **Language / category:** en / UTILITY
-- **Header:** Awaiting Payment
-- **Footer:** Reply STOP to stop WhatsApp messages.
-- **Placeholders:**
-  - `{{1}}` user name, for example: Asha Verma
-  - `{{2}}` booking ID, for example: XRD202600123
-  - `{{3}}` equipment, for example: X-Ray Diffractometer
-  - `{{4}}` amount, for example: Rs. 1,500.00
-- **Body:**
-
-```
-Dear {{1}},
-
-Your equipment booking is waiting for payment.
-
-Booking ID: {{2}}
-Equipment: {{3}}
-Amount: {{4}}
-
-Please complete the payment on the IIT Roorkee Equipment Booking Portal to confirm this booking.
-
-IIT Roorkee
-```
-
-## iitr_refund_initiated
-
-- **Django event:** `refund_initiated`
-- **Trigger:** Bank refund queued, or gateway refund created
-- **Recipient:** The user who made the booking
-- **Language / category:** en / UTILITY
-- **Header:** Refund Started
-- **Footer:** Reply STOP to stop WhatsApp messages.
-- **Placeholders:**
-  - `{{1}}` user name, for example: Asha Verma
-  - `{{2}}` booking ID, for example: XRD202600123
-  - `{{3}}` amount, for example: Rs. 1,500.00
-- **Body:**
-
-```
-Dear {{1}},
-
-A refund has been started for your equipment booking.
-
-Booking ID: {{2}}
-Refund amount: {{3}}
-
-You can follow it on the IIT Roorkee Equipment Booking Portal.
-
-IIT Roorkee
-```
-
 ## iitr_refund_completed
 
 - **Django event:** `refund_completed`
@@ -348,35 +292,6 @@ Date: {{3}}
 Time: {{4}}
 
 Slots are not held. To book it, please visit the IIT Roorkee Equipment Booking Portal.
-
-IIT Roorkee
-```
-
-## iitr_sample_received
-
-- **Django event:** `sample_received`
-- **Trigger:** Sample lifecycle moves to Sample Accepted
-- **Recipient:** The user who made the booking
-- **Language / category:** en / UTILITY
-- **Header:** Sample Received
-- **Footer:** Reply STOP to stop WhatsApp messages.
-- **Placeholders:**
-  - `{{1}}` user name, for example: Asha Verma
-  - `{{2}}` booking ID, for example: XRD202600123
-  - `{{3}}` equipment, for example: X-Ray Diffractometer
-  - `{{4}}` date, for example: 10 Nov 2026
-- **Body:**
-
-```
-Dear {{1}},
-
-The laboratory has received and accepted your sample.
-
-Booking ID: {{2}}
-Equipment: {{3}}
-Date: {{4}}
-
-You can follow the analysis on the IIT Roorkee Equipment Booking Portal.
 
 IIT Roorkee
 ```

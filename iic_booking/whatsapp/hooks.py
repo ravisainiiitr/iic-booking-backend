@@ -96,9 +96,7 @@ def booking_event(event) -> None:
     kind = event.event_type
     chosen = None
     if kind == BookingEventType.CREATED:
-        if booking.status == BookingStatus.PENDING_PAYMENT:
-            chosen = ("payment_pending", [*_base(booking), _money(booking.amount_due)])
-        elif booking.status == BookingStatus.BOOKED:
+        if booking.status == BookingStatus.BOOKED:
             chosen = ("booking_confirmed", _with_slot_time(booking))
     elif kind == BookingEventType.CONFIRMED or (
         kind == BookingEventType.STATUS_CHANGED
@@ -109,7 +107,7 @@ def booking_event(event) -> None:
     elif kind in (BookingEventType.CANCELLED, BookingEventType.REFUNDED):
         chosen = ("booking_cancelled", _with_slot_date(booking))
     elif kind == BookingEventType.RESCHEDULED:
-        chosen = ("reschedule_approved", _with_slot_time(booking))
+        chosen = ("booking_rescheduled", _with_slot_time(booking))
     elif kind == BookingEventType.COMPLETED:
         chosen = ("booking_completed", [*_base(booking), _date(booking.completed_at or timezone.now())])
     if chosen is not None:
@@ -161,33 +159,18 @@ def payment_refund_saved(refund, created: bool) -> None:
     order = refund.payment.payment_order
     if not order.booking_id:
         return
-    if refund.status == RefundStatus.PROCESSED:
-        event = "refund_completed"
-    elif created and refund.status == RefundStatus.PENDING:
-        event = "refund_initiated"
-    else:
+    if refund.status != RefundStatus.PROCESSED:
         return
-    _notify(order.user, event, [_person(order.user), _ref(order.booking), _money(refund.amount)], f"gateway-refund:{refund.pk}:{event}")
+    _notify(order.user, "refund_completed", [_person(order.user), _ref(order.booking), _money(refund.amount)],
+            f"gateway-refund:{refund.pk}:refund_completed")
 
 
 @_guarded
 def external_refund_saved(refund, created: bool) -> None:
     from iic_booking.external_services.models import RefundStatus
 
-    if refund.status == RefundStatus.CLOSED:
-        event = "refund_completed"
-    elif created and refund.status == RefundStatus.QUEUED:
-        event = "refund_initiated"
-    else:
+    if refund.status != RefundStatus.CLOSED:
         return
-    _notify(refund.user, event, [_person(refund.user), _ref(refund.booking), _money(refund.refund_amount)], f"refund:{refund.pk}:{event}")
+    _notify(refund.user, "refund_completed", [_person(refund.user), _ref(refund.booking), _money(refund.refund_amount)],
+            f"refund:{refund.pk}:refund_completed")
 
-
-@_guarded
-def sample_trace_saved(trace, created: bool) -> None:
-    from iic_booking.equipment.models import SampleTraceStatus
-
-    if not created or trace.status != SampleTraceStatus.SAMPLE_ACCEPTED:
-        return
-    booking = trace.booking
-    _notify(booking.user, "sample_received", [*_base(booking), _date(trace.created_at or timezone.now())], f"sample:{trace.pk}")

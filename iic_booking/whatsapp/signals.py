@@ -1,4 +1,4 @@
-"""Payment, refund and sample changes reach WhatsApp through signals, so that business code stays untouched."""
+"""Payment and refund changes reach WhatsApp through signals, so that business code stays untouched."""
 
 from __future__ import annotations
 
@@ -25,8 +25,3 @@ def _external_refund(sender, instance, created, raw=False, **kwargs):
     if not raw:
         hooks.external_refund_saved(instance, created)
 
-
-@receiver(post_save, sender="equipment.BookingSampleTrace", dispatch_uid="whatsapp_sample_trace")
-def _sample_trace(sender, instance, created, raw=False, **kwargs):
-    if not raw:
-        hooks.sample_trace_saved(instance, created)

@@ -2,8 +2,8 @@
 
 The three iic_booking_* entries repeat, word for word, what is already at Meta; their names stay as they are because Meta
 keys templates by name. New templates carry a line about STOP in the footer. ``trigger`` says what in the portal sends the
-message. A template belongs here only when the portal has that step: no reschedule request or refusal exists, so neither does
-a template for one.
+message. A template belongs here only when the portal has that step: users cannot request a reschedule, so the one template
+for it simply reports that a booking was rescheduled.
 """
 
 from __future__ import annotations
@@ -98,7 +98,7 @@ CATALOGUE: tuple[Template, ...] = (
     _new("booking_rejected", "iitr_booking_rejected", "Booking Not Accepted",
          "Your equipment booking could not be accepted by the laboratory.",
          f"The reason and the next steps are shown on {_PORTAL}.", trigger="Laboratory rejects a 3D printing or laser cutting job"),
-    _new("reschedule_approved", "iitr_reschedule_approved", "Booking Rescheduled",
+    _new("booking_rescheduled", "iitr_booking_rescheduled", "Booking Rescheduled",
          "Your equipment booking has been rescheduled. The new slot is shown below.",
          f"Please check the updated details on {_PORTAL}.", trigger="Booking event Rescheduled", **_WITH_TIME),
     _new("booking_reminder", "iitr_booking_reminder", "Booking Reminder",
@@ -110,13 +110,6 @@ CATALOGUE: tuple[Template, ...] = (
     _new("payment_failed", "iitr_payment_failed", "Payment Not Completed",
          "The payment for your equipment booking was not completed.",
          f"You can check the booking and try again on {_PORTAL}.", trigger="Online payment order marked Failed", **_WITH_AMOUNT),
-    _new("payment_pending", "iitr_payment_pending", "Awaiting Payment",
-         "Your equipment booking is waiting for payment.",
-         f"Please complete the payment on {_PORTAL} to confirm this booking.", trigger="Booking created with status Awaiting payment",
-         **_WITH_AMOUNT),
-    _new("refund_initiated", "iitr_refund_initiated", "Refund Started",
-         "A refund has been started for your equipment booking.",
-         f"You can follow it on {_PORTAL}.", trigger="Bank refund queued, or gateway refund created", **_REFUND_AMOUNT),
     _new("refund_completed", "iitr_refund_completed", "Refund Completed",
          "The refund for your equipment booking has been completed.",
          f"The details are shown on {_PORTAL}.", trigger="Wallet refund made, bank refund closed, or gateway refund processed",
@@ -125,9 +118,6 @@ CATALOGUE: tuple[Template, ...] = (
          "A slot has become available for equipment you are waitlisted for.",
          f"Slots are not held. To book it, please visit {_PORTAL}.", trigger="Freed slot within 48 hours, same step as the email",
          recipient="Each active waitlist user for that equipment", **_SLOT),
-    _new("sample_received", "iitr_sample_received", "Sample Received",
-         "The laboratory has received and accepted your sample.",
-         f"You can follow the analysis on {_PORTAL}.", trigger="Sample lifecycle moves to Sample Accepted"),
 )
 BY_EVENT = {t.event: t for t in CATALOGUE}
 
