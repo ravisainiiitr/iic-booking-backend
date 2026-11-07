@@ -173,7 +173,7 @@ def test_dry_run_is_the_default_and_can_show_wording(conf_on):
 def test_submit_sends_only_missing_templates_in_a_batch_and_saves_the_id(conf_on):
     meta = FakeMeta(rows=[meta_row(BY_EVENT[e]) for e in ("booking_confirmed", "booking_cancelled", "booking_completed")])
     out = run_command(meta, "--submit", "--batch-size", "2", "--delay", "0")
-    assert len(meta.posts) == 2 and "Submitted: 2" in out and "Still to submit: 12" in out
+    assert len(meta.posts) == 2 and "Submitted: 2" in out and "Still to submit: 10" in out
     assert all(url.endswith(f"/{WABA}/message_templates") for url, _ in meta.posts)
     assert not {body["name"] for _, body in meta.posts} & set(EXISTING)
     record = WhatsAppTemplate.objects.get(name=meta.posts[0][1]["name"])
