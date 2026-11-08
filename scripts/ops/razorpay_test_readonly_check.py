@@ -160,7 +160,7 @@ def receipts():
         return f"(not given yet; next would be) IITR/{receipt_numbers.department_code(order)}/{year}/{serial}"
 
     receipt_numbers.ensure = preview
-    instrument.ensure = lambda payment: None
+    instrument.ensure = lambda payment: (payment.raw_payload or {}).get(instrument.KEY) or {}  # stored only
     out = []
     for o in PaymentOrder.objects.filter(_booking_filter()).order_by("-created_at")[:10]:
         for p in o.payments.all():
