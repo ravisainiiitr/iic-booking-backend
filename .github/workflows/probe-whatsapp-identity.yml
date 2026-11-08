@@ -65,3 +65,15 @@ jobs:
           git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/whatsapp_token_check.py > "$RUNNER_TEMP/wa_check.py"
           python3 -I "$RUNNER_TEMP/wa_check.py"
           rm -f "$RUNNER_TEMP/wa_check.py"
+  from-github-network:
+    # Same read-only script from a GitHub-hosted runner: tells a block on the server's address apart from one on the app.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The repository secret token against Meta, from GitHub's network
+        env:
+          NEW_TOKEN: ${{ secrets.WHATSAPP_ACCESS_TOKEN }}
+          WABA_ID: ${{ secrets.WHATSAPP_WABA_ID }}
+          PHONE_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
+          DIAG_ID: ${{ secrets.WHATSAPP_DIAGNOSTIC_PHONE_NUMBER_ID }}
+        run: python3 -I scripts/ops/whatsapp_token_check.py
