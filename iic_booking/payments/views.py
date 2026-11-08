@@ -65,11 +65,14 @@ def _serialize_order(order: PaymentOrder) -> dict:
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def fee_settings(request):
+    from iic_booking.payments.gateway_mode import public_status
+
     fee_percent, fee_gst_percent = get_fee_percents()
     return Response(
         {
             "fee_percent": str(fee_percent),
             "fee_gst_percent": str(fee_gst_percent),
+            "gateway": public_status(request.user),
             "RAZORPAY_CONVENIENCE_FEE_PERCENT": str(fee_percent),
             "RAZORPAY_CONVENIENCE_FEE_GST_PERCENT": str(fee_gst_percent),
         }
@@ -174,12 +177,12 @@ def razorpay_create_order(request):
         return Response(payload, status=status.HTTP_201_CREATED)
 
     except RazorpayNotConfigured as e:
-        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({"error": str(e), "code": "gateway_unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
     except RazorpayServiceError as e:
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-    except Exception as e:
+    except Exception:
         logger.exception("create-order failed")
-        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({"error": "The payment could not be started. Please try again."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(["POST"])
