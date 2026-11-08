@@ -476,6 +476,15 @@ def settle_order_success(
         order.status = PaymentOrderStatus.PAID
         order.save(update_fields=["status", "updated_at"])
 
+    # The printed receipt number (IITR/<dept>/<year>/<serial>), given now so the series follows payment order. A
+    # failure here must never undo the payment: the receipt then numbers it when first opened.
+    try:
+        from iic_booking.payments.receipt_numbers import ensure as ensure_receipt_number
+
+        ensure_receipt_number(payment)
+    except Exception:
+        logger.warning("Receipt number not given for %s", payment.razorpay_payment_id, exc_info=True)
+
     return order, payment
 
 

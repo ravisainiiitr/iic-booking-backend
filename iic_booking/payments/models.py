@@ -145,6 +145,9 @@ class Payment(models.Model):
         help_text=_("GST on the Razorpay fee, as Razorpay reports it (blank until known)."),
     )
     raw_payload = models.JSONField(default=dict, blank=True)
+    # Printed receipt number, IITR/<department>/<year>/<5-digit serial> (receipt_numbers.py). Given once, when the
+    # payment is confirmed, and never changed.
+    receipt_number = models.CharField(max_length=48, unique=True, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -363,3 +366,18 @@ class ReceiptTemplateChange(models.Model):
 
     class Meta:
         ordering = ["-changed_at", "-id"]
+
+
+class ReceiptSerialCounter(models.Model):
+    """Last receipt serial used in a calendar year (IST). Live and test-mode payments count separately, so test
+    payments never leave gaps in the real series."""
+
+    year = models.PositiveSmallIntegerField()
+    test_mode = models.BooleanField(default=False)
+    last = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["year", "test_mode"], name="payments_one_receipt_counter_per_year")]
+
+    def __str__(self):
+        return f"{self.year}{' test' if self.test_mode else ''}: {self.last}"

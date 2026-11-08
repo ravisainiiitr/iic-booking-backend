@@ -1,7 +1,7 @@
 """Payment receipt data for an online (Razorpay) payment.
 
-The receipt number is the order's existing receipt reference (``PaymentOrder.receipt``, also sent to Razorpay as the
-order's receipt), so no second numbering scheme is introduced. A receipt is never a GST tax invoice: where a tax
+The printed receipt number is IITR/<department>/<year>/<serial> (receipt_numbers.py); the order's Razorpay receipt
+reference stays available as ``gateway_receipt``. A receipt is never a GST tax invoice: where a tax
 invoice applies, SRIC issues it.
 """
 
@@ -241,8 +241,12 @@ def receipt_for(payment: Payment) -> dict:
     user = order.user
     how = describe(payment)
     t = template_values()
+    from .receipt_numbers import ensure as ensure_receipt_number
+
     return {
-        "receipt_number": order.receipt,
+        "receipt_number": ensure_receipt_number(payment),
+        # The reference the order carries at Razorpay (shown to finance; not the printed receipt number).
+        "gateway_receipt": order.receipt,
         "title": t["receipt_heading"],
         "not_a_tax_invoice": t["not_a_tax_invoice"],
         "computer_generated": t["computer_generated"],
@@ -291,9 +295,11 @@ def receipt_summary(payment: Payment) -> dict:
     from .purpose import order_purpose
 
     order = payment.payment_order
+    from .receipt_numbers import ensure as ensure_receipt_number
+
     return {
         "razorpay_payment_id": payment.razorpay_payment_id,
-        "receipt_number": order.receipt,
+        "receipt_number": ensure_receipt_number(payment),
         "purpose": order_purpose(order),
         "total_paid": str(payment.amount),
         "paid_at": payment.created_at.isoformat(),

@@ -41,7 +41,10 @@ def _client(user):
 
 def test_payer_gets_a_receipt_with_the_existing_reference_and_breakdown(paid_recharge):
     data = _client(paid_recharge).get(URL.format("pay_RCP1")).json()
-    assert data["receipt_number"] == "iic_wall_1_abc123"
+    from django.utils import timezone
+
+    assert data["receipt_number"] == f"IITR/RCP/{timezone.localtime().year}/TEST-00001"
+    assert data["gateway_receipt"] == "iic_wall_1_abc123"
     assert (data["base_amount"], data["convenience_fee"], data["gst_on_fee"], data["total_paid"]) == ("1000.00", "20.00", "3.60", "1023.60")
     assert data["collected_by"] == "DEAN SRIC IIT ROORKEE" and data["institution"] == "Indian Institute of Technology Roorkee"
     assert data["test_mode"] is True and "not a GST tax invoice" in data["not_a_tax_invoice"]
