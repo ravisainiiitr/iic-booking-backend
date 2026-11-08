@@ -40,6 +40,14 @@ WAIVE = os.environ.get("WAIVE_FBR_FLAG", "").strip().lower() == "yes"
 FAILED = []
 
 
+def scrub(text) -> str:
+    """Masks email addresses and 6+ digit numbers (mobiles, ids of people) for the public Actions log."""
+    import re
+
+    text = re.sub(r"[\w.+-]+@[\w-]+(\.[\w-]+)+", "<email>", str(text or ""))
+    return re.sub(r"\+?\d[\d\s-]{8,}\d", "<number>", text)[:500]
+
+
 def out(*parts):
     print(*parts, flush=True)
 
@@ -139,6 +147,15 @@ def show_booking(booking):
     out("  eligible for Create Booking:", ok, reason)
     ul = IstemUserLink.objects.filter(user=booking.user).first()
     out("  user link |", (ul.state, ul.public_user_id) if ul else "none")
+    if ul:
+        # Why the link is not LINKED, and the latest user-link job's error. Emails and phone numbers are masked:
+        # Actions logs are public.
+        out("  user link review |", scrub(ul.review_reason) or "-")
+        last = IstemOutboxJob.objects.filter(user_link=ul).exclude(last_error_message="").order_by("-pk").first()
+        if last:
+            out("  user link last error | job", last.pk, last.operation, last.state, last.last_error_category, "|", scrub(last.last_error_message))
+        open_jobs = IstemOutboxJob.objects.filter(user_link=ul).exclude(state__in=["DONE", "CANCELLED"])
+        out("  user link open jobs |", open_jobs.count(), sorted(set(open_jobs.values_list("state", flat=True))))
     built = mapping.build_create_booking_payload(booking, ul)
     out("  create payload |", "ready" if built.ok else "missing: " + "; ".join(f"{k}: {v}" for k, v in sorted(built.errors.items())))
     link = IstemBookingLink.objects.filter(booking=booking).first()
