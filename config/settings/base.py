@@ -1026,6 +1026,9 @@ RAZORPAY_KEY_ID = env("RAZORPAY_KEY_ID", default="")
 # Merchant name shown in Razorpay Checkout and on receipts. Must equal the business name on the Razorpay account
 # (Dashboard > Account & Settings > Business details); the institute's bank records give DEAN SRIC IIT ROORKEE.
 RAZORPAY_CHECKOUT_NAME = env("RAZORPAY_CHECKOUT_NAME", default="DEAN SRIC IIT ROORKEE")
+# GSTIN of the SRIC office, printed on payment receipts as on SRIC's own receipts (from the SRIC receipt the user shared,
+# 8 Nov 2026). Shown for reference only: the receipt is not a tax invoice.
+RECEIPT_INSTITUTE_GSTIN = env("RECEIPT_INSTITUTE_GSTIN", default="05AAALI0033R1Z5")
 # A captured payment not in any Razorpay settlement after this many days is raised for Finance.
 RAZORPAY_UNSETTLED_ALERT_DAYS = env.int("RAZORPAY_UNSETTLED_ALERT_DAYS", default=5)
 RAZORPAY_KEY_SECRET = env("RAZORPAY_KEY_SECRET", default="")
