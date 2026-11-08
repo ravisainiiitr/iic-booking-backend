@@ -103,7 +103,8 @@ def install_waiver(booking):
 
 def remote_lookup(name):
     client = service.default_client()
-    page = client.list_equipment(institute_id=conf.configured_institute_id() or "213", equipment_name=name, limit=10)
+    # The institute is the one I-STEM names in the token (no longer a portal setting).
+    page = client.list_equipment(institute_id=client.session_info().institute_id, equipment_name=name, limit=10)
     return page.rows
 
 
