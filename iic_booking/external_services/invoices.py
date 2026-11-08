@@ -182,7 +182,13 @@ def _billing(booking) -> dict:
 def _payments(booking) -> list[dict]:
     out = []
     try:
-        for order in booking.razorpay_payment_orders.filter(status="PAID"):
+        from django.db.models import Q
+
+        from iic_booking.payments.models import PaymentOrder
+
+        # The booking's own balance orders, and the external checkout order that paid for it before it existed.
+        orders = PaymentOrder.objects.filter(status="PAID").filter(Q(booking=booking) | Q(external_checkout__booking=booking)).distinct()
+        for order in orders.order_by("created_at"):
             payment = order.payments.order_by("-pk").first()
             out.append({
                 "method": "Online (Razorpay)",

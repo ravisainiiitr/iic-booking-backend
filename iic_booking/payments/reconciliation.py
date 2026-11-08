@@ -203,7 +203,7 @@ def run_checks(*, unsettled_after_days: int | None = None) -> dict:
     return counts
 
 
-def reconcile(*, days: int = 3, client=None) -> dict:
+def reconcile(*, days: int = 7, client=None) -> dict:
     """The daily run: settlement reports for the last ``days`` days, missed-payment recovery, then the checks."""
     from .razorpay_service import get_razorpay_client
 
