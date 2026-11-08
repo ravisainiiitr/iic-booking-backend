@@ -39,7 +39,41 @@ LABELS = {
 }
 
 
-def automatic_status(booking) -> dict | None:
+_BILLING = ("billing_user_name", "billing_address", "billing_state")
+
+
+def waiting_reasons(booking) -> tuple[list[str], list[str]]:
+    """Why a booking that should go to I-STEM has not been registered yet: (reasons for the user, detail for staff).
+    Uses the same eligibility and Create Booking checks as the sync; database reads only."""
+    from . import eligibility, mapping
+    from .models import IstemUserLink
+
+    ok, reason = eligibility.evaluate(booking)
+    if not ok:
+        if reason == "payment not settled":
+            return ["Waiting for the payment to be confirmed."], [reason]
+        if reason.startswith("booking status is"):
+            return ["Registered on I-STEM once the booking is confirmed and paid."], [reason]
+        return ["Not sent to I-STEM for this booking."], [reason]
+    user_link = IstemUserLink.objects.filter(user=booking.user).first()
+    built = mapping.build_create_booking_payload(booking, user_link)
+    if built.ok:
+        return ["Being registered on I-STEM; this usually takes a few minutes."], []
+    errors = built.errors
+    reasons = []
+    if "public_user_id" in errors:
+        reasons.append("Your portal account is not linked to an I-STEM account yet. Link it from your profile; the booking is then registered automatically.")
+    if any(k in errors for k in _BILLING):
+        reasons.append("Your billing details are incomplete (billing name, address and state). Add them in your profile.")
+    if "equipment_id" in errors:
+        reasons.append("This instrument is not on I-STEM, so the IIC team handles its I-STEM record.")
+    elif set(errors) - {"public_user_id", "booking_gstn", *_BILLING}:
+        reasons.append("Waiting for the IIC team to complete this instrument's I-STEM setup.")
+    detail = [f"{key}: {message}" for key, message in sorted(errors.items())]
+    return reasons or ["Waiting for the IIC team."], detail
+
+
+def automatic_status(booking, *, include_reason: bool = False) -> dict | None:
     from iic_booking.equipment.models import charge_profile_requires_istem_fbr
 
     if not conf.automatic_fbr_enabled() or not charge_profile_requires_istem_fbr(getattr(booking, "charge_profile", None)):
@@ -53,7 +87,7 @@ def automatic_status(booking) -> dict | None:
         step = "attention"
     else:
         step = _STEP_BY_STATE.get(state, "queued")
-    return {
+    result = {
         "automatic": True,
         "step": step,
         "label": LABELS[step],
@@ -62,3 +96,9 @@ def automatic_status(booking) -> dict | None:
         "confirmation_id": (getattr(link, "confirmation_id", None) or "") if link else "",
         "payment_id": (getattr(link, "payment_id", None) or "") if link else "",
     }
+    if include_reason and step == "queued":
+        try:
+            result["waiting_reasons"], result["waiting_detail"] = waiting_reasons(booking)
+        except Exception:  # the booking page must never fail because of this explanation
+            result["waiting_reasons"], result["waiting_detail"] = [], []
+    return result
