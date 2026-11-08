@@ -58,7 +58,11 @@ def _when(timestamp):
 
 
 def record_gateway_charges(razorpay_payment_id: str, entity: dict | None) -> None:
-    """Store Razorpay's fee and tax for a payment when the entity carries them. Never raises."""
+    """Store Razorpay's fee and tax for a payment when the entity carries them, and how it was paid (for the receipt).
+    Never raises."""
+    from .instrument import record as record_instrument
+
+    record_instrument(razorpay_payment_id, entity)
     if not isinstance(entity, dict) or entity.get("fee") is None:
         return
     try:

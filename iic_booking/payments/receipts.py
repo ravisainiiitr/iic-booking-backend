@@ -51,23 +51,48 @@ def _service(order) -> dict:
     }
 
 
+def institute_gstin() -> str:
+    """The SRIC office GSTIN printed on its receipts (shown for reference; this receipt is not a tax invoice)."""
+    return str(getattr(settings, "RECEIPT_INSTITUTE_GSTIN", "") or "").strip().upper()
+
+
+def _payer_organisation(user) -> str:
+    for attr in ("organisation", "organization", "institute_name", "company_name"):
+        value = getattr(user, attr, "")
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:200]
+    department = getattr(user, "department", None)
+    return (getattr(department, "name", "") or "")[:200]
+
+
 def receipt_for(payment: Payment) -> dict:
+    from .instrument import describe
+
     order = payment.payment_order
     user = order.user
+    how = describe(payment)
     return {
         "receipt_number": order.receipt,
         "title": "Payment Receipt",
         "not_a_tax_invoice": "This is a payment receipt, not a GST tax invoice. Where a tax invoice applies, it is issued by SRIC, IIT Roorkee.",
+        "computer_generated": "This is a computer-generated receipt and does not require a signature.",
         "test_mode": order.mode == "test",
         "collected_by": checkout_name(),
         "institution": "Indian Institute of Technology Roorkee",
+        "office": "Sponsored Research & Industrial Consultancy (SRIC)",
+        "institute_gstin": institute_gstin(),
         "service_name": "IIT Roorkee Equipment Booking Portal",
         "payer_name": getattr(user, "name", "") or "",
+        "payer_organisation": _payer_organisation(user),
+        "payer_email": getattr(user, "email", "") or "",
         "purpose": order.get_purpose_display(),
         **_service(order),
         "razorpay_payment_id": payment.razorpay_payment_id,
         "razorpay_order_id": order.razorpay_order_id,
         "method": payment.method,
+        # How the payment was made, with that mode's own references (UPI RRN, card authorisation code, bank txn no.).
+        "payment_mode": how["mode"],
+        "payment_details": how["details"],
         # The bank's own reference for the payment (UPI RRN / netbanking transaction no.) as Razorpay reports it, and the
         # UTR of the bank transfer in which Razorpay settled it to the institute. Blank until known; cards have no UTR.
         "bank_reference": payment.gateway_reference or "",

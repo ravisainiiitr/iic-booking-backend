@@ -55,3 +55,5 @@ RAZORPAY_MODE = "test"
 RAZORPAY_KEY_ID = "rzp_test_unittest"
 RAZORPAY_KEY_SECRET = "unit-test-key-secret"
 RAZORPAY_TEST_MODE_TEST_ACCOUNTS_ONLY = False
+# Receipts never fetch payment details from Razorpay in tests (they use what the settlement stored).
+RECEIPT_FETCH_PAYMENT_DETAILS = False
