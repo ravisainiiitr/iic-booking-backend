@@ -1,8 +1,7 @@
-# READ-ONLY: what Meta reports about the WhatsApp sender's identity. GET requests only: sends nothing and changes no name,
-# registration, setting or record. Script and rules: scripts/ops/whatsapp_identity_probe.py. Run logs are public, so the
-# Phone Number ID and the optional WABA ID come from secrets, not inputs: inputs would appear in the log.
-#   WHATSAPP_DIAGNOSTIC_PHONE_NUMBER_ID  the sender to investigate (required)
-#   WHATSAPP_DIAGNOSTIC_WABA_ID          the WABA from WhatsApp Manager (optional; otherwise the token's scopes are asked)
+# ONE-OFF TEST SEND (branch ops/whatsapp-test-send only, never merged): sends ONE approved template, iitr_booking_reminder
+# with dummy booking details, to the number in the WHATSAPP_TEST_CONTACT_NUMBER secret, through the portal's own client
+# and production's sender settings. Changes no setting: WHATSAPP_ENABLED stays as it is and nobody else gets anything.
+# The run log is public: it prints only the last two digits of the number and whether Meta accepted the message.
 name: Probe WhatsApp identity (read-only)
 
 on:
@@ -12,20 +11,34 @@ permissions:
   contents: read
 
 jobs:
-  probe:
+  send:
     runs-on: [self-hosted, Linux]
     steps:
-      - uses: actions/checkout@v4
-      - name: Ask Meta
+      - name: Send one test template
         env:
-          TARGET_ID: ${{ secrets.WHATSAPP_DIAGNOSTIC_PHONE_NUMBER_ID }}
-          WABA_ID: ${{ secrets.WHATSAPP_DIAGNOSTIC_WABA_ID }}
+          TEST_TO: ${{ secrets.WHATSAPP_TEST_CONTACT_NUMBER }}
         run: |
           set -euo pipefail
-          case "$TARGET_ID" in (*[!0-9]*|'') echo "WHATSAPP_DIAGNOSTIC_PHONE_NUMBER_ID must be set and numeric"; exit 1 ;; esac
-          case "$WABA_ID" in (*[!0-9]*) echo "WHATSAPP_DIAGNOSTIC_WABA_ID must be numeric"; exit 1 ;; esac
+          case "$TEST_TO" in (+[1-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) ;; (*) echo "WHATSAPP_TEST_CONTACT_NUMBER must look like +91XXXXXXXXXX"; exit 1 ;; esac
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
-          # The runner's checkout is sparse, so the script is read from git rather than from disk.
-          git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/whatsapp_identity_probe.py \
-            | docker exec -i -w /app -e TARGET_ID -e WABA_ID -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
-              python -
+          docker exec -i -w /app -e TEST_TO -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python -c '
+          import os, django
+          django.setup()
+          from django.utils import timezone
+          from iic_booking.whatsapp import client, conf
+          to = os.environ["TEST_TO"].strip()
+          print("Sender configured:", bool(conf.phone_number_id() and conf.access_token()), "| sending switch (unchanged):", conf.enabled())
+          print("Recipient: number ending", to[-2:])
+          now = timezone.localtime()
+          params = ["Test User", "TEST-0001", "Test message only, not a real booking", now.strftime("%d %b %Y"), now.strftime("%I:%M %p")]
+          try:
+              client.send_template(to, "iitr_booking_reminder", params, language="en")
+              print("RESULT: Meta ACCEPTED the message (iitr_booking_reminder)")
+          except client.WhatsAppError as exc:
+              text = str(exc).replace(to, "[number]").replace(to.lstrip("+"), "[number]")
+              for hidden in (conf.phone_number_id(), conf.access_token()):
+                  if hidden:
+                      text = text.replace(hidden, "[hidden]")
+              print("RESULT: Meta did NOT accept it:", text[:300])
+              raise SystemExit(1)
+          '
