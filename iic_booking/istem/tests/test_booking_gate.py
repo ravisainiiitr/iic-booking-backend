@@ -102,6 +102,19 @@ def test_internal_users_need_only_the_link(automatic):
     assert refusal(user, equipment, profile) is None
 
 
+def test_with_automatic_linking_an_unlinked_user_is_not_asked_to_link(automatic):
+    """[USER 2026-11-08] the portal creates or finds the I-STEM user itself; only missing profile data blocks."""
+    automatic.ISTEM_USER_CREATION_ENABLED = True
+    user = _external()
+    user.gender, user.phone_number = "female", "9876543210"
+    user.save(update_fields=["gender", "phone_number"])
+    equipment, profile = _setup(user)
+    assert refusal(user, equipment, profile) is None
+    user.gender, user.phone_number = "", "123"
+    user.save(update_fields=["gender", "phone_number"])
+    assert [p["field"] for p in refusal(user, equipment, profile)["missing"]] == ["phone_number", "gender"]
+
+
 def test_readiness_endpoint(automatic):
     user = _external()
     equipment, _ = _setup(user, with_billing=False)

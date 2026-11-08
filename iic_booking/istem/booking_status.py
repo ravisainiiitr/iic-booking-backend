@@ -61,16 +61,37 @@ def waiting_reasons(booking) -> tuple[list[str], list[str]]:
         return ["Being registered on I-STEM; this usually takes a few minutes."], []
     errors = built.errors
     reasons = []
+    detail_extra = []
     if "public_user_id" in errors:
-        reasons.append("Your portal account is not linked to an I-STEM account yet. Link it from your profile; the booking is then registered automatically.")
+        reasons.append(_link_reason(booking.user, user_link, detail_extra,
+                                    include_address=not any(k in errors for k in _BILLING)))
     if any(k in errors for k in _BILLING):
         reasons.append("Your billing details are incomplete (billing name, address and state). Add them in your profile.")
     if "equipment_id" in errors:
         reasons.append("This instrument is not on I-STEM, so the IIC team handles its I-STEM record.")
     elif set(errors) - {"public_user_id", "booking_gstn", *_BILLING}:
         reasons.append("Waiting for the IIC team to complete this instrument's I-STEM setup.")
-    detail = [f"{key}: {message}" for key, message in sorted(errors.items())]
+    detail = [f"{key}: {message}" for key, message in sorted(errors.items())] + detail_extra
     return reasons or ["Waiting for the IIC team."], detail
+
+
+def _link_reason(user, user_link, detail: list[str], *, include_address: bool) -> str:
+    """Why the user has no I-STEM user id yet. [USER 2026-11-08] the portal links the account itself (Create User, or
+    the existing I-STEM user for the email/mobile), so the user is only asked for profile data that step lacks."""
+    state = getattr(user_link, "state", "") or ""
+    if user_link is not None and user_link.review_reason:
+        detail.append(f"I-STEM user link ({state}): {user_link.review_reason}")
+    if not conf.user_creation_enabled():
+        return "Your I-STEM account is not linked yet. The IIC team links it; the booking is then registered automatically."
+    from .booking_gate import _create_user_problems
+
+    problems = _create_user_problems(user, include_address=include_address)
+    if problems:
+        return ("Your I-STEM account is created automatically once your profile has: "
+                + " ".join(p["message"] for p in problems))
+    if state == "NEEDS_REVIEW":
+        return "The IIC team is checking your I-STEM account; the booking is then registered automatically."
+    return "Your I-STEM account is being set up automatically; the booking is then registered on I-STEM."
 
 
 def automatic_status(booking, *, include_reason: bool = False) -> dict | None:

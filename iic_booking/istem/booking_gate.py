@@ -1,7 +1,8 @@
 """Stop a booking before payment when the user's profile lacks what I-STEM needs (8 Nov 2026).
 
-The portal registers bookings on I-STEM itself (automatic FBR). A booking whose user is not linked to I-STEM, or whose
-billing details are incomplete, would be paid for and then wait indefinitely. So, for instruments that are on I-STEM and
+The portal registers bookings on I-STEM itself (automatic FBR), and links the user to I-STEM itself too (Create User,
+or the existing I-STEM user for their email/mobile; [USER 2026-11-08] no manual link). A booking whose user lacks the
+profile data for that, or whose billing details are incomplete, would be paid for and then wait indefinitely. So, for instruments that are on I-STEM and
 whose charge profile requires an FBR, the booking is refused up front with what to complete in the profile.
 
 Scope (``ISTEM_BOOKING_GATE``): ``off``; ``test_accounts`` (default, [USER 2026-11-08] test accounts first); ``all``.
@@ -65,15 +66,41 @@ def billing_problems(user) -> list[dict]:
     return out
 
 
+# Create User fields the user can fix in their profile; address and billing fields are reported by billing_problems.
+_CREATE_USER_MESSAGES = (
+    (("user_first_name", "user_last_name"), "name", "Enter your full name (first and last name, letters and spaces only)."),
+    (("user_contactno",), "phone_number", "Add a 10-digit mobile number."),
+    (("user_gender", "user_salutation"), "gender", "Select your gender."),
+    (("user_organisation",), "organisation", "Add your organisation."),
+)
+_CREATE_USER_ADDRESS = (("user_address", "user_city", "user_district", "user_state", "user_pin", "billing_user_name",
+                         "billing_address"), "billing", "Complete your billing address (address, city, state and pincode).")
+
+
+def _create_user_problems(user, *, include_address: bool = False) -> list[dict]:
+    """What the portal needs to create (or find) the user's I-STEM account itself ([USER 2026-11-08] no manual link).
+    The address comes from the billing profile, which ``billing_problems`` reports field by field where it applies."""
+    from .mapping import build_public_user_payload
+
+    errors = build_public_user_payload(user, None).errors
+    rules = _CREATE_USER_MESSAGES + ((_CREATE_USER_ADDRESS,) if include_address else ())
+    return [{"field": field, "message": message} for keys, field, message in rules if any(k in errors for k in keys)]
+
+
 def profile_problems(user, *, internal: bool) -> list[dict]:
-    """Everything the user must complete before an I-STEM booking. Internal users are billed to the institute, so only
-    the I-STEM link applies to them (unless they keep a billing profile of their own, e.g. an incubated startup)."""
+    """Everything the user must complete before an I-STEM booking. A user not yet linked to I-STEM is linked by the
+    portal itself (Create User, or the existing I-STEM user for their email/mobile), so only the profile data that
+    needs is asked for. Internal users are billed to the institute, so billing applies to them only when they keep a
+    billing profile of their own (e.g. an incubated startup)."""
     from .models import IstemUserLink
 
     out: list[dict] = []
     link = IstemUserLink.objects.filter(user=user).first()
     if link is None or link.state != "LINKED" or not str(link.public_user_id or "").isdigit():
-        out.append({"field": "istem_link", "message": "Link your portal account to your I-STEM account."})
+        if conf.user_creation_enabled():
+            out.extend(_create_user_problems(user))
+        else:
+            out.append({"field": "istem_link", "message": "Link your portal account to your I-STEM account."})
     if not internal or getattr(user, "external_billing_profile", None) is not None:
         out.extend(billing_problems(user))
     return out

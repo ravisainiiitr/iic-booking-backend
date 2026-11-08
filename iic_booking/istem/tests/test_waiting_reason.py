@@ -30,7 +30,20 @@ def test_an_unlinked_account_is_named_first(automatic):
     map_equipment(booking.equipment)
     map_codes(booking.equipment)
     reasons = _reasons(booking)
-    assert reasons[0].startswith("Your portal account is not linked to an I-STEM account yet")
+    assert reasons[0].startswith("Your I-STEM account is not linked yet. The IIC team links it")
+
+
+def test_with_automatic_linking_the_user_is_told_it_happens_by_itself(automatic):
+    automatic.ISTEM_USER_CREATION_ENABLED = True
+    booking = make_booking()
+    map_equipment(booking.equipment)
+    map_codes(booking.equipment)
+    booking.user.gender, booking.user.phone_number = "female", "9876543210"
+    booking.user.save(update_fields=["gender", "phone_number"])
+    assert _reasons(booking)[0].startswith("Your I-STEM account is being set up automatically")
+    booking.user.gender = ""
+    booking.user.save(update_fields=["gender"])
+    assert _reasons(booking)[0] == "Your I-STEM account is created automatically once your profile has: Select your gender."
 
 
 def test_missing_billing_and_an_unmapped_instrument_are_explained(automatic):
