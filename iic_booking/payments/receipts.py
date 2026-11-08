@@ -68,6 +68,10 @@ def receipt_for(payment: Payment) -> dict:
         "razorpay_payment_id": payment.razorpay_payment_id,
         "razorpay_order_id": order.razorpay_order_id,
         "method": payment.method,
+        # The bank's own reference for the payment (UPI RRN / netbanking transaction no.) as Razorpay reports it, and the
+        # UTR of the bank transfer in which Razorpay settled it to the institute. Blank until known; cards have no UTR.
+        "bank_reference": payment.gateway_reference or "",
+        "settlement_utr": _settlement_utr(payment),
         "paid_at": payment.created_at.isoformat(),
         "status": payment.get_status_display(),
         "currency": order.currency,
@@ -77,6 +81,42 @@ def receipt_for(payment: Payment) -> dict:
         "gst_on_fee_percent": str(order.fee_gst_percent_snapshot),
         "total_paid": str(payment.amount),
     }
+
+
+def _settlement_utr(payment: Payment) -> str:
+    line = payment.settlement_lines.exclude(settlement_utr="").order_by("-settled_at").first()
+    return line.settlement_utr if line else ""
+
+
+def receipt_summary(payment: Payment) -> dict:
+    """One line of a receipts list."""
+    from .purpose import order_purpose
+
+    order = payment.payment_order
+    return {
+        "razorpay_payment_id": payment.razorpay_payment_id,
+        "receipt_number": order.receipt,
+        "purpose": order_purpose(order),
+        "total_paid": str(payment.amount),
+        "paid_at": payment.created_at.isoformat(),
+        "test_mode": order.mode == "test",
+    }
+
+
+def receipts_for(queryset) -> list[dict]:
+    """Confirmed online payments, newest first."""
+    rows = (
+        queryset.filter(status__in=RECEIPT_STATUSES, payment_order__status=PaymentOrderStatus.PAID)
+        .select_related("payment_order__department", "payment_order__booking__equipment")
+        .order_by("-created_at")
+    )
+    out = []
+    for payment in rows[:200]:
+        try:
+            out.append(receipt_summary(payment))
+        except Exception:  # one odd row must never hide the others
+            continue
+    return out
 
 
 def receipt_allowed(payment: Payment) -> bool:

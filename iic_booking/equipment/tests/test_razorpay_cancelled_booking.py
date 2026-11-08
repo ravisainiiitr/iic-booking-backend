@@ -110,3 +110,39 @@ def test_preview_and_receipt_name_the_payment_purpose(egs_factory):
     )
     settle_order_success(razorpay_order_id="order_PUR", razorpay_payment_id="pay_PUR")
     assert client.get("/api/payments/receipts/pay_PUR/").json()["description"] == purpose
+
+
+def test_booking_receipts_list_is_owner_only(egs_factory):
+    from rest_framework.test import APIClient
+
+    owner = UserFactory()
+    booking = egs_factory.booking(owner, egs_factory.equipment(), egs_factory.future())
+    Booking.objects.filter(pk=booking.pk).update(amount_due=Decimal("10.00"), status=BookingStatus.PENDING_PAYMENT)
+    PaymentOrder.objects.create(
+        razorpay_order_id="order_LST", receipt="iic_book_lst", purpose=PaymentPurpose.BOOKING_SHORTFALL, user=owner, booking=booking,
+        base_amount=Decimal("10.00"), total_amount=Decimal("10.00"), idempotency_key="k-lst",
+    )
+    settle_order_success(razorpay_order_id="order_LST", razorpay_payment_id="pay_LST")
+    client = APIClient()
+    client.force_authenticate(owner)
+    rows = client.get(f"/api/payments/receipts/booking/{booking.pk}/").json()["results"]
+    assert [r["razorpay_payment_id"] for r in rows] == ["pay_LST"]
+    stranger = APIClient()
+    stranger.force_authenticate(UserFactory())
+    assert stranger.get(f"/api/payments/receipts/booking/{booking.pk}/").status_code == 404
+
+
+def test_booking_detail_says_when_it_was_paid_online(egs_factory):
+    from iic_booking.equipment.serializers import BookingSerializer
+
+    owner = UserFactory()
+    booking = egs_factory.booking(owner, egs_factory.equipment(), egs_factory.future())
+    assert BookingSerializer().get_has_online_payment(booking) is False
+    Booking.objects.filter(pk=booking.pk).update(amount_due=Decimal("10.00"), status=BookingStatus.PENDING_PAYMENT)
+    PaymentOrder.objects.create(
+        razorpay_order_id="order_HOP", receipt="iic_book_hop", purpose=PaymentPurpose.BOOKING_SHORTFALL, user=owner, booking=booking,
+        base_amount=Decimal("10.00"), total_amount=Decimal("10.00"), idempotency_key="k-hop",
+    )
+    settle_order_success(razorpay_order_id="order_HOP", razorpay_payment_id="pay_HOP")
+    assert BookingSerializer().get_has_online_payment(booking) is True
+    assert "has_online_payment" in BookingSerializer.Meta.fields

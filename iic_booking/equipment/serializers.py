@@ -3868,6 +3868,22 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     """Serializer for Booking model. Shows 'Booked' for PENDING (user-facing)."""
     
     booking_id = serializers.SerializerMethodField()
+    has_online_payment = serializers.SerializerMethodField()
+
+    def get_has_online_payment(self, obj):
+        """True when part or all of the booking was paid through the payment gateway, so a receipt exists."""
+        from django.db.models import Q
+
+        from iic_booking.payments.models import Payment, PaymentOrderStatus
+        from iic_booking.payments.receipts import RECEIPT_STATUSES
+
+        try:
+            return Payment.objects.filter(status__in=RECEIPT_STATUSES, payment_order__status=PaymentOrderStatus.PAID).filter(
+                Q(payment_order__booking_id=obj.pk) | Q(payment_order__external_checkout__booking_id=obj.pk)
+            ).exists()
+        except Exception:
+            return False
+
     results_deadline = serializers.SerializerMethodField()
     results_overdue = serializers.SerializerMethodField()
     results_paused = serializers.SerializerMethodField()
@@ -4171,6 +4187,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'total_charge',
             'wallet_amount_applied',
             'amount_due',
+            'has_online_payment',
             'payment_settled_at',
             'settlement_department',
             'settlement_department_name',
