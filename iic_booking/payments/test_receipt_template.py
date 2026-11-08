@@ -60,7 +60,7 @@ def test_bad_values_are_refused_field_by_field(main_admin):
                                               "brand_color": "#FFFF00", "accent_color": "gold",
                                               "receipt_heading": "x" * 61}, format="json")
     assert res.status_code == 400
-    fields = res.json()["fields"]
+    fields = {k: v for k, v in res.json().items() if k != "error"}
     assert set(fields) == {"institute_gstin", "contact_email", "brand_color", "accent_color", "receipt_heading"}
     assert "darker" in fields["brand_color"]
     assert template_values()["institute_gstin"] == "05AAALI0033R1Z5"

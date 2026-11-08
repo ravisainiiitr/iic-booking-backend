@@ -139,7 +139,8 @@ def admin_receipt_template(request):
     data = request.data if isinstance(request.data, dict) else {}
     cleaned, errors = clean_template_input(data)
     if errors:
-        return Response({"error": "Some values need correcting.", "fields": errors}, status=status.HTTP_400_BAD_REQUEST)
+        # One key per field (as DRF serializers do), so the dashboard can show each message beside its field.
+        return Response({"error": "Some values need correcting.", **errors}, status=status.HTTP_400_BAD_REQUEST)
     payload = save_template(cleaned, request.user)
     payload["message"] = "Receipt template saved."
     return Response(payload)
