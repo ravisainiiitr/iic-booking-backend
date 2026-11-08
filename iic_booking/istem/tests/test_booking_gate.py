@@ -111,3 +111,14 @@ def test_readiness_endpoint(automatic):
     assert body["complete"] is False and body["blocks_booking"] is True
     assert {p["field"] for p in body["missing"]} == {"istem_link", "billing"}
     assert client.get("/api/istem/profile-readiness/").json()["blocks_booking"] is False
+
+
+def test_a_paid_external_checkout_is_never_refused_at_confirmation(automatic):
+    from iic_booking.external_services import checkout_context
+
+    user = _external()
+    equipment, profile = _setup(user, with_billing=False)
+    with checkout_context.active(checkout_context.CheckoutContext(mode=checkout_context.QUOTE)):
+        assert refusal(user, equipment, profile) is not None
+    with checkout_context.active(checkout_context.CheckoutContext(mode=checkout_context.CONFIRM)):
+        assert refusal(user, equipment, profile) is None

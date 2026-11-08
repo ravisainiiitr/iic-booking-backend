@@ -85,6 +85,12 @@ def refusal(user, equipment, charge_profile) -> dict | None:
         return None
     if not _applies_to(user) or not _instrument_on_istem(equipment):
         return None
+    from iic_booking.external_services import checkout_context
+
+    ctx = checkout_context.current()
+    if ctx is not None and ctx.mode == checkout_context.CONFIRM:
+        # Already checked at the quote, before payment; a paid booking is never refused for this.
+        return None
     from iic_booking.users.models.user_type import UserType
 
     problems = profile_problems(user, internal=UserType.is_internal_user(getattr(user, "user_type", "") or ""))
