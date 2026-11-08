@@ -1,0 +1,38 @@
+# READ-ONLY: Razorpay test-mode check. Changes nothing: every query runs in a read-only database transaction.
+# Run logs are public, so the result is printed only encrypted to the public key passed in.
+# Script: scripts/ops/razorpay_test_readonly_check.py
+name: Razorpay test read-only check
+
+on:
+  workflow_dispatch:
+    inputs:
+      public_key:
+        description: 'Base64 of a PEM RSA public key (public; the result is encrypted to it)'
+        required: true
+        type: string
+      booking_refs:
+        description: 'Optional: comma-separated booking references or IDs (blank = every test-mode order)'
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Collect and encrypt
+        env:
+          CHECK_PUBLIC_KEY: ${{ inputs.public_key }}
+          BOOKING_REFS: ${{ inputs.booking_refs }}
+        run: |
+          set -euo pipefail
+          case "$CHECK_PUBLIC_KEY" in (*[!A-Za-z0-9+/=]*|'') echo "public_key must be base64"; exit 1 ;; esac
+          case "$BOOKING_REFS" in (*[!A-Za-z0-9,_-]*) echo "booking_refs: letters, digits, comma, dash and underscore only"; exit 1 ;; esac
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          # The runner's checkout is sparse, so the script is read from git rather than from disk.
+          git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/razorpay_test_readonly_check.py \
+            | docker exec -i -w /app -e CHECK_PUBLIC_KEY -e BOOKING_REFS -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - 2>/dev/null
