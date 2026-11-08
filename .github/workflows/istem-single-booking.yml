@@ -7,10 +7,10 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "inspect | map-equipment | unmap-equipment | set-codes | create | confirm | execute | status"
+        description: "inspect | map-equipment | unmap-equipment | set-codes | create | confirm | execute | status | cancel-user-jobs"
         required: true
         type: choice
-        options: [inspect, map-equipment, unmap-equipment, set-codes, create, confirm, execute, status]
+        options: [inspect, map-equipment, unmap-equipment, set-codes, create, confirm, execute, status, cancel-user-jobs]
       booking:
         description: "Booking virtual ID or numeric ID (create/confirm/execute/status; optional for inspect)"
         required: false

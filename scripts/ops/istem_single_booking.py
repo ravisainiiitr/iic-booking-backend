@@ -240,6 +240,23 @@ def main():
         show_equipment(eq)
         return
 
+    if ACTION == "cancel-user-jobs":
+        # Tidy the booking user's BLOCKED user-link jobs left from before the user was linked. Marked CANCELLED,
+        # never deleted, and only once the user is LINKED (so nothing still needed is dropped).
+        if booking is None:
+            sys.exit("BOOKING not found")
+        ul = IstemUserLink.objects.filter(user=booking.user).first()
+        if ul is None or ul.state != "LINKED":
+            sys.exit(f"user link is {getattr(ul, 'state', 'missing')}, not LINKED: nothing cancelled")
+        with transaction.atomic():
+            jobs = IstemOutboxJob.objects.filter(user_link=ul, state="BLOCKED")
+            count = jobs.update(state="CANCELLED", last_error_message="Cancelled: the user is now linked to I-STEM.",
+                                updated_at=timezone.now(), finished_at=timezone.now())
+        out("user link jobs cancelled |", count)
+        left = IstemOutboxJob.objects.filter(user_link=ul).exclude(state__in=["DONE", "CANCELLED"]).count()
+        out("user link open jobs left |", left)
+        return
+
     if ACTION == "set-codes":
         if eq is None:
             sys.exit("EQUIPMENT not found")
