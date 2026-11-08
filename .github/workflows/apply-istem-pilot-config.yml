@@ -9,6 +9,9 @@
 #             booking_steps=automatic: as on, plus automatic FBR (ISTEM_AUTOMATIC_FBR), closing cancelled bookings on
 #             I-STEM (ISTEM_CANCEL_ENABLED) and the "I-STEM sync (every 5 minutes)" schedule switched on, so every new
 #             booking that needs an I-STEM FBR is created, confirmed and executed by the portal. off/on switch them off.
+#             user_linking=automatic ([USER 2026-11-08]): the portal links users to I-STEM itself. Create User is
+#             sent when a booking needs it, and an "already exists" answer stores that I-STEM user id without an OTP
+#             (ISTEM_USER_CREATION_ENABLED + ISTEM_ACCEPT_DUPLICATE_USER_ID). manual (default) keeps both off.
 #   open    : as enable, but without the test key: "Already registered on I-STEM?" shows for every external
 #             visitor and those sign-ups are ordinary (not test) accounts. Still I-STEM STAGING: for a temporary
 #             evaluation of the flow and screens only; switch back with enable (test link only) or disable.
@@ -37,6 +40,12 @@ on:
         type: choice
         options: ["off", "on", "automatic"]
         default: "off"
+      user_linking:
+        description: "enable/open only: automatic = the portal creates the I-STEM user or stores the existing one's id (no OTP); manual = users link by OTP"
+        required: false
+        type: choice
+        options: ["manual", "automatic"]
+        default: "manual"
 
 permissions:
   contents: read
@@ -53,6 +62,7 @@ jobs:
           MODE: ${{ github.event.inputs.mode }}
           TEST_OTP_INBOX: ${{ github.event.inputs.test_otp_inbox }}
           BOOKING_STEPS: ${{ github.event.inputs.booking_steps }}
+          USER_LINKING: ${{ github.event.inputs.user_linking }}
           ISTEM_STAGING_USERNAME: ${{ secrets.ISTEM_STAGING_USERNAME }}
           ISTEM_STAGING_PASSWORD: ${{ secrets.ISTEM_STAGING_PASSWORD }}
           ISTEM_REGISTRATION_TEST_KEY: ${{ secrets.ISTEM_REGISTRATION_TEST_KEY }}
@@ -105,6 +115,9 @@ jobs:
                   })
               if os.environ.get("BOOKING_STEPS") == "automatic":
                   upsert.update({"ISTEM_AUTOMATIC_FBR": "True", "ISTEM_CANCEL_ENABLED": "True"})
+              automatic_linking = os.environ.get("USER_LINKING") == "automatic"
+              upsert["ISTEM_USER_CREATION_ENABLED"] = "True" if automatic_linking else "False"
+              upsert["ISTEM_ACCEPT_DUPLICATE_USER_ID"] = "True" if automatic_linking else "False"
               if mode == "open":
                   del upsert["ISTEM_REGISTRATION_TEST_KEY"]
                   remove = {"ISTEM_REGISTRATION_TEST_KEY"}
@@ -117,6 +130,7 @@ jobs:
                   remove.add("ISTEM_TEST_OTP_INBOX")
           elif mode == "disable":
               upsert = {"ISTEM_ENABLED": "False", "ISTEM_MODE": "off", "ISTEM_OTP_LINKING_ENABLED": "False",
+                        "ISTEM_USER_CREATION_ENABLED": "False", "ISTEM_ACCEPT_DUPLICATE_USER_ID": "False",
                         "ISTEM_AUTOMATIC_FBR": "False", "ISTEM_CANCEL_ENABLED": "False"}
               remove = set(secret_keys) | {"ISTEM_TEST_OTP_INBOX", "ISTEM_CONFIRM_APPROVED_BY"}
           else:
@@ -184,6 +198,7 @@ jobs:
           print("RUNTIME istem_enabled=", conf.istem_enabled(), " mode=", conf.istem_mode(),
                 " network_allowed=", conf.network_allowed(), " missing=", conf.missing_live_settings())
           print("RUNTIME otp_linking=", conf.otp_linking_enabled(), " user_creation=", conf.user_creation_enabled(),
+                " link_existing_user_automatically=", conf.accept_duplicate_user_id(),
                 " test_key_set=", bool(registration_lookup._test_key()))
           print("RUNTIME confirm=", conf.confirm_enabled(), " execute=", conf.execute_enabled(),
                 " automatic_fbr=", conf.automatic_fbr_enabled() if hasattr(conf, "automatic_fbr_enabled") else "n/a",
