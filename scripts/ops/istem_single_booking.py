@@ -205,6 +205,23 @@ def main():
         show_equipment(eq)
         return
 
+    if ACTION == "unmap-equipment":
+        # Switch off the named instrument's I-STEM mapping (kept, not deleted, so the change can be undone and audited).
+        if eq is None:
+            sys.exit("EQUIPMENT not found")
+        m = IstemEquipmentMapping.objects.filter(equipment=eq).first()
+        if m is None:
+            out("mapping | none to switch off")
+        elif not m.is_active:
+            out("mapping | already off")
+        else:
+            m.is_active = False
+            m.notes = ((m.notes or "") + f" Switched off {timezone.now():%Y-%m-%d}: wrong I-STEM instrument.").strip()[:2000]
+            m.save(update_fields=["is_active", "notes", "updated_at"])
+            out("mapping | switched off (was istem_equipment_id=", m.istem_equipment_id, ")")
+        show_equipment(eq)
+        return
+
     if ACTION == "set-codes":
         if eq is None:
             sys.exit("EQUIPMENT not found")
