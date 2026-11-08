@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from django.utils import timezone
 
@@ -196,6 +196,26 @@ def _whole_number(value) -> str | None:
     return str(int(d))
 
 
+def _add_eq_rate(p: dict, errors: dict, profile_type: str, profile) -> None:
+    """eq_rate, the unit rate I-STEM asks for. Per-sample and per-hour profiles have one: their primary unit charge.
+    Other profiles (formula, multi-parameter, sample + element) price a booking as a whole, so the rate is the booking
+    total divided by the number of samples ([USER 2026-11-08] rule (a)), rounded to a whole rupee as I-STEM expects
+    integers; the total sent stays the booking's exact total."""
+    if profile_type in ("SAMPLE", "HOUR"):
+        rate = _whole_number(getattr(profile, "primary_unit_charge", None))
+        if rate is None:
+            errors["eq_rate"] = "unit rate is not a whole rupee amount (I-STEM expects an integer)"
+        else:
+            p["eq_rate"] = rate
+        return
+    total, count = p.get("total_est_amt"), p.get("booking_no_sample")
+    if total is None or count is None:
+        errors["eq_rate"] = "needs the booking total and the sample count (booking total ÷ samples)"
+        return
+    rate = (Decimal(total) / Decimal(count)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    p["eq_rate"] = str(int(rate))
+
+
 def booking_slot_window(booking):
     slots = list(booking.daily_slots.order_by("start_datetime").values_list("start_datetime", "end_datetime"))
     if not slots:
@@ -354,15 +374,6 @@ def build_create_booking_payload(booking, user_link) -> MappingResult:
         result.errors["total_est_amt"] = "total charge is not a whole rupee amount (I-STEM expects an integer; no rounding rule agreed)"
     else:
         p["total_est_amt"] = total
-    if profile_type not in ("SAMPLE", "HOUR"):
-        result.errors["eq_rate"] = f"no single rate for '{profile_type}' charge profiles"
-    else:
-        rate = _whole_number(getattr(profile, "primary_unit_charge", None))
-        if rate is None:
-            result.errors["eq_rate"] = "unit rate is not a whole rupee amount (I-STEM expects an integer)"
-        else:
-            p["eq_rate"] = rate
-
     key = (mapping.sample_count_input_key or "").strip() if mapping else ""
     if not key:
         result.errors["booking_no_sample"] = "the equipment mapping does not name the input field holding the sample count"
@@ -373,6 +384,8 @@ def build_create_booking_payload(booking, user_link) -> MappingResult:
             result.errors["booking_no_sample"] = f"input field {key} does not hold a positive whole sample count"
         else:
             p["booking_no_sample"] = count
+
+    _add_eq_rate(p, result.errors, profile_type, profile)
 
     minutes = booking.total_time_minutes or 0
     if minutes <= 0:
