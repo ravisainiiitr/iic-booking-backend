@@ -51,6 +51,15 @@ class RazorpayServiceError(Exception):
     pass
 
 
+def _purpose(order) -> str:
+    from iic_booking.payments.purpose import order_purpose
+
+    try:
+        return order_purpose(order)
+    except Exception:  # wording must never stop a payment
+        return ""
+
+
 def _checkout_name() -> str:
     from iic_booking.payments.receipts import checkout_name
 
@@ -190,6 +199,7 @@ def create_order(
                 "booking_id": booking.booking_id,
                 "mode": existing.mode,
                 "checkout_name": _checkout_name(),
+                "payment_purpose": _purpose(existing),
             }
         if existing:
             existing.status = PaymentOrderStatus.CANCELLED
@@ -270,6 +280,7 @@ def create_order(
         "department_id": department.id if department else None,
         "mode": payment_order.mode,
         "checkout_name": _checkout_name(),
+        "payment_purpose": _purpose(payment_order),
     }
     return payment_order, response
 

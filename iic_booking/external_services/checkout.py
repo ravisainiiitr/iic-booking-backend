@@ -160,6 +160,7 @@ def payload(checkout: ExternalBookingCheckout) -> dict[str, Any]:
         "state_label": checkout.get_state_display(),
         "summary": checkout.summary,
         "equipment_image_url": equipment_image_url(checkout.equipment),
+        "payment_purpose": _checkout_purpose(checkout),
         "total_amount": f"{total:.2f}",
         "choice": checkout.choice or None,
         "wallet_amount": f"{_money(checkout.wallet_amount):.2f}",
@@ -383,6 +384,7 @@ def _order_params(checkout: ExternalBookingCheckout) -> dict:
         "key": key_id,
         "mode": order.mode,
         "checkout_name": _checkout_name(),
+        "payment_purpose": _checkout_purpose(checkout),
         "breakup": {
             "base_amount": f"{order.base_amount:.2f}",
             "convenience_fee": f"{order.convenience_fee:.2f}",
@@ -496,4 +498,14 @@ def equipment_image_url(equipment) -> str:
 
         return _equipment_image_url(equipment, verify_storage=False) or ""
     except Exception:  # a missing photo must never stop a payment page
+        return ""
+
+
+def _checkout_purpose(checkout) -> str:
+    """e.g. "Analysis charges for 'Powder XRD'" for an external booking checkout. Never raises."""
+    try:
+        from iic_booking.payments.purpose import booking_purpose, profile_type_of
+
+        return booking_purpose(getattr(checkout.equipment, "name", ""), profile_type_of(None, checkout.equipment))
+    except Exception:
         return ""
