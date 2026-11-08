@@ -245,6 +245,7 @@ def razorpay_verify(request):
                 verified_via="CHECKOUT",
                 raw_payload={"source": "checkout", "razorpay_order_id": order_id, "razorpay_payment_id": payment_id},
                 method=str(entity.get("method") or ""),
+                gateway_reference=str((entity.get("acquirer_data") or {}).get("rrn") or entity.get("bank_transaction_id") or "")[:128],
             )
         except RazorpayServiceError as e:
             if entity:  # Razorpay confirmed the capture, so the money is taken: hand it to Finance
@@ -576,3 +577,28 @@ def booking_payment_preview(request, booking_id: int):
         },
         "gateway": public_status(request.user),
     })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def my_payment_receipts(request):
+    """The signed-in user's confirmed online payments (bookings and wallet recharges), for downloading receipts later."""
+    from iic_booking.payments.receipts import receipts_for
+
+    return Response({"results": receipts_for(Payment.objects.filter(payment_order__user=request.user))})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def booking_payment_receipts(request, booking_id: int):
+    """Online payments for one booking: its balance payment, or the external checkout that created it. The booking's
+    owner, Finance or Main Admin; others get 404."""
+    from django.db.models import Q
+
+    from iic_booking.payments.receipts import receipts_for
+
+    booking = Booking.objects.filter(pk=booking_id).only("pk", "user_id").first()
+    if booking is None or not (booking.user_id == request.user.id or _is_finance_or_admin(request.user)):
+        return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+    payments = Payment.objects.filter(Q(payment_order__booking_id=booking.pk) | Q(payment_order__external_checkout__booking_id=booking.pk))
+    return Response({"results": receipts_for(payments)})

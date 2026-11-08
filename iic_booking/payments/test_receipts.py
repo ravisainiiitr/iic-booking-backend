@@ -58,3 +58,21 @@ def test_checkout_name_is_one_setting(settings, paid_recharge):
     settings.RAZORPAY_CHECKOUT_NAME = "Name On The Razorpay Account"
     assert _client(paid_recharge).get(URL.format("pay_RCP1")).json()["collected_by"] == "Name On The Razorpay Account"
     assert _client(paid_recharge).get("/api/payments/fee-settings/").json()["gateway"]["checkout_name"] == "Name On The Razorpay Account"
+
+
+def test_receipt_carries_the_bank_reference_and_settlement_utr(paid_recharge):
+    from iic_booking.payments.models import Payment, SettlementLine
+
+    payment = Payment.objects.get(razorpay_payment_id="pay_RCP1")
+    Payment.objects.filter(pk=payment.pk).update(gateway_reference="RRN123456789")
+    SettlementLine.objects.create(settlement_id="setl_R", settlement_utr="UTR98765", entity_id="pay_RCP1", entity_type="payment",
+                                  payment=payment, amount=Decimal("1023.60"))
+    data = _client(paid_recharge).get(URL.format("pay_RCP1")).json()
+    assert (data["bank_reference"], data["settlement_utr"]) == ("RRN123456789", "UTR98765")
+
+
+def test_my_receipts_lists_only_my_confirmed_payments(paid_recharge):
+    mine = _client(paid_recharge).get("/api/payments/receipts/").json()["results"]
+    assert [r["razorpay_payment_id"] for r in mine] == ["pay_RCP1"]
+    assert mine[0]["purpose"].startswith("Wallet recharge") and mine[0]["test_mode"] is True
+    assert _client(UserFactory()).get("/api/payments/receipts/").json()["results"] == []
