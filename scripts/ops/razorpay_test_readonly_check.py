@@ -139,6 +139,35 @@ def money_guards():
     }
 
 
+def receipts():
+    """The receipt each confirmed payment of the named bookings shows (only with BOOKING_REFS), exactly as the portal
+    builds it, but without writing: a payment still waiting for its receipt number shows the number it would get
+    (given for real the first time the receipt is opened), and stored payment details are used without asking Razorpay."""
+    if not os.environ.get("BOOKING_REFS", "").strip():
+        return "only with booking_refs"
+    from iic_booking.payments import instrument, receipt_numbers
+    from iic_booking.payments.models import ReceiptSerialCounter
+    from iic_booking.payments.receipts import receipt_allowed, receipt_for
+
+    def preview(payment):
+        if payment.receipt_number:
+            return payment.receipt_number
+        order = payment.payment_order
+        test = order.mode == "test"
+        year = receipt_numbers._year(payment)
+        last = ReceiptSerialCounter.objects.filter(year=year, test_mode=test).values_list("last", flat=True).first() or 0
+        serial = f"TEST-{last + 1:05d}" if test else f"{last + 1:05d}"
+        return f"(not given yet; next would be) IITR/{receipt_numbers.department_code(order)}/{year}/{serial}"
+
+    receipt_numbers.ensure = preview
+    instrument.ensure = lambda payment: None
+    out = []
+    for o in PaymentOrder.objects.filter(_booking_filter()).order_by("-created_at")[:10]:
+        for p in o.payments.all():
+            out.append(receipt_for(p) if receipt_allowed(p) else {"razorpay_payment_id": p.razorpay_payment_id, "no_receipt": p.status})
+    return out
+
+
 def section(fn):
     try:
         with transaction.atomic():
@@ -158,7 +187,8 @@ def encrypt(payload: bytes, public_key_b64: str) -> str:
 
 def main():
     result = {name: section(fn) for name, fn in (("config", config), ("webhook_events", webhook_events), ("orders", orders),
-                                                 ("issues", issues), ("money_guards", money_guards), ("totals", totals))}
+                                                 ("issues", issues), ("money_guards", money_guards), ("totals", totals),
+                                                 ("receipts", receipts))}
     print("CIPHERTEXT " + encrypt(json.dumps(result, default=lambda v: str(v) if isinstance(v, Decimal) else str(v)).encode(),
                                   os.environ["CHECK_PUBLIC_KEY"]))
 
