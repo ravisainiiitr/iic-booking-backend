@@ -13,6 +13,9 @@ from .models import Payment
 from .models import PaymentOrderStatus
 from .models import PaymentPurpose
 from .models import PaymentStatus
+from .purpose import booking_purpose
+from .purpose import profile_type_of
+from .purpose import recharge_purpose
 
 RECEIPT_STATUSES = (PaymentStatus.CAPTURED, PaymentStatus.PARTIALLY_REFUNDED, PaymentStatus.REFUNDED)
 
@@ -29,7 +32,7 @@ def _service(order) -> dict:
         booking = checkout.booking
     if order.purpose == PaymentPurpose.WALLET_RECHARGE:
         department = getattr(order.department, "name", "") or "department"
-        return {"description": f"Wallet recharge, {department} sub-wallet", "booking_reference": "", "equipment": "",
+        return {"description": recharge_purpose(department), "booking_reference": "", "equipment": "",
                 "booking_total": "", "booking_gst": ""}
     equipment = getattr(getattr(booking, "equipment", None), "name", "") or getattr(getattr(checkout, "equipment", None), "name", "")
     reference = (getattr(booking, "virtual_booking_id", "") or str(getattr(booking, "booking_id", "") or "")) if booking else ""
@@ -39,7 +42,7 @@ def _service(order) -> dict:
 
         gst = _gst_in_breakdown(booking)
     return {
-        "description": f"Equipment booking charges{f', {equipment}' if equipment else ''}",
+        "description": booking_purpose(equipment, profile_type_of(booking, getattr(booking, "equipment", None) or getattr(checkout, "equipment", None))),
         "booking_reference": reference,
         "equipment": equipment,
         # The booking's own total and the GST inside it, from its charge breakdown (blank for wallet recharges).

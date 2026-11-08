@@ -86,3 +86,27 @@ def test_payment_pages_get_the_equipment_photo(egs_factory):
     assert url and str(equipment.pk) in url
     assert client.get(f"/api/payments/booking-preview/{booking.pk}/").json()["equipment_image_url"] == url
     assert equipment_image_url(None) == ""
+
+
+def test_preview_and_receipt_name_the_payment_purpose(egs_factory):
+    from rest_framework.test import APIClient
+
+    from iic_booking.equipment.models import Equipment
+
+    owner = UserFactory()
+    equipment = egs_factory.equipment()
+    Equipment.objects.filter(pk=equipment.pk).update(name="Sample Printer", profile_type="PRINT_3D")
+    equipment.refresh_from_db()
+    booking = egs_factory.booking(owner, equipment, egs_factory.future())
+    Booking.objects.filter(pk=booking.pk).update(amount_due=Decimal("10.00"), status=BookingStatus.PENDING_PAYMENT)
+    booking.refresh_from_db()
+    client = APIClient()
+    client.force_authenticate(owner)
+    purpose = client.get(f"/api/payments/booking-preview/{booking.pk}/").json()["payment_purpose"]
+    assert purpose.endswith("for 'Sample Printer'") and purpose.split(" for ")[0] in ("3D printing charges", "Analysis charges")
+    PaymentOrder.objects.create(
+        razorpay_order_id="order_PUR", receipt="iic_book_pur", purpose=PaymentPurpose.BOOKING_SHORTFALL, user=owner, booking=booking,
+        base_amount=Decimal("10.00"), total_amount=Decimal("10.00"), idempotency_key="k-pur",
+    )
+    settle_order_success(razorpay_order_id="order_PUR", razorpay_payment_id="pay_PUR")
+    assert client.get("/api/payments/receipts/pay_PUR/").json()["description"] == purpose

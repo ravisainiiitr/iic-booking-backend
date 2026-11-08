@@ -550,6 +550,7 @@ def payment_receipt(request, razorpay_payment_id: str):
 def booking_payment_preview(request, booking_id: int):
     """What the booking owner will pay online, calculated on the server exactly as the order will be."""
     from iic_booking.external_services.checkout import equipment_image_url
+    from iic_booking.payments.purpose import booking_purpose, profile_type_of
     from iic_booking.payments.fees import compute_fee_breakup
     from iic_booking.payments.gateway_mode import public_status
 
@@ -562,6 +563,7 @@ def booking_payment_preview(request, booking_id: int):
         "booking_reference": booking.virtual_booking_id or str(booking.booking_id),
         "equipment": getattr(booking.equipment, "name", ""),
         "equipment_image_url": equipment_image_url(booking.equipment),
+        "payment_purpose": booking_purpose(getattr(booking.equipment, "name", ""), profile_type_of(booking, booking.equipment)),
         "department": getattr(booking.settlement_department, "name", ""),
         "status": booking.get_status_display(),
         "total_charge": str(booking.total_charge or 0),
