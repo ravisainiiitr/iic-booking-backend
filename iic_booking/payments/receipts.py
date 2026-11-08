@@ -29,13 +29,22 @@ def _service(order) -> dict:
         booking = checkout.booking
     if order.purpose == PaymentPurpose.WALLET_RECHARGE:
         department = getattr(order.department, "name", "") or "department"
-        return {"description": f"Wallet recharge, {department} sub-wallet", "booking_reference": "", "equipment": ""}
+        return {"description": f"Wallet recharge, {department} sub-wallet", "booking_reference": "", "equipment": "",
+                "booking_total": "", "booking_gst": ""}
     equipment = getattr(getattr(booking, "equipment", None), "name", "") or getattr(getattr(checkout, "equipment", None), "name", "")
     reference = (getattr(booking, "virtual_booking_id", "") or str(getattr(booking, "booking_id", "") or "")) if booking else ""
+    gst = None
+    if booking is not None:
+        from iic_booking.external_services.refunds import _gst_in_breakdown
+
+        gst = _gst_in_breakdown(booking)
     return {
         "description": f"Equipment booking charges{f', {equipment}' if equipment else ''}",
         "booking_reference": reference,
         "equipment": equipment,
+        # The booking's own total and the GST inside it, from its charge breakdown (blank for wallet recharges).
+        "booking_total": str(booking.total_charge) if booking is not None and booking.total_charge is not None else "",
+        "booking_gst": str(gst) if gst else "",
     }
 
 

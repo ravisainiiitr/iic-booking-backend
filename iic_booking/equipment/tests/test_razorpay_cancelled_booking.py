@@ -45,3 +45,23 @@ def test_booking_payment_preview_is_server_calculated_and_owner_only(egs_factory
     stranger = APIClient()
     stranger.force_authenticate(UserFactory())
     assert stranger.get(f"/api/payments/booking-preview/{booking.pk}/").status_code == 404
+
+
+def test_receipt_shows_the_booking_total_and_its_gst(egs_factory):
+    from rest_framework.test import APIClient
+
+    owner = UserFactory()
+    booking = egs_factory.booking(owner, egs_factory.equipment(), egs_factory.future())
+    Booking.objects.filter(pk=booking.pk).update(
+        status=BookingStatus.PENDING_PAYMENT, amount_due=Decimal("1180.00"), total_charge=Decimal("1180.00"),
+        charge_breakdown=[{"description": "Analysis", "amount": "1000.00"}, {"description": "GST @ 18%", "amount": "180.00"}],
+    )
+    PaymentOrder.objects.create(
+        razorpay_order_id="order_GST", receipt="iic_book_gst", purpose=PaymentPurpose.BOOKING_SHORTFALL, user=owner, booking=booking,
+        base_amount=Decimal("1180.00"), total_amount=Decimal("1180.00"), idempotency_key="k-gst",
+    )
+    settle_order_success(razorpay_order_id="order_GST", razorpay_payment_id="pay_GST")
+    client = APIClient()
+    client.force_authenticate(owner)
+    data = client.get("/api/payments/receipts/pay_GST/").json()
+    assert (data["booking_total"], data["booking_gst"]) == ("1180.00", "180.00")
