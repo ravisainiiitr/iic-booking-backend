@@ -1,8 +1,6 @@
-# READ-ONLY: what Meta reports about the WhatsApp sender's identity. GET requests only: sends nothing and changes no name,
-# registration, setting or record. Script and rules: scripts/ops/whatsapp_identity_probe.py. Run logs are public, so the
-# Phone Number ID and the optional WABA ID come from secrets, not inputs: inputs would appear in the log.
-#   WHATSAPP_DIAGNOSTIC_PHONE_NUMBER_ID  the sender to investigate (required)
-#   WHATSAPP_DIAGNOSTIC_WABA_ID          the WABA from WhatsApp Manager (optional; otherwise the token's scopes are asked)
+# READ-ONLY (branch ops/whatsapp-token-check): does production hold the access token in the repository secret, and what
+# does Meta grant that token? GET requests and comparisons only: sends no message, changes no template, setting, file or
+# record. Run logs are public: tokens and IDs are compared by fingerprint inside the job and never printed.
 name: Probe WhatsApp identity (read-only)
 
 on:
@@ -16,16 +14,54 @@ jobs:
     runs-on: [self-hosted, Linux]
     steps:
       - uses: actions/checkout@v4
-      - name: Ask Meta
+      - name: Production environment against the repository secrets
         env:
-          TARGET_ID: ${{ secrets.WHATSAPP_DIAGNOSTIC_PHONE_NUMBER_ID }}
-          WABA_ID: ${{ secrets.WHATSAPP_DIAGNOSTIC_WABA_ID }}
+          NEW_TOKEN: ${{ secrets.WHATSAPP_ACCESS_TOKEN }}
+          WABA_ID: ${{ secrets.WHATSAPP_WABA_ID }}
+          PHONE_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
         run: |
           set -euo pipefail
-          case "$TARGET_ID" in (*[!0-9]*|'') echo "WHATSAPP_DIAGNOSTIC_PHONE_NUMBER_ID must be set and numeric"; exit 1 ;; esac
-          case "$WABA_ID" in (*[!0-9]*) echo "WHATSAPP_DIAGNOSTIC_WABA_ID must be numeric"; exit 1 ;; esac
+          DEPLOY=/home/ubuntu/iic-booking-backend
+          ENV_FILE="$DEPLOY/.envs/.production/.django"
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
-          # The runner's checkout is sparse, so the script is read from git rather than from disk.
-          git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/whatsapp_identity_probe.py \
-            | docker exec -i -w /app -e TARGET_ID -e WABA_ID -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
-              python -
+          fp() { tr -d '\r\n' | sha256sum | cut -c1-64; }
+          same() { if [ "$1" = "$2" ]; then echo "SAME"; else echo "DIFFERENT"; fi; }
+          srv() { docker exec "$CID" printenv "$1" 2>/dev/null || true; }
+          echo "Deployed release: $(git -C "$DEPLOY" describe --tags --always 2>/dev/null || echo unknown)"
+          echo "Container started: $(docker inspect -f '{{.State.StartedAt}}' "$CID")"
+          echo "Env file last changed: $(stat -c %y "$ENV_FILE")"
+          echo "Server token set: $([ -n "$(srv WHATSAPP_ACCESS_TOKEN)" ] && echo yes || echo no)"
+          echo "Server token vs repository secret: $(same "$(srv WHATSAPP_ACCESS_TOKEN | fp)" "$(printf %s "$NEW_TOKEN" | fp)")"
+          echo "Server token in env file vs repository secret: $(same "$(grep -E '^WHATSAPP_ACCESS_TOKEN=' "$ENV_FILE" | head -n1 | cut -d= -f2- | fp)" "$(printf %s "$NEW_TOKEN" | fp)")"
+          echo "Server Phone Number ID vs secret: $(same "$(srv WHATSAPP_PHONE_NUMBER_ID | fp)" "$(printf %s "$PHONE_ID" | fp)")"
+          echo "Server WABA ID set: $([ -n "$(srv WHATSAPP_WABA_ID)" ] && echo yes || echo no); vs secret: $(same "$(srv WHATSAPP_WABA_ID | fp)" "$(printf %s "$WABA_ID" | fp)")"
+          echo "Server sending enabled: $(srv WHATSAPP_ENABLED)"
+      - name: The token production uses today (one GET on its own sender)
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i "$CID" python -c '
+          import json, os, re, urllib.error, urllib.request
+          t, p = os.environ.get("WHATSAPP_ACCESS_TOKEN", ""), os.environ.get("WHATSAPP_PHONE_NUMBER_ID", "")
+          r = urllib.request.Request("https://graph.facebook.com/v21.0/" + p + "?fields=id", headers={"Authorization": "Bearer " + t})
+          try:
+              urllib.request.urlopen(r, timeout=25); print("Server token on its configured sender: OK")
+          except urllib.error.HTTPError as e:
+              err = json.loads(e.read() or b"{}").get("error", {})
+              msg = str(err.get("message", "")).replace(t, "[token]").replace(p, "[hidden]") if t and p else str(err.get("message", ""))
+              msg = re.sub(r"\d{6,}", "[number]", msg)[:200]
+              print("Server token on its configured sender: FAIL http=%s code=%s subcode=%s message=%s" % (e.code, err.get("code"), err.get("error_subcode"), msg))
+          except Exception as e:
+              print("Server token: network error", type(e).__name__)
+          '
+      - name: The repository secret token against Meta
+        env:
+          NEW_TOKEN: ${{ secrets.WHATSAPP_ACCESS_TOKEN }}
+          WABA_ID: ${{ secrets.WHATSAPP_WABA_ID }}
+          PHONE_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
+          DIAG_ID: ${{ secrets.WHATSAPP_DIAGNOSTIC_PHONE_NUMBER_ID }}
+        run: |
+          set -euo pipefail
+          git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/whatsapp_token_check.py > "$RUNNER_TEMP/wa_check.py"
+          python3 -I "$RUNNER_TEMP/wa_check.py"
+          rm -f "$RUNNER_TEMP/wa_check.py"
