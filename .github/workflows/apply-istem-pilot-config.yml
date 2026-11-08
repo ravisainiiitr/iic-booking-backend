@@ -159,7 +159,7 @@ jobs:
         run: |
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
-          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          docker exec -i -w /app -e MODE -e BOOKING_STEPS -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
           import django
 
           django.setup()
