@@ -4322,7 +4322,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
         """The I-STEM record the portal keeps for this booking when automatic FBR is on (else None)."""
         from iic_booking.istem.booking_status import automatic_status
 
-        return automatic_status(obj)
+        return automatic_status(obj, include_reason=True)
 
     def get_istem_portal_url(self, obj):
         from .models import get_equipment_istem_portal_url

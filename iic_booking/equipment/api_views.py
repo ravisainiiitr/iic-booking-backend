@@ -411,7 +411,7 @@ def _istem_automatic_status(booking):
     """The portal's own I-STEM record for this booking when automatic FBR is on (see iic_booking.istem.booking_status)."""
     from iic_booking.istem.booking_status import automatic_status
 
-    return automatic_status(booking)
+    return automatic_status(booking, include_reason=True)
 
 
 def _booking_requires_istem_fbr_results_block(booking) -> bool:
