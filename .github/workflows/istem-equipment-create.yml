@@ -1,0 +1,52 @@
+# I-STEM Equipment Create for ONE portal instrument on production (8 Nov 2026). Runs scripts/ops/istem_equipment_create.py
+# in the django container. show / dry-run are read-only; sync-lists stores I-STEM's reference lists; set saves the
+# instrument's I-STEM details on the portal; create sends Equipment Create to I-STEM (currently I-STEM STAGING).
+name: I-STEM Equipment Create
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "sync-lists | show | set | dry-run | create"
+        required: true
+        type: choice
+        options: [show, sync-lists, set, dry-run, create]
+      equipment:
+        description: "Equipment code or numeric ID (show/set/dry-run/create)"
+        required: false
+        default: ""
+      details:
+        description: "set: field=value;field=value (e.g. equipment_srno=SN1;funding_agency_id=109)"
+        required: false
+        default: ""
+      confirm:
+        description: "Type ISTEM for create"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - name: Require confirmation to create
+        if: ${{ inputs.action == 'create' }}
+        run: test "${{ inputs.confirm }}" = "ISTEM"
+      - name: Run in the django container
+        env:
+          ACTION: ${{ inputs.action }}
+          EQUIPMENT: ${{ inputs.equipment }}
+          DETAILS: ${{ inputs.details }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          cd "$GITHUB_WORKSPACE"
+          git show HEAD:scripts/ops/istem_equipment_create.py | \
+            docker exec -i -w /app -e ACTION -e EQUIPMENT -e DETAILS \
+              -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python -
