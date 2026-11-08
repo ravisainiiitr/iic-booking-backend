@@ -14,6 +14,31 @@ jobs:
     runs-on: [self-hosted, Linux]
     steps:
       - uses: actions/checkout@v4
+      - name: Delivery reports and webhook subscription (read-only)
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python -c '
+          import django, json, os, re, urllib.error, urllib.request
+          django.setup()
+          from datetime import timedelta
+          from django.utils import timezone
+          from iic_booking.whatsapp import conf
+          from iic_booking.whatsapp.models import WhatsAppWebhookEvent
+          rows = list(WhatsAppWebhookEvent.objects.filter(received_at__gte=timezone.now() - timedelta(hours=4)).order_by("received_at"))
+          print("Webhook events in the last 4 hours:", len(rows))
+          for r in rows:
+              print("  ", r.received_at.isoformat(timespec="seconds"), r.kind, r.detail)
+          waba, token = os.environ.get("WHATSAPP_WABA_ID", ""), conf.access_token()
+          req = urllib.request.Request("https://graph.facebook.com/v21.0/" + waba + "/subscribed_apps", headers={"Authorization": "Bearer " + token})
+          try:
+              data = json.loads(urllib.request.urlopen(req, timeout=25).read() or b"{}")
+              apps = [(a.get("whatsapp_business_api_data") or {}).get("name") for a in data.get("data", [])]
+              print("Apps subscribed to the institutional WABA webhooks:", apps or "NONE")
+          except urllib.error.HTTPError as e:
+              err = json.loads(e.read() or b"{}").get("error", {})
+              print("subscribed_apps FAIL http=%s code=%s message=%s" % (e.code, err.get("code"), re.sub(r"\d{6,}", "[number]", str(err.get("message")))[:200]))
+          '
       - name: Production environment against the repository secrets
         env:
           NEW_TOKEN: ${{ secrets.WHATSAPP_ACCESS_TOKEN }}
