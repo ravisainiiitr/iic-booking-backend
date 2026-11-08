@@ -92,6 +92,35 @@ def _money(v) -> str:
     return f"Rs. {v}" if v not in (None, "") else "-"
 
 
+def _payment_line(p: dict) -> str:
+    """One payment for SRIC. For an online (Razorpay) payment the bank reference and the UTR of Razorpay's transfer to
+    the institute are looked up now, not taken from the snapshot: Razorpay settles a few days after the payment, and
+    the daily reconciliation records the settlement (payments.reconciliation.sync_settlement_report)."""
+    line = f"  - {p.get('method')}: {p.get('reference')} ({_money(p.get('amount'))})"
+    reference = str(p.get("reference") or "")
+    if not reference.startswith("pay_"):
+        return line
+    try:
+        from iic_booking.payments.models import Payment
+
+        payment = Payment.objects.filter(razorpay_payment_id=reference).first()
+        if payment is None:
+            return line
+        parts = []
+        if payment.gateway_reference:
+            parts.append(f"bank ref {payment.gateway_reference}")
+        settled = payment.settlement_lines.exclude(settlement_utr="").order_by("-settled_at").first()
+        if settled:
+            on = timezone.localtime(settled.settled_at).strftime("%d %b %Y") if settled.settled_at else "date not given"
+            parts.append(f"settled to the institute on {on}, UTR {settled.settlement_utr} (settlement {settled.settlement_id})")
+        else:
+            parts.append("settlement UTR pending: Razorpay has not settled this payment yet")
+        return f"{line} - " + "; ".join(parts)
+    except Exception:  # the email must go out even if the lookup fails
+        logger.exception("settlement lookup failed for %s", reference)
+        return line
+
+
 def compose(req: SricInvoiceRequest, *, mode: str) -> tuple[str, str, str]:
     snap = req.snapshot or {}
     billing = snap.get("billing") or {}
@@ -126,7 +155,7 @@ def compose(req: SricInvoiceRequest, *, mode: str) -> tuple[str, str, str]:
     payments = snap.get("payments") or []
     if payments:
         lines.append("Payments:")
-        lines.extend(f"  - {p.get('method')}: {p.get('reference')} ({_money(p.get('amount'))})" for p in payments)
+        lines.extend(_payment_line(p) for p in payments)
     lines += [
         f"Payment realised: {snap.get('payment_settled_at') or 'Paid from the portal wallet'}",
         "",
@@ -181,6 +210,7 @@ def compose_consolidated(reqs: list[SricInvoiceRequest], *, mode: str) -> tuple[
             f"  - {snap.get('booking_reference') or r.booking_id} | FBR {snap.get('fbr_number') or 'not available'} | "
             f"{(snap.get('equipment') or {}).get('name', '-')} | {_money((snap.get('charges') or {}).get('total'))}"
         )
+        lines.extend("    " + _payment_line(p).lstrip() for p in snap.get("payments") or [])
     lines += ["", f"Total of all bookings: {_money(total)}",
               f"Payment realised: {first.get('payment_settled_at') or 'Paid from the portal wallet'}",
               "", "Regards,", "IIC Booking Portal"]
