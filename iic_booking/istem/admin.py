@@ -8,6 +8,8 @@ from django.contrib import admin, messages
 from django.utils import timezone
 
 from .models import (
+    IstemEquipmentDetails,
+    IstemReferenceValue,
     IstemApiAttempt,
     IstemBookingLink,
     IstemCodeMapping,
@@ -119,3 +121,17 @@ class IstemApiAttemptAdmin(_ReadOnlyAdmin):
 class IstemSyncEventAdmin(_ReadOnlyAdmin):
     list_display = ("created_at", "booking_link", "user_link", "from_state", "to_state", "actor", "evidence_type")
     list_filter = ("evidence_type",)
+
+
+@admin.register(IstemReferenceValue)
+class IstemReferenceValueAdmin(admin.ModelAdmin):
+    list_display = ("kind", "istem_id", "name", "is_current", "synced_at")
+    list_filter = ("kind", "is_current")
+    search_fields = ("name", "istem_id")
+
+
+@admin.register(IstemEquipmentDetails)
+class IstemEquipmentDetailsAdmin(admin.ModelAdmin):
+    list_display = ("equipment", "equipment_srno", "created_istem_equipment_id", "created_at_istem", "updated_at")
+    search_fields = ("equipment__name", "equipment__code", "equipment_srno", "created_istem_equipment_id")
+    readonly_fields = ("created_istem_equipment_id", "created_at_istem", "created_by", "last_attempt_at", "last_error")

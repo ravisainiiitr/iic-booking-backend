@@ -4856,6 +4856,20 @@ def _book_equipment_impl(request, pk):
             )
         perf.mark("charge_profile_loaded")
 
+        from iic_booking.istem.booking_gate import refusal as istem_profile_refusal
+
+        istem_refusal = istem_profile_refusal(booking_user, equipment, charge_profile)
+        if istem_refusal:
+            _create_booking_attempt_log(
+                request, equipment, BookingAttemptOutcome.FAILED,
+                failure_reason=istem_refusal["error"],
+                slots_requested=len(slot_ids),
+                number_of_samples=request.data.get("number_of_samples") or 1,
+                duration_minutes=total_time_minutes,
+                additional_info=_get_additional_info_from_request(request, equipment),
+            )
+            return Response(istem_refusal, status=status.HTTP_400_BAD_REQUEST)
+
         from .calculators import build_safe_input_values_for_charge_calculation
         safe_input_values = build_safe_input_values_for_charge_calculation(input_values, equipment=equipment)
         try:
