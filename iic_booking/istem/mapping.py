@@ -122,8 +122,11 @@ def _ten_digit_mobile(raw: str) -> str | None:
     return digits if re.fullmatch(r"[0-9]{10}", digits) else None
 
 
-_TITLES = {"dr": "Dr", "prof": "Dr", "professor": "Dr", "mr": "Mr", "mrs": "Mrs", "ms": "Ms", "miss": "Ms"}
-_GENDER_SALUTATION = {"Male": "Mr", "Female": "Ms", "Other": "Mx"}
+# I-STEM Create User accepts exactly these salutations (staging, 8 Nov 2026: "Invalid salutation. Must be Mr., Ms.,
+# Dr., or Prof."). Mrs and Miss become Ms.; there is none for gender Other, so such a user needs a title in their name.
+ISTEM_SALUTATIONS = ("Mr.", "Ms.", "Dr.", "Prof.")
+_TITLES = {"dr": "Dr.", "prof": "Prof.", "professor": "Prof.", "mr": "Mr.", "mrs": "Ms.", "ms": "Ms.", "miss": "Ms."}
+_GENDER_SALUTATION = {"Male": "Mr.", "Female": "Ms."}
 
 # Create User ``user_type`` when no PUBLIC_USER_TYPE code mapping is set ([USER 2026-11-08] linking is automatic, so
 # every portal user type needs a value). An administrator mapping always wins.
@@ -136,7 +139,7 @@ DEFAULT_PUBLIC_USER_TYPES = {
 
 
 def _split_name(raw: str) -> tuple[str | None, str | None, str | None]:
-    """(salutation from a leading title, first name, last name). "Dr. Asha Verma" -> ("Dr", "Asha", "Verma")."""
+    """(salutation from a leading title, first name, last name). "Dr. Asha Verma" -> ("Dr.", "Asha", "Verma")."""
     words = [w for w in re.split(r"\s+", (raw or "").strip()) if w]
     title = None
     while words and words[0].rstrip(".").lower() in _TITLES:
@@ -150,8 +153,10 @@ def _salutation(user, title: str | None, gender: str | None) -> str | None:
     if title:
         return title
     designation = (getattr(user, "designation", "") or "").lower()
-    if (user.user_type or "") == "faculty" or "prof" in designation or "scientist" in designation:
-        return "Dr"
+    if "prof" in designation:
+        return "Prof."
+    if (user.user_type or "") == "faculty" or "scientist" in designation:
+        return "Dr."
     return _GENDER_SALUTATION.get(gender or "")
 
 
