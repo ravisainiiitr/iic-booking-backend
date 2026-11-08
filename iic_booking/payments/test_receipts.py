@@ -138,3 +138,11 @@ def test_without_razorpay_details_the_stored_reference_is_used(paid_recharge):
     Payment.objects.filter(razorpay_payment_id="pay_RCP1").update(method="netbanking", gateway_reference="NB123")
     how = describe(Payment.objects.get(razorpay_payment_id="pay_RCP1"))
     assert how == {"mode": "Net banking", "details": [["Bank transaction reference", "NB123"]]}
+
+
+def test_issuing_bank_codes_print_as_bank_names():
+    """Razorpay reports the card issuer as a code ("DCBL" on IICPXRD [B]202600026's receipt)."""
+    from iic_booking.payments.instrument import _bank
+
+    assert _bank("DCBL") == "DCB Bank" and _bank("dcbl") == "DCB Bank"
+    assert _bank("ZZZZ") == "ZZZZ"  # unknown codes still show as they came

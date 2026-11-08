@@ -25,6 +25,8 @@ BANKS = {
     "FDRL": "Federal Bank", "RATN": "RBL Bank", "KARB": "Karnataka Bank", "SIBL": "South Indian Bank", "AUBL": "AU Small Finance Bank",
     "CIUB": "City Union Bank", "DBSS": "DBS Bank India", "SCBL": "Standard Chartered Bank", "HSBC": "HSBC", "CITI": "Citibank",
     "IBKL": "IDBI Bank", "JAKA": "Jammu & Kashmir Bank", "TMBL": "Tamilnad Mercantile Bank", "KVBL": "Karur Vysya Bank",
+    "DCBL": "DCB Bank", "ESFB": "Equitas Small Finance Bank", "USFB": "Ujjivan Small Finance Bank", "BDBL": "Bandhan Bank",
+    "CSBK": "CSB Bank", "DLXB": "Dhanlaxmi Bank", "NTBL": "Nainital Bank", "LAVB": "Lakshmi Vilas Bank",
 }
 # UPI handle -> the bank or app behind it (the payer's own bank is not reported for UPI).
 UPI_HANDLES = {
