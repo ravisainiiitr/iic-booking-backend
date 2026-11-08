@@ -56,7 +56,9 @@ def enqueue_user_link(user, trigger: str) -> IstemUserLink:
     with transaction.atomic():
         link, _ = IstemUserLink.objects.select_for_update().get_or_create(user=user)
         # A user waiting for their email OTP is already known to I-STEM; Create User would only repeat the answer.
-        if link.state not in ("LINKED", "AWAITING_OTP"):
+        # With automatic linking the job links that known user instead (service._run_ensure_user).
+        skip = ("LINKED",) if conf.accept_duplicate_user_id() else ("LINKED", "AWAITING_OTP")
+        if link.state not in skip:
             add_job(Operation.ENSURE_USER, dedupe_key=f"ENSURE_USER:{user.pk}", trigger=trigger, user_link=link)
     return link
 

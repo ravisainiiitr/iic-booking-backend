@@ -1,8 +1,8 @@
 """Builds I-STEM request payloads from local data. Pure validation and formatting: no network, no writes.
 
 Every mandatory value comes from real local data or an administrator-maintained mapping. When a value cannot be
-established the field is reported in ``errors`` and nothing is substituted (the one exception is the GSTIN
-placeholder I-STEM accepts where no GSTIN applies).
+established the field is reported in ``errors`` and nothing is substituted (exceptions: the GSTIN placeholder I-STEM
+accepts where no GSTIN applies, and Create User's institute address for internal users and city as district).
 """
 
 from __future__ import annotations
@@ -122,37 +122,107 @@ def _ten_digit_mobile(raw: str) -> str | None:
     return digits if re.fullmatch(r"[0-9]{10}", digits) else None
 
 
-def collect_public_user_profile(user) -> dict:
-    """Local values for each Create User field; ``None`` where the local data model has no source.
+_TITLES = {"dr": "Dr", "prof": "Dr", "professor": "Dr", "mr": "Mr", "mrs": "Mrs", "ms": "Ms", "miss": "Ms"}
+_GENDER_SALUTATION = {"Male": "Mr", "Female": "Ms", "Other": "Mx"}
 
-    No local source exists for user_organisation, user_salutation, user_district or a separate personal address,
-    so those stay ``None`` and Create User is blocked until a data source is agreed (no values are invented).
-    """
-    name = (user.name or "").strip()
-    first, _, last = name.rpartition(" ")
+# Create User ``user_type`` when no PUBLIC_USER_TYPE code mapping is set ([USER 2026-11-08] linking is automatic, so
+# every portal user type needs a value). An administrator mapping always wins.
+DEFAULT_PUBLIC_USER_TYPES = {
+    "student": "Academic User", "individual_student": "Academic User", "faculty": "Academic User",
+    "external": "Academic User", "RND": "National Research Lab User", "Industry": "Industry User",
+    "startup_incubated_iitr": "Startup/MSME User", "external_startup_msme": "Startup/MSME User",
+    "other": "Industry User",
+}
+
+
+def _split_name(raw: str) -> tuple[str | None, str | None, str | None]:
+    """(salutation from a leading title, first name, last name). "Dr. Asha Verma" -> ("Dr", "Asha", "Verma")."""
+    words = [w for w in re.split(r"\s+", (raw or "").strip()) if w]
+    title = None
+    while words and words[0].rstrip(".").lower() in _TITLES:
+        title = title or _TITLES[words.pop(0).rstrip(".").lower()]
+    if len(words) < 2:
+        return title, (words[0] if words else None), None
+    return title, " ".join(words[:-1]), words[-1]
+
+
+def _salutation(user, title: str | None, gender: str | None) -> str | None:
+    if title:
+        return title
+    designation = (getattr(user, "designation", "") or "").lower()
+    if (user.user_type or "") == "faculty" or "prof" in designation or "scientist" in designation:
+        return "Dr"
+    return _GENDER_SALUTATION.get(gender or "")
+
+
+def _is_internal(user) -> bool:
+    from iic_booking.users.models.user_type import UserType
+
+    return UserType.is_internal_user(user.user_type or "")
+
+
+def _organisation(user, billing) -> str | None:
+    if _is_internal(user):
+        return conf.institute_address()["organisation"] or None
+    department = getattr(user, "department", None)
+    for candidate in (getattr(department, "name", ""), getattr(getattr(user, "organization_request", None), "name", ""),
+                      getattr(billing, "billing_name", "") if billing else ""):
+        if (candidate or "").strip():
+            return candidate.strip()
+    return None
+
+
+def collect_public_user_profile(user) -> dict:
+    """Local values for each Create User field; ``None`` where the profile has no value (the user is then told what to
+    complete). [USER 2026-11-08] the portal creates or finds the I-STEM user itself, so every field has a source:
+    external users' address from their billing profile (the city doubles as the district, which the profile does not
+    hold); internal users the institute's address (``conf.institute_address``) and, without a billing profile of their
+    own, the institute's billing identity as in Create Booking."""
+    title, first, last = _split_name(user.name or "")
+    gender = LOCAL_GENDER_TO_ISTEM.get((user.gender or "").strip().lower())
     billing = getattr(user, "external_billing_profile", None)
-    billing_address = None
+    profile = {
+        "user_first_name": first, "user_last_name": last, "user_email": (user.email or "").strip() or None,
+        "user_contactno": _ten_digit_mobile(user.phone_number or ""), "user_organisation": _organisation(user, billing),
+        "user_gender": gender, "user_salutation": _salutation(user, title, gender),
+        "user_address": None, "user_city": None, "user_district": None, "user_state": None, "user_country": None,
+        "user_pin": None, "billing_user_name": None, "billing_address": None,
+    }
     if billing is not None:
+        line = ", ".join(p.strip() for p in (billing.billing_address_line1, billing.billing_address_line2) if p and p.strip())
+        city = (billing.billing_city or "").strip()
         parts = [billing.billing_address_line1, billing.billing_address_line2, billing.billing_city,
                  billing.billing_pincode, billing.billing_country]
-        billing_address = ", ".join(p.strip() for p in parts if p and p.strip()) or None
-    return {
-        "user_first_name": first.strip() or None,
-        "user_last_name": last.strip() or None,
-        "user_email": (user.email or "").strip() or None,
-        "user_contactno": _ten_digit_mobile(user.phone_number or ""),
-        "user_organisation": None,
-        "user_gender": LOCAL_GENDER_TO_ISTEM.get((user.gender or "").strip().lower()),
-        "user_salutation": None,
-        "user_address": None,
-        "user_city": None,
-        "user_district": None,
-        "user_state": None,
-        "user_country": None,
-        "user_pin": None,
-        "billing_user_name": (billing.billing_name or "").strip() or None if billing else None,
-        "billing_address": billing_address,
-    }
+        profile.update({
+            "user_address": line or None, "user_city": city or None, "user_district": city or None,
+            "user_state": (billing.billing_state or "").strip() or None,
+            "user_country": (billing.billing_country or "").strip() or "India",
+            "user_pin": (billing.billing_pincode or "").strip() or None,
+            "billing_user_name": (billing.billing_name or "").strip() or None,
+            "billing_address": ", ".join(p.strip() for p in parts if p and p.strip()) or None,
+        })
+    elif _is_internal(user):
+        institute = conf.institute_address()
+        billing_identity = conf.internal_billing()
+        profile.update({
+            "user_address": institute["address"] or None, "user_city": institute["city"] or None,
+            "user_district": institute["district"] or None, "user_state": institute["state"] or None,
+            "user_country": institute["country"] or None, "user_pin": institute["pin"] or None,
+            "billing_user_name": billing_identity["billing_user_name"] or None,
+            "billing_address": billing_identity["billing_address"] or None,
+        })
+    return profile
+
+
+def public_user_type(user) -> tuple[str | None, str | None]:
+    """(Create User user_type, error): the administrator's PUBLIC_USER_TYPE mapping, else the built-in default."""
+    value, error = resolve_code(CodeType.PUBLIC_USER_TYPE, user.user_type or "", allowed=contract.PUBLIC_USER_TYPES)
+    if error and error.startswith("no active"):
+        if (user.user_type or "") in DEFAULT_PUBLIC_USER_TYPES:
+            return DEFAULT_PUBLIC_USER_TYPES[user.user_type], None
+        if _is_internal(user):
+            return "Academic User", None
+    return value, error
 
 
 def build_public_user_payload(user, institute_id: str | None) -> MappingResult:
@@ -171,7 +241,7 @@ def build_public_user_payload(user, institute_id: str | None) -> MappingResult:
         result.errors["user_pin"] = "must be 6 digits (SOP)"
     if "user_gender" in result.payload and result.payload["user_gender"] not in contract.USER_GENDERS:
         result.errors["user_gender"] = "must be Male/Female/Other"
-    user_type, error = resolve_code(CodeType.PUBLIC_USER_TYPE, user.user_type or "", allowed=contract.PUBLIC_USER_TYPES)
+    user_type, error = public_user_type(user)
     if error:
         result.errors["user_type"] = error
     else:

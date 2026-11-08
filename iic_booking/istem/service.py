@@ -504,6 +504,12 @@ def _run_ensure_user(job: IstemOutboxJob, client_factory) -> str:
             finish_job(job, JobState.DONE, message="already linked")
             return JobState.DONE
         if user_link.state == UserLinkState.AWAITING_OTP:
+            candidate = str(user_link.candidate_public_user_id or "")
+            if conf.accept_duplicate_user_id() and candidate.isdigit():
+                # Found on I-STEM before linking became automatic: store that user id instead of waiting for an OTP.
+                _link_user(user_link, candidate, reason="existing I-STEM user linked automatically (no OTP)")
+                finish_job(job, JobState.DONE, message="linked to the existing I-STEM user")
+                return JobState.DONE
             finish_job(job, JobState.DONE, message="waiting for the user's email OTP")
             return JobState.DONE
         if not conf.user_creation_enabled():
@@ -559,10 +565,12 @@ def _run_ensure_user(job: IstemOutboxJob, client_factory) -> str:
         otp_email = response.email or (result.payload.get("user_email", "").strip().lower() if response.matched_on == "email" else "")
         if response.created:
             _link_user(user_link, response.user_id, reason="Create User succeeded", attempt=attempt)
+        elif response.user_id and conf.accept_duplicate_user_id():
+            # [USER 2026-11-08] linking is automatic: the existing I-STEM user for this email/mobile is stored, no OTP.
+            _link_user(user_link, response.user_id, reason="Create User reported an existing user; linked to it automatically",
+                       attempt=attempt)
         elif response.user_id and otp_email and conf.otp_linking_enabled():
             _await_otp(user_link, response.user_id, otp_email, attempt=attempt, profile=response.profile)
-        elif response.user_id and conf.accept_duplicate_user_id():
-            _link_user(user_link, response.user_id, reason="Create User reported an existing user; mapped to it", attempt=attempt)
         else:
             previous = user_link.state
             user_link.state = UserLinkState.NEEDS_REVIEW
