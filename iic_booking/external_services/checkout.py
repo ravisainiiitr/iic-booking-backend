@@ -159,6 +159,7 @@ def payload(checkout: ExternalBookingCheckout) -> dict[str, Any]:
         "state": checkout.state,
         "state_label": checkout.get_state_display(),
         "summary": checkout.summary,
+        "equipment_image_url": equipment_image_url(checkout.equipment),
         "total_amount": f"{total:.2f}",
         "choice": checkout.choice or None,
         "wallet_amount": f"{_money(checkout.wallet_amount):.2f}",
@@ -484,3 +485,15 @@ def _checkout_name() -> str:
     from iic_booking.payments.receipts import checkout_name
 
     return checkout_name()
+
+
+def equipment_image_url(equipment) -> str:
+    """The equipment's photo for the payment page (the portal's stable image address), or "" when it has none."""
+    if equipment is None or not getattr(equipment, "image", None):
+        return ""
+    try:
+        from iic_booking.equipment.serializers import _equipment_image_url
+
+        return _equipment_image_url(equipment, verify_storage=False) or ""
+    except Exception:  # a missing photo must never stop a payment page
+        return ""

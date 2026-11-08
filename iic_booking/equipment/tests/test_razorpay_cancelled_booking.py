@@ -65,3 +65,24 @@ def test_receipt_shows_the_booking_total_and_its_gst(egs_factory):
     client.force_authenticate(owner)
     data = client.get("/api/payments/receipts/pay_GST/").json()
     assert (data["booking_total"], data["booking_gst"]) == ("1180.00", "180.00")
+
+
+def test_payment_pages_get_the_equipment_photo(egs_factory):
+    from rest_framework.test import APIClient
+
+    from iic_booking.equipment.models import Equipment
+    from iic_booking.external_services.checkout import equipment_image_url
+
+    owner = UserFactory()
+    equipment = egs_factory.equipment()
+    booking = egs_factory.booking(owner, equipment, egs_factory.future())
+    Booking.objects.filter(pk=booking.pk).update(amount_due=Decimal("10.00"), status=BookingStatus.PENDING_PAYMENT)
+    client = APIClient()
+    client.force_authenticate(owner)
+    assert client.get(f"/api/payments/booking-preview/{booking.pk}/").json()["equipment_image_url"] == ""
+    Equipment.objects.filter(pk=equipment.pk).update(image="equipment_images/sample.jpg")
+    equipment.refresh_from_db()
+    url = equipment_image_url(equipment)
+    assert url and str(equipment.pk) in url
+    assert client.get(f"/api/payments/booking-preview/{booking.pk}/").json()["equipment_image_url"] == url
+    assert equipment_image_url(None) == ""
