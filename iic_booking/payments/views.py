@@ -247,6 +247,9 @@ def razorpay_verify(request):
                 raise_issue(PaymentIssueKind.NOT_APPLIED, key=payment_id, order=order, razorpay_payment_id=payment_id,
                             amount=order.total_amount, detail=f"Captured at checkout but not applied: {e}")
             raise
+        from iic_booking.payments.reconciliation import record_gateway_charges
+
+        record_gateway_charges(payment_id, entity)
     except RazorpayNotConfigured as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     except RazorpayServiceError as e:
@@ -475,3 +478,41 @@ def razorpay_refund(request):
             "status": refund.status,
         }
     )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def reconciliation_summary(request):
+    """Finance and Main Admin: collected, refunded, gateway charges and settled money for a date range (last 30 days
+    by default), with open issues. ``mode=test`` shows test-mode orders alone; otherwise they are excluded.
+    ``export=csv`` downloads the issue list."""
+    import csv
+    from datetime import timedelta
+
+    from django.http import HttpResponse
+    from django.utils import timezone
+    from django.utils.dateparse import parse_date
+
+    from iic_booking.payments.reconciliation import summary
+
+    if not _is_finance_or_admin(request.user):
+        return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+    today = timezone.localdate()
+    date_to = parse_date(request.query_params.get("date_to") or "") or today
+    date_from = parse_date(request.query_params.get("date_from") or "") or (date_to - timedelta(days=30))
+    if request.query_params.get("export") == "csv":
+        response = HttpResponse(content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = 'attachment; filename="payment-issues.csv"'
+        writer = csv.writer(response)
+        writer.writerow(["Raised", "Kind", "Status", "Order", "Payment", "Amount", "Mode", "Detail", "Resolution"])
+        issues = PaymentIssue.objects.filter(raised_at__date__gte=date_from, raised_at__date__lte=date_to).order_by("raised_at")
+        for i in issues.iterator():
+            writer.writerow([_csv_safe(v) for v in (i.raised_at.isoformat(), i.get_kind_display(), i.status, i.razorpay_order_id,
+                                                    i.razorpay_payment_id, i.amount, i.mode, i.detail, i.resolution_note)])
+        return response
+    return Response(summary(date_from, date_to, mode="test" if request.query_params.get("mode") == "test" else None))
+
+
+def _csv_safe(value) -> str:
+    text = "" if value is None else str(value)
+    return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
