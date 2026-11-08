@@ -144,10 +144,13 @@ def test_duplicate_events_settle_once(internal_booking):
     assert _post(event).status_code == 200
     assert _post(event).status_code == 200
     assert Payment.objects.filter(payment_order=order).count() == 1
-    # a second, different capture for an order that is already paid changes nothing (existing behaviour)
+    # a second, different capture for an order that is already paid is recorded and raised for a refund, never applied
     assert _post(_event(order, payment_id="pay_Tdup0002")).status_code == 200
     order.refresh_from_db()
-    assert order.status == "PAID" and Payment.objects.filter(payment_order=order).count() == 1
+    assert order.status == "PAID" and Payment.objects.filter(payment_order=order).count() == 2
+    from iic_booking.payments.models import PaymentIssue, PaymentIssueKind
+
+    assert PaymentIssue.objects.get().kind == PaymentIssueKind.DUPLICATE_CAPTURE
 
 
 def test_replay_for_a_paid_order_without_amount_stays_a_no_op(internal_booking):

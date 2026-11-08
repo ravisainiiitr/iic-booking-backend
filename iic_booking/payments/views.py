@@ -9,13 +9,23 @@ from decimal import Decimal, InvalidOperation
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from iic_booking.equipment.models import Booking
 from iic_booking.payments.fees import get_fee_percents, set_fee_percents
-from iic_booking.payments.models import Payment, PaymentOrder, PaymentPurpose
+from iic_booking.payments.issues import minimal_webhook_payload
+from iic_booking.payments.models import (
+    Payment,
+    PaymentIssue,
+    PaymentIssueStatus,
+    PaymentOrder,
+    PaymentPurpose,
+    RazorpayWebhookEvent,
+    WebhookEventStatus,
+)
+from iic_booking.payments.throttles import PaymentUserThrottle, PaymentWebhookThrottle
 from iic_booking.payments.razorpay_service import (
     RazorpayNotConfigured,
     RazorpayServiceError,
@@ -114,6 +124,7 @@ def admin_fee_settings(request):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PaymentUserThrottle])
 def razorpay_create_order(request):
     purpose = (request.data.get("purpose") or "").strip().upper()
     if purpose not in PaymentPurpose.values:
@@ -187,6 +198,7 @@ def razorpay_create_order(request):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PaymentUserThrottle])
 def razorpay_verify(request):
     order_id = request.data.get("razorpay_order_id") or request.data.get("order_id")
     payment_id = request.data.get("razorpay_payment_id") or request.data.get("payment_id")
@@ -218,14 +230,23 @@ def razorpay_verify(request):
                               "confirms it.", "code": "payment_not_confirmed"},
                     status=status.HTTP_409_CONFLICT,
                 )
-        order, payment = settle_order_success(
-            razorpay_order_id=order_id,
-            razorpay_payment_id=payment_id,
-            razorpay_signature=signature,
-            verified_via="CHECKOUT",
-            raw_payload=dict(request.data),
-            method=str(entity.get("method") or ""),
-        )
+        try:
+            order, payment = settle_order_success(
+                razorpay_order_id=order_id,
+                razorpay_payment_id=payment_id,
+                razorpay_signature=signature,
+                verified_via="CHECKOUT",
+                raw_payload={"source": "checkout", "razorpay_order_id": order_id, "razorpay_payment_id": payment_id},
+                method=str(entity.get("method") or ""),
+            )
+        except RazorpayServiceError as e:
+            if entity:  # Razorpay confirmed the capture, so the money is taken: hand it to Finance
+                from iic_booking.payments.issues import raise_issue
+                from iic_booking.payments.models import PaymentIssueKind
+
+                raise_issue(PaymentIssueKind.NOT_APPLIED, key=payment_id, order=order, razorpay_payment_id=payment_id,
+                            amount=order.total_amount, detail=f"Captured at checkout but not applied: {e}")
+            raise
     except RazorpayNotConfigured as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     except RazorpayServiceError as e:
@@ -258,24 +279,130 @@ def razorpay_verify(request):
     )
 
 
+def _event_summary(payload: dict) -> dict:
+    inner = (payload or {}).get("payload") or {}
+    payment = ((inner.get("payment") or {}).get("entity")) or {}
+    refund = ((inner.get("refund") or {}).get("entity")) or {}
+    settlement = ((inner.get("settlement") or {}).get("entity")) or {}
+    entity = payment or refund or settlement
+    try:
+        amount = int(entity.get("amount")) if entity.get("amount") is not None else None
+    except (TypeError, ValueError):
+        amount = None
+    return {
+        "event_type": str((payload or {}).get("event") or "")[:64],
+        "razorpay_order_id": str(payment.get("order_id") or "")[:64],
+        "razorpay_payment_id": str(payment.get("id") or refund.get("payment_id") or "")[:64],
+        "razorpay_refund_id": str(refund.get("id") or "")[:64],
+        "razorpay_settlement_id": str(settlement.get("id") or "")[:64],
+        "amount_paise": amount,
+        "currency": str(entity.get("currency") or "")[:8],
+        "entity_status": str(entity.get("status") or "")[:32],
+    }
+
+
 @csrf_exempt
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([PaymentWebhookThrottle])
 def razorpay_webhook(request):
+    """Signed Razorpay events. The signature is checked on the raw body first; each event ID is processed once.
+
+    A signed event that cannot be applied is answered 200 and raised as a payment issue (a 4xx answer makes Razorpay
+    retry for 24 hours and then disable the webhook). Only an unexpected error answers 500, so Razorpay retries it.
+    """
+    import hashlib
+
+    from django.db import transaction
+    from django.utils import timezone
+
+    from iic_booking.payments.razorpay_service import verify_webhook_signature
+
     signature = request.headers.get("X-Razorpay-Signature") or request.META.get("HTTP_X_RAZORPAY_SIGNATURE") or ""
     body = request.body
+    if not verify_webhook_signature(body, signature):
+        return Response({"error": "Invalid webhook signature."}, status=status.HTTP_400_BAD_REQUEST)
     try:
         payload = json.loads(body.decode("utf-8") if isinstance(body, (bytes, bytearray)) else body)
     except Exception:
         return Response({"error": "Invalid JSON."}, status=status.HTTP_400_BAD_REQUEST)
+    if not isinstance(payload, dict):
+        return Response({"error": "Invalid JSON."}, status=status.HTTP_400_BAD_REQUEST)
+
+    event_id = (request.headers.get("X-Razorpay-Event-Id") or "").strip()[:64]
+    if not event_id:  # Razorpay always sends one; fall back to the body's hash so a resend is still recognised
+        event_id = "body-" + hashlib.sha256(body if isinstance(body, bytes) else str(body).encode()).hexdigest()[:59]
+    with transaction.atomic():
+        event, created = RazorpayWebhookEvent.objects.select_for_update().get_or_create(
+            event_id=event_id, defaults=_event_summary(payload)
+        )
+        if not created:
+            event.attempts += 1
+            if event.status in (WebhookEventStatus.PROCESSED, WebhookEventStatus.IGNORED):
+                event.save(update_fields=["attempts"])
+                return Response({"ok": True, "event": event.event_type, "duplicate": True})
+            event.status = WebhookEventStatus.PROCESSING
+            event.save(update_fields=["attempts", "status"])
     try:
-        result = handle_webhook(payload, body, signature)
-    except RazorpayServiceError as e:
-        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            result = handle_webhook(payload, body, signature)
     except Exception:
-        logger.exception("webhook handling failed")
+        logger.exception("webhook handling failed for event %s", event_id)
+        RazorpayWebhookEvent.objects.filter(pk=event.pk).update(
+            status=WebhookEventStatus.FAILED, result="Unexpected error; Razorpay will retry.", processed_at=timezone.now()
+        )
         return Response({"error": "Webhook processing failed."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    ignored = result.get("ignored")
+    RazorpayWebhookEvent.objects.filter(pk=event.pk).update(
+        status=WebhookEventStatus.IGNORED if ignored else WebhookEventStatus.PROCESSED,
+        result=(str(ignored) if ignored and ignored is not True else ("not handled" if ignored else "applied"))[:255],
+        processed_at=timezone.now(),
+    )
     return Response(result)
+
+
+def _issue(i: PaymentIssue) -> dict:
+    return {
+        "id": i.pk, "kind": i.kind, "kind_label": i.get_kind_display(), "status": i.status,
+        "razorpay_order_id": i.razorpay_order_id, "razorpay_payment_id": i.razorpay_payment_id,
+        "amount": str(i.amount) if i.amount is not None else None, "mode": i.mode, "detail": i.detail,
+        "raised_at": i.raised_at.isoformat(), "resolved_at": i.resolved_at.isoformat() if i.resolved_at else None,
+        "resolution_note": i.resolution_note,
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def payment_issues(request):
+    """Finance and Main Admin: payments that reached Razorpay but were not applied normally."""
+    if not _is_finance_or_admin(request.user):
+        return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+    state = request.query_params.get("status", PaymentIssueStatus.OPEN)
+    queryset = PaymentIssue.objects.all()
+    if state in PaymentIssueStatus.values:
+        queryset = queryset.filter(status=state)
+    return Response({"results": [_issue(i) for i in queryset[:500]]})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def payment_issue_resolve(request, issue_id: int):
+    """Close an issue with a note once the money has been refunded or applied by hand. Nothing else changes."""
+    from django.utils import timezone
+
+    if not _is_finance_or_admin(request.user):
+        return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+    note = str(request.data.get("note") or "").strip()
+    if len(note) < 5:
+        return Response({"error": "Give a note of at least 5 characters."}, status=status.HTTP_400_BAD_REQUEST)
+    issue = PaymentIssue.objects.filter(pk=issue_id, status=PaymentIssueStatus.OPEN).first()
+    if issue is None:
+        return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+    issue.status, issue.resolved_at, issue.resolved_by, issue.resolution_note = (
+        PaymentIssueStatus.RESOLVED, timezone.now(), request.user, note[:2000]
+    )
+    issue.save(update_fields=["status", "resolved_at", "resolved_by", "resolution_note"])
+    return Response(_issue(issue))
 
 
 @api_view(["GET"])

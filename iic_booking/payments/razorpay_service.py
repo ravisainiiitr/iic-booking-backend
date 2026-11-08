@@ -265,7 +265,7 @@ def create_order(
     return payment_order, response
 
 
-def _settle_booking_shortfall(order: PaymentOrder) -> None:
+def _settle_booking_shortfall(order: PaymentOrder, payment: Payment | None = None) -> None:
     if not order.booking_id:
         from iic_booking.external_services.checkout import settle_checkout_order
 
@@ -294,6 +294,19 @@ def _settle_booking_shortfall(order: PaymentOrder) -> None:
         booking.payment_settled_at = timezone.now()
         booking.amount_due = Decimal("0.00")
         booking.save(update_fields=["payment_settled_at", "amount_due", "updated_at"])
+        return
+    if booking.status in (BookingStatus.CANCELLED, BookingStatus.REFUNDED):
+        from iic_booking.payments.issues import raise_issue
+        from iic_booking.payments.models import PaymentIssueKind
+
+        raise_issue(
+            PaymentIssueKind.CANCELLED_BOOKING,
+            key=getattr(payment, "razorpay_payment_id", "") or order.razorpay_order_id,
+            order=order,
+            razorpay_payment_id=getattr(payment, "razorpay_payment_id", ""),
+            amount=order.total_amount,
+            detail=f"Booking {booking.booking_id} was {booking.status.lower()} when the payment arrived; the money needs a refund.",
+        )
         return
     booking.payment_settled_at = timezone.now()
     booking.amount_due = Decimal("0.00")
@@ -387,9 +400,35 @@ def settle_order_success(
         raise RazorpayServiceError("A test-mode payment cannot settle for an account that is not a test account.")
 
     if order.status == PaymentOrderStatus.PAID:
-        payment = existing_payment or order.payments.filter(status=PaymentStatus.CAPTURED).first()
-        if payment:
-            return order, payment
+        if existing_payment:
+            return order, existing_payment
+        first = order.payments.filter(status=PaymentStatus.CAPTURED).first()
+        if first and razorpay_payment_id:
+            from iic_booking.payments.issues import raise_issue
+            from iic_booking.payments.models import PaymentIssueKind
+
+            second = Payment.objects.create(
+                payment_order=order,
+                razorpay_payment_id=razorpay_payment_id,
+                razorpay_signature=razorpay_signature or "",
+                method=method or "",
+                gateway_reference=gateway_reference or "",
+                amount=order.total_amount,
+                status=PaymentStatus.CAPTURED,
+                verified_via=verified_via,
+                raw_payload=raw_payload or {},
+            )
+            raise_issue(
+                PaymentIssueKind.DUPLICATE_CAPTURE,
+                key=razorpay_payment_id,
+                order=order,
+                razorpay_payment_id=razorpay_payment_id,
+                amount=order.total_amount,
+                detail=f"Order already paid by {first.razorpay_payment_id}; this second payment was recorded, not applied, and needs a refund.",
+            )
+            return order, second
+        if first:
+            return order, first
 
     if not existing_payment:
         payment = Payment.objects.create(
@@ -409,7 +448,7 @@ def settle_order_success(
     # Apply side effects once when transitioning to PAID
     if order.status != PaymentOrderStatus.PAID:
         if order.purpose == PaymentPurpose.BOOKING_SHORTFALL:
-            _settle_booking_shortfall(order)
+            _settle_booking_shortfall(order, payment)
         elif order.purpose == PaymentPurpose.WALLET_RECHARGE:
             _settle_wallet_recharge(order, payment)
         order.status = PaymentOrderStatus.PAID
@@ -509,13 +548,26 @@ def handle_webhook(payload: dict, body: bytes | str, signature: str) -> dict:
         payment_id = payment_entity.get("id")
         if order_id and payment_id:
             order = PaymentOrder.objects.filter(razorpay_order_id=order_id).first()
+            from iic_booking.payments.issues import minimal_webhook_payload, raise_issue
+            from iic_booking.payments.models import PaymentIssueKind
+
+            try:
+                amount = (Decimal(str(int(payment_entity.get("amount")))) / 100).quantize(Decimal("0.01"))
+            except (TypeError, ValueError, ArithmeticError):
+                amount = None
             if order is None:
                 logger.error("Razorpay webhook %s for unknown order %s (payment %s) not applied", event, order_id,
                              payment_id)
+                if event == "payment.captured":
+                    raise_issue(PaymentIssueKind.UNKNOWN_ORDER, key=payment_id, razorpay_order_id=order_id,
+                                razorpay_payment_id=payment_id, amount=amount,
+                                detail="Captured payment for an order this portal did not create.")
                 return {"ok": True, "event": event, "ignored": "unknown order"}
             problem = _webhook_amount_problem(order_id, payment_entity)
             if problem:
                 logger.error("Razorpay webhook for order %s not applied: %s", order_id, problem)
+                raise_issue(PaymentIssueKind.MISMATCH, key=payment_id, order=order, razorpay_payment_id=payment_id,
+                            amount=amount, detail=f"Not applied: {problem}.")
                 return {"ok": True, "event": event, "ignored": f"does not match the order: {problem}"}
             if event == "payment.authorized" and order.status != PaymentOrderStatus.PAID:
                 # Authorised is not paid: capture it (checked against the order) before delivering anything.
@@ -524,19 +576,29 @@ def handle_webhook(payload: dict, body: bytes | str, signature: str) -> dict:
                 except RazorpayServiceError as exc:
                     logger.error("Razorpay authorised payment %s for order %s not captured: %s", payment_id,
                                  order_id, exc)
+                    raise_issue(PaymentIssueKind.NOT_CAPTURED, key=payment_id, order=order, razorpay_payment_id=payment_id,
+                                amount=amount, detail=f"Authorised payment not captured: {exc}")
                     return {"ok": True, "event": event, "ignored": str(exc)}
-            settle_order_success(
-                razorpay_order_id=order_id,
-                razorpay_payment_id=payment_id,
-                verified_via=PaymentVerifiedVia.WEBHOOK,
-                raw_payload=payload,
-                method=str(payment_entity.get("method") or ""),
-                gateway_reference=str(
-                    payment_entity.get("acquirer_data", {}).get("rrn")
-                    or payment_entity.get("bank_transaction_id")
-                    or ""
-                ),
-            )
+            try:
+                settle_order_success(
+                    razorpay_order_id=order_id,
+                    razorpay_payment_id=payment_id,
+                    verified_via=PaymentVerifiedVia.WEBHOOK,
+                    raw_payload=minimal_webhook_payload(payload),
+                    method=str(payment_entity.get("method") or ""),
+                    gateway_reference=str(
+                        (payment_entity.get("acquirer_data") or {}).get("rrn")
+                        or payment_entity.get("bank_transaction_id")
+                        or ""
+                    ),
+                )
+            except RazorpayServiceError as exc:
+                # The money is captured but could not be applied. A 4xx answer would make Razorpay retry for 24 hours
+                # and then disable the webhook for every payment, so answer 200 and hand it to Finance.
+                logger.error("Razorpay payment %s for order %s captured but not applied: %s", payment_id, order_id, exc)
+                raise_issue(PaymentIssueKind.NOT_APPLIED, key=payment_id, order=order, razorpay_payment_id=payment_id,
+                            amount=amount, detail=f"Captured but not applied: {exc}")
+                return {"ok": True, "event": event, "ignored": "captured but not applied; raised for Finance"}
         return {"ok": True, "event": event}
 
     if event == "payment.failed":
@@ -560,7 +622,7 @@ def handle_webhook(payload: dict, body: bytes | str, signature: str) -> dict:
                     # A refund that already processed is final; a late or replayed "failed" event can't undo it.
                     if not (refund.status == RefundStatus.PROCESSED and new_status == RefundStatus.FAILED):
                         refund.status = new_status
-                        refund.raw_payload = payload
+                        refund.raw_payload = {"event": event, "refund": {k: refund_entity.get(k) for k in ("id", "payment_id", "amount", "status", "created_at")}}
                         refund.save(update_fields=["status", "raw_payload", "updated_at"])
                     payment = Payment.objects.select_for_update().get(pk=refund.payment_id)
                     recompute_payment_refund_status(payment)
