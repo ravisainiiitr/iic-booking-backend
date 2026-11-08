@@ -7,6 +7,8 @@ invoice applies, SRIC issues it.
 
 from __future__ import annotations
 
+import re
+
 from django.conf import settings
 
 from .models import Payment
@@ -53,7 +55,174 @@ def _service(order) -> dict:
 
 def institute_gstin() -> str:
     """The SRIC office GSTIN printed on its receipts (shown for reference; this receipt is not a tax invoice)."""
+    return template_values()["institute_gstin"]
+
+
+def _settings_gstin() -> str:
     return str(getattr(settings, "RECEIPT_INSTITUTE_GSTIN", "") or "").strip().upper()
+
+
+# The receipt's editable wording and look. A blank stored value means the default below.
+TEXT_FIELDS = (
+    "institution_name", "office_name", "address", "institute_gstin", "contact_email", "website", "receipt_heading",
+    "service_name", "not_a_tax_invoice", "refund_note", "extra_note", "computer_generated", "brand_color", "accent_color",
+)
+FLAG_FIELDS = ("show_gstin", "show_logo", "show_watermark")
+
+
+def template_defaults() -> dict:
+    return {
+        "institution_name": "Indian Institute of Technology Roorkee",
+        "office_name": "Sponsored Research & Industrial Consultancy (SRIC)",
+        "address": "Roorkee – 247667, Uttarakhand, India",
+        "institute_gstin": _settings_gstin(),
+        "contact_email": "arsric@iitr.ac.in",
+        "website": "equip.iitr.ac.in",
+        "receipt_heading": "Payment Receipt",
+        "service_name": "IIT Roorkee Equipment Booking Portal",
+        "not_a_tax_invoice": "This is a payment receipt, not a GST tax invoice. Where a tax invoice applies, it is issued by SRIC, IIT Roorkee.",
+        "refund_note": "Refunds, where due, go to the portal wallet or to a bank account through the institute, not automatically back to the card or UPI account used.",
+        "extra_note": "",
+        "computer_generated": "This is a computer-generated receipt and does not require a signature.",
+        "brand_color": "#153F79",
+        "accent_color": "#C29938",
+        "show_gstin": True,
+        "show_logo": True,
+        "show_watermark": True,
+    }
+
+
+def _stored_template():
+    from .models import ReceiptTemplate
+
+    return ReceiptTemplate.objects.filter(pk=1).first()
+
+
+def template_values(row=None) -> dict:
+    """The wording and look every receipt uses now: stored values, with blanks filled from the defaults."""
+    out = template_defaults()
+    row = row if row is not None else _stored_template()
+    if row is None:
+        return out
+    for field in TEXT_FIELDS:
+        value = (getattr(row, field, "") or "").strip()
+        if value:
+            out[field] = value
+    for field in FLAG_FIELDS:
+        out[field] = bool(getattr(row, field, True))
+    return out
+
+
+_GSTIN_RE = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
+_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+_WEBSITE_RE = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(/\S*)?$")
+_LIMITS = {"institution_name": 160, "office_name": 160, "address": 240, "contact_email": 120, "website": 120,
+           "receipt_heading": 60, "service_name": 120, "not_a_tax_invoice": 400, "refund_note": 400, "extra_note": 400,
+           "computer_generated": 160}
+
+
+def _luminance(hex_color: str) -> float:
+    r, g, b = (int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    lin = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in (r, g, b)]
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+
+def clean_template_input(data: dict) -> tuple[dict, dict]:
+    """Checks an edit from the admin page. Returns (cleaned values for the fields sent, errors by field)."""
+    from django.core.exceptions import ValidationError
+    from django.core.validators import validate_email
+
+    cleaned, errors = {}, {}
+    for field in TEXT_FIELDS:
+        if field not in data:
+            continue
+        value = data.get(field)
+        value = "" if value is None else str(value).strip()
+        if field in _LIMITS and len(value) > _LIMITS[field]:
+            errors[field] = f"At most {_LIMITS[field]} characters."
+            continue
+        if field == "institute_gstin" and value:
+            value = value.upper()
+            if not _GSTIN_RE.match(value):
+                errors[field] = "Not a valid GSTIN (15 characters, e.g. 05AAALI0033R1Z5)."
+                continue
+        if field == "contact_email" and value:
+            try:
+                validate_email(value)
+            except ValidationError:
+                errors[field] = "Not a valid email address."
+                continue
+        if field == "website" and value:
+            value = re.sub(r"^https?://", "", value).rstrip("/")
+            if not _WEBSITE_RE.match(value):
+                errors[field] = "Give a web address such as equip.iitr.ac.in."
+                continue
+        if field in ("brand_color", "accent_color") and value:
+            if not _COLOR_RE.match(value):
+                errors[field] = "Give a colour as #RRGGBB."
+                continue
+            value = value.upper()
+            # White text sits on the brand colour (header bands, amount box, total row): it must stay readable.
+            if field == "brand_color" and (1.05 / (_luminance(value) + 0.05)) < 4.5:
+                errors[field] = "Too light: white text on this colour would be hard to read. Choose a darker colour."
+                continue
+        cleaned[field] = value
+    for field in FLAG_FIELDS:
+        if field in data:
+            raw = data.get(field)
+            cleaned[field] = raw if isinstance(raw, bool) else str(raw).strip().lower() in ("1", "true", "yes", "on")
+    return cleaned, errors
+
+
+def save_template(cleaned: dict, user) -> dict:
+    """Saves an admin edit and records what changed. Returns the same payload as ``template_payload``."""
+    from django.db import transaction
+
+    from .models import ReceiptTemplate
+    from .models import ReceiptTemplateChange
+
+    with transaction.atomic():
+        ReceiptTemplate.objects.get_or_create(pk=1)
+        row = ReceiptTemplate.objects.select_for_update().get(pk=1)
+        changes = {}
+        for field, value in cleaned.items():
+            old = getattr(row, field)
+            if old != value:
+                changes[field] = {"from": old, "to": value}
+                setattr(row, field, value)
+        if changes:
+            row.updated_by = user if getattr(user, "pk", None) else None
+            row.save()
+            ReceiptTemplateChange.objects.create(changed_by=row.updated_by, changes=changes)
+    return template_payload(row)
+
+
+def _who(user) -> str:
+    if user is None:
+        return ""
+    return getattr(user, "name", "") or getattr(user, "email", "") or ""
+
+
+def template_payload(row=None) -> dict:
+    """What the admin page shows: stored values (blank = default), the defaults, the values in use, and recent changes."""
+    from .models import ReceiptTemplateChange
+
+    row = row if row is not None else _stored_template()
+    stored = {f: (getattr(row, f, "") if row else "") for f in TEXT_FIELDS}
+    stored.update({f: (getattr(row, f, True) if row else True) for f in FLAG_FIELDS})
+    history = [
+        {"changed_at": c.changed_at.isoformat(), "changed_by": _who(c.changed_by), "fields": sorted(c.changes.keys())}
+        for c in ReceiptTemplateChange.objects.select_related("changed_by")[:20]
+    ]
+    return {
+        "stored": stored,
+        "defaults": template_defaults(),
+        "effective": template_values(row),
+        "updated_at": row.updated_at.isoformat() if row and row.updated_at else None,
+        "updated_by": _who(row.updated_by) if row and row.updated_by_id else "",
+        "collected_by": checkout_name(),
+        "history": history,
+    }
 
 
 def _payer_organisation(user) -> str:
@@ -71,17 +240,21 @@ def receipt_for(payment: Payment) -> dict:
     order = payment.payment_order
     user = order.user
     how = describe(payment)
+    t = template_values()
     return {
         "receipt_number": order.receipt,
-        "title": "Payment Receipt",
-        "not_a_tax_invoice": "This is a payment receipt, not a GST tax invoice. Where a tax invoice applies, it is issued by SRIC, IIT Roorkee.",
-        "computer_generated": "This is a computer-generated receipt and does not require a signature.",
+        "title": t["receipt_heading"],
+        "not_a_tax_invoice": t["not_a_tax_invoice"],
+        "computer_generated": t["computer_generated"],
         "test_mode": order.mode == "test",
         "collected_by": checkout_name(),
-        "institution": "Indian Institute of Technology Roorkee",
-        "office": "Sponsored Research & Industrial Consultancy (SRIC)",
-        "institute_gstin": institute_gstin(),
-        "service_name": "IIT Roorkee Equipment Booking Portal",
+        "institution": t["institution_name"],
+        "office": t["office_name"],
+        "institute_gstin": t["institute_gstin"] if t["show_gstin"] else "",
+        "service_name": t["service_name"],
+        # The rest of the template the Main Admin edits on the dashboard (Receipt template).
+        "template": {k: t[k] for k in ("address", "contact_email", "website", "refund_note", "extra_note", "brand_color",
+                                         "accent_color", "show_gstin", "show_logo", "show_watermark")},
         "payer_name": getattr(user, "name", "") or "",
         "payer_organisation": _payer_organisation(user),
         "payer_email": getattr(user, "email", "") or "",

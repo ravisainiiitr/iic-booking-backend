@@ -123,6 +123,29 @@ def admin_fee_settings(request):
     )
 
 
+@api_view(["GET", "PUT", "PATCH"])
+@permission_classes([IsAuthenticated])
+def admin_receipt_template(request):
+    """The online-payment receipt's wording and look (Main Admin only). A blank field restores the built-in default.
+    Changes apply to every receipt opened or downloaded afterwards, older payments included."""
+    from iic_booking.payments.receipts import clean_template_input
+    from iic_booking.payments.receipts import save_template
+    from iic_booking.payments.receipts import template_payload
+
+    if not _is_main_admin(request.user):
+        return Response({"error": "Only Main Admin can change the receipt template."}, status=status.HTTP_403_FORBIDDEN)
+    if request.method == "GET":
+        return Response(template_payload())
+    data = request.data if isinstance(request.data, dict) else {}
+    cleaned, errors = clean_template_input(data)
+    if errors:
+        # One key per field (as DRF serializers do), so the dashboard can show each message beside its field.
+        return Response({"error": "Some values need correcting.", **errors}, status=status.HTTP_400_BAD_REQUEST)
+    payload = save_template(cleaned, request.user)
+    payload["message"] = "Receipt template saved."
+    return Response(payload)
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 @throttle_classes([PaymentUserThrottle])

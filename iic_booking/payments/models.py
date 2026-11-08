@@ -312,3 +312,54 @@ class SettlementLine(models.Model):
 
     def __str__(self):
         return f"{self.settlement_id} {self.entity_type} {self.entity_id}"
+
+
+class ReceiptTemplate(models.Model):
+    """The editable parts of the online-payment receipt, kept as one row (pk=1) and edited by the Main Admin.
+
+    A blank field means "use the built-in wording" (see ``receipts.TEMPLATE_DEFAULTS``), so clearing a field restores
+    the default. Amounts, payer details and payment references always come from the payment itself and are not editable.
+    """
+
+    institution_name = models.CharField(max_length=160, blank=True)
+    office_name = models.CharField(max_length=160, blank=True)
+    address = models.CharField(max_length=240, blank=True)
+    institute_gstin = models.CharField(max_length=15, blank=True)
+    contact_email = models.EmailField(max_length=120, blank=True)
+    website = models.CharField(max_length=120, blank=True)
+    receipt_heading = models.CharField(max_length=60, blank=True)
+    service_name = models.CharField(max_length=120, blank=True)
+    not_a_tax_invoice = models.TextField(max_length=400, blank=True)
+    refund_note = models.TextField(max_length=400, blank=True)
+    extra_note = models.TextField(max_length=400, blank=True)
+    computer_generated = models.CharField(max_length=160, blank=True)
+    brand_color = models.CharField(max_length=7, blank=True)
+    accent_color = models.CharField(max_length=7, blank=True)
+    show_gstin = models.BooleanField(default=True)
+    show_logo = models.BooleanField(default=True)
+    show_watermark = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+    class Meta:
+        verbose_name = "Receipt template"
+        verbose_name_plural = "Receipt template"
+
+    def __str__(self):
+        return "Receipt template"
+
+    @classmethod
+    def get_solo(cls) -> "ReceiptTemplate":
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+
+class ReceiptTemplateChange(models.Model):
+    """Append-only record of each change to the receipt template: who, when, and each field's old and new value."""
+
+    changed_at = models.DateTimeField(auto_now_add=True)
+    changed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    changes = models.JSONField(default=dict)
+
+    class Meta:
+        ordering = ["-changed_at", "-id"]
