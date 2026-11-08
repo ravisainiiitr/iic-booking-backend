@@ -915,6 +915,9 @@ ISTEM_AUTO_CONFIRM = env.bool("ISTEM_AUTO_CONFIRM", default=True)
 # Automatic FBR: bookings whose charge profile requires an I-STEM FBR are registered, confirmed and executed on I-STEM
 # by the portal; the booking pages show that progress instead of asking the user to enter an FBR number (2 Nov 2026).
 ISTEM_AUTOMATIC_FBR = env.bool("ISTEM_AUTOMATIC_FBR", default=False)
+# Stop a booking on an I-STEM instrument before payment when the user's I-STEM link or billing details are missing
+# (8 Nov 2026): off | test_accounts | all.
+ISTEM_BOOKING_GATE = env("ISTEM_BOOKING_GATE", default="test_accounts")
 # FBR Execute after local completion; also needs a confirmation_id, so it does nothing while Confirm is off.
 ISTEM_EXECUTE_ENABLED = env.bool("ISTEM_EXECUTE_ENABLED", default=False)
 ISTEM_EXECUTE_UPDATED_BY = env("ISTEM_EXECUTE_UPDATED_BY", default="")

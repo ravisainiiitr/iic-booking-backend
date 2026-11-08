@@ -621,6 +621,10 @@ from iic_booking.istem.api_views import (
     istem_department_mappings,
     istem_equipment_mappings_verify,
     istem_institute,
+    istem_profile_readiness,
+    istem_reference_sync,
+    istem_equipment_details,
+    istem_equipment_create,
 )
 
 from iic_booking.whatsapp.views import (
@@ -1728,6 +1732,10 @@ urlpatterns = router.urls + [
     path("istem/institute/", istem_institute, name="istem-institute"),
     path("istem/equipment-mappings/verify/", istem_equipment_mappings_verify, name="istem-equipment-mappings-verify"),
     path("istem/equipment-mappings/<int:equipment_id>/", istem_equipment_mapping_save, name="istem-equipment-mapping-save"),
+    path("istem/profile-readiness/", istem_profile_readiness, name="istem-profile-readiness"),
+    path("istem/reference/sync/", istem_reference_sync, name="istem-reference-sync"),
+    path("istem/equipment-details/<int:equipment_id>/", istem_equipment_details, name="istem-equipment-details"),
+    path("istem/equipment-details/<int:equipment_id>/create/", istem_equipment_create, name="istem-equipment-create"),
     path("bookings/<int:booking_id>/istem-fbr/", update_booking_istem_fbr, name="booking-istem-fbr-update"),
     path("bookings/<int:booking_id>/istem-fbr/review/", review_booking_istem_fbr, name="booking-istem-fbr-review"),
     path("bookings/<int:booking_id>/complete/", complete_booking, name="complete-booking"),
