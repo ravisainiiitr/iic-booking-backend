@@ -266,14 +266,14 @@ def test_create_user_payload_for_an_external_user_comes_from_the_profile():
     result = build_public_user_payload(user, "213")
     assert result.ok, result.errors
     p = result.payload
-    assert (p["user_salutation"], p["user_first_name"], p["user_last_name"]) == ("Dr", "Asha", "Verma")
+    assert (p["user_salutation"], p["user_first_name"], p["user_last_name"]) == ("Dr.", "Asha", "Verma")
     assert (p["user_contactno"], p["user_gender"], p["user_type"]) == ("9876543210", "Female", "Academic User")
     assert p["user_organisation"] == "Asha Labs"  # no organisation on the account: the billing name
     assert (p["user_address"], p["user_city"], p["user_district"]) == ("12 Station Road", "Roorkee", "Roorkee")
     assert (p["user_state"], p["user_country"], p["user_pin"]) == ("Uttarakhand", "India", "247667")
     assert p["billing_user_name"] == "Asha Labs" and p["institute_id"] == "213"
     user.name = "Asha Verma"
-    assert build_public_user_payload(user, "213").payload["user_salutation"] == "Ms"
+    assert build_public_user_payload(user, "213").payload["user_salutation"] == "Ms."
 
 
 def test_create_user_payload_for_an_internal_user_uses_the_institute():
@@ -286,7 +286,7 @@ def test_create_user_payload_for_an_internal_user_uses_the_institute():
     p = result.payload
     assert p["user_organisation"] == "Indian Institute of Technology Roorkee"
     assert (p["user_city"], p["user_district"], p["user_state"], p["user_pin"]) == ("Roorkee", "Haridwar", "Uttarakhand", "247667")
-    assert (p["billing_user_name"], p["user_salutation"], p["user_type"]) == ("IIT Roorkee", "Mr", "Academic User")
+    assert (p["billing_user_name"], p["user_salutation"], p["user_type"]) == ("IIT Roorkee", "Mr.", "Academic User")
 
 
 def test_create_user_type_uses_its_own_code_list_and_the_token_institute():
@@ -349,3 +349,20 @@ def test_confirm_payload_refuses_a_window_different_from_the_one_requested(setti
     booking.daily_slots.update(start_datetime=F("start_datetime") + timedelta(hours=1), end_datetime=F("end_datetime") + timedelta(hours=1))
     result = build_confirm_payload(booking, link, approved_on=timezone.now())
     assert "allocated_timings_from" in result.errors and result.payload == {}
+
+
+def test_create_user_salutation_is_one_istem_accepts():
+    """I-STEM staging (8 Nov 2026): "Invalid salutation. Must be Mr., Ms., Dr., or Prof." """
+    from iic_booking.istem.mapping import ISTEM_SALUTATIONS
+    from iic_booking.users.models.user_type import UserType
+    from iic_booking.users.tests.factories import UserFactory
+
+    cases = [("Mrs. Meena Rao", "female", "", "Ms."), ("Prof. Anil Gupta", "male", "", "Prof."),
+             ("Anil Gupta", "male", "Professor", "Prof."), ("Ravi Kumar", "male", "", "Mr."),
+             ("Asha Verma", "female", "", "Ms."), ("Miss Lata Singh", "female", "", "Ms.")]
+    for name, gender, designation, expected in cases:
+        user = UserFactory(user_type=UserType.STUDENT, name=name, gender=gender, phone_number="9876543210", designation=designation)
+        salutation = build_public_user_payload(user, "213").payload["user_salutation"]
+        assert salutation == expected and salutation in ISTEM_SALUTATIONS, (name, salutation)
+    other = UserFactory(user_type=UserType.STUDENT, name="Sam Lee", gender="other", phone_number="9876543210")
+    assert "user_salutation" in build_public_user_payload(other, "213").errors  # never an invalid "Mx"
