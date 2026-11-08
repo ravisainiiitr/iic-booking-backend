@@ -167,3 +167,38 @@ def test_payment_routes_are_rate_limited(monkeypatch, recharge_order):
     client = _client_for(recharge_order.user)
     codes = [client.post("/api/payments/razorpay/verify/", {}).status_code for _ in range(3)]
     assert codes[:2] == [400, 400] and codes[2] == 429
+
+
+class _RacingClient:
+    """Razorpay captured the payment itself (automatic capture) just as the portal tried to: capture fails, fetch says captured."""
+
+    def __init__(self, status_after="captured"):
+        self.calls = 0
+        self.status_after = status_after
+        self.payment = self
+
+    def fetch(self, payment_id):
+        self.calls += 1
+        status = "authorized" if self.calls == 1 else self.status_after
+        return {"id": payment_id, "order_id": "order_WH1", "amount": 50000, "currency": "INR", "status": status, "method": "card"}
+
+    def capture(self, *args, **kwargs):
+        raise RuntimeError("This payment has already been captured")
+
+
+def test_an_authorised_event_racing_automatic_capture_raises_no_issue(recharge_order):
+    with patch("iic_booking.payments.razorpay_service.get_razorpay_client", return_value=_RacingClient()):
+        assert _post(_event("payment.authorized", status="authorized"), event_id="evt_auth").status_code == 200
+    assert not PaymentIssue.objects.exists()
+    assert _wallet_total(recharge_order) == Decimal("500.00")
+
+
+def test_a_capture_issue_closes_itself_when_the_capture_arrives(recharge_order):
+    with patch("iic_booking.payments.razorpay_service.get_razorpay_client", return_value=_RacingClient(status_after="authorized")):
+        _post(_event("payment.authorized", status="authorized"), event_id="evt_auth2")
+    issue = PaymentIssue.objects.get()
+    assert issue.kind == PaymentIssueKind.NOT_CAPTURED and issue.status == "OPEN"
+    _post(_event("payment.captured"), event_id="evt_cap2")
+    issue.refresh_from_db()
+    assert issue.status == "RESOLVED" and "captured" in issue.resolution_note
+    assert _wallet_total(recharge_order) == Decimal("500.00")
