@@ -52,11 +52,13 @@ class RazorpayServiceError(Exception):
 
 
 def get_razorpay_client() -> razorpay.Client:
-    key_id = getattr(settings, "RAZORPAY_KEY_ID", "") or ""
-    key_secret = getattr(settings, "RAZORPAY_KEY_SECRET", "") or ""
-    if not key_id or not key_secret:
-        raise RazorpayNotConfigured("Razorpay credentials are not configured.")
-    return razorpay.Client(auth=(key_id, key_secret))
+    """Client for the configured mode. Refused when payments are off, keys are missing, or the key's mode differs."""
+    from iic_booking.payments import gateway_mode
+
+    problem = gateway_mode.configuration_problem()
+    if problem:
+        raise RazorpayNotConfigured(problem)
+    return razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
 
 
 def verify_checkout_signature(order_id: str, payment_id: str, signature: str) -> bool:
@@ -118,6 +120,13 @@ def create_order(
     purpose = (purpose or "").strip().upper()
     if purpose not in PaymentPurpose.values:
         raise RazorpayServiceError("Invalid purpose.")
+    from iic_booking.payments import gateway_mode
+
+    if gateway_mode.configuration_problem():
+        raise RazorpayNotConfigured(gateway_mode.configuration_problem())
+    refused = gateway_mode.user_may_pay(user)
+    if refused:
+        raise RazorpayServiceError(refused)
 
     if purpose == PaymentPurpose.BOOKING_SHORTFALL and checkout is not None:
         from iic_booking.external_services.models import CheckoutState
@@ -231,6 +240,7 @@ def create_order(
         currency="INR",
         status=PaymentOrderStatus.CREATED,
         idempotency_key=idempotency_key[:128],
+        mode=gateway_mode.mode(),
         fee_percent_snapshot=breakup.fee_percent,
         fee_gst_percent_snapshot=breakup.fee_gst_percent,
         raw_create_response=rp_order if isinstance(rp_order, dict) else {"raw": str(rp_order)},
@@ -250,6 +260,7 @@ def create_order(
         "booking_id": booking.booking_id if booking else None,
         "wallet_id": wallet.id if wallet else None,
         "department_id": department.id if department else None,
+        "mode": payment_order.mode,
     }
     return payment_order, response
 
@@ -368,6 +379,12 @@ def settle_order_success(
     existing_payment = Payment.objects.filter(razorpay_payment_id=razorpay_payment_id).first()
     if existing_payment and existing_payment.payment_order_id != order.id:
         raise RazorpayServiceError("Payment already linked to another order.")
+
+    if order.mode == "test" and not getattr(order.user, "is_test_account", False) and getattr(
+        settings, "RAZORPAY_TEST_MODE_TEST_ACCOUNTS_ONLY", True
+    ):
+        # A test-mode payment must never become real money for a real account.
+        raise RazorpayServiceError("A test-mode payment cannot settle for an account that is not a test account.")
 
     if order.status == PaymentOrderStatus.PAID:
         payment = existing_payment or order.payments.filter(status=PaymentStatus.CAPTURED).first()

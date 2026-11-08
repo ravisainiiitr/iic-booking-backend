@@ -82,6 +82,13 @@ class PaymentOrder(models.Model):
         db_index=True,
     )
     idempotency_key = models.CharField(max_length=128, unique=True, db_index=True)
+    mode = models.CharField(
+        max_length=8,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text=_("Razorpay mode the order was created in: test or live. Blank for orders made before this was recorded."),
+    )
     fee_percent_snapshot = models.DecimalField(max_digits=8, decimal_places=4, default=Decimal("0"))
     fee_gst_percent_snapshot = models.DecimalField(max_digits=8, decimal_places=4, default=Decimal("0"))
     raw_create_response = models.JSONField(default=dict, blank=True)

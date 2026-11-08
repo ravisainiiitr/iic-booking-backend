@@ -380,6 +380,7 @@ def _order_params(checkout: ExternalBookingCheckout) -> dict:
         "amount": int((order.total_amount * 100).quantize(Decimal("1"))),
         "currency": order.currency,
         "key": key_id,
+        "mode": order.mode,
         "breakup": {
             "base_amount": f"{order.base_amount:.2f}",
             "convenience_fee": f"{order.convenience_fee:.2f}",

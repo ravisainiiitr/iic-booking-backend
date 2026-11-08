@@ -1014,6 +1014,12 @@ CALLS_APNS_BUNDLE_ID = env("CALLS_APNS_BUNDLE_ID", default="ac.in.iitr.iicbookin
 CALLS_APNS_USE_SANDBOX = env.bool("CALLS_APNS_USE_SANDBOX", default=True)
 
 
+# Razorpay: off unless switched on; the key must match the mode (rzp_test_ / rzp_live_); live needs a second switch.
+RAZORPAY_ENABLED = env.bool("RAZORPAY_ENABLED", default=False)
+RAZORPAY_MODE = env("RAZORPAY_MODE", default="test")
+RAZORPAY_LIVE_ALLOWED = env.bool("RAZORPAY_LIVE_ALLOWED", default=False)
+# In test mode only accounts marked as test accounts may pay online. Never turned off outside the unit-test settings.
+RAZORPAY_TEST_MODE_TEST_ACCOUNTS_ONLY = env.bool("RAZORPAY_TEST_MODE_TEST_ACCOUNTS_ONLY", default=True)
 RAZORPAY_KEY_ID = env("RAZORPAY_KEY_ID", default="")
 RAZORPAY_KEY_SECRET = env("RAZORPAY_KEY_SECRET", default="")
 RAZORPAY_WEBHOOK_SECRET = env("RAZORPAY_WEBHOOK_SECRET", default="")
