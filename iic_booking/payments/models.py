@@ -191,3 +191,81 @@ class PaymentSettlement(models.Model):
 
     def __str__(self):
         return f"{self.settlement_id} UTR={self.bank_utr or '-'}"
+
+
+class WebhookEventStatus(models.TextChoices):
+    PROCESSING = "PROCESSING", _("Processing")
+    PROCESSED = "PROCESSED", _("Processed")
+    IGNORED = "IGNORED", _("Received, nothing to apply")
+    FAILED = "FAILED", _("Failed, Razorpay will retry")
+
+
+class RazorpayWebhookEvent(models.Model):
+    """One signed webhook event from Razorpay, keyed by its event ID so a repeat is never processed twice.
+
+    Only identifiers and amounts are kept, never the full payload (it can hold payer email, phone and card details).
+    """
+
+    event_id = models.CharField(max_length=64, unique=True)
+    event_type = models.CharField(max_length=64, db_index=True)
+    razorpay_order_id = models.CharField(max_length=64, blank=True, db_index=True)
+    razorpay_payment_id = models.CharField(max_length=64, blank=True, db_index=True)
+    razorpay_refund_id = models.CharField(max_length=64, blank=True)
+    razorpay_settlement_id = models.CharField(max_length=64, blank=True)
+    amount_paise = models.BigIntegerField(null=True, blank=True)
+    currency = models.CharField(max_length=8, blank=True)
+    entity_status = models.CharField(max_length=32, blank=True)
+    status = models.CharField(max_length=16, choices=WebhookEventStatus.choices, default=WebhookEventStatus.PROCESSING)
+    result = models.CharField(max_length=255, blank=True)
+    attempts = models.PositiveIntegerField(default=1)
+    received_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-received_at"]
+
+    def __str__(self):
+        return f"{self.event_type} {self.event_id} ({self.status})"
+
+
+class PaymentIssueKind(models.TextChoices):
+    DUPLICATE_CAPTURE = "DUPLICATE_CAPTURE", _("Second payment captured on an already paid order")
+    CANCELLED_BOOKING = "CANCELLED_BOOKING", _("Payment received for a cancelled or refunded booking")
+    NOT_APPLIED = "NOT_APPLIED", _("Payment captured but could not be applied")
+    UNKNOWN_ORDER = "UNKNOWN_ORDER", _("Payment for an order the portal does not know")
+    MISMATCH = "MISMATCH", _("Payment amount or currency differs from the order")
+    NOT_CAPTURED = "NOT_CAPTURED", _("Authorised payment could not be captured")
+
+
+class PaymentIssueStatus(models.TextChoices):
+    OPEN = "OPEN", _("Open")
+    RESOLVED = "RESOLVED", _("Resolved")
+
+
+class PaymentIssue(models.Model):
+    """Money that reached Razorpay but was not applied normally. Finance resolves each one with a note."""
+
+    kind = models.CharField(max_length=24, choices=PaymentIssueKind.choices, db_index=True)
+    key = models.CharField(max_length=160, help_text=_("Payment ID, or order ID when there is no payment."))
+    status = models.CharField(max_length=12, choices=PaymentIssueStatus.choices, default=PaymentIssueStatus.OPEN, db_index=True)
+    razorpay_order_id = models.CharField(max_length=64, blank=True)
+    razorpay_payment_id = models.CharField(max_length=64, blank=True)
+    payment_order = models.ForeignKey(PaymentOrder, on_delete=models.SET_NULL, null=True, blank=True, related_name="issues")
+    amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    mode = models.CharField(max_length=8, blank=True)
+    detail = models.CharField(max_length=500)
+    raised_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="resolved_payment_issues"
+    )
+    resolution_note = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-raised_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["kind", "key"], condition=models.Q(status="OPEN"), name="payments_one_open_issue_per_key")
+        ]
+
+    def __str__(self):
+        return f"{self.kind} {self.key} ({self.status})"

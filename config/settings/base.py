@@ -606,6 +606,8 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         # DRF throttle format example: "5/min", "1/hour"
         "sync_enroll": env("DSA_SYNC_ENROLL_THROTTLE_RATE", default="10/hour"),
+        "payments_user": env("PAYMENTS_USER_THROTTLE_RATE", default="30/min"),
+        "payments_webhook": env("PAYMENTS_WEBHOOK_THROTTLE_RATE", default="600/min"),
         "provisioning_session": env("PROVISIONING_SESSION_THROTTLE_RATE", default="30/hour"),
         # Research Copilot only (portal-wide traffic is not throttled by these)
         "research_copilot_user": env("RESEARCH_COPILOT_USER_THROTTLE", default="300/hour"),
