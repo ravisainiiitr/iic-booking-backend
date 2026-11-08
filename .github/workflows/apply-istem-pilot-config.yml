@@ -113,6 +113,12 @@ jobs:
                       # Safety net: bookings made before this moment are never sent, even by istem_sync --enqueue.
                       "ISTEM_SYNC_START_AT": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                   })
+                  # Re-applying the config (e.g. to change user_linking) keeps the start already set, so bookings
+                  # made since then are not dropped from the sync. Only the first switch-on sets it.
+                  for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                      if line.startswith("ISTEM_SYNC_START_AT=") and line.split("=", 1)[1].strip():
+                          upsert["ISTEM_SYNC_START_AT"] = line.split("=", 1)[1].strip()
+                          print("keeping ISTEM_SYNC_START_AT=", upsert["ISTEM_SYNC_START_AT"])
               if os.environ.get("BOOKING_STEPS") == "automatic":
                   upsert.update({"ISTEM_AUTOMATIC_FBR": "True", "ISTEM_CANCEL_ENABLED": "True"})
               automatic_linking = os.environ.get("USER_LINKING") == "automatic"
