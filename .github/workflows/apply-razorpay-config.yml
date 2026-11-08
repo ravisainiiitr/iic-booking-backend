@@ -1,0 +1,176 @@
+# Razorpay online payments on the production server (docs: iic_booking/payments/gateway_mode.py).
+#   test_on : RAZORPAY_ENABLED=True, RAZORPAY_MODE=test, and the key, secret and webhook secret from the repository
+#             secrets RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET and RAZORPAY_WEBHOOK_SECRET. Refused unless the key is a
+#             Razorpay TEST key (rzp_test_). In test mode only accounts marked "Test account" can pay online, and
+#             test orders are kept out of real totals. Live mode cannot be switched on from here.
+#   off     : RAZORPAY_ENABLED=False (no new online payment can start). Keys are left in place.
+# django and the Celery worker are recreated. Nothing secret is printed: the checks print only PASS / FAIL, HTTP
+# codes, counts and the key's mode.
+name: Apply Razorpay Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "test_on | off"
+        required: true
+        type: choice
+        options: [test_on, "off"]
+      checkout_name:
+        description: "Merchant name shown in Checkout and receipts; must equal the Razorpay account's business name (blank keeps the current one)"
+        required: false
+        default: ""
+      confirm:
+        description: "Type RAZORPAY to proceed"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        run: test "${{ github.event.inputs.confirm }}" = "RAZORPAY"
+
+      - name: Update env file and recreate django and the worker
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          CHECKOUT_NAME: ${{ github.event.inputs.checkout_name }}
+          RZP_KEY_ID: ${{ secrets.RAZORPAY_KEY_ID }}
+          RZP_KEY_SECRET: ${{ secrets.RAZORPAY_KEY_SECRET }}
+          RZP_WEBHOOK_SECRET: ${{ secrets.RAZORPAY_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          DEPLOY=/home/ubuntu/iic-booking-backend
+          ENV_FILE="$DEPLOY/.envs/.production/.django"
+          test -f "$ENV_FILE"
+          cp -p "$ENV_FILE" "$ENV_FILE.bak-razorpay-$(date -u +%Y%m%dT%H%M%SZ)"
+          export ENV_FILE
+          python3 <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          mode = os.environ["MODE"]
+          env_file = Path(os.environ["ENV_FILE"])
+          upsert, remove = {}, set()
+          if mode == "test_on":
+              secrets = {
+                  "RAZORPAY_KEY_ID": os.environ.get("RZP_KEY_ID", "").strip(),
+                  "RAZORPAY_KEY_SECRET": os.environ.get("RZP_KEY_SECRET", "").strip(),
+                  "RAZORPAY_WEBHOOK_SECRET": os.environ.get("RZP_WEBHOOK_SECRET", "").strip(),
+              }
+              missing = [k for k, v in secrets.items() if not v]
+              if missing:
+                  raise SystemExit("repository secrets not set: " + ", ".join(missing))
+              if not secrets["RAZORPAY_KEY_ID"].startswith("rzp_test_"):
+                  raise SystemExit("RAZORPAY_KEY_ID is not a Razorpay TEST key (rzp_test_...); nothing was changed")
+              upsert = {**secrets, "RAZORPAY_ENABLED": "True", "RAZORPAY_MODE": "test"}
+              remove |= {"RAZORPAY_LIVE_ALLOWED", "RAZORPAY_TEST_MODE_TEST_ACCOUNTS_ONLY"}  # defaults: live off, test accounts only
+          else:
+              upsert = {"RAZORPAY_ENABLED": "False"}
+          name = os.environ.get("CHECKOUT_NAME", "").strip()
+          if name:
+              if not re.fullmatch(r"[A-Za-z0-9 .,&()'/-]{3,80}", name):
+                  raise SystemExit("checkout_name: 3 to 80 letters, digits, spaces and . , & ( ) ' / - only")
+              upsert["RAZORPAY_CHECKOUT_NAME"] = name
+          out, seen = [], set()
+          for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+              key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+              if key in remove:
+                  continue
+              if key in upsert:
+                  if key not in seen:
+                      out.append(f"{key}={upsert[key]}")
+                      seen.add(key)
+                  continue
+              out.append(line)
+          for key, value in upsert.items():
+              if key not in seen:
+                  out.append(f"{key}={value}")
+          env_file.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+          print("mode=", mode, " set=", sorted(upsert), " removed=", sorted(remove))
+          PY
+          cd "$DEPLOY"
+          SERVICES="django"
+          if docker compose -f docker-compose.production.yml config --services | grep -qx celeryworker; then SERVICES="django celeryworker"; fi
+          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps $SERVICES
+          for i in $(seq 1 30); do
+            CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+            if [ -n "$CID" ] && docker exec "$CID" true 2>/dev/null; then break; fi
+            sleep 2
+          done
+          sleep 6
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'django|celery' || true
+
+      - name: Runtime verification
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import django
+
+          django.setup()
+          import hashlib
+          import hmac
+          import json
+          import secrets as pysecrets
+
+          import requests
+          from django.conf import settings
+          from django.contrib.auth import get_user_model
+
+          from iic_booking.payments import gateway_mode
+          from iic_booking.payments.receipts import checkout_name
+
+          problem = gateway_mode.configuration_problem()
+          print("RUNTIME enabled=", gateway_mode.enabled(), " mode=", gateway_mode.mode(),
+                " key_mode=", gateway_mode.key_mode(settings.RAZORPAY_KEY_ID),
+                " live_allowed=", bool(getattr(settings, "RAZORPAY_LIVE_ALLOWED", False)),
+                " test_accounts_only=", bool(getattr(settings, "RAZORPAY_TEST_MODE_TEST_ACCOUNTS_ONLY", True)))
+          print("RUNTIME checkout_name=", checkout_name())
+          print("RUNTIME problem=", problem or "none")
+          print("RUNTIME active test accounts=", get_user_model().objects.filter(is_active=True, is_test_account=True).count())
+
+          if not problem:
+              # Read-only call: lists at most one order; creates nothing.
+              try:
+                  from iic_booking.payments.razorpay_service import get_razorpay_client
+
+                  get_razorpay_client().order.all({"count": 1})
+                  print("RAZORPAY API PASS keys accepted by Razorpay (read-only call)")
+              except Exception as exc:
+                  print("RAZORPAY API FAIL", type(exc).__name__)
+
+          # The webhook, as Razorpay will call it. A signed test event names an order that does not exist, as a
+          # payment.failed event, so it changes nothing; only PASS / FAIL and HTTP codes are printed.
+          url = "https://equip.iitr.ac.in/api/payments/razorpay/webhook/"
+          secret = settings.RAZORPAY_WEBHOOK_SECRET or ""
+          results = []
+
+          def check(name, passed, code):
+              results.append(passed)
+              print("WEBHOOK", "PASS" if passed else "FAIL", name, "HTTP", code)
+
+          try:
+              event_id = "selftest_" + pysecrets.token_hex(8)
+              body = json.dumps({"event": "payment.failed", "payload": {"payment": {"entity": {
+                  "id": "pay_" + event_id, "order_id": "order_" + event_id, "status": "failed"}}}}).encode()
+              headers = {"Content-Type": "application/json", "X-Razorpay-Event-Id": event_id}
+              r = requests.post(url, data=body, headers=headers, timeout=20)
+              check("unsigned event is refused", r.status_code == 400, r.status_code)
+              r = requests.post(url, data=body, headers={**headers, "X-Razorpay-Signature": "0" * 64}, timeout=20)
+              check("wrongly signed event is refused", r.status_code == 400, r.status_code)
+              if secret:
+                  sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+                  r = requests.post(url, data=body, headers={**headers, "X-Razorpay-Signature": sig}, timeout=20)
+                  check("correctly signed event is accepted", r.status_code == 200, r.status_code)
+                  r = requests.post(url, data=body, headers={**headers, "X-Razorpay-Signature": sig}, timeout=20)
+                  check("the same event again is a duplicate", r.status_code == 200 and r.json().get("duplicate") is True, r.status_code)
+          except Exception as exc:
+              results.append(False)
+              print("WEBHOOK FAIL could not run:", type(exc).__name__)
+          print("WEBHOOK READY FOR RAZORPAY" if results and all(results) else "WEBHOOK NOT READY")
+          PY
