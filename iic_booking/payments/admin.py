@@ -1,6 +1,7 @@
 from django.contrib import admin
 
 from .models import Payment, PaymentIssue, PaymentOrder, PaymentRefund, PaymentSettlement, RazorpayWebhookEvent
+from .models import ReceiptTemplate, ReceiptTemplateChange
 
 
 @admin.register(PaymentOrder)
@@ -76,6 +77,29 @@ class PaymentIssueAdmin(admin.ModelAdmin):
     readonly_fields = [f.name for f in PaymentIssue._meta.fields]
 
     def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+
+
+@admin.register(ReceiptTemplate)
+class ReceiptTemplateAdmin(admin.ModelAdmin):
+    list_display = ("id", "updated_at", "updated_by")
+    readonly_fields = ("updated_at", "updated_by")
+
+
+@admin.register(ReceiptTemplateChange)
+class ReceiptTemplateChangeAdmin(admin.ModelAdmin):
+    list_display = ("changed_at", "changed_by")
+    readonly_fields = ("changed_at", "changed_by", "changes")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
         return False
 
     def has_delete_permission(self, request, obj=None):
