@@ -381,6 +381,7 @@ def _order_params(checkout: ExternalBookingCheckout) -> dict:
         "currency": order.currency,
         "key": key_id,
         "mode": order.mode,
+        "checkout_name": _checkout_name(),
         "breakup": {
             "base_amount": f"{order.base_amount:.2f}",
             "convenience_fee": f"{order.convenience_fee:.2f}",
@@ -477,3 +478,9 @@ def settle_checkout_order(order) -> Optional[str]:
         order.save(update_fields=["booking", "updated_at"])
         return ""
     return reason
+
+
+def _checkout_name() -> str:
+    from iic_booking.payments.receipts import checkout_name
+
+    return checkout_name()

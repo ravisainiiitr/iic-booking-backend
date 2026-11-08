@@ -29,3 +29,19 @@ def test_payment_for_a_cancelled_booking_is_raised(egs_factory):
     assert booking.status == BookingStatus.CANCELLED and booking.payment_settled_at is None
     issue = PaymentIssue.objects.get()
     assert (issue.kind, issue.razorpay_payment_id) == (PaymentIssueKind.CANCELLED_BOOKING, "pay_CXL")
+
+
+def test_booking_payment_preview_is_server_calculated_and_owner_only(egs_factory):
+    from rest_framework.test import APIClient
+
+    owner = UserFactory()
+    booking = egs_factory.booking(owner, egs_factory.equipment(), egs_factory.future())
+    Booking.objects.filter(pk=booking.pk).update(amount_due=Decimal("1000.00"), status=BookingStatus.PENDING_PAYMENT)
+    client = APIClient()
+    client.force_authenticate(owner)
+    data = client.get(f"/api/payments/booking-preview/{booking.pk}/").json()
+    assert data["amount_due"] == "1000.00" and data["breakup"]["base_amount"] == "1000.00"
+    assert data["gateway"]["checkout_name"] == "DEAN SRIC IIT ROORKEE"
+    stranger = APIClient()
+    stranger.force_authenticate(UserFactory())
+    assert stranger.get(f"/api/payments/booking-preview/{booking.pk}/").status_code == 404

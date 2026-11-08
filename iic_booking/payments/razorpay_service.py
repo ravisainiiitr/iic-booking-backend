@@ -51,6 +51,12 @@ class RazorpayServiceError(Exception):
     pass
 
 
+def _checkout_name() -> str:
+    from iic_booking.payments.receipts import checkout_name
+
+    return checkout_name()
+
+
 def get_razorpay_client() -> razorpay.Client:
     """Client for the configured mode. Refused when payments are off, keys are missing, or the key's mode differs."""
     from iic_booking.payments import gateway_mode
@@ -161,7 +167,7 @@ def create_order(
         if department is None:
             department = booking.settlement_department
         existing = _open_order_for_booking(booking)
-        if existing and existing.base_amount == base:
+        if existing and existing.base_amount == base and existing.mode == gateway_mode.mode():
             # Reuse open order if still CREATED and amount unchanged
             key_id = getattr(settings, "RAZORPAY_KEY_ID", "") or ""
             return existing, {
@@ -182,6 +188,8 @@ def create_order(
                 },
                 "purpose": existing.purpose,
                 "booking_id": booking.booking_id,
+                "mode": existing.mode,
+                "checkout_name": _checkout_name(),
             }
         if existing:
             existing.status = PaymentOrderStatus.CANCELLED
@@ -261,6 +269,7 @@ def create_order(
         "wallet_id": wallet.id if wallet else None,
         "department_id": department.id if department else None,
         "mode": payment_order.mode,
+        "checkout_name": _checkout_name(),
     }
     return payment_order, response
 

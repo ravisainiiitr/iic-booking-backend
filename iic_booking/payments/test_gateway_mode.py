@@ -128,4 +128,4 @@ def test_fee_settings_tell_the_frontend_the_mode_without_secrets(strict, recharg
     client = APIClient()
     client.force_authenticate(user)
     gateway = client.get("/api/payments/fee-settings/").json()["gateway"]
-    assert gateway == {"available": True, "mode": "test", "test_mode": True, "reason": ""}
+    assert gateway == {"available": True, "mode": "test", "test_mode": True, "reason": "", "checkout_name": "DEAN SRIC IIT ROORKEE"}
