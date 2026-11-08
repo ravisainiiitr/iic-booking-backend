@@ -145,9 +145,21 @@ def test_values_that_would_need_inventing_or_rounding_are_blocked(field, kwargs)
     assert field not in result.payload
 
 
-def test_charge_profile_without_a_single_rate_blocks_eq_rate():
-    booking = ready_booking(profile_type="MULTI_PARAM")
-    assert "eq_rate" in _payload(booking).errors
+@pytest.mark.parametrize("profile_type", ["GENERIC", "MULTI_PARAM", "SAMPLE_ELEMENT"])
+def test_profiles_without_a_single_rate_send_total_divided_by_samples(profile_type):
+    # [USER 2026-11-08] rule (a): eq_rate = booking total / number of samples; the total itself is sent unchanged.
+    p = _payload(ready_booking(profile_type=profile_type)).payload
+    assert (p["total_est_amt"], p["booking_no_sample"], p["eq_rate"]) == ("1500", "3", "500")
+
+
+def test_total_divided_by_samples_is_rounded_to_a_whole_rupee():
+    p = _payload(ready_booking(profile_type="GENERIC", total=Decimal("1000.00"), samples="3")).payload
+    assert (p["total_est_amt"], p["eq_rate"]) == ("1000", "333")
+
+
+def test_no_rate_without_a_sample_count():
+    result = _payload(ready_booking(profile_type="GENERIC", samples=""))
+    assert "eq_rate" in result.errors and "booking_no_sample" in result.errors
 
 
 def test_empty_gstin_is_sent_as_the_placeholder_istem_accepts():
