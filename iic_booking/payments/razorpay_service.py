@@ -579,6 +579,8 @@ def handle_webhook(payload: dict, body: bytes | str, signature: str) -> dict:
                     raise_issue(PaymentIssueKind.NOT_CAPTURED, key=payment_id, order=order, razorpay_payment_id=payment_id,
                                 amount=amount, detail=f"Authorised payment not captured: {exc}")
                     return {"ok": True, "event": event, "ignored": str(exc)}
+            from iic_booking.payments.reconciliation import record_gateway_charges
+
             try:
                 settle_order_success(
                     razorpay_order_id=order_id,
@@ -599,6 +601,7 @@ def handle_webhook(payload: dict, body: bytes | str, signature: str) -> dict:
                 raise_issue(PaymentIssueKind.NOT_APPLIED, key=payment_id, order=order, razorpay_payment_id=payment_id,
                             amount=amount, detail=f"Captured but not applied: {exc}")
                 return {"ok": True, "event": event, "ignored": "captured but not applied; raised for Finance"}
+            record_gateway_charges(payment_id, payment_entity)
         return {"ok": True, "event": event}
 
     if event == "payment.failed":

@@ -30,6 +30,7 @@ class PaymentStatus(models.TextChoices):
 class PaymentVerifiedVia(models.TextChoices):
     CHECKOUT = "CHECKOUT", _("Checkout verify")
     WEBHOOK = "WEBHOOK", _("Webhook")
+    RECONCILIATION = "RECONCILIATION", _("Recovered by reconciliation (Razorpay API)")
 
 
 class RefundStatus(models.TextChoices):
@@ -135,6 +136,14 @@ class Payment(models.Model):
         choices=PaymentVerifiedVia.choices,
         default=PaymentVerifiedVia.CHECKOUT,
     )
+    gateway_fee = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        help_text=_("Razorpay fee for this payment, as Razorpay reports it (blank until known)."),
+    )
+    gateway_tax = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        help_text=_("GST on the Razorpay fee, as Razorpay reports it (blank until known)."),
+    )
     raw_payload = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -235,6 +244,10 @@ class PaymentIssueKind(models.TextChoices):
     UNKNOWN_ORDER = "UNKNOWN_ORDER", _("Payment for an order the portal does not know")
     MISMATCH = "MISMATCH", _("Payment amount or currency differs from the order")
     NOT_CAPTURED = "NOT_CAPTURED", _("Authorised payment could not be captured")
+    ORDER_WITHOUT_PAYMENT = "ORDER_WITHOUT_PAYMENT", _("Order marked paid with no captured payment")
+    UNSETTLED = "UNSETTLED", _("Captured payment not yet in any Razorpay settlement")
+    SETTLEMENT_MISMATCH = "SETTLEMENT_MISMATCH", _("Settlement amount differs from the payment")
+    SETTLEMENT_UNKNOWN = "SETTLEMENT_UNKNOWN", _("Settlement line for a payment the portal does not have")
 
 
 class PaymentIssueStatus(models.TextChoices):
@@ -269,3 +282,33 @@ class PaymentIssue(models.Model):
 
     def __str__(self):
         return f"{self.kind} {self.key} ({self.status})"
+
+
+class SettlementLine(models.Model):
+    """One line of Razorpay's settlement reconciliation report: a payment, refund or adjustment in a settlement.
+
+    Kept separately from PaymentSettlement so gross, fee, tax and net are never confused. Amounts are in rupees.
+    """
+
+    settlement_id = models.CharField(max_length=64, db_index=True)
+    settlement_utr = models.CharField(max_length=128, blank=True)
+    entity_id = models.CharField(max_length=64, db_index=True)
+    entity_type = models.CharField(max_length=24)
+    razorpay_order_id = models.CharField(max_length=64, blank=True)
+    payment = models.ForeignKey(Payment, on_delete=models.SET_NULL, null=True, blank=True, related_name="settlement_lines")
+    amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    fee = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    tax = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    credit = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    debit = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    settled_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-settled_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(fields=["settlement_id", "entity_id"], name="payments_one_line_per_settlement_entity")
+        ]
+
+    def __str__(self):
+        return f"{self.settlement_id} {self.entity_type} {self.entity_id}"

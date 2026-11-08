@@ -1023,6 +1023,8 @@ RAZORPAY_LIVE_ALLOWED = env.bool("RAZORPAY_LIVE_ALLOWED", default=False)
 # In test mode only accounts marked as test accounts may pay online. Never turned off outside the unit-test settings.
 RAZORPAY_TEST_MODE_TEST_ACCOUNTS_ONLY = env.bool("RAZORPAY_TEST_MODE_TEST_ACCOUNTS_ONLY", default=True)
 RAZORPAY_KEY_ID = env("RAZORPAY_KEY_ID", default="")
+# A captured payment not in any Razorpay settlement after this many days is raised for Finance.
+RAZORPAY_UNSETTLED_ALERT_DAYS = env.int("RAZORPAY_UNSETTLED_ALERT_DAYS", default=5)
 RAZORPAY_KEY_SECRET = env("RAZORPAY_KEY_SECRET", default="")
 RAZORPAY_WEBHOOK_SECRET = env("RAZORPAY_WEBHOOK_SECRET", default="")
 

@@ -10,5 +10,6 @@ urlpatterns = [
     path("razorpay/refund/", views.razorpay_refund, name="payments-razorpay-refund"),
     path("fee-settings/", views.fee_settings, name="payments-fee-settings"),
     path("issues/", views.payment_issues, name="payments-issues"),
+    path("reconciliation/", views.reconciliation_summary, name="payments-reconciliation"),
     path("issues/<int:issue_id>/resolve/", views.payment_issue_resolve, name="payments-issue-resolve"),
 ]
