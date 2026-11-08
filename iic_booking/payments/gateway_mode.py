@@ -68,8 +68,11 @@ def user_may_pay(user) -> str:
 
 def public_status(user=None) -> dict:
     """What the frontend may know: no keys, no secrets."""
+    from iic_booking.payments.receipts import checkout_name
+
     problem = configuration_problem()
     return {
+        "checkout_name": checkout_name(),
         "available": not problem and (user is None or not user_may_pay(user)),
         "mode": mode() if mode() in _PREFIX else "",
         "test_mode": mode() == TEST,

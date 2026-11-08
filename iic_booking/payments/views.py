@@ -4,41 +4,42 @@ from __future__ import annotations
 
 import json
 import logging
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
+from decimal import InvalidOperation
 
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes, throttle_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.decorators import api_view
+from rest_framework.decorators import permission_classes
+from rest_framework.decorators import throttle_classes
+from rest_framework.permissions import AllowAny
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from iic_booking.equipment.models import Booking
-from iic_booking.payments.fees import get_fee_percents, set_fee_percents
-from iic_booking.payments.issues import minimal_webhook_payload
-from iic_booking.payments.models import (
-    Payment,
-    PaymentIssue,
-    PaymentIssueStatus,
-    PaymentOrder,
-    PaymentPurpose,
-    RazorpayWebhookEvent,
-    WebhookEventStatus,
-)
-from iic_booking.payments.throttles import PaymentUserThrottle, PaymentWebhookThrottle
-from iic_booking.payments.razorpay_service import (
-    RazorpayNotConfigured,
-    RazorpayServiceError,
-    confirm_gateway_payment,
-    create_order,
-    create_refund,
-    settle_order_success,
-    handle_webhook,
-    verify_checkout_signature,
-)
+from iic_booking.payments.fees import get_fee_percents
+from iic_booking.payments.fees import set_fee_percents
+from iic_booking.payments.models import Payment
+from iic_booking.payments.models import PaymentIssue
+from iic_booking.payments.models import PaymentIssueStatus
+from iic_booking.payments.models import PaymentOrder
+from iic_booking.payments.models import PaymentPurpose
+from iic_booking.payments.models import RazorpayWebhookEvent
+from iic_booking.payments.models import WebhookEventStatus
+from iic_booking.payments.razorpay_service import RazorpayNotConfigured
+from iic_booking.payments.razorpay_service import RazorpayServiceError
+from iic_booking.payments.razorpay_service import confirm_gateway_payment
+from iic_booking.payments.razorpay_service import create_order
+from iic_booking.payments.razorpay_service import create_refund
+from iic_booking.payments.razorpay_service import handle_webhook
+from iic_booking.payments.razorpay_service import settle_order_success
+from iic_booking.payments.razorpay_service import verify_checkout_signature
+from iic_booking.payments.throttles import PaymentUserThrottle
+from iic_booking.payments.throttles import PaymentWebhookThrottle
 from iic_booking.users.models import UserType
+from iic_booking.users.repositories.wallet_repository import WalletRepository
 from iic_booking.users.repositories.wallet_repository import (
-    WalletRepository,
     resolve_internal_department_for_wallet_recharge,
 )
 
@@ -145,9 +146,15 @@ def razorpay_create_order(request):
             return Response(payload, status=status.HTTP_201_CREATED)
 
         # WALLET_RECHARGE
-        from iic_booking.users.api.wallet_views import online_gateway_recharge_disabled_response
-        from iic_booking.users.models.wallet_sric_settings import online_gateway_recharge_enabled
-        from iic_booking.users.student_wallet_recharge import assert_iitr_student_may_recharge
+        from iic_booking.users.api.wallet_views import (
+            online_gateway_recharge_disabled_response,
+        )
+        from iic_booking.users.models.wallet_sric_settings import (
+            online_gateway_recharge_enabled,
+        )
+        from iic_booking.users.student_wallet_recharge import (
+            assert_iitr_student_may_recharge,
+        )
 
         if not online_gateway_recharge_enabled(department=request.data.get("department_id")):
             return online_gateway_recharge_disabled_response()
@@ -516,3 +523,52 @@ def reconciliation_summary(request):
 def _csv_safe(value) -> str:
     text = "" if value is None else str(value)
     return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def payment_receipt(request, razorpay_payment_id: str):
+    """Receipt for a captured online payment: the payer, Finance or Main Admin. Others get 404, so a payment ID
+    cannot be probed."""
+    from iic_booking.payments.receipts import receipt_allowed
+    from iic_booking.payments.receipts import receipt_for
+
+    payment = (
+        Payment.objects.select_related("payment_order__user", "payment_order__booking__equipment", "payment_order__department")
+        .filter(razorpay_payment_id=razorpay_payment_id)
+        .first()
+    )
+    if payment is None or not (payment.payment_order.user_id == request.user.id or _is_finance_or_admin(request.user)):
+        return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not receipt_allowed(payment):
+        return Response({"error": "No receipt: this payment is not confirmed.", "code": "not_confirmed"}, status=status.HTTP_409_CONFLICT)
+    return Response(receipt_for(payment))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def booking_payment_preview(request, booking_id: int):
+    """What the booking owner will pay online, calculated on the server exactly as the order will be."""
+    from iic_booking.payments.fees import compute_fee_breakup
+    from iic_booking.payments.gateway_mode import public_status
+
+    booking = Booking.objects.select_related("equipment", "settlement_department").filter(pk=booking_id).first()
+    if booking is None or booking.user_id != request.user.id:
+        return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+    due = Decimal(str(booking.amount_due or 0))
+    breakup = compute_fee_breakup(due)
+    return Response({
+        "booking_reference": booking.virtual_booking_id or str(booking.booking_id),
+        "equipment": getattr(booking.equipment, "name", ""),
+        "department": getattr(booking.settlement_department, "name", ""),
+        "status": booking.get_status_display(),
+        "total_charge": str(booking.total_charge or 0),
+        "wallet_applied": str(getattr(booking, "wallet_amount_applied", 0) or 0),
+        "amount_due": str(due),
+        "breakup": {
+            "base_amount": str(breakup.base_amount), "convenience_fee": str(breakup.convenience_fee),
+            "fee_gst": str(breakup.fee_gst), "total_amount": str(breakup.total_amount),
+            "fee_percent": str(breakup.fee_percent), "fee_gst_percent": str(breakup.fee_gst_percent),
+        },
+        "gateway": public_status(request.user),
+    })
