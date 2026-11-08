@@ -173,7 +173,8 @@ def problems(details: IstemEquipmentDetails) -> dict[str, str]:
     for name, kind in (("category", IstemReferenceValue.KIND_EQUIPMENT_CATEGORY), ("facility_id", IstemReferenceValue.KIND_FACILITY)):
         value = getattr(details, name)
         known = _choices(kind)
-        if value and known and value not in {v["id"] or v["name"] for v in known}:
+        # I-STEM's own example sends the category by name ("Fabrication"); its id is accepted too.
+        if value and known and value not in {v["id"] for v in known if v["id"]} | {v["name"] for v in known}:
             out[name] = "Choose a value from I-STEM's list."
     for name in RATE_FIELDS:
         value = getattr(details, name)
@@ -187,10 +188,12 @@ def problems(details: IstemEquipmentDetails) -> dict[str, str]:
             except ValidationError:
                 out[name] = "Not a valid email address."
     if details.equipment_website:
+        website = details.equipment_website
         try:
-            URLValidator(schemes=["http", "https"])(details.equipment_website)
+            # A bare domain ("test.com", as in I-STEM's example) is accepted as well as a full address.
+            URLValidator(schemes=["http", "https"])(website if "://" in website else f"https://{website}")
         except ValidationError:
-            out["equipment_website"] = "Not a valid http(s) address."
+            out["equipment_website"] = "Not a valid web address."
     if details.last_amc_done:
         try:
             date.fromisoformat(details.last_amc_done)
@@ -202,11 +205,11 @@ def problems(details: IstemEquipmentDetails) -> dict[str, str]:
 def build_payload(details: IstemEquipmentDetails, institute_id: str) -> dict:
     """The Equipment Create form. Free-text supplier / service provider names go as "Other" plus suppl / ser_prov,
     as I-STEM documents for a value outside its own list."""
+    # Every documented field is sent, empty ones as "" ([USER 2026-11-08] Swagger "Send empty value"): I-STEM answered
+    # "Failed to insert equipment" to a form that left the empty optional fields out.
     payload: dict[str, str] = {}
     for name, istem_field, _, _ in FIELDS:
-        value = str(getattr(details, name) or "").strip()
-        if value:
-            payload[istem_field] = value
+        payload[istem_field] = str(getattr(details, name) or "").strip()
     if payload.get("supplier_name"):
         payload["suppl"] = payload["supplier_name"]
         payload["supplier_name"] = "Other"

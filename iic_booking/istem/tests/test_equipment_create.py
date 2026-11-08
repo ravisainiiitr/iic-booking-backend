@@ -162,3 +162,18 @@ def test_already_mapped_instrument_cannot_be_created():
     IstemEquipmentMapping.objects.create(equipment=equipment, istem_equipment_id="38750")
     with pytest.raises(MappingRefused, match="already mapped"):
         create_on_istem(admin, equipment.pk, client_factory=_factory(FakeTransport()))
+
+
+def test_every_documented_field_is_sent_and_istem_example_values_are_accepted():
+    """I-STEM's own Swagger example: empty optional fields sent as "", category by name, website as a bare domain."""
+    admin = _admin()
+    equipment = _equipment(_department("C"), "XRF")
+    _ready(equipment, admin)
+    out = save_details(admin, equipment.pk, {"category": "Microscopy", "equipment_website": "test.com",
+                                             "equipment_rate": "10.00", "facility_id": "1"})
+    assert out["problems"] == {}
+    payload = build_payload(IstemEquipmentDetails.objects.get(equipment=equipment), "213")
+    assert payload["category"] == "Microscopy" and payload["equipment_website"] == "test.com"
+    assert payload["equipment_project_id"] == "" and payload["pooling_status"] == "" and payload["last_amc_done"] == ""
+    assert payload["equipment_fov_rate"] == "" and payload["supplier_email_id"] == ""
+    assert save_details(admin, equipment.pk, {"category": "Unknown"})["problems"]["category"]
