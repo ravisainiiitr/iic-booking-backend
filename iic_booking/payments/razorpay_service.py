@@ -465,6 +465,8 @@ def settle_order_success(
     else:
         payment = existing_payment
 
+    _close_capture_issue(razorpay_payment_id)
+
     # Apply side effects once when transitioning to PAID
     if order.status != PaymentOrderStatus.PAID:
         if order.purpose == PaymentPurpose.BOOKING_SHORTFALL:
@@ -475,6 +477,19 @@ def settle_order_success(
         order.save(update_fields=["status", "updated_at"])
 
     return order, payment
+
+
+def _close_capture_issue(razorpay_payment_id: str) -> None:
+    """A captured, recorded payment closes any open "authorised payment could not be captured" issue for it."""
+    from iic_booking.payments.models import PaymentIssue, PaymentIssueKind, PaymentIssueStatus
+
+    PaymentIssue.objects.filter(
+        kind=PaymentIssueKind.NOT_CAPTURED, razorpay_payment_id=razorpay_payment_id, status=PaymentIssueStatus.OPEN
+    ).update(
+        status=PaymentIssueStatus.RESOLVED,
+        resolved_at=timezone.now(),
+        resolution_note="Closed automatically: Razorpay captured the payment and it was recorded.",
+    )
 
 
 def mark_order_failed(razorpay_order_id: str, raw_payload: dict | None = None) -> PaymentOrder | None:
@@ -513,8 +528,15 @@ def confirm_gateway_payment(order: PaymentOrder, razorpay_payment_id: str) -> di
             entity = client.payment.capture(razorpay_payment_id, _amount_to_paise(order.total_amount),
                                             {"currency": order.currency or "INR"})
         except Exception as exc:
-            logger.warning("Razorpay capture failed for %s", razorpay_payment_id, exc_info=True)
-            raise RazorpayServiceError("The payment could not be captured yet.") from exc
+            # Razorpay may have captured it at the same moment (automatic capture): ask again before calling it a failure.
+            try:
+                entity = client.payment.fetch(razorpay_payment_id)
+            except Exception:
+                entity = None
+            if not (isinstance(entity, dict) and entity.get("status") == "captured"
+                    and entity.get("order_id") == order.razorpay_order_id and not _amount_or_currency_problem(order, entity)):
+                logger.warning("Razorpay capture failed for %s", razorpay_payment_id, exc_info=True)
+                raise RazorpayServiceError("The payment could not be captured yet.") from exc
     if not isinstance(entity, dict) or entity.get("status") != "captured":
         status = entity.get("status") if isinstance(entity, dict) else "unknown"
         raise RazorpayServiceError(f"The payment is {status}, not captured.")
