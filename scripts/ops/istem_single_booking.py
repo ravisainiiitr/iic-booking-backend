@@ -301,7 +301,35 @@ def main():
     if booking is None:
         sys.exit("BOOKING is required")
 
-    if ACTION == "create":
+    if ACTION == "retry-create":
+        # Re-send a Create Booking that I-STEM definitely refused (e.g. "This slot is already booked." before Create
+        # moved to the next free hour). Only when nothing exists on I-STEM: no request_id, and the latest Create
+        # attempt is a definite refusal, never an uncertain one (those need the two-administrator recovery).
+        from iic_booking.istem.choices import AttemptOutcome, Operation
+        from iic_booking.istem.models import IstemApiAttempt
+
+        link = IstemBookingLink.objects.filter(booking=booking).first()
+        if link is None or link.sync_state != SyncState.CREATE_FAILED or link.request_id:
+            sys.exit(f"retry-create needs a CREATE_FAILED link without a request_id (link is "
+                     f"{getattr(link, 'sync_state', 'missing')}, request_id={getattr(link, 'request_id', None)})")
+        last = IstemApiAttempt.objects.filter(booking_link=link, operation=Operation.CREATE_BOOKING).order_by("-pk").first()
+        if last is None or last.outcome != AttemptOutcome.DEFINITE_FAILURE:
+            sys.exit(f"the latest Create Booking attempt is {getattr(last, 'outcome', 'missing')}, not a definite refusal")
+        with transaction.atomic():
+            service.record_event(booking_link=link, from_state=link.sync_state, to_state=SyncState.CREATE_READY,
+                                 reason="retry after a definite I-STEM refusal (single-booking workflow)")
+            link.sync_state = SyncState.CREATE_READY
+            link.needs_review, link.review_reason = False, ""
+            link.save(update_fields=["sync_state", "needs_review", "review_reason", "updated_at"])
+            outbox.add_job(Operation.CREATE_BOOKING, dedupe_key=f"CREATE_BOOKING:{booking.pk}",
+                           trigger="single-booking retry-create", booking_link=link)
+        out("link reset to CREATE_READY after", last.outcome, "attempt", last.pk)
+        run_jobs(link)
+        # A booking already completed is executed straight away (discovery would queue it a few minutes later).
+        booking.refresh_from_db()
+        if booking.status == "COMPLETED" and outbox.enqueue_fbr_execute(booking, trigger="single-booking retry-create"):
+            run_jobs(link)
+    elif ACTION == "create":
         link = outbox.enqueue_booking_sync(booking, trigger="single-booking workflow")
         if link is None:
             sys.exit("integration off")
@@ -331,7 +359,8 @@ def main():
     show_booking(booking)
     link = IstemBookingLink.objects.filter(booking=booking).first()
     # With confirmation on, Confirm Booking follows Create Booking automatically.
-    expected = {"create": (SyncState.CREATED, SyncState.CONFIRMED), "confirm": (SyncState.CONFIRMED,),
+    expected = {"create": (SyncState.CREATED, SyncState.CONFIRMED),
+                "retry-create": (SyncState.CREATED, SyncState.CONFIRMED, SyncState.EXECUTED), "confirm": (SyncState.CONFIRMED,),
                 "execute": (SyncState.EXECUTED, SyncState.EXECUTED_PENDING_VERIFY)}.get(ACTION)
     if expected and (link is None or link.sync_state not in expected):
         fail(f"link is {link.sync_state if link else 'missing'}, expected {expected}")
