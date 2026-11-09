@@ -119,13 +119,21 @@ def _existing_account(user, data: dict, link_token: str):
 
 
 def _same_mobile(profile: dict):
-    """Another portal account with the mobile number registered on I-STEM (different email), if any."""
+    """Another EXTERNAL portal account with the mobile number registered on I-STEM (different email), if any.
+
+    Only external accounts count: a staff or IIT Roorkee account that happens to carry the same number (an office
+    phone, or a staff member's own number) is not the same external person."""
     from iic_booking.users.models import User
+    from iic_booking.users.models.user_type import UserType
 
     mobile = _mobile(profile)
     if not mobile:
         return None
-    return User.objects.filter(phone_number__endswith=mobile).order_by("pk").first()
+    return (
+        User.objects.filter(phone_number__endswith=mobile, user_type__in=list(UserType.get_external_user_codes()))
+        .order_by("pk")
+        .first()
+    )
 
 
 def create_account(link_token: str, user_type: str):

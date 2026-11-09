@@ -277,3 +277,13 @@ def test_account_linked_to_another_istem_user_is_refused(on, mailoutbox):
     res = APIClient().post("/api/istem/register/complete/", {"link_token": _verified(mailoutbox), "user_type": "external"},
                            format="json")
     assert res.status_code == 409 and res.data["code"] == "linked_other"
+
+
+def test_a_staff_account_with_the_same_mobile_does_not_block(on, mailoutbox):
+    # e.g. a department office account carrying a staff member's number
+    User.objects.create_user(email="office@iitr.ac.in", password="x-Strong-1!", user_type=UserType.FINANCE,
+                             phone_number="9876543210")
+    res = APIClient().post("/api/istem/register/complete/", {"link_token": _verified(mailoutbox), "user_type": "external"},
+                           format="json")
+    assert res.status_code == 201, res.data
+    assert User.objects.filter(email__iexact="neha@lab.example.org").exists()
