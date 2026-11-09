@@ -100,9 +100,13 @@ def test_refusals(on, mailoutbox):
     link_token = _verified(mailoutbox)
     assert APIClient().post("/api/istem/register/complete/", {"link_token": link_token, "user_type": UserType.STUDENT},
                             format="json").data["code"] == "invalid_user_type"
-    User.objects.create_user(email="neha@lab.example.org", password="x-Strong-1!", user_type=UserType.EXTERNAL)
-    assert APIClient().post("/api/istem/register/complete/", {"link_token": link_token, "user_type": "external"},
-                            format="json").status_code == 409
+    # An account already using the email but still awaiting approval: linked, not signed in.
+    User.objects.create_user(email="neha@lab.example.org", password="x-Strong-1!", user_type=UserType.EXTERNAL,
+                             is_active=False, admin_approved=False)
+    res = APIClient().post("/api/istem/register/complete/", {"link_token": link_token, "user_type": "external"},
+                           format="json")
+    assert res.status_code == 409 and res.data["code"] == "existing_pending"
+    assert IstemUserLink.objects.get(user__email="neha@lab.example.org").public_user_id == "60018"
 
 
 def test_unavailable_when_istem_is_off(on, mailoutbox):
@@ -229,3 +233,47 @@ def test_internal_users_are_never_asked(on):
     res = APIClient()
     res.force_authenticate(student)
     assert res.get("/api/profiles/me/onboarding/").data["required"] is False
+
+
+def test_existing_portal_account_with_the_same_email_is_linked_and_signed_in(on, mailoutbox):
+    org = _org()
+    existing = User.objects.create_user(email="neha@lab.example.org", password="x-Strong-1!", user_type=UserType.EXTERNAL,
+                                        department=org)
+    User.objects.filter(pk=existing.pk).update(is_active=True, admin_approved=True, email_verified=True)
+    link_token = _verified(mailoutbox)
+    res = APIClient().post("/api/istem/register/complete/", {"link_token": link_token, "user_type": UserType.EXTERNAL},
+                           format="json")
+    assert res.status_code == 200, res.data
+    assert res.data["outcome"] == "linked_existing" and res.data["token"]
+    assert User.objects.filter(email__iexact="neha@lab.example.org").count() == 1
+    existing.refresh_from_db()
+    assert IstemUserLink.objects.get(user=existing).public_user_id == "60018"
+    assert existing.is_test_account is False and existing.has_usable_password()
+
+
+def test_internal_account_with_the_same_email_is_linked_but_signs_in_with_channel_i(on, mailoutbox):
+    existing = User.objects.create_user(email="neha@lab.example.org", password=None, user_type=UserType.STUDENT)
+    User.objects.filter(pk=existing.pk).update(is_active=True, admin_approved=True)
+    res = APIClient().post("/api/istem/register/complete/", {"link_token": _verified(mailoutbox), "user_type": "external"},
+                           format="json")
+    assert res.status_code == 409 and res.data["code"] == "existing_internal"
+    assert IstemUserLink.objects.get(user=existing).public_user_id == "60018"
+
+
+def test_same_mobile_under_another_email_gets_no_second_account(on, mailoutbox):
+    User.objects.create_user(email="neha.old@college.example.org", password="x-Strong-1!", user_type=UserType.EXTERNAL,
+                             phone_number="9876543210")
+    res = APIClient().post("/api/istem/register/complete/", {"link_token": _verified(mailoutbox), "user_type": "external"},
+                           format="json")
+    assert res.status_code == 409 and res.data["code"] == "mobile_exists"
+    assert "neha@lab.example.org" not in res.data["error"]
+    assert not User.objects.filter(email__iexact="neha@lab.example.org").exists()
+
+
+def test_account_linked_to_another_istem_user_is_refused(on, mailoutbox):
+    existing = User.objects.create_user(email="neha@lab.example.org", password="x-Strong-1!", user_type=UserType.EXTERNAL)
+    User.objects.filter(pk=existing.pk).update(is_active=True, admin_approved=True)
+    IstemUserLink.objects.create(user=existing, public_user_id="59999")
+    res = APIClient().post("/api/istem/register/complete/", {"link_token": _verified(mailoutbox), "user_type": "external"},
+                           format="json")
+    assert res.status_code == 409 and res.data["code"] == "linked_other"
