@@ -48,10 +48,14 @@ def opt_in_status(user) -> dict:
         pass
     from .otp import available as codes_available  # imported here: otp.py builds on this module
 
+    phone = row.phone_e164 if row else default_phone
     return {
         "available": conf.enabled(),
+        # Show the one-tap "Get booking updates on WhatsApp" prompt (9 Nov 2026): sending is on, the user has not
+        # answered yet (no opt-in record either way), and their number could receive messages now (pilot list).
+        "ask": bool(conf.enabled() and row is None and phone and conf.may_send_to(phone)),
         "opted_in": bool(row and row.opted_in),
-        "phone": row.phone_e164 if row else default_phone,
+        "phone": phone,
         "opted_in_at": row.opted_in_at if row else None,
         "phone_verified": bool(row and row.phone_e164 and row.phone_verified_e164 == row.phone_e164),
         "codes_available": codes_available(),
