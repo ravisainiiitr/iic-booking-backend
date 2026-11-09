@@ -27,6 +27,38 @@ def checkout_name() -> str:
     return str(getattr(settings, "RAZORPAY_CHECKOUT_NAME", "") or "DEAN SRIC IIT ROORKEE").strip()
 
 
+_PLURAL_ONE = re.compile(r"(?<![\d.])1 (sample|slot|hour|part|piece|element|set|unit|item)s\b", re.IGNORECASE)
+
+
+def _clean_charge_text(text: str) -> str:
+    """A charge-breakdown line made fit for the receipt: rupees as Rs., whole numbers without .0, '1 sample'."""
+    s = " ".join(str(text or "").split())
+    s = s.replace("₹", "Rs. ").replace("Rs.  ", "Rs. ")
+    s = re.sub(r"(?<![\d.])(\d+)\.0(?!\d)", r"\1", s)  # 1.0 samples -> 1 samples
+    s = _PLURAL_ONE.sub(lambda m: f"1 {m.group(1)}", s)
+    s = re.sub(r"@ (?=\d)", "@ Rs. ", s)
+    return s[:140]
+
+
+def charge_lines(booking) -> list[str]:
+    """Quantity lines for the receipt from the booking's charge breakdown: samples, slots or hours for analysis;
+    weight, parts and machine time for fabrication. GST and zero-amount lines are left out (GST has its own column)."""
+    rows = getattr(booking, "charge_breakdown", None) or []
+    out: list[str] = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        desc = str(row.get("description") or "").strip()
+        try:
+            amount = float(row.get("amount") or 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        if not desc or desc.upper().startswith("GST") or abs(amount) < 0.005:
+            continue
+        out.append(_clean_charge_text(desc))
+    return out[:5]
+
+
 def _service(order) -> dict:
     booking = order.booking
     checkout = getattr(order, "external_checkout", None) if order.booking_id is None else None
@@ -35,7 +67,7 @@ def _service(order) -> dict:
     if order.purpose == PaymentPurpose.WALLET_RECHARGE:
         department = getattr(order.department, "name", "") or "department"
         return {"description": recharge_purpose(department), "booking_reference": "", "equipment": "",
-                "booking_total": "", "booking_gst": ""}
+                "booking_total": "", "booking_gst": "", "charge_lines": []}
     equipment = getattr(getattr(booking, "equipment", None), "name", "") or getattr(getattr(checkout, "equipment", None), "name", "")
     reference = (getattr(booking, "virtual_booking_id", "") or str(getattr(booking, "booking_id", "") or "")) if booking else ""
     gst = None
@@ -50,6 +82,8 @@ def _service(order) -> dict:
         # The booking's own total and the GST inside it, from its charge breakdown (blank for wallet recharges).
         "booking_total": str(booking.total_charge) if booking is not None and booking.total_charge is not None else "",
         "booking_gst": str(gst) if gst else "",
+        # Quantity details for the particulars line (samples, slots, weight, machine time ...).
+        "charge_lines": charge_lines(booking) if booking is not None else [],
     }
 
 
