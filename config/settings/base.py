@@ -609,6 +609,8 @@ REST_FRAMEWORK = {
         "payments_user": env("PAYMENTS_USER_THROTTLE_RATE", default="30/min"),
         "payments_webhook": env("PAYMENTS_WEBHOOK_THROTTLE_RATE", default="600/min"),
         "provisioning_session": env("PROVISIONING_SESSION_THROTTLE_RATE", default="30/hour"),
+        # Public receipt check (payments.views.verify_receipt), per IP.
+        "receipt_verify": env("RECEIPT_VERIFY_THROTTLE_RATE", default="60/hour"),
         # Research Copilot only (portal-wide traffic is not throttled by these)
         "research_copilot_user": env("RESEARCH_COPILOT_USER_THROTTLE", default="300/hour"),
         "research_copilot_read": env("RESEARCH_COPILOT_READ_THROTTLE", default="300/hour"),
@@ -1032,6 +1034,9 @@ RAZORPAY_CHECKOUT_NAME = env("RAZORPAY_CHECKOUT_NAME", default="DEAN SRIC IIT RO
 # GSTIN of the SRIC office, printed on payment receipts as on SRIC's own receipts (from the SRIC receipt the user shared,
 # 8 Nov 2026). Shown for reference only: the receipt is not a tax invoice.
 RECEIPT_INSTITUTE_GSTIN = env("RECEIPT_INSTITUTE_GSTIN", default="05AAALI0033R1Z5")
+# Secret for the verification code printed on receipts (payments/receipt_verification.py). Blank = SECRET_KEY.
+# Must stay fixed once receipts are issued: changing it changes every code.
+RECEIPT_VERIFY_SECRET = env("RECEIPT_VERIFY_SECRET", default="")
 # A captured payment not in any Razorpay settlement after this many days is raised for Finance.
 RAZORPAY_UNSETTLED_ALERT_DAYS = env.int("RAZORPAY_UNSETTLED_ALERT_DAYS", default=5)
 RAZORPAY_KEY_SECRET = env("RAZORPAY_KEY_SECRET", default="")

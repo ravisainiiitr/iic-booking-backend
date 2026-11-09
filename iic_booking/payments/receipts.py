@@ -309,8 +309,15 @@ def receipt_for(payment: Payment) -> dict:
     department = order_department(order)
     from .receipt_numbers import ensure as ensure_receipt_number
 
+    number = ensure_receipt_number(payment)
+    from .receipt_verification import verification_code
+    from .receipt_verification import verify_url
+
     return {
-        "receipt_number": ensure_receipt_number(payment),
+        "receipt_number": number,
+        # Anyone holding the receipt can check it on <site>/verify-receipt (QR code on the receipt).
+        "verification_code": verification_code(payment),
+        "verify_url": verify_url(payment),
         # The reference the order carries at Razorpay (shown to finance; not the printed receipt number).
         "gateway_receipt": order.receipt,
         "title": t["receipt_heading"],
