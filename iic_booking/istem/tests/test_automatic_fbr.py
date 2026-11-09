@@ -56,6 +56,19 @@ def test_a_link_needing_review_is_shown_as_with_the_iic_team(automatic):
     assert automatic_status(booking)["step"] == "attention"
 
 
+def test_a_held_record_still_shows_the_steps_i_stem_accepted(automatic):
+    """IICXRF202600014: confirmed on I-STEM, then FBR Execute held for the team. The page keeps the registered and
+    confirmed steps (with their numbers) and only marks the FBR step as held."""
+    booking = ready_booking()
+    IstemBookingLink.objects.create(booking=booking, sync_state=SyncState.EXECUTE_READY, needs_review=True,
+                                    request_id="95587", fbr_no="1976095587", confirmation_id="72001")
+    booking.refresh_from_db()
+    status = automatic_status(booking)
+    assert (status["step"], status["reached"]) == ("attention", "confirmed")
+    assert (status["fbr_no"], status["confirmation_id"]) == ("1976095587", "72001")
+    assert status["booking_completed"] is (booking.status == "COMPLETED")
+
+
 def test_manual_fbr_number_is_refused_in_automatic_mode(automatic):
     booking = ready_booking()
     booking.istem_fbr_status = IstemFbrStatus.PENDING_FBR

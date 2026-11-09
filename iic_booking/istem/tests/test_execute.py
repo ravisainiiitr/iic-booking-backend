@@ -487,16 +487,19 @@ def test_executed_status_read_while_an_identical_retry_is_queued_leaves_it_to_th
     assert (link.sync_state, link.payment_id) == (SyncState.EXECUTED, "9981")
 
 
-@pytest.mark.parametrize("shift,field", [
-    (timedelta(days=30), "allocation_date"),  # slot (allocation) in the future
-    (timedelta(days=1), "allocation_date"),  # slot on the IST day after completion (still in the past)
+@pytest.mark.parametrize("shift", [
+    timedelta(days=30),  # slot (allocation) still in the future
+    timedelta(days=1),  # slot on the IST day after completion
 ])
-def test_allocation_date_rules(live, shift, field):
+def test_completed_before_the_slot_uses_the_completion_date(live, shift):
+    """[USER 2026-11-09] Work completed before its slot date (e.g. samples analysed early) is executed at once with
+    the completion date as the allocation date: the day the equipment was really used."""
     link = _confirmed()
     start = COMPLETED_AT + shift
     link.booking.daily_slots.update(start_datetime=start, end_datetime=start + timedelta(hours=1))
     result = build_execute_payload(link.booking, link)
-    assert field in result.errors and field not in result.payload
+    assert "allocation_date" not in result.errors
+    assert result.payload["allocation_date"] == result.payload["completion_date"]
 
 
 def test_worker_lost_mid_execute_becomes_uncertain(live):

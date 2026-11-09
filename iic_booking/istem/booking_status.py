@@ -104,6 +104,15 @@ def automatic_status(booking, *, include_reason: bool = False) -> dict | None:
     except Exception:  # noqa: BLE001 - RelatedObjectDoesNotExist: not sent yet
         link = None
     state = getattr(link, "sync_state", None)
+    # The furthest step I-STEM has accepted (from the identifiers held), even while the record is held for the team.
+    reached = _STEP_BY_STATE.get(state, "queued")
+    if reached in ("queued", "cancelled") and link is not None:
+        if getattr(link, "payment_id", None):
+            reached = "executed"
+        elif getattr(link, "confirmation_id", None):
+            reached = "confirmed"
+        elif getattr(link, "request_id", None):
+            reached = "registered"
     if state in _ATTENTION or getattr(link, "needs_review", False):
         step = "attention"
     else:
@@ -111,6 +120,9 @@ def automatic_status(booking, *, include_reason: bool = False) -> dict | None:
     result = {
         "automatic": True,
         "step": step,
+        "reached": reached if state != SyncState.REMOTE_CANCELLED else "cancelled",
+        # FBR Execute follows completion: the page says whether it is waiting for completion or being sent.
+        "booking_completed": getattr(booking, "status", "") == "COMPLETED",
         "label": LABELS[step],
         "fbr_no": (getattr(link, "fbr_no", None) or "") if link else "",
         "request_id": (getattr(link, "request_id", None) or "") if link else "",

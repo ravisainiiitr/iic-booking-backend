@@ -563,9 +563,9 @@ def build_execute_payload(booking, link) -> MappingResult:
     """FBR Execute: request_id + confirmation_id from the link, completion data from the completed local booking.
 
     Dates are IST calendar dates (YYYY-MM-DD). allocation_date is "the date the equipment/slot was actually allocated
-    to the user" [SPEC]: the IST date of the first allocated local slot (the slot sent as allocated_timings_from).
-    completion_date is the IST date of ``Booking.completed_at``. Neither may be in the future, and the service cannot
-    have completed before its slot date.
+    to the user" [SPEC]: the IST date of the first allocated local slot (the slot sent as allocated_timings_from), or
+    the completion date when the work was completed before that slot ([USER 2026-11-09]: the day it was really used).
+    completion_date is the IST date of ``Booking.completed_at``. Neither may be in the future.
 
     A late cancellation that kept part of the fee (``link.retained_amount`` set) is closed instead of cancelled
     ([TEAM 2026-10-30]); see ``_build_retention_payload``.
@@ -596,10 +596,12 @@ def build_execute_payload(booking, link) -> MappingResult:
     allocated = ist(start).date() if start else None
     if allocated is None:
         result.errors["allocation_date"] = "the booking has no allocated slot window"
+    elif completed is not None and completed < allocated:
+        # [USER 2026-11-09] Completed before the slot date (e.g. samples analysed early): the equipment was actually
+        # used on the completion date, so that is the allocation date sent; FBR Execute then goes ahead at once.
+        p["allocation_date"] = format_execute_date(booking.completed_at)
     elif allocated > today:
         result.errors["allocation_date"] = "allocation_date is in the future (I-STEM refuses future allocation dates)"
-    elif completed is not None and completed < allocated:
-        result.errors["allocation_date"] = "the booking was completed before its allocated slot date; check the booking"
     else:
         p["allocation_date"] = format_execute_date(start)
     amount, error = _final_amount(booking)
