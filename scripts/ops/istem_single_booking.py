@@ -109,11 +109,12 @@ def install_waiver(booking):
     out("INFO | FBR-flag waiver active for booking", booking.pk, "only")
 
 
-def remote_lookup(name):
+def remote_lookup(name, with_institute=False):
     client = service.default_client()
     # The institute is the one I-STEM names in the token (no longer a portal setting).
-    page = client.list_equipment(institute_id=client.session_info().institute_id, equipment_name=name, limit=10)
-    return page.rows
+    institute_id = client.session_info().institute_id
+    page = client.list_equipment(institute_id=institute_id, equipment_name=name, limit=10)
+    return (page.rows, institute_id) if with_institute else page.rows
 
 
 def show_switches():
@@ -126,7 +127,7 @@ def show_equipment(eq):
     m = IstemEquipmentMapping.objects.filter(equipment=eq).first()
     if m:
         out("  mapping | istem_equipment_id=", m.istem_equipment_id, "active=", m.is_active, "verified=", bool(m.verified_at),
-            "sample_key=", m.sample_count_input_key or "-", "remote_found=", m.remote_found, "remote_name=", m.remote_equipment_name or "-")
+            "sample_key=", m.sample_count_input_key or "-", "remote_found=", m.remote_found, "remote_institute=", m.remote_institute_id or "-", "remote_name=", m.remote_equipment_name or "-")
     else:
         out("  mapping | none")
     for cp in eq.charge_profiles.all().order_by("pk"):
@@ -205,14 +206,19 @@ def main():
         if not istem_id.isdigit():
             sys.exit("ISTEM_EQUIPMENT_ID must be numeric")
         name = os.environ.get("REMOTE_NAME", "").strip()
-        rows = remote_lookup(name) if name else []
-        if name and not any(str(r.get("equipment_id")) == istem_id for r in rows):
-            sys.exit(f"I-STEM equipment {istem_id} is not listed under the name {name!r}: {rows}")
+        rows, institute_id = remote_lookup(name, with_institute=True) if name else ([], None)
+        # Only the row with this equipment_id counts (a name can be listed more than once).
+        rows = [r for r in rows if str(r.get("equipment_id")) == istem_id]
+        if name and not rows:
+            sys.exit(f"I-STEM equipment {istem_id} is not listed under the name {name!r} for the token's institute")
         with transaction.atomic():
+            # Create Booking checks remote_found and remote_institute_id (equipment_remote_problem): record both, as
+            # 'istem_recover verify-equipment' would, when the listing under the token's institute shows this id.
             m, created = IstemEquipmentMapping.objects.update_or_create(equipment=eq, defaults={
                 "istem_equipment_id": istem_id, "is_active": True, "verified_by": actor(), "verified_at": timezone.now(),
                 "remote_checked_at": timezone.now() if rows else None, "remote_found": bool(rows),
                 "remote_equipment_name": (rows[0]["equipment_name"] if rows else "")[:255],
+                "remote_institute_id": str(institute_id or "") if rows else "",
                 "notes": "Mapped for the I-STEM end-to-end demo (I-STEM staging).",
             })
             sample_key = os.environ.get("SAMPLE_KEY", "").strip()
