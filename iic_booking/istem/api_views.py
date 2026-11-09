@@ -142,10 +142,11 @@ def istem_register_complete(request):
         return Response({"error": "Too many sign-up attempts from your network. Please wait an hour and try again.",
                          "code": "rate_limited"}, status=status.HTTP_429_TOO_MANY_REQUESTS)
     try:
-        user = create_account(str(request.data.get("link_token") or ""), str(request.data.get("user_type") or ""))
+        user, outcome = create_account(str(request.data.get("link_token") or ""), str(request.data.get("user_type") or ""))
     except DirectSignupError as exc:
         return Response({"error": exc.message, "code": exc.code}, status=exc.http_status)
-    registration_approvals.on_registration_verified(user, request=request)
+    if outcome == "created":
+        registration_approvals.on_registration_verified(user, request=request)
     token = _regenerate_auth_token(user)
     set_token_activity(token.key)
     if _mark_login_and_check_first(user) and _should_send_welcome_email(user):
@@ -156,7 +157,8 @@ def istem_register_complete(request):
         except Exception:  # noqa: BLE001 - the account exists; a welcome email is not worth failing for
             pass
     return Response({"token": token.key, "user": UserSerializer(user, context={"request": request}).data,
-                     "onboarding": onboarding.status(user)}, status=status.HTTP_201_CREATED)
+                     "onboarding": onboarding.status(user), "outcome": outcome},
+                    status=status.HTTP_201_CREATED if outcome == "created" else status.HTTP_200_OK)
 
 
 # --- I-STEM equipment mapping page (Main Admin: every instrument; department administrators: their own) --------------
