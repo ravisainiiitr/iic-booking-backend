@@ -541,6 +541,7 @@ def fake_event(booking, kind, *, previous="", new=""):
     ("BOOKED", "CONFIRMED", "", "", "booking_confirmed"),
     ("BOOKED", "STATUS_CHANGED", "PENDING", "BOOKED", "booking_confirmed"),
     ("BOOKED", "STATUS_CHANGED", "PENDING_PAYMENT", "BOOKED", "booking_confirmed"),
+    ("BOOKED", "STATUS_CHANGED", "HOLD", "BOOKED", "booking_confirmed"),
     ("CANCELLED", "CANCELLED", "", "", "booking_cancelled"),
     ("REFUNDED", "REFUNDED", "", "", "booking_cancelled"),
     ("BOOKED", "RESCHEDULED", "", "", "booking_rescheduled"),
@@ -551,12 +552,13 @@ def test_each_booking_event_maps_to_its_template_with_the_right_values(sending, 
         hooks.booking_event(fake_event(fake_booking(status), kind, previous=previous, new=new))
     args = notify.call_args
     assert args.args[1] == expected and len(args.args[2]) == len(BY_EVENT[expected].params)
-    assert "99" in args.kwargs["event_key"]
+    # One confirmation per booking (shared with the payment path); every other event once per event.
+    assert args.kwargs["event_key"].endswith("booking_confirmed:payment") if expected == "booking_confirmed" else "99" in args.kwargs["event_key"]
 
 
 @pytest.mark.parametrize("status, kind, previous, new", [
     ("BOOKED", "COMMENT", "", ""),
-    ("BOOKED", "STATUS_CHANGED", "HOLD", "BOOKED"),
+    ("BOOKED", "STATUS_CHANGED", "BOOKING_NOT_UTILIZED", "BOOKED"),
     ("HOLD", "STATUS_CHANGED", "BOOKED", "HOLD"),
     ("WAITLISTED", "CREATED", "", ""),
     ("PENDING", "CREATED", "", ""),
@@ -710,3 +712,23 @@ def test_the_lifecycle_call_sites_exist():
     for path, name in (("equipment/booking_reminders.py", "booking_reminder"), ("equipment/waitlist.py", "waitlist_slot_available"),
                        ("equipment/fabrication_workflow.py", "booking_rejected")):
         assert f"from iic_booking.whatsapp.hooks import {name}" in open(f"iic_booking/{path}", encoding="utf8").read()
+
+
+def test_a_whole_booking_journey_sends_one_message_per_step(sending):
+    """Confirmed (once, whichever path reports it), payment, rescheduled, completed: in that order, nothing twice."""
+    for event in ("booking_confirmed", "booking_rescheduled", "booking_completed", "booking_cancelled"):
+        approve(event)
+    booking = fake_booking("BOOKED")
+    booking.user = opted_in()
+    booking.pk = 11
+    with patch("iic_booking.whatsapp.service._enqueue"), patch("iic_booking.whatsapp.hooks._first_slot", lambda b: None):
+        hooks.booking_event(SimpleNamespace(pk=1, event_id=1, booking=booking, event_type="CREATED", previous_status="", new_status="BOOKED"))
+        hooks.booking_confirmed_by_payment(booking)  # the payment path reports the same confirmation
+        hooks.booking_event(SimpleNamespace(pk=2, event_id=2, booking=booking, event_type="STATUS_CHANGED",
+                                            previous_status="PENDING_PAYMENT", new_status="BOOKED"))
+        hooks.booking_event(SimpleNamespace(pk=3, event_id=3, booking=booking, event_type="RESCHEDULED", previous_status="", new_status=""))
+        booking.status = "COMPLETED"
+        hooks.booking_event(SimpleNamespace(pk=4, event_id=4, booking=booking, event_type="COMPLETED", previous_status="BOOKED", new_status="COMPLETED"))
+        hooks.booking_event(SimpleNamespace(pk=5, event_id=5, booking=booking, event_type="COMMENT", previous_status="", new_status=""))
+    events = list(WhatsAppMessage.objects.order_by("id").values_list("event", flat=True))
+    assert events == ["booking_confirmed", "booking_rescheduled", "booking_completed"]

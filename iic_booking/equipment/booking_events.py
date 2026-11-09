@@ -459,10 +459,6 @@ def create_booking_event(
         else:
             _safe_queue_notification()
 
-        from iic_booking.whatsapp.hooks import booking_event as whatsapp_booking_event
-
-        whatsapp_booking_event(event)  # nothing unless WhatsApp is on and the user opted in; never raises
-
         from .print_3d_notifications import maybe_dispatch_print_3d_stl_notification
 
         maybe_dispatch_print_3d_stl_notification(
@@ -472,6 +468,15 @@ def create_booking_event(
             new_status=new_status,
             metadata=metadata,
         )
+
+    # WhatsApp (9 Nov 2026): every event goes to the hook, whether or not the generic email is sent here. Many paths
+    # record their event silently because they send their own email (completion, external cancellations and refunds,
+    # maintenance reschedules, slot exchanges, waitlist promotion); the hook itself picks the events users are told
+    # about (confirmed, cancelled/refunded, rescheduled, completed) and ignores the rest. It does nothing unless
+    # WhatsApp is on and the user opted in, never raises, and sends once per event.
+    from iic_booking.whatsapp.hooks import booking_event as whatsapp_booking_event
+
+    whatsapp_booking_event(event)
 
     # Print_3D cleanup on completion should happen even when email notifications are suppressed
     # (e.g. auto-complete when sample lifecycle becomes Analyzed).
