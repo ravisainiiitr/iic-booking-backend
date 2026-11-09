@@ -94,3 +94,14 @@ def test_receipt_contact_falls_back_to_the_template_email(departments):
     _iic, phy = departments
     UserFactory(user_type=UserType.FINANCE, department=phy, email="gone@example.org", is_active=False)
     assert receipt_for(_paid(1, phy))["template"]["contact_email"] == "arsric@iitr.ac.in"
+
+
+def test_receipt_shows_the_facility_department_and_its_grant_code(departments):
+    from iic_booking.payments.receipts import receipt_for
+
+    iic, phy = departments
+    Department.objects.filter(pk=iic.pk).update(internal_grant_code=" IIC-GRANT-01 ")
+    receipt = receipt_for(_paid(1, iic))
+    assert receipt["department_name"] == "Institute Instrumentation Centre"
+    assert receipt["grant_code"] == "IIC-GRANT-01"
+    assert receipt_for(_paid(2, phy))["grant_code"] == ""  # none set: the receipt leaves the line out

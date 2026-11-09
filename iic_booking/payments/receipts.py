@@ -268,6 +268,11 @@ def receipt_for(payment: Payment) -> dict:
     t = template_values()
     # The department's Accounts In Charge answers payment questions; the template's email is the fallback.
     t["contact_email"] = department_accounts_email(order) or t["contact_email"]
+    from .receipt_numbers import order_department
+
+    # The department whose facility the money is for (the recharged department for a wallet recharge), with the
+    # SRIC / accounts grant code its income is booked under. Blank when the department has no grant code set.
+    department = order_department(order)
     from .receipt_numbers import ensure as ensure_receipt_number
 
     return {
@@ -291,6 +296,8 @@ def receipt_for(payment: Payment) -> dict:
         "payer_email": getattr(user, "email", "") or "",
         "purpose": order.get_purpose_display(),
         **_service(order),
+        "department_name": (getattr(department, "name", "") or "").strip(),
+        "grant_code": (getattr(department, "internal_grant_code", "") or "").strip(),
         "razorpay_payment_id": payment.razorpay_payment_id,
         "razorpay_order_id": order.razorpay_order_id,
         "method": payment.method,
