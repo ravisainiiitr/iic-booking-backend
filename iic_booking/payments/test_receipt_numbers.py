@@ -66,3 +66,31 @@ def test_the_serial_starts_again_each_year(departments):
     Payment.objects.filter(pk=old.pk).update(receipt_number=None, created_at=datetime(2025, 12, 31, 23, 0, tzinfo=IST))
     assert ensure(Payment.objects.get(pk=old.pk)) == "IITR/IIC/2025/00001"
     assert _paid(2, iic).receipt_number.endswith("/00002")  # this year's series already had 00001
+
+
+def test_receipt_contact_is_the_department_accounts_in_charge(departments):
+    from iic_booking.payments.receipts import receipt_for
+
+    iic, phy = departments
+    from django.contrib.auth import get_user_model
+
+    UserFactory(user_type=UserType.FINANCE, department=iic, email="iic.left@example.org")
+    UserFactory(user_type=UserType.FINANCE, department=iic, email="iic.accounts@example.org")
+    UserFactory(user_type=UserType.FINANCE, department=iic, email="iic.second@example.org")
+    UserFactory(user_type=UserType.FINANCE, department=phy, email="phy.accounts@example.org")
+    UserFactory(user_type=UserType.OPERATOR, department=phy, email="phy.operator@example.org")
+    # Staff accounts start inactive until approved; approve all but the one who left.
+    get_user_model().objects.exclude(email="iic.left@example.org").filter(email__endswith="@example.org").update(
+        is_active=True
+    )
+    # Active only; with several, the first appointed (lowest id).
+    assert receipt_for(_paid(1, iic))["template"]["contact_email"] == "iic.accounts@example.org"
+    assert receipt_for(_paid(2, phy))["template"]["contact_email"] == "phy.accounts@example.org"
+
+
+def test_receipt_contact_falls_back_to_the_template_email(departments):
+    from iic_booking.payments.receipts import receipt_for
+
+    _iic, phy = departments
+    UserFactory(user_type=UserType.FINANCE, department=phy, email="gone@example.org", is_active=False)
+    assert receipt_for(_paid(1, phy))["template"]["contact_email"] == "arsric@iitr.ac.in"
