@@ -234,6 +234,31 @@ def _payer_organisation(user) -> str:
     return (getattr(department, "name", "") or "")[:200]
 
 
+def department_accounts_email(order) -> str:
+    """Email of the Accounts In Charge of the department the money is for; blank when it has none.
+
+    Payment questions go to that department's accounts, not to a central address. With several, the
+    longest-serving (lowest id) is printed, so the same receipt always shows the same address.
+    """
+    from django.contrib.auth import get_user_model
+
+    from iic_booking.users.models.user_type import UserType
+
+    from .receipt_numbers import order_department
+
+    department = order_department(order)
+    if department is None:
+        return ""
+    email = (
+        get_user_model().objects.filter(user_type=UserType.FINANCE, is_active=True, department_id=department.pk)
+        .exclude(email="")
+        .order_by("pk")
+        .values_list("email", flat=True)
+        .first()
+    )
+    return (email or "").strip()
+
+
 def receipt_for(payment: Payment) -> dict:
     from .instrument import describe
 
@@ -241,6 +266,8 @@ def receipt_for(payment: Payment) -> dict:
     user = order.user
     how = describe(payment)
     t = template_values()
+    # The department's Accounts In Charge answers payment questions; the template's email is the fallback.
+    t["contact_email"] = department_accounts_email(order) or t["contact_email"]
     from .receipt_numbers import ensure as ensure_receipt_number
 
     return {

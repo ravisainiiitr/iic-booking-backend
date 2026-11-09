@@ -23,20 +23,23 @@ INSTITUTE = "IITR"
 FALLBACK_DEPARTMENT = "IITR"
 
 
+def order_department(order):
+    """The department the money is for: the instrument's department, or the recharged department."""
+    if order.purpose == "WALLET_RECHARGE":
+        return order.department
+    booking = order.booking
+    if booking is None:
+        checkout = getattr(order, "external_checkout", None)
+        booking = getattr(checkout, "booking", None)
+        equipment = getattr(booking, "equipment", None) or getattr(checkout, "equipment", None)
+    else:
+        equipment = booking.equipment
+    return getattr(equipment, "internal_department", None) or order.department
+
+
 def department_code(order) -> str:
     """The department code for the order, made safe for a receipt number."""
-    department = None
-    if order.purpose == "WALLET_RECHARGE":
-        department = order.department
-    else:
-        booking = order.booking
-        if booking is None:
-            checkout = getattr(order, "external_checkout", None)
-            booking = getattr(checkout, "booking", None)
-            equipment = getattr(booking, "equipment", None) or getattr(checkout, "equipment", None)
-        else:
-            equipment = booking.equipment
-        department = getattr(equipment, "internal_department", None) or order.department
+    department = order_department(order)
     code = re.sub(r"[^A-Z0-9]", "", str(getattr(department, "code", "") or "").upper())[:12]
     return code or FALLBACK_DEPARTMENT
 
