@@ -180,3 +180,26 @@ def test_label_shows_the_lab_and_the_addressed_people(on, booking):
     assert booking.virtual_booking_id in text
     assert IIC_ADDRESS.splitlines()[1] in text
     assert timezone.now() - SampleShipmentLabel.objects.get(booking=booking).created_at < timedelta(minutes=1)
+
+
+PUBLIC = "/api/v1/external-booking/sample-label/status/"
+
+
+def test_anyone_who_scans_the_label_sees_the_booking_and_latest_status(on, booking):
+    from rest_framework.test import APIClient
+
+    token = _label(booking)
+    office, _oic, _lab = _people(booking)
+    r = APIClient().get(PUBLIC, {"code": token})  # not signed in
+    assert r.status_code == 200, r.content
+    data = r.json()
+    assert data["equipment"] == booking.equipment.name and data["payment"] == "Paid"
+    assert data["current_status"] == "Not received at the office yet" and data["timeline"] == []
+    assert data["department"] == booking.equipment.internal_department.name
+    assert "email" not in str(data).lower() and "amount" not in data
+    _scan(office, token)
+    data = APIClient().get(PUBLIC, {"code": token}).json()
+    assert data["current_status"] == "Received at Office" and data["updated_at"]
+    # The 8-letter code printed under the QR works too; anything else is not found.
+    assert APIClient().get(PUBLIC, {"code": "SCAN2345"}).status_code == 200
+    assert APIClient().get(PUBLIC, {"code": "nope"}).status_code == 404

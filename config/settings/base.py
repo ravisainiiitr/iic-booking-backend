@@ -611,6 +611,8 @@ REST_FRAMEWORK = {
         "provisioning_session": env("PROVISIONING_SESSION_THROTTLE_RATE", default="30/hour"),
         # Public receipt check (payments.views.verify_receipt), per IP.
         "receipt_verify": env("RECEIPT_VERIFY_THROTTLE_RATE", default="60/hour"),
+        # Public view of a parcel's label QR code (external_services.views.sample_label_public), per IP.
+        "sample_label_public": env("SAMPLE_LABEL_PUBLIC_THROTTLE_RATE", default="120/hour"),
         # Research Copilot only (portal-wide traffic is not throttled by these)
         "research_copilot_user": env("RESEARCH_COPILOT_USER_THROTTLE", default="300/hour"),
         "research_copilot_read": env("RESEARCH_COPILOT_READ_THROTTLE", default="300/hour"),
