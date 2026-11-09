@@ -6342,6 +6342,7 @@ def list_bookings(request):
         booking_id: Optional. Filter by booking ID (admin/OIC only; use with limit=1 to fetch one booking).
         status: Optional. Filter by booking status (PENDING, BOOKED, COMPLETED, CANCELLED, ABSENT, REFUNDED)
         start_date: Optional. Filter bookings from this date (YYYY-MM-DD)
+        created_from / created_to: Optional. Filter by the local date the booking was made (YYYY-MM-DD, inclusive)
         end_date: Optional. Filter bookings until this date (YYYY-MM-DD)
         ordering: Optional. Order by field (default: -created_at). Use '-' prefix for descending.
         limit: Optional. Max number of results per page (default: 50; at most 500 with list_view, else 100).
@@ -6793,6 +6794,27 @@ def _booking_list_queryset(request, *, min_search_chars: int = 0):
                 status=status.HTTP_400_BAD_REQUEST,
             )
     
+    # Filter by the day the booking was made (local dates, inclusive): the dashboard's "Bookings made today".
+    for param, lookup in (("created_from", "created_at__date__gte"), ("created_to", "created_at__date__lte")):
+        raw = (request.query_params.get(param) or "").strip()
+        if not raw:
+            continue
+        try:
+            day = parse_date(raw)
+        except (ValueError, TypeError):
+            day = None
+        if day is None:
+            return None, Response(
+                {"error": f"Invalid {param} format. Use YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        queryset = queryset.filter(**{lookup: day})
+    # exclude_test=1: leave out test accounts' bookings and test equipment, as the dashboard figures do.
+    if (request.query_params.get("exclude_test") or "").strip().lower() in ("1", "true", "yes"):
+        from .testdata import exclude_test_bookings
+
+        queryset = exclude_test_bookings(queryset)
+
     # View Booking / My Bookings status (incl. derived Pending / Result Overdue) and default group order.
     from . import booking_list_status as bls
 

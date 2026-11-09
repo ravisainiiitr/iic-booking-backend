@@ -167,7 +167,10 @@ def test_test_account_bookings_are_excluded(two_departments):
     tester.is_test_account = True
     tester.save(update_fields=["is_test_account"])
     _book(f, tester, two_departments["eq"][0], f.future(days=1), total_charge="999.00")
-    assert _summary(_admin())["bookings"]["created_today"] == 3
+    bookings = _summary(_admin())["bookings"]
+    assert bookings["created_today"] == 3
+    # The card says how many test bookings it left out, so a test booking made today is not "missing".
+    assert bookings["test_created_today"] == 1
 
 
 def test_open_tickets_need_main_admin_attention(two_departments):
