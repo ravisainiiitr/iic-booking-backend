@@ -469,13 +469,14 @@ def create_booking_event(
             metadata=metadata,
         )
 
-    # WhatsApp (9 Nov 2026): with the email and push, and also for a completed booking whose event is recorded silently
-    # because the completion email is sent separately (both completion paths do that), so the user is told on WhatsApp
-    # too. The hook does nothing unless WhatsApp is on and the user opted in, never raises, and sends once per event.
-    if send_notification or event_type == BookingEventType.COMPLETED:
-        from iic_booking.whatsapp.hooks import booking_event as whatsapp_booking_event
+    # WhatsApp (9 Nov 2026): every event goes to the hook, whether or not the generic email is sent here. Many paths
+    # record their event silently because they send their own email (completion, external cancellations and refunds,
+    # maintenance reschedules, slot exchanges, waitlist promotion); the hook itself picks the events users are told
+    # about (confirmed, cancelled/refunded, rescheduled, completed) and ignores the rest. It does nothing unless
+    # WhatsApp is on and the user opted in, never raises, and sends once per event.
+    from iic_booking.whatsapp.hooks import booking_event as whatsapp_booking_event
 
-        whatsapp_booking_event(event)
+    whatsapp_booking_event(event)
 
     # Print_3D cleanup on completion should happen even when email notifications are suppressed
     # (e.g. auto-complete when sample lifecycle becomes Analyzed).

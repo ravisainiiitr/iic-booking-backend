@@ -101,7 +101,8 @@ def booking_event(event) -> None:
     elif kind == BookingEventType.CONFIRMED or (
         kind == BookingEventType.STATUS_CHANGED
         and getattr(event, "new_status", "") == BookingStatus.BOOKED
-        and getattr(event, "previous_status", "") in (BookingStatus.PENDING, BookingStatus.PENDING_PAYMENT, BookingStatus.WAITLISTED)
+        and getattr(event, "previous_status", "") in (BookingStatus.PENDING, BookingStatus.PENDING_PAYMENT, BookingStatus.WAITLISTED,
+                                                        BookingStatus.HOLD)
     ):
         chosen = ("booking_confirmed", _with_slot_time(booking))
     elif kind in (BookingEventType.CANCELLED, BookingEventType.REFUNDED):
@@ -111,7 +112,10 @@ def booking_event(event) -> None:
     elif kind == BookingEventType.COMPLETED:
         chosen = ("booking_completed", [*_base(booking), _date(booking.completed_at or timezone.now())])
     if chosen is not None:
-        _notify(booking.user, chosen[0], chosen[1], f"booking:{booking.pk}:{chosen[0]}:{event.event_id}")
+        # A booking is confirmed once: the event and the payment paths share one key, so the user gets one message.
+        key = (f"booking:{booking.pk}:booking_confirmed:payment" if chosen[0] == "booking_confirmed"
+               else f"booking:{booking.pk}:{chosen[0]}:{event.event_id}")
+        _notify(booking.user, chosen[0], chosen[1], key)
 
 
 @_guarded

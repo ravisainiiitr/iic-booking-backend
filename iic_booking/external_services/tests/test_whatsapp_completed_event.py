@@ -22,5 +22,6 @@ def test_completed_event_goes_to_whatsapp_even_when_silent(factory):
         create_booking_event(booking=booking, event_type=BookingEventType.COMPLETED, previous_status=BookingStatus.BOOKED,
                              new_status=BookingStatus.COMPLETED, comment="done", send_notification=False)
         assert hook.call_count == 1
-        create_booking_event(booking=booking, event_type=BookingEventType.COMMENT, comment="note", send_notification=False)
-        assert hook.call_count == 1  # other silent events stay silent
+        create_booking_event(booking=booking, event_type=BookingEventType.CANCELLED, previous_status=BookingStatus.BOOKED,
+                             new_status=BookingStatus.CANCELLED, comment="cancelled", send_notification=False)
+        assert hook.call_count == 2  # every event reaches the hook; the hook picks what to send
