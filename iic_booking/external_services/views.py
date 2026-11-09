@@ -586,6 +586,28 @@ def staff_sample_scan(request):
     return Response(logistics.scan(request.user, request.data.get("code") or ""))
 
 
+from rest_framework.decorators import throttle_classes as _throttle_classes  # noqa: E402
+from rest_framework.permissions import AllowAny as _AllowAny  # noqa: E402
+from rest_framework.throttling import AnonRateThrottle as _AnonRateThrottle  # noqa: E402
+
+
+class SampleLabelPublicThrottle(_AnonRateThrottle):
+    scope = "sample_label_public"
+
+
+@api_view(["GET"])
+@permission_classes([_AllowAny])
+@_throttle_classes([SampleLabelPublicThrottle])
+def sample_label_public(request):
+    """Public: ?code=<label code>. The parcel's booking and latest sample status, for anyone who scans its label."""
+    from . import logistics
+
+    try:
+        return Response(logistics.public_status(request.query_params.get("code") or ""))
+    except logistics.LogisticsError as exc:
+        return Response(exc.payload(), status=exc.status)
+
+
 # --- booking checkout (payment choice; nothing held before payment) --------------------------------------------------
 
 def _checkout_errors(fn):
