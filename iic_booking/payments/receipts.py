@@ -326,7 +326,9 @@ def receipt_for(payment: Payment) -> dict:
         "test_mode": order.mode == "test",
         "collected_by": checkout_name(),
         "institution": t["institution_name"],
-        "office": t["office_name"],
+        # Under the institute's name: the department whose equipment (or sub-wallet) the payment is for; the
+        # template's office name only when no department is known.
+        "office": (getattr(department, "name", "") or "").strip() or t["office_name"],
         "institute_gstin": t["institute_gstin"] if t["show_gstin"] else "",
         "service_name": t["service_name"],
         # The rest of the template the Main Admin edits on the dashboard (Receipt template).

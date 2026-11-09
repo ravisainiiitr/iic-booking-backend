@@ -132,3 +132,10 @@ def test_receipt_quantity_lines_from_the_charge_breakdown():
     assert booking_purpose("3D Printer", "PRINT_3D") == "Fabrication charges for '3D Printer'"
     assert booking_purpose("Laser Cutter", "LASER_CUT_2D") == "Fabrication charges for 'Laser Cutter'"
     assert booking_purpose("XRD", "SAMPLE") == "Analysis charges for 'XRD'"
+
+
+def test_receipt_header_names_the_equipment_department(departments):
+    from iic_booking.payments.receipts import receipt_for
+
+    iic, _ = departments
+    assert receipt_for(_paid(1, iic))["office"] == "Institute Instrumentation Centre"
