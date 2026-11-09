@@ -190,3 +190,34 @@ def test_the_nightly_report_follows_each_booking(istem_on, whatsapp_on):
     problem = next(p for p in journey["problems"] if p.startswith(booking.virtual_booking_id or f"#{booking.pk}"))
     assert "FBR not executed" in problem and "1 WhatsApp message(s) refused" in problem
     assert "FBR executed: 0 of 1 completed" in report.journey_text(journey)
+
+
+def test_capture_issues_whose_payment_was_recorded_are_closed_and_others_stay_open():
+    """IICXRF202600013 / IICPXRD [B]202600026: "authorised but not captured" raised before #234, while Razorpay had
+    captured the payment and the portal recorded it. Only such issues are closed."""
+    from decimal import Decimal
+
+    from iic_booking.payments.models import (
+        Payment, PaymentIssue, PaymentIssueKind, PaymentIssueStatus, PaymentOrder, PaymentOrderStatus, PaymentPurpose,
+        PaymentStatus,
+    )
+
+    user = UserFactory()
+
+    def order(n, status):
+        return PaymentOrder.objects.create(razorpay_order_id=f"order_h{n}", receipt=f"r{n}", purpose=PaymentPurpose.WALLET_RECHARGE,
+                                           user=user, base_amount=Decimal("1"), total_amount=Decimal("1"),
+                                           idempotency_key=f"k-h{n}", mode="test", status=status)
+
+    paid = order(1, PaymentOrderStatus.PAID)
+    Payment.objects.create(payment_order=paid, razorpay_payment_id="pay_h1", amount=Decimal("1"), status=PaymentStatus.CAPTURED)
+    stale = PaymentIssue.objects.create(kind=PaymentIssueKind.NOT_CAPTURED, key="pay_h1", razorpay_payment_id="pay_h1",
+                                        razorpay_order_id="order_h1", detail="x")
+    order(2, PaymentOrderStatus.CREATED)
+    real = PaymentIssue.objects.create(kind=PaymentIssueKind.NOT_CAPTURED, key="pay_h2", razorpay_payment_id="pay_h2",
+                                       razorpay_order_id="order_h2", detail="x")
+    assert heal.close_captured_payment_issues() == 1
+    stale.refresh_from_db()
+    real.refresh_from_db()
+    assert stale.status == PaymentIssueStatus.RESOLVED and "captured the payment" in stale.resolution_note
+    assert real.status == PaymentIssueStatus.OPEN

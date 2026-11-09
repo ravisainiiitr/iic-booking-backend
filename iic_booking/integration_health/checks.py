@@ -275,7 +275,9 @@ def payment_checks(now=None) -> list[Check]:
         issues.status = FAIL if any(k in ("NOT_APPLIED", "DUPLICATE_CAPTURE", "MISMATCH") for k in serious) else WARN
         issues.summary = f"{sum(serious.values())} open payment issue(s)."
         issues.items = [f"{kind}: {n}" for kind, n in sorted(serious.items())]
-        issues.action = "Open Finance → payment issues and settle them."
+        issues.action = ("These need Finance: refund or apply the money by hand, then close the issue with a note "
+                         "(POST /api/payments/issues/<id>/resolve/). \"Authorised but not captured\" issues close "
+                         "themselves once Razorpay's capture is recorded.")
     else:
         issues.summary = "No open payment issue."
     hooks = Check("payments_webhooks", "payments", "Razorpay notifications processed")
