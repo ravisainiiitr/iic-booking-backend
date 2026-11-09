@@ -105,3 +105,30 @@ def test_receipt_shows_the_facility_department_and_its_grant_code(departments):
     assert receipt["department_name"] == "Institute Instrumentation Centre"
     assert receipt["grant_code"] == "IIC-GRANT-01"
     assert receipt_for(_paid(2, phy))["grant_code"] == ""  # none set: the receipt leaves the line out
+
+
+def test_receipt_quantity_lines_from_the_charge_breakdown():
+    from types import SimpleNamespace
+
+    from iic_booking.payments.purpose import booking_purpose
+    from iic_booking.payments.receipts import charge_lines
+
+    analysis = SimpleNamespace(charge_breakdown=[
+        {"description": "1.0 samples @ 800.00 per sample", "amount": 800.0},
+        {"description": "GST (18%)", "amount": 144.0},
+        {"description": "Discounted Charge Profile", "amount": 0.0},
+    ])
+    assert charge_lines(analysis) == ["1 sample @ Rs. 800.00 per sample"]
+    fabrication = SimpleNamespace(charge_breakdown=[
+        {"description": "Bracket: 42 g PLA @ 5/g", "amount": 210.0},
+        {"description": "95 min machine time @ 300/hour", "amount": 475.0},
+        {"description": "Panel: 0.02 m² × 2 of Acrylic (0.5 m² sheet @ 900) = ₹72.00", "amount": 72.0},
+    ])
+    assert charge_lines(fabrication) == [
+        "Bracket: 42 g PLA @ Rs. 5/g",
+        "95 min machine time @ Rs. 300/hour",
+        "Panel: 0.02 m² × 2 of Acrylic (0.5 m² sheet @ Rs. 900) = Rs. 72.00",
+    ]
+    assert booking_purpose("3D Printer", "PRINT_3D") == "Fabrication charges for '3D Printer'"
+    assert booking_purpose("Laser Cutter", "LASER_CUT_2D") == "Fabrication charges for 'Laser Cutter'"
+    assert booking_purpose("XRD", "SAMPLE") == "Analysis charges for 'XRD'"

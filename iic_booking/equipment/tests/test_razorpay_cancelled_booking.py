@@ -103,7 +103,7 @@ def test_preview_and_receipt_name_the_payment_purpose(egs_factory):
     client = APIClient()
     client.force_authenticate(owner)
     purpose = client.get(f"/api/payments/booking-preview/{booking.pk}/").json()["payment_purpose"]
-    assert purpose.endswith("for 'Sample Printer'") and purpose.split(" for ")[0] in ("3D printing charges", "Analysis charges")
+    assert purpose.endswith("for 'Sample Printer'") and purpose.split(" for ")[0] in ("Fabrication charges", "Analysis charges")
     PaymentOrder.objects.create(
         razorpay_order_id="order_PUR", receipt="iic_book_pur", purpose=PaymentPurpose.BOOKING_SHORTFALL, user=owner, booking=booking,
         base_amount=Decimal("10.00"), total_amount=Decimal("10.00"), idempotency_key="k-pur",

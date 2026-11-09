@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+# Fabrication profiles (3D printing, 2D laser cutting) are "Fabrication charges"; everything else is analysis.
 PURPOSE_BY_PROFILE = {
-    "PRINT_3D": "3D printing charges",
-    "LASER_CUT_2D": "2D laser cutting charges",
+    "PRINT_3D": "Fabrication charges",
+    "LASER_CUT_2D": "Fabrication charges",
 }
 DEFAULT_PURPOSE = "Analysis charges"
 
@@ -19,7 +20,7 @@ def profile_type_of(booking=None, equipment=None) -> str:
 
 
 def booking_purpose(equipment_name: str, profile_type: str = "") -> str:
-    """e.g. "Analysis charges for 'Powder X-Ray Diffractometer'" or "3D printing charges for '...'"."""
+    """e.g. "Analysis charges for 'Powder X-Ray Diffractometer'" or "Fabrication charges for '3D Printer'"."""
     label = PURPOSE_BY_PROFILE.get(str(profile_type or "").upper(), DEFAULT_PURPOSE)
     name = (equipment_name or "").strip()
     return f"{label} for '{name}'" if name else label
