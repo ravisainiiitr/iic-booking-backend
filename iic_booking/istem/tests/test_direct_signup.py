@@ -133,7 +133,16 @@ def test_onboarding_steps_one_by_one_then_password_sign_in(on, mailoutbox):
     assert login.status_code == 200, login.data
 
 
-def test_unlisted_organisation_is_requested_and_joined_on_approval(on, mailoutbox):
+def _admin_api():
+    admin = User.objects.create_user(email="admin@iitr.ac.in", password="x-Strong-1!", user_type=UserType.ADMIN,
+                                     is_active=True)
+    api = APIClient()
+    api.force_authenticate(admin)
+    return api
+
+
+def test_unlisted_organisation_is_added_at_once_and_marked_unverified(on, mailoutbox):
+    from iic_booking.users import onboarding
     from iic_booking.users.models import OrganizationRequest
 
     link_token = _verified(mailoutbox)
@@ -147,23 +156,72 @@ def test_unlisted_organisation_is_requested_and_joined_on_approval(on, mailoutbo
     res = api.post(url, {"step": "organisation", "request_organisation": True,
                          "organisation_name": "  Asha  Institute of Science ", "state": "uttarakhand"}, format="json")
     assert res.status_code == 200, res.data
-    assert "organisation" not in res.data["steps"] and res.data["organisation_requested"] == "Asha Institute of Science"
+    assert "organisation" not in res.data["steps"] and res.data["organisation_added"] == "Asha Institute of Science"
+    user = User.objects.get(email="neha@lab.example.org")
+    dept = user.department
+    assert (dept.name, dept.state, dept.external_subcategory, dept.department_type) == (
+        "Asha Institute of Science", "uttarakhand", "educational_institute", DepartmentType.EXTERNAL)
     req = OrganizationRequest.objects.get()
-    assert (req.name, req.state, req.external_subcategory, req.email) == (
-        "Asha Institute of Science", "uttarakhand", "educational_institute", "neha@lab.example.org")
-    # A second user from the same organisation joins the same pending request.
+    assert req.status == OrganizationRequest.Status.PENDING and req.created_department == dept
+    # Listed for others, marked unverified, and not twice.
+    listed = APIClient().get("/api/departments/", {"type": "external", "external_subcategory": "educational_institute",
+                                                   "state": "uttarakhand"}).data
+    assert [(d["name"], d["verified"]) for d in listed["departments"]] == [("Asha Institute of Science", False)]
+    # A second user typing the same name joins it rather than adding it again.
     other = User.objects.create_user(email="other@lab.example.org", password=None, user_type=UserType.EXTERNAL)
+    onboarding.save_step(other, "organisation", {"request_organisation": True,
+                                                 "organisation_name": "asha institute of science", "state": "uttarakhand"})
+    other.refresh_from_db()
+    assert other.department == dept and OrganizationRequest.objects.count() == 1
+
+
+def _added(name="Asha Instt of Sci", email="neha@lab.example.org"):
+    from iic_booking.users import provisional_organisations as provisional
+    from iic_booking.users.models import OrganizationRequest
+
+    user = User.objects.create_user(email=email, password=None, user_type=UserType.EXTERNAL)
+    dept = provisional.add_for_user(user, name, "uttarakhand", "educational_institute")
+    return user, dept, OrganizationRequest.objects.get(created_department=dept)
+
+
+def test_admin_approves_an_added_organisation_with_a_corrected_name():
+    user, dept, req = _added()
+    _org(name="Taken Name")
+    api = _admin_api()
+    url = f"/api/admin/organization-requests/{req.pk}/"
+    api.patch(url, {"approved_name": "Taken Name"}, format="json")
+    assert api.post(url + "approve/").status_code == 400  # would duplicate a listed organisation
+    api.patch(url, {"approved_name": "Asha Institute of Science"}, format="json")
+    assert api.post(url + "approve/").status_code == 200
+    dept.refresh_from_db()
+    req.refresh_from_db()
+    assert dept.name == "Asha Institute of Science" and req.status == "approved"
+    user.refresh_from_db()
+    assert user.department == dept
+
+
+def test_admin_merges_a_duplicate_into_the_listed_organisation():
+    from iic_booking.users.models import OrganizationRequest
+
+    listed = _org()
+    user, dept, req = _added()
+    res = _admin_api().post(f"/api/admin/organization-requests/{req.pk}/merge/", {"department_id": listed.pk},
+                            format="json")
+    assert res.status_code == 200, res.data
+    user.refresh_from_db()
+    req.refresh_from_db()
+    assert user.department == listed and not Department.objects.filter(pk=dept.pk).exists()
+    assert req.status == OrganizationRequest.Status.APPROVED and req.created_department == listed
+
+
+def test_admin_rejects_an_added_organisation_and_its_users_are_asked_again():
     from iic_booking.users import onboarding
 
-    onboarding.save_step(other, "organisation", {"request_organisation": True, "organisation_name": "asha institute of science",
-                                                 "state": "uttarakhand"})
-    assert OrganizationRequest.objects.count() == 1
-    # The IIC office approves it: both users move to the new organisation.
-    org = _org()
-    req.status, req.created_department = OrganizationRequest.Status.APPROVED, org
-    req.save()
-    assert set(User.objects.filter(department=org).values_list("email", flat=True)) == {
-        "neha@lab.example.org", "other@lab.example.org"}
+    user, dept, req = _added()
+    assert _admin_api().post(f"/api/admin/organization-requests/{req.pk}/reject/").status_code == 200
+    user.refresh_from_db()
+    assert user.department is None and not Department.objects.filter(pk=dept.pk).exists()
+    assert "organisation" in onboarding.missing_steps(user)
 
 
 def test_internal_users_are_never_asked(on):

@@ -63,11 +63,16 @@ def status(user) -> dict:
             "subcategory": SUBCATEGORY_BY_USER_TYPE.get(str(user.user_type or ""), ""),
         }
     requested = getattr(user, "organization_request", None) if not user.department_id else None
+    from .provisional_organisations import unverified_department_ids
+
+    added = user.department.name if user.department_id and user.department_id in unverified_department_ids() else ""
     return {
         "required": bool(steps),
         "steps": steps,
         "hints": hints,
         "organisation_requested": requested.name if requested is not None else "",
+        # The organisation the user added themself, until the admin has checked it.
+        "organisation_added": added,
         "values": {
             "gender": user.gender or "",
             "mobile": user.phone_number or "",
@@ -85,12 +90,13 @@ def _parse_date(value, field: str) -> date:
 
 
 def _request_organisation(user, data: dict) -> None:
-    """The organisation is not in the portal's list (common for I-STEM accounts): ask the IIC office to add it, as
-    registration does. The user is moved to the organisation when the office approves the request
-    (``OrganizationRequest.save``); a pending request for the same name, State/UT and kind is reused."""
+    """The organisation is not in the portal's list (common for I-STEM accounts): the user adds it and is put in it
+    at once, so they can book; the admin verifies it later (see ``provisional_organisations``)."""
     from iic_booking.istem.direct_signup import SUBCATEGORY_BY_USER_TYPE
-    from iic_booking.users.models import OrganizationRequest
     from iic_booking.users.models.department import IndianState
+
+    from .provisional_organisations import OrganisationError
+    from .provisional_organisations import add_for_user
 
     name = " ".join(str(data.get("organisation_name") or "").split())[:255]
     state = str(data.get("state") or "").strip()
@@ -99,16 +105,10 @@ def _request_organisation(user, data: dict) -> None:
     if state not in {c for c, _ in IndianState.get_choices()}:
         raise OnboardingError("Choose your State / Union Territory.", "state")
     subcategory = SUBCATEGORY_BY_USER_TYPE.get(str(user.user_type or ""), "")
-    pending = OrganizationRequest.objects.filter(
-        name__iexact=name, state=state, external_subcategory=subcategory, status=OrganizationRequest.Status.PENDING,
-    ).first()
-    if pending is None:
-        pending = OrganizationRequest.objects.create(
-            name=name, state=state, external_subcategory=subcategory, email=user.email,
-            requester_name=(user.name or "")[:255], notes="Asked for while completing a profile created from I-STEM.",
-        )
-    user.organization_request = pending
-    user.save(update_fields=["organization_request"])
+    try:
+        add_for_user(user, name, state, subcategory)
+    except OrganisationError as exc:
+        raise OnboardingError(str(exc), "organisation_name")
 
 
 def save_step(user, step: str, data: dict) -> None:
