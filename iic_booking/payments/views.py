@@ -397,8 +397,17 @@ def razorpay_webhook(request):
 
 
 def _issue(i: PaymentIssue) -> dict:
+    order = i.payment_order
+    booking = getattr(order, "booking", None) if order else None
+    resolver = i.resolved_by
     return {
         "id": i.pk, "kind": i.kind, "kind_label": i.get_kind_display(), "status": i.status,
+        # The booking or wallet recharge the payment was for, so Finance can find it on the portal.
+        "booking_id": booking.pk if booking else None,
+        "booking_reference": (booking.virtual_booking_id or str(booking.pk)) if booking else "",
+        "purpose": getattr(order, "purpose", "") or "",
+        "test_account": bool(getattr(getattr(order, "user", None), "is_test_account", False)),
+        "resolved_by": (getattr(resolver, "name", "") or getattr(resolver, "email", "")) if resolver else "",
         "razorpay_order_id": i.razorpay_order_id, "razorpay_payment_id": i.razorpay_payment_id,
         "amount": str(i.amount) if i.amount is not None else None, "mode": i.mode, "detail": i.detail,
         "raised_at": i.raised_at.isoformat(), "resolved_at": i.resolved_at.isoformat() if i.resolved_at else None,
@@ -413,7 +422,7 @@ def payment_issues(request):
     if not _is_finance_or_admin(request.user):
         return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
     state = request.query_params.get("status", PaymentIssueStatus.OPEN)
-    queryset = PaymentIssue.objects.all()
+    queryset = PaymentIssue.objects.select_related("payment_order__booking", "payment_order__user", "resolved_by").order_by("-raised_at")
     if state in PaymentIssueStatus.values:
         queryset = queryset.filter(status=state)
     return Response({"results": [_issue(i) for i in queryset[:500]]})
