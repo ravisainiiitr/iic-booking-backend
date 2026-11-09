@@ -34,7 +34,7 @@ from .client import IstemClient, _as_remote_id
 from .eligibility import evaluate, evaluate_execute
 from .errors import IstemConfigError, IstemError
 from .mapping import (
-    booking_slot_window, build_confirm_payload, build_create_booking_payload, build_execute_payload,
+    booking_slot_window, build_confirm_payload, create_shift_hours, build_create_booking_payload, build_execute_payload,
     build_public_user_payload, collect_public_user_profile, format_booking_datetime, ist_today, istem_window_fits_day,
 )
 from .models import IstemApiAttempt, IstemBookingLink, IstemEquipmentMapping, IstemOutboxJob, IstemUserLink
@@ -320,7 +320,7 @@ def _run_create_booking(job: IstemOutboxJob, client_factory) -> str:
             _set_link(link, SyncState.USER_PENDING, reason="waiting for the I-STEM user mapping", user_link=user_link)
             finish_job(job, JobState.CANCELLED, message="waiting for the I-STEM user mapping")
             return JobState.CANCELLED
-        result = build_create_booking_payload(booking, user_link)
+        result = build_create_booking_payload(booking, user_link, shift_hours=link.istem_slot_shift_hours or 0)
         if not result.ok:
             if repeat:
                 return _hold_uncertain(job, link, "The Create Booking payload can no longer be built ("
@@ -424,6 +424,19 @@ def _create_failed(job, link_pk, attempt, exc: IstemError, *, resume_state=SyncS
         if exc.not_sent or exc.auth_failure:
             _set_link(link, resume_state, reason=f"not accepted ({exc.category}); safe to send again", attempt=attempt)
             return retry_or_block(job, category=exc.category, message=exc.message)
+        if exc.definite_failure and contract.slot_occupied(exc.message):
+            start, end = booking_slot_window(link.booking)
+            shift = (link.istem_slot_shift_hours or 0) + 1
+            if start and end and istem_window_fits_day(start, end, shift):
+                # I-STEM books whole hours: the hour this booking falls in is already booked there (e.g. another
+                # 30-minute IIC booking in the same hour). Ask for the next hour of the same day, as Confirm does.
+                _set_link(link, SyncState.CREATE_READY, attempt=attempt, istem_slot_shift_hours=shift,
+                          reason=f"I-STEM slot occupied ({exc.message}); retrying {shift} hour(s) later")
+                return retry_or_block(job, category=ErrorCategory.CONFLICT, message=f"I-STEM slot occupied; moved {shift} hour(s) later")
+            _set_link(link, SyncState.CREATE_FAILED, reason=exc.message, attempt=attempt,
+                      review=f"No free hourly slot left on I-STEM that day ({exc.message}); reserve it on I-STEM by hand.")
+            finish_job(job, JobState.BLOCKED, category=ErrorCategory.CONFLICT, message=exc.message)
+            return JobState.BLOCKED
         if exc.definite_failure:
             _set_link(link, SyncState.CREATE_FAILED, reason=exc.message, attempt=attempt, review=f"I-STEM refused the booking: {exc.message}")
             finish_job(job, JobState.BLOCKED, category=exc.category, message=exc.message)
@@ -738,7 +751,7 @@ def acknowledge_drift(link: IstemBookingLink, *, actor, evidence_type: str, evid
         pending = booking.charge_recalculation_pending_amount
         if pending is not None and pending != 0:
             raise ValueError("a charge recalculation is still pending; settle it first")
-        result = build_create_booking_payload(booking, link.user_link)
+        result = build_create_booking_payload(booking, link.user_link, shift_hours=create_shift_hours(booking, link) or 0)
         if not result.ok:
             raise ValueError("the current booking cannot produce a complete payload: " + ", ".join(result.missing_fields()))
         previous = link.drift_reason
@@ -764,7 +777,8 @@ def _run_confirm_booking(job: IstemOutboxJob, client_factory) -> str:
             finish_job(job, JobState.DONE, message=f"skipped: link is {link.sync_state}")
             return JobState.DONE
         repeat = link.sync_state == SyncState.CONFIRM_UNCERTAIN
-        booking_payload = build_create_booking_payload(link.booking, link.user_link)
+        booking_payload = build_create_booking_payload(link.booking, link.user_link,
+                                                       shift_hours=create_shift_hours(link.booking, link) or 0)
         # approved_on is the time confirmation was requested (this job's creation), so a repeat is identical.
         result = build_confirm_payload(link.booking, link, approved_on=job.created_at,
                                        booking_payload=booking_payload.payload if booking_payload.ok else None)

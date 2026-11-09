@@ -69,6 +69,47 @@ def test_occupied_hourly_slot_moves_to_the_next_hour_of_the_day(live):
     assert (link.sync_state, link.istem_slot_shift_hours) == (SyncState.CONFIRM_READY, 1)
 
 
+def test_create_moves_to_the_next_hour_when_its_hour_is_booked_and_confirm_follows(live):
+    """IICXRF202600016: a second 30-minute booking in an hour I-STEM already gave to another booking. Create Booking is
+    refused ("This slot is already booked."), asks for the next hour of the day, and Confirm then allocates that hour."""
+    from iic_booking.istem import service
+    from iic_booking.istem.choices import Operation
+    from iic_booking.istem.models import IstemOutboxJob
+    from iic_booking.istem.outbox import enqueue_booking_sync
+
+    from .test_confirm import factory
+    from .test_confirm import CREATED
+
+    link = enqueue_booking_sync(_booking_at(17, 30, 30), trigger="test")  # 17:30-18:00 -> I-STEM hour 17:00-18:00
+    job = IstemOutboxJob.objects.get(booking_link=link, operation=Operation.CREATE_BOOKING, state=JobState.PENDING)
+    refused = json_response({"status": False, "message": "This slot is already booked."})
+    transport = FakeTransport(token_response(), refused)
+    assert service.process_job(job.pk, client_factory=factory(transport)) == JobState.RETRY_WAIT
+    link.refresh_from_db()
+    assert (link.sync_state, link.istem_slot_shift_hours) == (SyncState.CREATE_READY, 1)
+    assert transport.calls[-1]["data"]["preferred_timings_from"][11:16] == "17:00"
+
+    IstemOutboxJob.objects.filter(pk=job.pk).update(next_attempt_at=timezone.now())
+    transport = FakeTransport(json_response(CREATED))
+    assert service.process_job(job.pk, client_factory=factory(transport)) == JobState.DONE
+    sent = transport.calls[-1]["data"]
+    assert (sent["preferred_timings_from"][11:16], sent["preferred_timings_to"][11:16]) == ("18:00", "19:00")
+    link.refresh_from_db()
+    assert link.sync_state in (SyncState.CREATED, SyncState.CONFIRM_READY)
+
+    # Confirm allocates the hour Create asked for: no "window differs" drift.
+    if link.sync_state == SyncState.CREATED:
+        assert _confirm(link, FakeTransport(json_response(CONFIRMED))) == JobState.DONE
+    else:
+        confirm_job = IstemOutboxJob.objects.get(booking_link=link, operation=Operation.CONFIRM_BOOKING)
+        transport = FakeTransport(json_response(CONFIRMED))
+        assert service.process_job(confirm_job.pk, client_factory=factory(transport)) == JobState.DONE
+        sent = transport.calls[-1]["data"]
+        assert (sent["allocated_timings_from"][11:16], sent["allocated_timings_to"][11:16]) == ("18:00", "19:00")
+    link.refresh_from_db()
+    assert link.sync_state == SyncState.CONFIRMED
+
+
 def test_no_free_hour_left_that_day_holds_for_staff(live):
     link = _created(_booking_at(22, 30, 60))  # 22:00-24:00; one hour later would cross midnight
     refused = json_response({"status": "ERROR", "message": "Slot already booked for this equipment"})
