@@ -1,0 +1,45 @@
+# Nightly portal check (06:00 IST) and on demand. Runs `manage.py integration_health` in the django container:
+# every booking of the last 24 hours followed step by step (paid -> I-STEM registered -> FBR executed -> WhatsApp
+# delivered), live read-only checks of I-STEM, Meta, Razorpay and the mail server, and the safe automatic fixes.
+# The report is emailed to the Main Administrators; the run turns red when something is failing.
+# Output is safe for this public log: booking IDs only, no names, emails, phone numbers, tokens or keys.
+name: Nightly Health Check
+
+on:
+  schedule:
+    - cron: "30 0 * * *"  # 00:30 UTC = 06:00 IST
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "nightly (report + email) | check (no email) | ensure-schedule (15-minute task)"
+        required: true
+        type: choice
+        options: [nightly, check, ensure-schedule]
+        default: check
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-health-check
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run in the django container
+        env:
+          MODE: ${{ inputs.mode || 'nightly' }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          run() { docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python manage.py integration_health "$@"; }
+          # The 15-minute check is kept registered (safe to repeat).
+          run --ensure-schedule
+          case "$MODE" in
+            ensure-schedule) ;;
+            nightly) run --nightly --email ;;
+            check) run ;;
+          esac
