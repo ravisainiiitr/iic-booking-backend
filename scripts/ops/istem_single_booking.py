@@ -263,6 +263,25 @@ def main():
         out("user link open jobs left |", left)
         return
 
+    if ACTION == "cancel-booking-jobs":
+        # Tidy the booking's BLOCKED Create Booking jobs left from attempts before it was created on I-STEM. Marked
+        # CANCELLED, never deleted, and only once I-STEM has a request_id for the booking (so the create is done).
+        # Other operations (e.g. a blocked FBR Execute still waiting for its date) are left alone.
+        if booking is None:
+            sys.exit("BOOKING not found")
+        link = IstemBookingLink.objects.filter(booking=booking).first()
+        if link is None or not link.request_id:
+            sys.exit("the booking has no I-STEM request_id yet: nothing cancelled")
+        with transaction.atomic():
+            jobs = IstemOutboxJob.objects.filter(booking_link=link, state="BLOCKED", operation="CREATE_BOOKING")
+            count = jobs.update(state="CANCELLED",
+                                last_error_message=f"Cancelled: the booking was created on I-STEM (request {link.request_id}).",
+                                updated_at=timezone.now(), finished_at=timezone.now())
+        out("booking create jobs cancelled |", count)
+        for job in IstemOutboxJob.objects.filter(booking_link=link).exclude(state__in=["DONE", "CANCELLED"]).order_by("pk"):
+            out("  still open | job", job.pk, job.operation, job.state)
+        return
+
     if ACTION == "set-codes":
         if eq is None:
             sys.exit("EQUIPMENT not found")
