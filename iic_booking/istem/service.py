@@ -136,6 +136,8 @@ def enqueue_eligible_executions(limit: int = 200) -> int:
             sync_state__in=[SyncState.CONFIRMED, SyncState.EXECUTE_READY],
             booking__status="COMPLETED", booking__completed_at__isnull=False,
         )
+        # A record held for the team is not queued again on every run (each run used to add one more BLOCKED job).
+        .exclude(needs_review=True)
         .select_related("booking")
         .order_by("pk")[:limit]
     )
