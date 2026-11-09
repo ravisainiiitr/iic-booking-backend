@@ -42,6 +42,22 @@ else:
     print("OPT-IN user", uid, ": opted_in=", row.opted_in, "source=", row.source, "has_number=", bool(row.phone_e164),
           "number_on_pilot_list=", bool(row.phone_e164) and conf.may_send_to(row.phone_e164),
           "opted_in_at=", row.opted_in_at, "opted_out_at=", row.opted_out_at)
+
+
+def shape(number: str) -> str:
+    """A number's shape without the number: length, first 3 characters, last 2 digits (e.g. len=13 +91…10)."""
+    n = str(number or "")
+    return f"len={len(n)} {n[:3]}…{n[-2:]}" if len(n) > 5 else f"len={len(n)}"
+
+
+import django.conf as _dc  # noqa: E402
+
+raw = getattr(_dc.settings, "WHATSAPP_PILOT_NUMBERS", "")
+raw_items = raw if isinstance(raw, (list, tuple)) else [x for x in str(raw).split(",")]
+print("PILOT raw entries=", len(raw_items), "raw shapes=", [shape(str(x).strip()) for x in raw_items])
+print("PILOT normalised shapes=", [shape(x) for x in sorted(conf.pilot_numbers())])
+if row is not None:
+    print("OPT-IN number shape=", shape(row.phone_e164))
 for e in WhatsAppConsentEvent.objects.filter(user_id=uid).order_by("id")[:20]:
     print("CONSENT", e.created_at, e.action, e.source)
 
