@@ -459,10 +459,6 @@ def create_booking_event(
         else:
             _safe_queue_notification()
 
-        from iic_booking.whatsapp.hooks import booking_event as whatsapp_booking_event
-
-        whatsapp_booking_event(event)  # nothing unless WhatsApp is on and the user opted in; never raises
-
         from .print_3d_notifications import maybe_dispatch_print_3d_stl_notification
 
         maybe_dispatch_print_3d_stl_notification(
@@ -472,6 +468,14 @@ def create_booking_event(
             new_status=new_status,
             metadata=metadata,
         )
+
+    # WhatsApp (9 Nov 2026): with the email and push, and also for a completed booking whose event is recorded silently
+    # because the completion email is sent separately (both completion paths do that), so the user is told on WhatsApp
+    # too. The hook does nothing unless WhatsApp is on and the user opted in, never raises, and sends once per event.
+    if send_notification or event_type == BookingEventType.COMPLETED:
+        from iic_booking.whatsapp.hooks import booking_event as whatsapp_booking_event
+
+        whatsapp_booking_event(event)
 
     # Print_3D cleanup on completion should happen even when email notifications are suppressed
     # (e.g. auto-complete when sample lifecycle becomes Analyzed).
