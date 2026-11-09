@@ -239,6 +239,7 @@ from iic_booking.users.api.payment_views import (
 )
 from iic_booking.payments.views import admin_fee_settings
 from iic_booking.payments.views import admin_receipt_template
+from iic_booking.payments.views import verify_receipt
 from iic_booking.users.api.finance_reports_views import (
     finance_report_dashboard,
     finance_report_drilldown,
@@ -1178,6 +1179,7 @@ urlpatterns = router.urls + [
         name="admin-payments-fee-settings",
     ),
     path("admin/payments/receipt-template/", admin_receipt_template, name="admin-payments-receipt-template"),
+    path("receipts/verify/", verify_receipt, name="receipt-verify"),
 
     path("payments/utr/submit/", submit_payment_utr, name="payment-utr-submit"),
     path(

@@ -16,6 +16,7 @@ from rest_framework.decorators import throttle_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import AnonRateThrottle
 
 from iic_booking.equipment.models import Booking
 from iic_booking.payments.fees import get_fee_percents
@@ -625,3 +626,17 @@ def booking_payment_receipts(request, booking_id: int):
         return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
     payments = Payment.objects.filter(Q(payment_order__booking_id=booking.pk) | Q(payment_order__external_checkout__booking_id=booking.pk))
     return Response({"results": receipts_for(payments)})
+
+
+class ReceiptVerifyThrottle(AnonRateThrottle):
+    scope = "receipt_verify"
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+@throttle_classes([ReceiptVerifyThrottle])
+def verify_receipt(request):
+    """Public: is this receipt genuine? ?number=IITR/IIC/2026/00001&code=K7Q2M-9XWPD. Answers from the portal's records."""
+    from iic_booking.payments.receipt_verification import check
+
+    return Response(check(request.query_params.get("number", ""), request.query_params.get("code", "")))
