@@ -3,6 +3,7 @@ where repeating cannot create a duplicate:
 
 * I-STEM: run the sync (queue newly paid / completed / cancelled bookings and process due jobs), and re-send a Create
   Booking that I-STEM definitely refused because the hour was taken (Create now moves to the next free hour).
+* Payments: close "authorised but not captured" issues whose payment was in fact captured and recorded.
 * WhatsApp: send again messages stuck in the queue, and, once Meta reports the number can send again, messages Meta
   refused for a reason that has since cleared (e.g. 131037 display name not yet approved). Only messages from the last
   48 hours, and each message at most once by this route.
@@ -101,9 +102,27 @@ def heal_whatsapp(sender_state: dict | None) -> dict:
     return {"requeued": requeued, "resent": resent, "sender": (sender_state or {}).get("can_send", "")}
 
 
+def close_captured_payment_issues() -> int:
+    """Open "authorised payment could not be captured" issues whose payment Razorpay did capture and the portal
+    recorded on a paid order: closed with the same note the payment flow uses since #234 (issues raised before that
+    fix stayed open). Nothing else is touched."""
+    from iic_booking.payments.models import (
+        Payment, PaymentIssue, PaymentIssueKind, PaymentIssueStatus, PaymentOrderStatus, PaymentStatus,
+    )
+
+    captured = Payment.objects.filter(status__in=[PaymentStatus.CAPTURED, PaymentStatus.REFUNDED,
+                                                  PaymentStatus.PARTIALLY_REFUNDED],
+                                      payment_order__status=PaymentOrderStatus.PAID).values_list("razorpay_payment_id", flat=True)
+    return PaymentIssue.objects.filter(kind=PaymentIssueKind.NOT_CAPTURED, status=PaymentIssueStatus.OPEN,
+                                       razorpay_payment_id__in=list(captured)).update(
+        status=PaymentIssueStatus.RESOLVED, resolved_at=timezone.now(),
+        resolution_note="Closed automatically: Razorpay captured the payment and it was recorded.")
+
+
 def heal_all(sender_state: dict | None) -> dict:
     out = {}
-    for name, fn in (("istem", heal_istem), ("whatsapp", lambda: heal_whatsapp(sender_state))):
+    for name, fn in (("istem", heal_istem), ("whatsapp", lambda: heal_whatsapp(sender_state)),
+                     ("payments", lambda: {"closed_capture_issues": close_captured_payment_issues()})):
         try:
             out[name] = fn()
         except Exception as exc:  # noqa: BLE001 - one failing fix must not stop the others
