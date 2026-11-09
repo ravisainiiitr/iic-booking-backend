@@ -65,6 +65,23 @@ def istem_hour_window(start, end, shift_hours: int = 0):
     return first + shift_hours * step, last_hour + shift_hours * step
 
 
+def create_shift_hours(booking, link) -> int | None:
+    """How many hours the window sent with Create Booking was moved (0 when nothing was sent yet); None when the stored
+    window is not the booking's hourly window moved by whole hours (the booking itself changed)."""
+    requested = getattr(link, "create_payload", None) or {}
+    sent_from, sent_to = requested.get("preferred_timings_from"), requested.get("preferred_timings_to")
+    if not sent_from:
+        return 0
+    start, end = booking_slot_window(booking)
+    if not start or not end:
+        return None
+    for shift in range(0, 24):
+        first, last = istem_hour_window(start, end, shift)
+        if (format_booking_datetime(first), format_booking_datetime(last)) == (sent_from, sent_to):
+            return shift
+    return None
+
+
 def istem_window_fits_day(start, end, shift_hours: int) -> bool:
     """True while the shifted window still ends by midnight of the day the booking starts (I-STEM's day)."""
     first, last = istem_hour_window(start, end, shift_hours)
@@ -358,8 +375,11 @@ def _add_internal_billing(p: dict, errors: dict) -> None:
     _add_gstin(p, errors, institute["gstin"])
 
 
-def build_create_booking_payload(booking, user_link) -> MappingResult:
-    """The 19 fields I-STEM confirmed as mandatory. Optional fields are omitted (permitted by I-STEM)."""
+def build_create_booking_payload(booking, user_link, *, shift_hours: int = 0) -> MappingResult:
+    """The 19 fields I-STEM confirmed as mandatory. Optional fields are omitted (permitted by I-STEM).
+
+    ``shift_hours``: the preferred window is moved that many hours later, when I-STEM answered that the booking's own
+    hour is already booked (two 30-minute IIC bookings share one I-STEM hour)."""
     result = MappingResult()
     p = result.payload
     equipment = booking.equipment
@@ -381,7 +401,7 @@ def build_create_booking_payload(booking, user_link) -> MappingResult:
     if not start or not end or end <= start:
         result.errors["preferred_timings_from"] = "the booking has no allocated slot window"
     else:
-        first, last = istem_hour_window(start, end)
+        first, last = istem_hour_window(start, end, shift_hours)
         p["preferred_timings_from"] = format_booking_datetime(first)
         p["preferred_timings_to"] = format_booking_datetime(last)
 
@@ -518,13 +538,11 @@ def build_confirm_payload(booking, link, *, approved_on, booking_payload: dict |
         first, last = istem_hour_window(start, end, shift)
         p["allocated_timings_from"] = format_booking_datetime(first)
         p["allocated_timings_to"] = format_booking_datetime(last)
-        requested = link.create_payload or {}
-        unshifted = [format_booking_datetime(t) for t in istem_hour_window(start, end)]
-        for key, sent in (("preferred_timings_from", unshifted[0]), ("preferred_timings_to", unshifted[1])):
-            if requested.get(key) and requested[key] != sent:
-                result.errors["allocated_timings_from"] = (
-                    "the local slot window differs from the window sent with Create Booking; reconcile the booking first"
-                )
+        # The window sent with Create Booking may already be moved by whole hours (its hour was booked on I-STEM).
+        if create_shift_hours(booking, link) is None:
+            result.errors["allocated_timings_from"] = (
+                "the local slot window differs from the window sent with Create Booking; reconcile the booking first"
+            )
     if result.errors:
         result.payload = {}
         return result

@@ -333,11 +333,12 @@ def test_retries_stop_at_the_attempt_limit(live):
 
 def test_definite_refusal_is_failed_for_review(live):
     link, job = _queue(ready_booking())
-    body = {"status": False, "message": "This slot is already booked."}
+    # A slot already booked moves to the next hour instead (test_istem_slots); any other refusal is held for review.
+    body = {"status": False, "message": "Invalid equipment for this institute."}
     service.process_job(job.pk, client_factory=factory(FakeTransport(token_response(), json_response(body))))
     link.refresh_from_db()
     assert link.sync_state == SyncState.CREATE_FAILED
-    assert "already booked" in link.review_reason
+    assert "Invalid equipment" in link.review_reason
     assert IstemApiAttempt.objects.get().outcome == AttemptOutcome.DEFINITE_FAILURE
 
 
