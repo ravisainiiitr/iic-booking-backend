@@ -78,10 +78,10 @@ def test_account_is_created_signed_in_and_linked_without_a_password(on, mailoutb
     assert not user.has_usable_password()
     assert IstemUserLink.objects.get(user=user).public_user_id == "60018"
     assert res.data["token"] and res.data["user"]["email"] == "neha@lab.example.org"
-    assert res.data["onboarding"]["steps"] == ["programme", "password"]
+    assert res.data["onboarding"]["steps"] == ["password"]
     # Signed in: the token works.
     me = APIClient(HTTP_AUTHORIZATION=f"Token {res.data['token']}").get("/api/profiles/me/onboarding/")
-    assert me.status_code == 200 and me.data["steps"] == ["programme", "password"]
+    assert me.status_code == 200 and me.data["steps"] == ["password"]
 
 
 def test_unmatched_organisation_is_asked_with_the_istem_hints(on, mailoutbox):
@@ -120,7 +120,7 @@ def test_onboarding_steps_one_by_one_then_password_sign_in(on, mailoutbox):
     url = "/api/profiles/me/onboarding/"
     assert api.post(url, {"step": "organisation", "department": 999999}, format="json").status_code == 400
     org = _org()
-    assert api.post(url, {"step": "organisation", "department": org.pk}, format="json").data["steps"] == ["programme", "password"]
+    assert api.post(url, {"step": "organisation", "department": org.pk}, format="json").data["steps"] == ["password"]
     past = (timezone.localdate() - timedelta(days=1)).isoformat()
     assert api.post(url, {"step": "programme", "program_end_date": past}, format="json").status_code == 400
     end = (timezone.localdate() + timedelta(days=200)).isoformat()
