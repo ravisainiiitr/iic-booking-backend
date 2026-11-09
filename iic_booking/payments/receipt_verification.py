@@ -62,15 +62,25 @@ def _status(payment) -> tuple[str, str]:
     return "paid", "Paid"
 
 
-def _booking_note(order) -> str:
+# Booking statuses after which the money may have gone back (to the wallet or a bank): the receipt still checks out,
+# but the page says so plainly so it is not accepted as if the service had been delivered.
+UNDONE_BOOKING_STATUSES = {"CANCELLED", "REFUNDED"}
+
+
+def _booking_of(order):
     booking = order.booking
     if booking is None:
         checkout = getattr(order, "external_checkout", None)
         booking = getattr(checkout, "booking", None)
+    return booking
+
+
+def _booking_note(order) -> str:
+    booking = _booking_of(order)
     if booking is None:
         return ""
     status = str(getattr(booking, "status", "") or "")
-    if status.upper() in {"CANCELLED", "REFUNDED"}:
+    if status.upper() in UNDONE_BOOKING_STATUSES:
         return (
             f"The booking was {booking.get_status_display().lower()}. Any refund goes to the payer's portal wallet; "
             "check with the department's Accounts In Charge before accepting this receipt for reimbursement."
@@ -118,5 +128,19 @@ def check(receipt_number: str, code: str) -> dict:
         "grant_code": r.get("grant_code", ""),
         "collected_by": f"{r['collected_by']}, {r['institution']}",
         "razorpay_payment_id": r["razorpay_payment_id"],
+        # The bank's own reference for the payment (UPI RRN / net-banking UTR), and the UTR of the transfer in which
+        # Razorpay paid the institute: each blank until known.
+        "bank_reference": r.get("bank_reference") or "",
         "settlement_utr": r["settlement_utr"],
+        # The booking's status now (Booked, Completed, Cancelled, Refunded ...), so a later cancellation shows.
+        **_booking_status(payment.payment_order),
     }
+
+
+def _booking_status(order) -> dict:
+    booking = _booking_of(order)
+    if booking is None:
+        return {"booking_status": "", "booking_status_label": "", "booking_undone": False}
+    code = str(getattr(booking, "status", "") or "").upper()
+    return {"booking_status": code, "booking_status_label": booking.get_status_display(),
+            "booking_undone": code in UNDONE_BOOKING_STATUSES}

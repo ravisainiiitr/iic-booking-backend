@@ -49,3 +49,26 @@ def test_refunds_are_shown(departments):  # noqa: F811
     Payment.objects.filter(pk=payment.pk).update(status=PaymentStatus.PARTIALLY_REFUNDED)
     result = check(payment.receipt_number, code)
     assert result["valid"] and result["status"] == "partly_refunded"
+
+
+def test_booking_status_and_bank_reference_are_shown(departments):  # noqa: F811
+    from types import SimpleNamespace
+
+    from iic_booking.payments.receipt_verification import _booking_status
+
+    iic, _ = departments
+    payment = _paid(1, iic)
+    Payment.objects.filter(pk=payment.pk).update(gateway_reference="UTR123456789")
+    result = check(payment.receipt_number, verification_code(payment))
+    assert result["bank_reference"] == "UTR123456789"
+    assert result["booking_status"] == "" and result["booking_undone"] is False  # a wallet recharge has no booking
+
+    def order(code, label):
+        booking = SimpleNamespace(status=code, get_status_display=lambda: label)
+        return SimpleNamespace(booking=booking)
+
+    assert _booking_status(order("BOOKED", "Booked")) == {
+        "booking_status": "BOOKED", "booking_status_label": "Booked", "booking_undone": False}
+    assert _booking_status(order("CANCELLED", "Cancelled"))["booking_undone"] is True
+    assert _booking_status(order("REFUNDED", "Refunded"))["booking_undone"] is True
+    assert _booking_status(order("COMPLETED", "Completed"))["booking_undone"] is False
