@@ -170,11 +170,27 @@ def _logo(c, x, y_top, max_w, max_h):
     if not path:
         c.setFont("Helvetica-Bold", 11)
         c.drawString(x, y_top - 12, "Indian Institute of Technology Roorkee")
-        return
+        return c.stringWidth("Indian Institute of Technology Roorkee", "Helvetica-Bold", 11)
     img = ImageReader(path)
     w, h = img.getSize()
     scale = min(max_w / w, max_h / h)
     c.drawImage(img, x, y_top - h * scale, width=w * scale, height=h * scale, mask="auto")
+    return w * scale  # the width drawn, so text can start after it
+
+
+def _wrap_words(c, text: str, width: float, font: str, size: float) -> list[str]:
+    """Words of text in lines no wider than width (a word longer than a line stands alone)."""
+    lines, line = [], ""
+    for word in str(text or "").split():
+        trial = f"{line} {word}".strip()
+        if line and c.stringWidth(trial, font, size) > width:
+            lines.append(line)
+            line = word
+        else:
+            line = trial
+    if line:
+        lines.append(line)
+    return lines
 
 
 def _label_canvas():
@@ -300,13 +316,29 @@ def sample_label_pdf(*, sender_lines: list[str], lab_name: str, lab_location: st
 
     # Header: masthead left, booking ID right, dashed rule below
     header_h = 44.0
-    _logo(c, MARGIN_PT, top, inner_w * 0.32, header_h - 4)
+    logo_w = _logo(c, MARGIN_PT, top, inner_w * 0.32, header_h - 4) or 0
     id_w = inner_w * 0.62
     c.setFont("Helvetica-Bold", 9)
     c.drawRightString(right_edge, top - 9, "BOOKING ID")
     id_size = _fit_bold(c, booking_reference, id_w, 28, 12)
     c.setFont("Helvetica-Bold", id_size)
-    c.drawRightString(right_edge, top - 13 - id_size, _one_line(c, booking_reference, id_w, "Helvetica-Bold", id_size))
+    id_text = _one_line(c, booking_reference, id_w, "Helvetica-Bold", id_size)
+    c.drawRightString(right_edge, top - 13 - id_size, id_text)
+    # Between the masthead and the booking ID: what is in the parcel, for sorting at a glance (9 Nov 2026).
+    mid_x = MARGIN_PT + logo_w + 14
+    mid_w = right_edge - c.stringWidth(id_text, "Helvetica-Bold", id_size) - 18 - mid_x
+    title = f"Samples for {equipment_name}".strip()
+    if mid_w > 60 and equipment_name:
+        size = 16.0
+        while size > 8 and len(_wrap_words(c, title, mid_w, "Helvetica-Bold", size)) > 2:
+            size -= 0.5
+        lines = _wrap_words(c, title, mid_w, "Helvetica-Bold", size)[:2]
+        block_h = len(lines) * size * 1.15
+        y = top - (header_h - block_h) / 2 - size * 0.85
+        c.setFont("Helvetica-Bold", size)
+        for line in lines:
+            c.drawCentredString(mid_x + mid_w / 2, y, line)
+            y -= size * 1.15
     c.setLineWidth(1.2)
     c.setDash(4, 3)
     c.line(MARGIN_PT, top - header_h - 4, right_edge, top - header_h - 4)
@@ -318,20 +350,14 @@ def sample_label_pdf(*, sender_lines: list[str], lab_name: str, lab_location: st
     right_w = 150.0
     left_w = inner_w - right_w - 14
     gap = 8.0
-    to_h = body_h * 0.62
+    # TO is the configured IIC address and the office mobile only (9 Nov 2026: the officer, equipment and lab lines
+    # were removed; the equipment is named in the header). FROM is the sender address line by line, like TO.
     to_lines = list(iic_lines)
-    attn = f"Attn: {attention} (Officer In Charge)" if attention else "Attn: Officer In Charge"
-    to_lines.append(f"{attn}, {lab_name}" if lab_name else attn)
-    eq = f"Equipment: {equipment_name}" + (f" ({equipment_code})" if equipment_code else "")
-    if lab_location:
-        eq += f"  ·  {lab_location}"
-    to_lines.append(eq)
-    if lab_incharge:
-        to_lines.append(f"Lab in-charge: {lab_incharge}")
+    from_lines = list(sender_lines)
+    rows_to, rows_from = len(to_lines) + 2, len(from_lines) + 2
+    to_h = max(body_h * 0.4, min(body_h * 0.6, body_h * rows_to / (rows_to + rows_from)))
     _address_box(c, MARGIN_PT, body_top, left_w, to_h, "TO", to_lines, office_mobile, LABEL_NAVY,
                  max_size=11, min_size=6.5)
-    # Name on its own line, the rest of the sender address as one wrapped line so it prints large enough to read
-    from_lines = sender_lines[:1] + ([", ".join(sender_lines[1:])] if len(sender_lines) > 1 else [])
     _address_box(c, MARGIN_PT, body_top - to_h - gap, left_w, body_h - to_h - gap, "FROM", from_lines,
                  sender_mobile, LABEL_BRICK, max_size=11, min_size=6)
 
