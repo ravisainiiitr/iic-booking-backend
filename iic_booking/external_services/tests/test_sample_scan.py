@@ -174,9 +174,10 @@ def test_label_shows_the_lab_and_the_addressed_people(on, booking):
     from pypdf import PdfReader
 
     text = PdfReader(io.BytesIO(r.content)).pages[0].extract_text()
-    assert booking.equipment.internal_department.name in text
-    assert f"Attn: {get_user_display_name(oic)} (Officer In Charge)" in text
-    assert f"Lab in-charge: {get_user_display_name(lab)}" in text
+    # 9 Nov 2026: the equipment is named in the header; TO holds only the IIC address (no officer, lab or equipment lines).
+    assert f"Samples for {booking.equipment.name}" in text
+    assert "Officer In Charge" not in text and "Lab in-charge" not in text
+    assert "Dr Asha Verma" in text and "12 Station Road" in text
     assert booking.virtual_booking_id in text
     assert IIC_ADDRESS.splitlines()[1] in text
     assert timezone.now() - SampleShipmentLabel.objects.get(booking=booking).created_at < timedelta(minutes=1)
