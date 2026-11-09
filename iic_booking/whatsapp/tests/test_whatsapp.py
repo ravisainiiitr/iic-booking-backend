@@ -604,3 +604,13 @@ def test_one_tap_prompt_not_asked_after_no_or_without_a_number_or_outside_the_pi
     assert _api(outside).get("/api/whatsapp/me/").json()["ask"] is False
     settings.WHATSAPP_ENABLED = False
     assert _api(UserFactory(user_type=UserType.EXTERNAL, phone_number="9800000000")).get("/api/whatsapp/me/").json()["ask"] is False
+
+
+def test_pilot_numbers_match_whatever_way_they_are_written(on, settings):
+    from iic_booking.whatsapp import conf
+
+    for written in ("9876543210", "+91 98765 43210", "91-98765-43210", " +919876543210 ", "09876543210"):
+        settings.WHATSAPP_PILOT_NUMBERS = written
+        assert conf.may_send_to("+919876543210"), written
+    settings.WHATSAPP_PILOT_NUMBERS = "9876543210; 9800000000"
+    assert conf.may_send_to("+919800000000") and not conf.may_send_to("+919811111111")
