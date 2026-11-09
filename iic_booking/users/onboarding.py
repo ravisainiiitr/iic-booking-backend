@@ -4,8 +4,8 @@ An account created directly from I-STEM (``istem.direct_signup``) has no passwor
 form normally asks for. The dashboard asks for each missing item one by one and, last, a password for the next sign-in.
 Only external user types are asked (internal users sign in with Channel i and keep no portal password).
 
-Steps, in order: ``organisation`` (State/UT and organisation), ``gender``, ``mobile``, ``programme`` (validity) and
-``password``.
+Steps, in order: ``organisation`` (State/UT and organisation), ``gender``, ``mobile`` and ``password``.
+(``programme``, an access validity date, is no longer asked: external users do not need one.)
 """
 
 from __future__ import annotations
@@ -41,8 +41,7 @@ def missing_steps(user) -> list[str]:
         missing.append("gender")
     if len("".join(ch for ch in (user.phone_number or "") if ch.isdigit())) < 10:
         missing.append("mobile")
-    if not user.program_end_date:
-        missing.append("programme")
+    # External users are not asked for an access validity date (9 Nov 2026).
     if not user.has_usable_password():
         missing.append("password")
     return missing
