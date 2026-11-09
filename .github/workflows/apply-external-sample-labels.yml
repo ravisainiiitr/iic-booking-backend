@@ -1,0 +1,82 @@
+# External sample shipment labels (the 10 x 4.5 inch label with the booking ID, TO and FROM with mobiles and the QR
+# code that opens the parcel's status). The same switch and IIC postal address as the Main Administrator's External
+# booking settings page, for when nobody can sign in to change them.
+#   status  : read-only. Whether labels are on, and how many lines the IIC postal address has.
+#   enable  : labels on for every external user; sets the IIC postal address when one is given (lines separated by |).
+#   disable : labels off (users get the plain shipping label again).
+# The IIC postal address is the institute's public address (TO on every label), so the run log may show it.
+name: Apply External Sample Labels
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "status | enable | disable"
+        required: true
+        default: "status"
+        type: choice
+        options: [status, enable, disable]
+      iic_postal_address:
+        description: "enable only: IIC postal address for the TO block, lines separated by | (blank keeps the current one)"
+        required: false
+        default: ""
+      confirm:
+        description: "enable / disable: type LABELS"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Guard
+        if: ${{ inputs.action != 'status' && inputs.confirm != 'LABELS' }}
+        run: |
+          echo "confirm must be LABELS to change the setting"
+          exit 1
+
+      - name: Read or change the setting
+        env:
+          ACTION: ${{ inputs.action }}
+          IIC_ADDRESS: ${{ inputs.iic_postal_address }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e ACTION="$ACTION" -e IIC_ADDRESS="$IIC_ADDRESS" -w /app "$CID" python - <<'PY'
+          import os
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.contrib.auth import get_user_model
+          from iic_booking.external_services.models import ExternalServicesSettings
+          from iic_booking.external_services.policy import update_settings
+          from iic_booking.users.models.user_type import UserType
+
+          action = os.environ["ACTION"].strip()
+          address = [ln.strip() for ln in os.environ.get("IIC_ADDRESS", "").split("|") if ln.strip()]
+
+          def show(label):
+              s = ExternalServicesSettings.load()
+              lines = [ln for ln in (s.iic_postal_address or "").splitlines() if ln.strip()]
+              print(label, "sample_labels_enabled=", s.sample_labels_enabled, "iic_postal_address_lines=", len(lines))
+              for ln in lines:
+                  print("   |", ln)
+
+          show("BEFORE")
+          if action in ("enable", "disable"):
+              data = {"sample_labels_enabled": action == "enable", "reason": "Apply External Sample Labels workflow"}
+              if action == "enable" and address:
+                  data["iic_postal_address"] = chr(10).join(address)
+              current = (ExternalServicesSettings.load().iic_postal_address or "").strip()
+              if action == "enable" and not address and not current:
+                  raise SystemExit("no IIC postal address is set: give iic_postal_address (lines separated by |)")
+              # The same audited change as the admin page (ExternalServicesSettingsChange), made as the Main Admin.
+              admin = get_user_model().objects.filter(user_type=UserType.ADMIN, is_active=True).order_by("id").first()
+              assert admin is not None, "no active Main Administrator"
+              update_settings(admin, data)
+              show("AFTER")
+          PY
