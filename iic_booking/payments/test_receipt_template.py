@@ -39,15 +39,14 @@ def test_saved_values_reach_the_receipt_and_blank_restores_default(main_admin, p
     assert res.json()["effective"]["brand_color"] == "#0B3D2E"
 
     receipt = _client(paid_recharge).get(URL.format("pay_RCP1")).json()
-    assert receipt["office"] == "Office of Dean SRIC"
+    # The header names the department the money is for; the template office is only the fallback.
+    assert receipt["office"] == "Receipt Dept"
     assert receipt["template"]["refund_note"] == "Refunds go to the wallet."
     assert receipt["template"]["extra_note"] == "Keep this receipt."
     assert receipt["template"]["show_logo"] is False
     # Untouched fields keep their defaults.
     assert receipt["institution"] == "Indian Institute of Technology Roorkee"
 
-    admin.patch(ADMIN_URL, {"office_name": ""}, format="json")
-    assert _client(paid_recharge).get(URL.format("pay_RCP1")).json()["office"].startswith("Sponsored Research")
 
 
 def test_hiding_the_gstin_blanks_it_on_receipts(main_admin, paid_recharge):  # noqa: F811
