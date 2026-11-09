@@ -150,6 +150,7 @@ LOCAL_APPS = [
     "iic_booking.courier_tracking.apps.CourierTrackingConfig",
     "iic_booking.external_services.apps.ExternalServicesConfig",
     "iic_booking.istem.apps.IstemConfig",
+    "iic_booking.integration_health.apps.IntegrationHealthConfig",
     "iic_booking.whatsapp.apps.WhatsAppConfig",
     # Your stuff: custom apps go here
 ]
