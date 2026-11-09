@@ -1,0 +1,35 @@
+# READ-ONLY: why a user did or did not get WhatsApp messages. Prints states, counts, event names, statuses and error
+# text only (no phone numbers, emails, message text or Meta ids): the run log is public.
+name: Probe WhatsApp Outbound
+
+on:
+  workflow_dispatch:
+    inputs:
+      user_id:
+        description: "Portal user id"
+        required: true
+      booking_ref:
+        description: "Optional booking reference (e.g. IICXRF202600014) or booking id"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe
+        env:
+          USER_ID: ${{ inputs.user_id }}
+          BOOKING_REF: ${{ inputs.booking_ref }}
+        run: |
+          set -euo pipefail
+          case "$USER_ID" in (*[!0-9]*|'') echo "user_id must be a number"; exit 1 ;; esac
+          case "$BOOKING_REF" in (*[!A-Za-z0-9\ \[\]_-]*) echo "booking_ref: letters, digits, spaces, [ ] _ - only"; exit 1 ;; esac
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          # The runner's checkout is sparse, so the script is read from git rather than from disk.
+          git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/whatsapp_outbound_probe.py \
+            | docker exec -i -w /app -e USER_ID -e BOOKING_REF -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python -
