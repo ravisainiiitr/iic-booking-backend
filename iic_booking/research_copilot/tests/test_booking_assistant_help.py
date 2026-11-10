@@ -55,6 +55,7 @@ NEW_INTENTS = [
     ("how to link wallet", "students", None),
     ("could not find supervisor name while linking wallet", "students", None),
     ("Summarize IITR Equipment Booking Assistant capabilities.", "help", None),
+    ("Summarize IITR Assistant capabilities.", "help", None),  # the old name still works
     ("Summarize Research Assistant capabilities.", "help", None),  # the old name still works
     ("Help me find suitable equipment for my sample.", "find_equipment", None),
 ]
