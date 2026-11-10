@@ -1,5 +1,5 @@
 """
-IITR Assistant turn handling.
+IITR Equipment Booking Assistant turn handling.
 
 Runs first in `send_message` for signed-in users. Day-to-day questions (my bookings, wallet, recharge,
 results, invoices, waitlist, tickets, staff queues, ...) are answered by the deterministic intent table in

@@ -1,4 +1,4 @@
-"""Portal actions in the IITR Assistant: "enable slot exchange", "where do I block slots", "approve recharges".
+"""Portal actions in the IITR Equipment Booking Assistant: "enable slot exchange", "where do I block slots", "approve recharges".
 
 Uses the same catalogue as the header search (``equipment.portal_actions``). An action about one instrument asks
 which one (buttons for the user's own instruments, or type the name); switches are changed only after the user

@@ -779,7 +779,7 @@ RESEARCH_COPILOT_INTELLIGENCE_ENABLED = env.bool("RESEARCH_COPILOT_INTELLIGENCE_
 RESEARCH_COPILOT_KNOWLEDGE_ENABLED = env.bool("RESEARCH_COPILOT_KNOWLEDGE_ENABLED", default=False)
 # Guided booking / cancellation / reschedule flows in chat. Execution stays gated by COPILOT_BOOKING_*.
 RESEARCH_COPILOT_ACTIONS_ENABLED = env.bool("RESEARCH_COPILOT_ACTIONS_ENABLED", default=False)
-# IITR Assistant: live availability, equipment Q&A and confirm-gated booking cards (read paths ON).
+# IITR Equipment Booking Assistant: live availability, equipment Q&A and confirm-gated booking cards (read paths ON).
 # In-chat booking execution still needs COPILOT_BOOKING_CREATE; otherwise the summary links to the booking page.
 BOOKING_ASSISTANT_ENABLED = env.bool("BOOKING_ASSISTANT_ENABLED", default=True)
 # "auto" uses the LLM as an intent planner only when the provider is OpenAI with a key; "on"/"off" force it.

@@ -1,4 +1,4 @@
-"""Response envelope, buttons and option cards for the IITR Assistant (`ba_*` card types)."""
+"""Response envelope, buttons and option cards for the IITR Equipment Booking Assistant (`ba_*` card types)."""
 
 from __future__ import annotations
 

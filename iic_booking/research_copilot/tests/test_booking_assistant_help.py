@@ -1,4 +1,4 @@
-"""IITR Assistant: "Need help?" after a failed booking, answers for the questions it used to log as
+"""IITR Equipment Booking Assistant: "Need help?" after a failed booking, answers for the questions it used to log as
 unanswered, next-step chips, role-based starter chips and the thumbs-down comment."""
 
 from __future__ import annotations
@@ -54,7 +54,8 @@ NEW_INTENTS = [
     ("link wallet", "students", None),
     ("how to link wallet", "students", None),
     ("could not find supervisor name while linking wallet", "students", None),
-    ("Summarize IITR Assistant capabilities.", "help", None),
+    ("Summarize IITR Equipment Booking Assistant capabilities.", "help", None),
+    ("Summarize IITR Assistant capabilities.", "help", None),  # the old name still works
     ("Summarize Research Assistant capabilities.", "help", None),  # the old name still works
     ("Help me find suitable equipment for my sample.", "find_equipment", None),
 ]

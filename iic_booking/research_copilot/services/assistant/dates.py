@@ -1,5 +1,5 @@
 """
-Date and time expressions for the IITR Assistant, resolved in portal time (IST).
+Date and time expressions for the IITR Equipment Booking Assistant, resolved in portal time (IST).
 
 Covers "today", "tomorrow", "day after tomorrow", "in 3 days", weekday names ("friday",
 "next monday" = Monday of next calendar week), "this/next week", "weekend", explicit dates

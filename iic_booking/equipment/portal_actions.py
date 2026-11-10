@@ -1,4 +1,4 @@
-"""Everything a signed-in user can do on the portal, as one catalogue shared by search and the IITR Assistant.
+"""Everything a signed-in user can do on the portal, as one catalogue shared by search and the IITR Equipment Booking Assistant.
 
 Each action names the roles that may use it, where it happens (a page) and, when it is about one instrument, which
 equipment to choose from: instruments the user looks after (``manage``) or may book (``book``). A few equipment
@@ -90,7 +90,7 @@ ACTIONS: tuple[PortalAction, ...] = (
     _a("equipment_details", "Equipment details", "Specifications, charges, contacts and manuals",
        ("equipment details", "specification", "specifications", "equipment page", "about equipment", "manual"),
        ANY, "/equipment/{id}", equipment="book", group=_E),
-    _a("equipment_references", "Manufacturer references", "Product pages, datasheets and manuals the IITR Assistant cites",
+    _a("equipment_references", "Manufacturer references", "Product pages, datasheets and manuals the IITR Equipment Booking Assistant cites",
        ("manufacturer reference", "manufacturer references", "datasheet", "datasheets", "product page",
         "manufacturer documentation", "technical documentation", "brochure"),
        STAFF, "/equipment-references?equipment={id}", equipment="manage", group=_E),
@@ -281,7 +281,7 @@ ACTIONS: tuple[PortalAction, ...] = (
        ADMIN, "/calendar-colors", group=_S),
     _a("automation", "AI and automation", "Instrument finder, best times and automatic alerts", ("automation", "ai settings", "no show", "alerts"),
        ADMIN, "/admin-settings/automation", group=_S),
-    _a("assistant_knowledge", "IITR Assistant knowledge", "SOPs and FAQs the assistant answers from",
+    _a("assistant_knowledge", "IITR Equipment Booking Assistant knowledge", "SOPs and FAQs the assistant answers from",
        ("knowledge", "sop", "faq", "assistant knowledge"), ADMIN, "/admin-settings/knowledge", group=_S),
     _a("support_admin", "Support tickets (helpdesk)", "Reassign and resolve tickets", ("helpdesk", "support queue", "all tickets"),
        ADMIN, "/admin-settings/support", group=_S),
