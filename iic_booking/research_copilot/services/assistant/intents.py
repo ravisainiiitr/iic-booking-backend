@@ -1,5 +1,5 @@
 """
-Day-to-day intents for the IITR Assistant (pure: no database, no network).
+Day-to-day intents for the IITR Equipment Booking Assistant (pure: no database, no network).
 
 `detect(text)` normalises the message (typos, simple Hinglish), then walks a priority-ordered rule
 table and returns the first intent that matches, with the parameters the handler needs (booking

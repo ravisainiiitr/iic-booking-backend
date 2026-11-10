@@ -35,7 +35,7 @@ supervisor wallet see Link supervisor's wallet / Invite your supervisor, and a w
 cannot cover the charge. If a booking fails, the form stays filled in (only slots someone else took are dropped)
 and an unsaved booking is restored as a draft on the same device (Discard clears it).
 In the Equipments catalog each card shows a From price and Book now, with a category filter.
-You can also book through the IITR Assistant (bottom-right button): choose Book equipment and follow the
+You can also book through the IITR Equipment Booking Assistant (bottom-right button): choose Book equipment and follow the
 steps. Never invent slot availability — always check the equipment page or live slots.
 """,
     },
@@ -101,7 +101,7 @@ Pay online (card / net banking) appears in the Recharge dialog but stays greyed 
 Authority Approval" until the Main Administrator switches it on.
 Uploading a payment receipt is no longer offered as a recharge method — you never need to upload a receipt.
 A method shown greyed out with "Awaiting Competent Authority Approval" is switched off by the Main
-Administrator. The IITR Assistant will not invent balances: ask it "wallet balance" for your live figure.
+Administrator. The IITR Equipment Booking Assistant will not invent balances: ask it "wallet balance" for your live figure.
 """,
     },
     {
@@ -197,13 +197,13 @@ difference from the user's wallet.
 """,
     },
     {
-        "title": "IITR Assistant — Guided Booking",
+        "title": "IITR Equipment Booking Assistant — Guided Booking",
         "category": DocumentCategory.USER_GUIDE,
         "security_level": SecurityLevel.AUTHENTICATED,
         "tags": ["booking assistant", "copilot", "guided booking", "virtual booking id", "confirm booking"],
         "external_url": "/book-equipment",
         "content_text": """
-The IITR Assistant is the round button at the bottom-right of the portal. Choose Book equipment for a guided
+The IITR Equipment Booking Assistant is the round button at the bottom-right of the portal. Choose Book equipment for a guided
 booking in five steps: Department -> Equipment -> booking inputs (sample sets, element selection and the
 equipment's important instruction) -> slot (Earlier / Later to move dates) -> summary.
 On the summary, tick "I have read the instructions above" and press Confirm booking. Nothing is booked until
@@ -310,7 +310,7 @@ Changes released in September–October 2026:
 - Samples with different parameters (sample sets) with element selection in every set.
 - Edit User Inputs after booking: 1 minute to pay a higher charge; a lower charge is refunded to your wallet
   straight away if you edit before the cancellation deadline, and after the Officer In Charge's approval if later.
-- IITR Assistant guided booking (Department -> Equipment -> inputs -> slot -> summary) with virtual booking IDs.
+- IITR Equipment Booking Assistant guided booking (Department -> Equipment -> inputs -> slot -> summary) with virtual booking IDs.
 - Wallet: Transfer, Credit Facility and Recharge Wallet buttons together; Project Grant (SRIC) and Direct Cash
   Deposit / Bank Transfer recharge with OTP; Project Already Closed decline reason; approver named in SRIC emails.
 - Student management: spending limits, identity card, Linked toggle, TA nominations; supervisor booking email.
@@ -324,12 +324,12 @@ Changes released in September–October 2026:
 - Smaller: server clock on the booking page, Back button on every page, larger home icon on the sign-in page,
   Sign in with email option for Channel i users, Lab In-charge renamed Lab Operator, Support tickets on the Lab
   Operator dashboard.
-- IITR Assistant: instant answers for my bookings, wallet balance, recharge steps, transactions, results,
+- IITR Equipment Booking Assistant: instant answers for my bookings, wallet balance, recharge steps, transactions, results,
   waitlist and tickets, with next-step buttons on every booking (cancel / reschedule always need Confirm).
 - Booking page: form kept after a failed booking with a restored draft, wallet link / Invite your supervisor
   banner and low-balance warning, remaining weekly quota, opening countdown, friendly waitlist queue message,
   tap a greyed slot to see why, phone-friendly slot grid and a Review line before Confirm; Need help? opens the
-  IITR Assistant after a failed booking, and every answer has "Was this helpful?".
+  IITR Equipment Booking Assistant after a failed booking, and every answer has "Was this helpful?".
 - My Bookings: cancel / reschedule deadline on each booking and a status legend.
 - Sample sets start from the equipment's defaults; number fields start at 1 and show "Max N allowed".
 - Catalog From prices, category filter and Book now; peak booking window (external users paused 8:55–9:15 PM on
@@ -345,7 +345,7 @@ Changes released in September–October 2026:
         "tags": ["cancel", "reschedule", "edit booking", "message the lab", "my bookings", "manage booking"],
         "external_url": "/my-bookings",
         "content_text": """
-Open My Bookings (or ask the IITR Assistant "show my upcoming bookings") and pick the booking.
+Open My Bookings (or ask the IITR Equipment Booking Assistant "show my upcoming bookings") and pick the booking.
 - Cancel / Reschedule: allowed for Pending or Booked bookings until the equipment's cutoff (48 hours before the
   slot unless the lab set another value). The refund or new slot is shown before you confirm. Repeat bookings
   created by the lab can't be changed by you. After the cutoff, use Message the lab or raise a support ticket.
@@ -410,7 +410,7 @@ support ticket.
                  "role:admin", "role:dept_admin"],
         "external_url": "/booking-management",
         "content_text": """
-Lab Operators and OICs: ask the IITR Assistant "today's bookings on my equipment", "pending approvals",
+Lab Operators and OICs: ask the IITR Equipment Booking Assistant "today's bookings on my equipment", "pending approvals",
 "waitlist queue" or "urgent requests" for a live list scoped to the equipment you handle (department admins see
 their department, admins all equipment). Each row opens the booking in View Booking. Approvals, manual
 waitlist confirmation and urgent-request decisions are done on those pages, not in chat.
@@ -462,7 +462,7 @@ you get an email (download from the portal; files are not emailed). Files create
 are uploaded to Booking Details → Analyzed Data when you press End Session. Data a colleague shared with you is
 under Shared with me / My Research.
 Which software can I use? The Analysis Workspace of your booking lists the software the lab set up for that
-instrument (ask the IITR Assistant "what software can I use for <instrument>?"). In general, TEM .dm3/.dm4
+instrument (ask the IITR Equipment Booking Assistant "what software can I use for <instrument>?"). In general, TEM .dm3/.dm4
 files open in Gatan DigitalMicrograph or the free ImageJ/Fiji; XRD patterns are analysed with the vendor
 software (for example HighScore or DIFFRAC.EVA) and free tools such as Profex, GSAS-II or FullProf for Rietveld
 refinement.
@@ -511,7 +511,7 @@ Contacts).
         "security_level": SecurityLevel.AUTHENTICATED,
         "tags": ["prepare", "preparation", "sample preparation", "before booking", "checklist", "submission"],
         "content_text": """
-Before your slot: read the instrument's sample instructions on its equipment page (the IITR Assistant shows them
+Before your slot: read the instrument's sample instructions on its equipment page (the IITR Equipment Booking Assistant shows them
 with "what should I prepare before my <instrument> booking?"), have the required booking inputs ready, submit
 your sample before the submission deadline shown in My Bookings, label samples clearly and declare anything
 hazardous, air-sensitive or magnetic.
@@ -529,7 +529,7 @@ temperature.
         "external_url": "/analysis-charges",
         "content_text": """
 Charges come from the instrument's charge profile for the account category of the person making the booking; the
-booking page shows the exact amount before you confirm, and the IITR Assistant can estimate N samples ("how
+booking page shows the exact amount before you confirm, and the IITR Equipment Booking Assistant can estimate N samples ("how
 much do 5 XRD samples cost?"). PI rates apply when you, or the owner of the wallet you book from, are registered
 as a PI of that instrument and the lab has set PI rates; otherwise the standard rate for your category applies (or
 a discounted rate if your account was approved for one). Students' bookings are debited from the supervisor's
@@ -615,7 +615,7 @@ Admin-only: Knowledge Center operations.
 - After a release that changes these baseline articles, re-seed them with the management command
   seed_research_copilot_knowledge --force (or POST /api/v1/research-copilot/knowledge/seed/ with force=true);
   articles are matched by title and updated in place.
-- Verified answers in IITR Assistant Knowledge take priority over these baseline articles; keep them consistent.
+- Verified answers in IITR Equipment Booking Assistant Knowledge take priority over these baseline articles; keep them consistent.
 - Review Failed documents and Knowledge Gaps for FAQ candidates.
 - Never auto-publish suggested FAQs without human review.
 """,

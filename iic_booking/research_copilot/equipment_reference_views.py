@@ -1,4 +1,4 @@
-"""Manufacturer references of instruments (IITR Assistant knowledge), for the staff who look after them.
+"""Manufacturer references of instruments (IITR Equipment Booking Assistant knowledge), for the staff who look after them.
 
 GET    /api/v1/research-copilot/equipment-references/                      instruments the user looks after, with make,
                                                                             model and how many references they have
