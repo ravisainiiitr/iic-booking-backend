@@ -1,0 +1,92 @@
+# Opens the external offline-payment wallet recharge (Wallet -> Offline payments -> Record an offline payment) to
+# every external user, or returns it to external test accounts only (the pilot state).
+#   status    : print the runtime value only, change nothing
+#   all       : EXTERNAL_OFFLINE_RECHARGE_ALL_EXTERNAL_USERS=True
+#   test-only : EXTERNAL_OFFLINE_RECHARGE_ALL_EXTERNAL_USERS=False
+# Backs up the env file first. Recreates django and the Celery worker only. Secrets are never printed.
+name: Apply External Offline Recharge Rollout
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "status | all | test-only"
+        required: true
+        default: status
+        type: choice
+        options: [status, all, test-only]
+      confirm:
+        description: "Type ROLLOUT to change the setting (not needed for status)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        if: github.event.inputs.mode != 'status'
+        run: test "${{ github.event.inputs.confirm }}" = "ROLLOUT"
+
+      - name: Update env file and recreate services
+        if: github.event.inputs.mode != 'status'
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          set -euo pipefail
+          DEPLOY=/home/ubuntu/iic-booking-backend
+          ENV_FILE="$DEPLOY/.envs/.production/.django"
+          test -f "$ENV_FILE"
+          cp -p "$ENV_FILE" "$ENV_FILE.bak-offline-recharge-$(date -u +%Y%m%dT%H%M%SZ)"
+          export ENV_FILE
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          key = "EXTERNAL_OFFLINE_RECHARGE_ALL_EXTERNAL_USERS"
+          value = "True" if os.environ["MODE"] == "all" else "False"
+          env_file = Path(os.environ["ENV_FILE"])
+          out, seen = [], False
+          for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+              name = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+              if name == key:
+                  if not seen:
+                      out.append(f"{key}={value}")
+                      seen = True
+                  continue
+              out.append(line)
+          if not seen:
+              out.append(f"{key}={value}")
+          env_file.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+          print("set=", {key: value})
+          PY
+          cd "$DEPLOY"
+          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps django celeryworker
+          for i in $(seq 1 30); do
+            CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+            if [ -n "$CID" ] && docker exec "$CID" true 2>/dev/null; then break; fi
+            sleep 2
+          done
+          sleep 6
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'django|celeryworker' || true
+
+      - name: Runtime verification
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import django
+
+          django.setup()
+          from django.conf import settings
+
+          print("RUNTIME EXTERNAL_OFFLINE_RECHARGE_ALL_EXTERNAL_USERS=", settings.EXTERNAL_OFFLINE_RECHARGE_ALL_EXTERNAL_USERS)
+          PY
+          curl -s -o /dev/null -w "health=%{http_code}\n" http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true
