@@ -65,7 +65,8 @@ reschedule deadline, or "Deadline passed - contact the Officer in Charge".
         "title": "Wallet, Recharge and Grants",
         "category": DocumentCategory.POLICY,
         "security_level": SecurityLevel.AUTHENTICATED,
-        "tags": ["wallet", "recharge", "grant", "sric", "project grant", "cash", "bank transfer", "decline reason"],
+        "tags": ["wallet", "recharge", "grant", "sric", "project grant", "cash", "bank transfer", "decline reason",
+                 "offline payment", "receipt", "utr", "neft", "external recharge", "reconciliation"],
         "external_url": "/wallet",
         "content_text": """
 Wallet guidance:
@@ -99,7 +100,20 @@ Students: where student recharge is enabled for the account, Recharge Wallet off
 Bank Transfer (same OTP and SRIC Bill Section steps); once approved, the funds go to the supervisor's wallet.
 Pay online (card / net banking) appears in the Recharge dialog but stays greyed out with "Awaiting Competent
 Authority Approval" until the Main Administrator switches it on.
-Uploading a payment receipt is no longer offered as a recharge method — you never need to upload a receipt.
+Internal users (faculty, students, staff) never upload a payment receipt to recharge.
+External users (outside organisations), where offline payment is offered for the account: Wallet page ->
+Offline payments -> Record an offline payment. Enter Credit to (department), Amount paid, Date of payment, Mode
+(NEFT, RTGS, IMPS, UPI, DD, cheque or other), the UTR / transaction reference (or DD / cheque number), Payer bank,
+Payer account name, optionally Paid into (institute account or grant) and Remarks, and attach the transaction
+receipt as a PDF or image (up to 10 MB) — choose a file or Take a photo of the receipt with the phone camera.
+The same UTR cannot be submitted twice for a department. States: Pending approval, Approved · awaiting
+reconciliation, Reconciled, Mismatch, Rejected (with the reason) and Cancelled; you can Cancel while it is
+pending. You get an email and a notification at each step. Approval credits the wallet once, with the approved
+amount (never more than the amount declared).
+Who decides an offline payment: the Main Administrator (any department), or the Department Administrator or
+Accounts In Charge of the department credited, on Offline Payment Recharges (/admin-settings/offline-recharges).
+Approve and Reject both need a note, which the user sees. Afterwards the Accounts In Charge (or the Main
+Administrator) marks it Reconciled with the bank or grant credit reference and date, or flags a Mismatch.
 A method shown greyed out with "Awaiting Competent Authority Approval" is switched off by the Main
 Administrator. The IITR Equipment Booking Assistant will not invent balances: ask it "wallet balance" for your live figure.
 """,
