@@ -437,3 +437,40 @@ def buyer_booking_view(request, booking_id):
     if not conf.enabled():
         return Response({"enabled": False, "invoice": None})
     return Response({"enabled": True, "invoice": service.buyer_view(request.user, booking_id)})
+
+
+# --- GSTR-1 export of B2C invoices (reviewers in the portal; the signing utility with its device token) -------------
+
+def _gstr1_response(request):
+    from django.utils.dateparse import parse_date
+
+    from . import gstr1
+
+    start, end = parse_date(request.query_params.get("from") or ""), parse_date(request.query_params.get("to") or "")
+    if start is None or end is None:
+        raise EinvoiceError("Give from and to as YYYY-MM-DD.", field="from")
+    kind = (request.query_params.get("kind") or "preview").lower()
+    try:
+        if kind == "preview":
+            return Response({"months": gstr1.preview(start, end), "b2cl_limit": f"{gstr1.B2CL_LIMIT:.2f}",
+                             "format": {k: v for k, v in gstr1.FORMAT.items() if k != "excel_sheets"}})
+        name, data, ctype = gstr1.export(start, end, kind)
+    except ValueError as exc:
+        raise EinvoiceError(str(exc), field="to") from exc
+    resp = HttpResponse(data, content_type=ctype)
+    resp["Content-Disposition"] = f'attachment; filename="{name}"'
+    resp["Cache-Control"] = "no-store"
+    return resp
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@_handled
+def gstr1_view(request):
+    service.require(service.can_review, request.user)
+    return _gstr1_response(request)
+
+
+@_signer
+def signer_gstr1(request, device):
+    return _gstr1_response(request)

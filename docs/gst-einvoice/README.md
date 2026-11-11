@@ -133,6 +133,49 @@ python tools/sric_signer/sric_signer.py --cli --portal http://localhost:8000 --t
 To register the B2B invoices on the NIC sandbox, set `GST_EINVOICE_PROVIDER=nic_sandbox` and the sandbox credentials,
 then run the same steps.
 
+## GSTR-1 export (B2C invoices)
+
+The portal builds the GSTR-1 data for invoices to buyers **without a GSTIN** (`gstr1.py`). E-invoices are left out:
+the GST system fills them into GSTR-1 from the IRP.
+
+### Where to get it
+- In the portal: GST invoices → Monthly register → *GSTR-1 export*.
+- In the SRIC Invoice Signer: the *GSTR-1 export* row.
+- API: `GET /api/v1/gst-einvoice/gstr1/?from=YYYY-MM-DD&to=YYYY-MM-DD&kind=preview|json|xlsx` (SRIC reviewers), or
+  `/signer/api/gstr1/` (the signing utility's device token).
+
+### Files
+- There is one file per calendar month, with `fp` = MMYYYY, because SRIC files monthly. There is no quarterly or IFF
+  option.
+- A range over several months downloads as a zip, with one file per month.
+- JSON: the offline tool's upload format (`gstin`, `fp`, `b2cs`, `b2cl`, `cdnur`, `hsn.hsn_b2c`, `doc_issue`).
+- Excel: the offline tool's template sheets `b2cl`, `b2cs`, `cdnur`, `hsn(b2c)` and `docs`, plus a *read me* sheet.
+
+### Contents
+| Table | What goes in it |
+|---|---|
+| **B2CS (Table 7)** | Every intra-state B2C supply, and inter-state B2C invoices up to ₹1,00,000, by place of supply and rate |
+| **B2CL (Table 5)** | Inter-state B2C invoices above ₹1,00,000 (the limit from the August 2024 tax period), invoice by invoice |
+| **CDNUR (Table 9B)** | Credit notes against B2CL invoices |
+| **HSN (Table 12, B2C tab)** | SAC 998397 by rate. Services are reported with UQC `NA` and quantity 0 |
+| **Documents issued (Table 13)** | The month's whole invoice series, B2B e-invoices included, and the credit-note series: from, to, total, and 0 cancelled |
+
+Credit notes against B2CS supplies are netted into B2CS in the month the note is issued.
+
+**There are no credit notes yet.** The portal has no credit-note flow, so the CDNUR section is empty and the export
+says so.
+
+Only invoices signed with the DSC count as issued. Numbered B2C invoices still waiting for the signature are left out,
+and the export lists them as a warning.
+
+### To confirm with SRIC before the first filing
+GSTN publishes no formal schema. The items below sit in `gstr1.FORMAT` and can be adjusted:
+- the JSON `version` string of the offline tool SRIC uses;
+- the exact Excel template headers;
+- UQC `NA` for services. The original brief said `OTH`; GSTN's advisory says `NA`.
+
+The ₹1 lakh limit is `gstr1.B2CL_LIMIT`.
+
 ## Signatory: install and first run
 
 1. Install the DSC token's own driver software (for example SafeNet Authentication Client, ePass2003, ProxKey).

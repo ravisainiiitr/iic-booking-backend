@@ -39,6 +39,12 @@ the SRIC signatory's DSC token, on the signatory's own computer (Dean SRIC propo
    - Enter the token PIN and click **Sign selected with DSC**.
    - The signed invoices go to the portal, and the buyers can then download them.
 
+6. **GSTR-1 file (monthly).**
+   - Pick the dates in the *GSTR-1 export* row, then choose **JSON** (to upload to the GST offline tool or portal) or
+     **Excel** (to enter the figures by hand), and click **Save GSTR-1 file...**.
+   - The portal builds the file: one per month, or a zip when the dates cover several months.
+   - The file covers only invoices to buyers without a GSTIN; e-invoices reach GSTR-1 automatically.
+
 If the screen says:
 - **No DSC token is plugged in:** insert the token, wait for its light, and click **Detect token**.
 - **The PIN is wrong:** check the PIN before trying again. The token locks itself after a few wrong PINs, and the

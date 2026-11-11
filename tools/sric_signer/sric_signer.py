@@ -94,6 +94,16 @@ class Portal:
                               "prepared (SHA-256 differs). Not signed.")
         return data
 
+    def gstr1(self, start: str, end: str, kind: str) -> tuple[str, bytes]:
+        """(file name, content): the GSTR-1 B2C export built by the portal; one file per month, a zip for several."""
+        import re
+
+        from urllib.parse import urlencode
+
+        resp = self._get("/api/v1/gst-einvoice/signer/api/gstr1/?" + urlencode({"from": start, "to": end, "kind": kind}))
+        found = re.search(r'filename="([^"]+)"', resp.headers.get("Content-Disposition", ""))
+        return (found.group(1) if found else f"GSTR1-B2C.{kind}"), resp.content
+
     def upload(self, item: dict, signed: bytes) -> dict:
         name = f"{item['invoice_number'].replace('/', '-')}-signed.pdf"
         resp = self.http.post(self.base + item["upload_url"], files={"file": (name, signed, "application/pdf")},
@@ -353,6 +363,20 @@ def cli(args) -> int:
     return 1 if failed else 0
 
 
+def gstr1_cli(args) -> int:
+    token = args.token or ""
+    if args.token_file:
+        with open(args.token_file, encoding="utf-8") as fh:
+            token = fh.read().strip()
+    portal = Portal(args.portal, token or getpass.getpass("Signing utility token: "))
+    name, data = portal.gstr1(args.gstr1[0], args.gstr1[1], args.gstr1_format)
+    path = os.path.join(args.out, name)
+    with open(path, "wb") as fh:
+        fh.write(data)
+    print(f"Saved {path} ({len(data)} bytes)")
+    return 0
+
+
 # --- window ---------------------------------------------------------------------------------------------------------------
 
 def _resource(name: str) -> str:
@@ -562,6 +586,42 @@ def gui() -> int:
                 session.close()
         refresh()
 
+    # --- GSTR-1 export (built by the portal; one file per month, a zip when the range covers several) ---
+    export = tk.LabelFrame(root, text="GSTR-1 export (B2C invoices: buyers without a GSTIN)")
+    export.pack(fill="x", padx=12, pady=(0, 6))
+    import datetime as _dt
+
+    first = _dt.date.today().replace(day=1)
+    tk.Label(export, text="From").pack(side="left", padx=(6, 2))
+    from_var = tk.StringVar(value=first.isoformat())
+    tk.Entry(export, textvariable=from_var, width=12).pack(side="left")
+    tk.Label(export, text="To").pack(side="left", padx=(8, 2))
+    to_var = tk.StringVar(value=_dt.date.today().isoformat())
+    tk.Entry(export, textvariable=to_var, width=12).pack(side="left")
+    kind_var = tk.StringVar(value="json")
+    tk.Radiobutton(export, text="JSON (GST offline tool / portal upload)", variable=kind_var, value="json").pack(
+        side="left", padx=(10, 0))
+    tk.Radiobutton(export, text="Excel (to enter by hand)", variable=kind_var, value="xlsx").pack(side="left")
+
+    def save_gstr1():
+        if state["portal"] is None:
+            messagebox.showinfo(APP, "Connect to the portal first.")
+            return
+        try:
+            name, data = state["portal"].gstr1(from_var.get().strip(), to_var.get().strip(), kind_var.get())
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror(APP, str(exc))
+            return
+        ext = os.path.splitext(name)[1]
+        path = filedialog.asksaveasfilename(initialfile=name, defaultextension=ext,
+                                            filetypes=[("GSTR-1 file", f"*{ext}"), ("All files", "*.*")])
+        if path:
+            with open(path, "wb") as fh:
+                fh.write(data)
+            say(f"Saved {path}" + (" (one file per month inside)" if ext == ".zip" else ""))
+
+    tk.Button(export, text="Save GSTR-1 file...", command=save_gstr1).pack(side="right", padx=6)
+
     actions = tk.Frame(root)
     actions.pack(fill="x", padx=12, pady=(0, 4))
     tk.Button(actions, text="Connect", command=connect).pack(side="left")
@@ -589,6 +649,9 @@ def main(argv=None) -> int:
     ap.add_argument("--token-label", help="token label, when several tokens are plugged in")
     ap.add_argument("--pkcs12", help="TEST DSC file, sandbox demonstration only")
     ap.add_argument("--all", action="store_true", help="sign every invoice waiting")
+    ap.add_argument("--gstr1", nargs=2, metavar=("FROM", "TO"), help="save the GSTR-1 (B2C) export, dates YYYY-MM-DD")
+    ap.add_argument("--gstr1-format", choices=("json", "xlsx"), default="json")
+    ap.add_argument("--out", default=".", help="folder for the GSTR-1 file")
     ap.add_argument("--invoice", action="append", help="sign this invoice number (repeatable)")
     args = ap.parse_args(argv)
     if args.self_test:
@@ -611,6 +674,8 @@ def main(argv=None) -> int:
             else:
                 print(report)
             return 0
+        if args.gstr1:
+            return gstr1_cli(args)
         return cli(args) if args.cli else gui()
     except SignerError as exc:
         print(f"Error: {exc}", file=sys.stderr)
