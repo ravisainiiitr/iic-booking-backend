@@ -870,6 +870,9 @@ MY_RESEARCH_GROUP_MAX_ATTACHMENTS = env.int("MY_RESEARCH_GROUP_MAX_ATTACHMENTS",
 # --- External booking workflow pilot (external_services.pilot) ---
 # Off: the new external rules apply to external test accounts (User.is_test_account) only.
 EXTERNAL_WORKFLOW_ALL_EXTERNAL_USERS = env.bool("EXTERNAL_WORKFLOW_ALL_EXTERNAL_USERS", default=False)
+# Off: wallet recharge against an offline payment with a receipt (users.offline_recharge) is open to external
+# test accounts only. On: to every external user with a wallet of their own.
+EXTERNAL_OFFLINE_RECHARGE_ALL_EXTERNAL_USERS = env.bool("EXTERNAL_OFFLINE_RECHARGE_ALL_EXTERNAL_USERS", default=False)
 # Off: only internal test accounts are offered online payment when their wallet falls short.
 INTERNAL_GATEWAY_FALLBACK_ALL_USERS = env.bool("INTERNAL_GATEWAY_FALLBACK_ALL_USERS", default=False)
 # --- I-STEM integration (https://www.istem.gov.in/) ---
