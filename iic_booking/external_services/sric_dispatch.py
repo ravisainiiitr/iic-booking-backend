@@ -23,6 +23,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.db import transaction
+from django.db.models import Exists, OuterRef
 from django.utils import timezone
 from django.utils.html import escape
 
@@ -252,6 +253,15 @@ def _alert_accounts(req: SricInvoiceRequest) -> None:
     )
 
 
+def _portal_invoiced():
+    """Requests the portal invoices itself (gst_einvoice) are not e-mailed, unless SRIC rejected the portal invoice:
+    then the request goes the manual way as before. A subquery, so the batch's row lock stays on the requests only."""
+    from django.apps import apps
+
+    EInvoice = apps.get_model("gst_einvoice", "EInvoice")
+    return Exists(EInvoice.objects.filter(sric_request_id=OuterRef("pk")).exclude(status="rejected"))
+
+
 def run_batch(now=None) -> dict:
     now = now or timezone.now()
     local = timezone.localtime(now)
@@ -284,7 +294,9 @@ def run_batch(now=None) -> dict:
                 ids = []
                 if s.invoice_requests_enabled:
                     ids = list(SricInvoiceRequest.objects.select_for_update(skip_locked=True)
-                               .filter(status=InvoiceRequestStatus.QUEUED, created_at__lte=cutoff).values_list("pk", flat=True))
+                               .filter(status=InvoiceRequestStatus.QUEUED, created_at__lte=cutoff)
+                               .exclude(_portal_invoiced())
+                               .values_list("pk", flat=True))
                     SricInvoiceRequest.objects.filter(pk__in=ids).update(status=InvoiceRequestStatus.BATCHED, batch=batch)
                 SricInvoiceBatch.objects.filter(pk=batch.pk).update(requests_count=len(ids))
                 result["batched"] = len(ids)

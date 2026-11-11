@@ -766,6 +766,8 @@ urlpatterns = router.urls + [
         include((external_services_urls.admin_urlpatterns, "external_services_admin")),
     ),
     path("v1/external-booking/", include("iic_booking.external_services.urls")),
+    # GST invoices of facility charges, prepared by the portal (sandbox only; gst_einvoice.conf)
+    path("v1/gst-einvoice/", include("iic_booking.gst_einvoice.urls")),
     # Facility user groups + group email (Main Admin)
     path("v1/admin/facility-groups/", include("iic_booking.facility_groups.urls")),
     path("v1/portal-migration/booking-status/", portal_booking_status, name="portal-migration-booking-status-v1"),
