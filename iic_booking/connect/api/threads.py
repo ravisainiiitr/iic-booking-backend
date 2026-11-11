@@ -51,6 +51,7 @@ SORTS = {
     "viewed": ("-view_count", "-last_activity_at"),
     "helpful": ("-helpful_count", "-last_activity_at"),
     "unanswered": ("-created_at", "-id"),
+    "solved": ("-solved_at", "-id"),
 }
 
 
@@ -192,9 +193,8 @@ class ThreadDetailView(ConnectAPIView):
 
     @extend_schema(tags=TAG, summary="A thread with its opening post, poll and the caller's permissions")
     def get(self, request, pk):
-        thread = _annotated_thread(request.user, pk)
-        svc.record_view(request.user, thread)
-        return Response(thread_detail(thread, request.user))
+        svc.record_view(request.user, access.get_thread_or_404(request.user, pk))
+        return Response(thread_detail(_annotated_thread(request.user, pk), request.user))
 
     @extend_schema(tags=TAG, summary="Edit the thread (title, body, tags, category); author within the edit window or a moderator")
     def patch(self, request, pk):

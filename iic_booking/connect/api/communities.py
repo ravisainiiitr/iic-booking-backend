@@ -136,6 +136,9 @@ class CommunityDetailView(ConnectAPIView):
             for m in staff
             if m.user.is_active
         ]
+        from ..models import DiscussionSubscription
+
+        data["following"] = DiscussionSubscription.objects.filter(user=user, community=community, level="watching").exists()
         return Response(data)
 
 
