@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-GENERATE, GET_BY_DOC, GET_IRN, CANCEL, GSTIN = "generate", "get_by_doc", "get_irn", "cancel", "gstin"
-ALL_OPERATIONS = (GSTIN, GENERATE, GET_BY_DOC, GET_IRN, CANCEL)
+GENERATE, GET_BY_DOC, GET_IRN, GSTIN = "generate", "get_by_doc", "get_irn", "gstin"
+ALL_OPERATIONS = (GSTIN, GENERATE, GET_BY_DOC, GET_IRN)  # no cancellation (SRIC decision)
 
 
 @dataclass
@@ -36,7 +36,7 @@ class IrpProvider:
     def gstin_details(self, gstin: str) -> ProviderResult:
         return self.unsupported("Get GSTIN details")
 
-    def generate_irn(self, payload: dict) -> ProviderResult:
+    def generate_irn(self, payload: dict, *, notes: str = "") -> ProviderResult:
         return self.unsupported("Generate IRN")
 
     def get_by_document(self, doc_type: str, doc_number: str, doc_date: str) -> ProviderResult:
@@ -45,5 +45,3 @@ class IrpProvider:
     def get_irn(self, irn: str) -> ProviderResult:
         return self.unsupported("Get e-invoice by IRN")
 
-    def cancel_irn(self, irn: str, reason: str, remarks: str) -> ProviderResult:
-        return self.unsupported("Cancel IRN")

@@ -8,6 +8,13 @@ browser), and only sandbox mode exists:
     GST_EINVOICE_SANDBOX_CLIENT_ID / _CLIENT_SECRET / _USERNAME / _PASSWORD / _GSTIN
     GST_EINVOICE_SANDBOX_PUBLIC_KEY  the NIC *sandbox* public key (PEM text, or a path to the PEM file)
 
+Points the NIC pages leave open, to confirm with the sandbox credentials at onboarding (defaults in brackets):
+
+    GST_EINVOICE_SANDBOX_APPKEY_BYTES     length of the random AppKey: 32 or 16 [32]
+    GST_EINVOICE_SANDBOX_CLIENT_ID_HEADER header spelling: client_id or client-id (client_secret follows it) [client_id]
+    GST_EINVOICE_SANDBOX_VITAL_PREFIX     path prefix for auth and GSTIN [/eivital/v1.04]
+    GST_EINVOICE_SANDBOX_CORE_PREFIX      path prefix for the invoice operations [/eicore/v1.03]
+
 There is deliberately no production mode: no production host, credential name or switch exists in this module. A
 base URL whose host is not on the sandbox allow-list, or that names a known production IRP host, refuses every call.
 """
@@ -58,6 +65,26 @@ def provider() -> str:
 
 def sandbox_base_url() -> str:
     return _get("GST_EINVOICE_SANDBOX_BASE_URL", DEFAULT_SANDBOX_BASE_URL).rstrip("/")
+
+
+def sandbox_options() -> dict:
+    """The configurable NIC points (never secrets)."""
+    try:
+        key_bytes = int(_get("GST_EINVOICE_SANDBOX_APPKEY_BYTES", "32"))
+    except ValueError:
+        key_bytes = 32
+    header = _get("GST_EINVOICE_SANDBOX_CLIENT_ID_HEADER", "client_id").lower()
+
+    def prefix(name, default):
+        value = "/" + _get(name, default).strip("/")
+        return value if all(c.isalnum() or c in "/._-" for c in value) else default
+
+    return {
+        "appkey_bytes": key_bytes if key_bytes in (16, 32) else 32,
+        "client_id_header": header if header in ("client_id", "client-id") else "client_id",
+        "vital_prefix": prefix("GST_EINVOICE_SANDBOX_VITAL_PREFIX", "/eivital/v1.04"),
+        "core_prefix": prefix("GST_EINVOICE_SANDBOX_CORE_PREFIX", "/eicore/v1.03"),
+    }
 
 
 class ProductionEndpointRefused(Exception):
@@ -122,4 +149,6 @@ def status() -> dict:
         "sandbox_host": urlparse(sandbox_base_url()).hostname or "",
         "problem": problem,
         "production_available": False,
+        "nic_options": sandbox_options(),
+        "credentials_missing": missing_sandbox_credentials() if prov == PROVIDER_NIC_SANDBOX else [],
     }

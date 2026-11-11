@@ -152,6 +152,9 @@ LOCAL_APPS = [
     "iic_booking.istem.apps.IstemConfig",
     "iic_booking.integration_health.apps.IntegrationHealthConfig",
     "iic_booking.whatsapp.apps.WhatsAppConfig",
+    # GST invoicing of facility charges (Dean SRIC proposal). SANDBOX ONLY; off unless GST_EINVOICE_ENABLED=true.
+    # Configured from GST_EINVOICE_* environment variables only (see iic_booking/gst_einvoice/conf.py).
+    "iic_booking.gst_einvoice.apps.GstEinvoiceConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps

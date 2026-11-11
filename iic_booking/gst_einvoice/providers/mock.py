@@ -16,8 +16,6 @@ import base64
 import hashlib
 import json
 import time
-from datetime import timedelta
-
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
@@ -113,7 +111,7 @@ class MockSandboxProvider(IrpProvider):
             "SIMULATED": True,
         }
 
-    # --- lookups and cancellation ------------------------------------------------------------------------------------
+    # --- lookups ------------------------------------------------------------------------------------
     def get_by_document(self, doc_type: str, doc_number: str, doc_date: str) -> ProviderResult:
         from ..models import SimulatedIrpRecord
 
@@ -131,23 +129,6 @@ class MockSandboxProvider(IrpProvider):
         if record is None:
             return ProviderResult(False, error_code="2154", error_message="IRN details are not found", request=req)
         return ProviderResult(True, data=self._answer(record), request=req, response=self._answer(record, redact=True))
-
-    def cancel_irn(self, irn: str, reason: str, remarks: str) -> ProviderResult:
-        from ..models import SimulatedIrpRecord
-
-        req = {"operation": "Cancel IRN", "Irn": irn, "CnlRsn": reason, "CnlRem": remarks}
-        record = SimulatedIrpRecord.objects.filter(irn=irn).first()
-        if record is None:
-            return ProviderResult(False, error_code="2154", error_message="IRN details are not found", request=req)
-        if record.status == "CNL":
-            return ProviderResult(False, error_code="9999", error_message="Invoice is already cancelled", request=req)
-        if timezone.now() - record.ack_date > timedelta(hours=24):
-            return ProviderResult(False, error_code="2270", error_message="The allowed cancellation time limit is crossed, you cannot cancel the IRN",
-                                  request=req)
-        record.status, record.cancelled_at = "CNL", timezone.now()
-        record.save(update_fields=["status", "cancelled_at"])
-        data = {"Irn": irn, "CancelDate": _fmt(record.cancelled_at), "SIMULATED": True}
-        return ProviderResult(True, data=data, request=req, response=data)
 
 
 def _fmt(dt) -> str:

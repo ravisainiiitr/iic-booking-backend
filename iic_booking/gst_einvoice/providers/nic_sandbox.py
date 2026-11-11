@@ -1,14 +1,14 @@
 """NIC e-invoice SANDBOX adapter (einv-apisandbox.nic.in), written to the NIC sandbox developer pages (v1.03 / v1.04):
 
 1. Authenticate: POST with headers client_id, client_secret, Gstin; body {"Data": base64(RSA-PKCS1(NIC sandbox public
-   key, base64(JSON{UserName, Password, AppKey, ForceRefreshAccessToken})))}. AppKey = 32 random bytes, base64.
+   key, base64(JSON{UserName, Password, AppKey, ForceRefreshAccessToken})))}. AppKey = 32 (or 16, configurable) random bytes, base64.
    The answer carries AuthToken, Sek (the session key, AES-ECB encrypted with the AppKey) and TokenExpiry.
 2. Later calls: headers client_id, client_secret, Gstin, user_name, AuthToken; request JSON AES-ECB encrypted with the
    decrypted Sek, base64, in {"Data": ...}; response Data decrypted the same way.
 
 Every URL passes ``conf.assert_sandbox_url`` before a request is made, so a production IRP host is never contacted.
-Points the NIC pages leave open (path prefixes, header spelling, AppKey length) are kept in PATHS / below and must be
-confirmed with the sandbox credentials at onboarding; see docs/gst-einvoice/SANDBOX_ONBOARDING.md.
+Points the NIC pages leave open (path prefixes, header spelling, AppKey length) are environment settings
+(conf.sandbox_options), to be confirmed with the sandbox credentials at onboarding; see docs/gst-einvoice/README.md.
 """
 
 from __future__ import annotations
@@ -31,13 +31,13 @@ from ..payload import redact
 from .base import ALL_OPERATIONS, IrpProvider, ProviderResult
 
 TIMEOUT = (10, 30)  # connect, read
+# Relative to the configurable prefixes (conf.sandbox_options: vital = auth / masters, core = invoice operations).
 PATHS = {
-    "auth": "/eivital/v1.04/auth",
-    "gstin": "/eivital/v1.04/Master/gstin/{gstin}",
-    "generate": "/eicore/v1.03/Invoice",
-    "get_irn": "/eicore/v1.03/Invoice/irn/{irn}",
-    "get_by_doc": "/eicore/v1.03/Invoice/irnbydocdetails",
-    "cancel": "/eicore/v1.03/Invoice/Cancel",
+    "auth": ("vital", "/auth"),
+    "gstin": ("vital", "/Master/gstin/{gstin}"),
+    "generate": ("core", "/Invoice"),
+    "get_irn": ("core", "/Invoice/irn/{irn}"),
+    "get_by_doc": ("core", "/Invoice/irnbydocdetails"),
 }
 TOKEN_CACHE_KEY = "gst_einvoice:nic_sandbox:session"
 
@@ -63,17 +63,21 @@ class NicSandboxProvider(IrpProvider):
         self.http = session or requests.Session()
         self.base = conf.assert_sandbox_url(conf.sandbox_base_url())
         self.creds = conf.sandbox_credentials()
+        self.options = conf.sandbox_options()
 
     def capabilities(self) -> set[str]:
         return set(ALL_OPERATIONS)
 
     # --- plumbing ----------------------------------------------------------------------------------------------------
     def _url(self, key: str, **kw) -> str:
-        return conf.assert_sandbox_url(self.base + PATHS[key].format(**kw))
+        group, path = PATHS[key]
+        return conf.assert_sandbox_url(self.base + self.options[f"{group}_prefix"] + path.format(**kw))
 
     def _headers(self, token: str | None = None) -> dict:
-        h = {"Content-Type": "application/json", "client_id": self.creds["client_id"],
-             "client_secret": self.creds["client_secret"], "Gstin": self.creds["gstin"]}
+        id_header = self.options["client_id_header"]
+        secret_header = id_header.replace("id", "secret")
+        h = {"Content-Type": "application/json", id_header: self.creds["client_id"],
+             secret_header: self.creds["client_secret"], "Gstin": self.creds["gstin"]}
         if token:
             h.update({"user_name": self.creds["username"], "AuthToken": token})
         return h
@@ -86,7 +90,7 @@ class NicSandboxProvider(IrpProvider):
         missing = conf.missing_sandbox_credentials()
         if missing:
             raise RuntimeError("Sandbox credentials missing: " + ", ".join(missing))
-        app_key = os.urandom(32)
+        app_key = os.urandom(self.options["appkey_bytes"])
         body = json.dumps({"UserName": self.creds["username"], "Password": self.creds["password"],
                            "AppKey": base64.b64encode(app_key).decode(), "ForceRefreshAccessToken": force})
         public_key = serialization.load_pem_public_key(self.creds["public_key_pem"].encode())
@@ -171,7 +175,3 @@ class NicSandboxProvider(IrpProvider):
 
     def get_irn(self, irn: str) -> ProviderResult:
         return self._call("GET", self._url("get_irn", irn=irn), request_log={"operation": "Get e-invoice by IRN", "Irn": irn})
-
-    def cancel_irn(self, irn: str, reason: str, remarks: str) -> ProviderResult:
-        body = {"Irn": irn, "CnlRsn": reason, "CnlRem": remarks[:100]}
-        return self._call("POST", self._url("cancel"), body=body, request_log=body)

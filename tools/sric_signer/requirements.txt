@@ -1,0 +1,3 @@
+# SRIC Invoice Signer (runs on the signatory's computer, not on the server)
+pyHanko[pkcs11]==0.38.1
+requests==2.34.2

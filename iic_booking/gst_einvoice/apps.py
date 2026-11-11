@@ -1,8 +1,11 @@
 from django.apps import AppConfig
+from django.utils.translation import gettext_lazy as _
 
 
 class GstEinvoiceConfig(AppConfig):
-    default_auto_field = "django.db.models.BigAutoField"
     name = "iic_booking.gst_einvoice"
     label = "gst_einvoice"
-    verbose_name = "GST e-invoice (sandbox demonstration)"
+    verbose_name = _("GST invoicing (sandbox)")
+
+    def ready(self):
+        from . import signals  # noqa: F401

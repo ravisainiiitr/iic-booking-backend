@@ -69,9 +69,14 @@ def build(invoice) -> dict:
         payload["BuyerDtls"]["Addr2"] = c.address2[:100]
     if c.email:
         payload["BuyerDtls"]["Em"] = c.email
-    po = invoice.purchase_order
-    if po is not None:
-        payload["RefDtls"] = {"ContrDtls": [{"PORefr": po.po_number[:16], "PORefDt": _d(po.po_date)}]}
+    if invoice.po_number:
+        ref = {"PORefr": invoice.po_number[:16]}
+        if invoice.po_date:
+            ref["PORefDt"] = _d(invoice.po_date)
+        payload["RefDtls"] = {"ContrDtls": [ref]}
+    if invoice.receipt_number:
+        # The payment receipt the invoice refers to (free-text remark; the IRP keeps it with the invoice).
+        payload.setdefault("RefDtls", {})["InvRm"] = f"Paid: receipt {invoice.receipt_number}"[:100]
     return payload
 
 

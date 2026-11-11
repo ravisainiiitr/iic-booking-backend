@@ -522,3 +522,39 @@ def staff_queue(user, *, status_filter: str = "", q: str = "") -> list[dict]:
             "snapshot": req.snapshot,
         })
     return out
+
+
+def attach_portal_invoice(req: SricInvoiceRequest, data: bytes, *, file_name: str, invoice_number: str,
+                          note: str = "") -> Optional[OfficialInvoiceDocument]:
+    """The invoice the portal issued for this request (``gst_einvoice``), filed exactly like an uploaded one: the
+    request's current document, status INVOICE_RECEIVED, waiting physical copies released, the user told. Returns
+    None (and changes nothing) when SRIC's own invoice is already on file."""
+    from django.core.files.base import ContentFile
+
+    if not data.startswith(b"%PDF-"):
+        raise InvoiceError("The portal invoice is not a PDF.", code="not_pdf")
+    with transaction.atomic():
+        req = SricInvoiceRequest.objects.select_for_update().select_related("booking").get(pk=req.pk)
+        if req.documents.filter(is_current=True).exists():
+            return None
+        doc = OfficialInvoiceDocument(
+            request=req, original_name=file_name[:200], size=len(data), sha256=hashlib.sha256(data).hexdigest(),
+            invoice_number=(invoice_number or "")[:64], uploaded_by=None,
+        )
+        doc.file.save(f"{req.pk}-{doc.sha256[:16]}.pdf", ContentFile(data), save=False)
+        doc.save()
+        req.status = InvoiceRequestStatus.INVOICE_RECEIVED
+        req.save(update_fields=["status", "updated_at"])
+        from .logistics import release_waiting_copies
+
+        release_waiting_copies(req)
+        booking = req.booking
+        ref = req.snapshot.get("booking_reference") or booking.pk
+        notifications.notify(
+            f"invoice:{req.pk}:document:{doc.pk}", [booking.user],
+            title=f"GST invoice {invoice_number} available for {ref}",
+            message=(f"Your GST invoice ({note or 'issued through the portal'}) is now available to download in the "
+                     "portal."),
+            link=f"/my-bookings?booking={booking.pk}",
+        )
+    return doc
