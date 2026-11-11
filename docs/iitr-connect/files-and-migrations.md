@@ -16,6 +16,8 @@ Generated from git (diff from each branch's base). Branch `feat/iitr-connect` in
 - `dc71c4e1` IITR Connect M9 + M10: announcements, notifications and digests; "Resolved" by the person who asked
 - `aea74968` IITR Connect tests: re-seed the notification email templates per test (a reused test DB can lose migration data)
 - `6de6afa8` IITR Connect M11 + M12: moderation, analytics and recognition
+- `90dff1bc` IITR Connect M13: security and query-count tests, delivery documentation
+- (this file's refresh is the next commit)
 
 ### Changed outside the new app
 
@@ -23,8 +25,21 @@ Generated from git (diff from each branch's base). Branch `feat/iitr-connect` in
      config/settings/base.py                               | 15 +++++++++++++++
      iic_booking/communication/notification_preferences.py |  6 ++++++
 
-### New app `iic_booking/connect/`
+### New app `iic_booking/connect/` and docs
 
+- `docs/iitr-connect/README.md`
+- `docs/iitr-connect/api.md`
+- `docs/iitr-connect/architecture.md`
+- `docs/iitr-connect/er-diagram.md`
+- `docs/iitr-connect/files-and-migrations.md`
+- `docs/iitr-connect/known-limitations.md`
+- `docs/iitr-connect/local-testing.md`
+- `docs/iitr-connect/migrations.md`
+- `docs/iitr-connect/performance-review.md`
+- `docs/iitr-connect/rollout-plan.md`
+- `docs/iitr-connect/security-review.md`
+- `docs/iitr-connect/test-results.md`
+- `docs/iitr-connect/user-guide.md`
 - `iic_booking/connect/__init__.py`
 - `iic_booking/connect/access.py`
 - `iic_booking/connect/admin.py`
@@ -80,6 +95,7 @@ Generated from git (diff from each branch's base). Branch `feat/iitr-connect` in
 - `iic_booking/connect/tests/conftest.py`
 - `iic_booking/connect/tests/test_m11_moderation.py`
 - `iic_booking/connect/tests/test_m12_analytics_recognition.py`
+- `iic_booking/connect/tests/test_m13_security.py`
 - `iic_booking/connect/tests/test_m2_access.py`
 - `iic_booking/connect/tests/test_m3_membership.py`
 - `iic_booking/connect/tests/test_m4_threads.py`
@@ -109,9 +125,11 @@ Generated from git (diff from each branch's base). Branch `feat/iitr-connect` in
 - `53961eb` IITR Connect M8: Discussions tab on the equipment page and staff tools on threads
 - `1a59f24` IITR Connect M9 + M10 (frontend): announcements, notifications page, and a clear "Resolved" badge
 - `019919b` IITR Connect M11 + M12 (frontend): reporting, moderation console, analytics, staff navigation
+- `becd09b` IITR Connect M13: robots.txt disallows /connect and its API (the rest of the site stays crawlable as before)
 
 ### Files
 
+     public/robots.txt                                  |    5 +
      src/components/DashboardHeader.tsx                 |   10 +-
      src/components/connect/ConnectEditor.tsx           |  480 +++++++++
      .../connect/EquipmentDiscussionsPanel.tsx          |  191 ++++
@@ -136,5 +154,3 @@ Generated from git (diff from each branch's base). Branch `feat/iitr-connect` in
      src/pages/connect/ConnectSearch.tsx                |   42 +
      src/pages/connect/ConnectThread.tsx                | 1019 ++++++++++++++++++++
      src/routes/AppRoutes.tsx                           |   23 +
-
-Plus `public/robots.txt` (new: disallows `/connect` and `/api/v1/connect/`).
