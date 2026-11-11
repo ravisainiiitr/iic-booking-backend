@@ -73,6 +73,31 @@ def inr(v) -> str:
     return f"{sign}{whole}.{frac}"
 
 
+_DURATION = re.compile(r"\(\s*(?:slot\s+)?duration\s*:\s*([^()]*?)\s*\)", re.IGNORECASE)
+_ONE = re.compile(r"(?<![\d.])1 (sample|slot|hour|part|piece|element|set|unit|item)s\b", re.IGNORECASE)
+
+
+def charge_text(desc: str, rupee: str = "\u20b9") -> str:
+    """A charge-breakdown line made short and readable, each fact once.
+
+    "5.0 slots ( slot duration: 1.5 hours ) @ 3000.00 per slots ( slot duration: 1.5 hours )"
+    becomes "5 slots of 1.5 hours @ ₹3,000 per slot".
+    """
+    s = " ".join(str(desc or "").split()).rstrip(": ")
+    durations = [d.strip().lower() for d in _DURATION.findall(s) if d.strip()]
+    s = _DURATION.sub("", s)
+    s = re.sub(r"(?<![\d.])(\d+)\.0+(?!\d)", r"\1", s)  # 5.0 slots -> 5 slots
+    s = re.sub(r"\bper (\w+?)s\b", r"per \1", s)  # per slots -> per slot
+    s = re.sub(r"@\s*(?:\u20b9|Rs\.?)?\s*(\d+(?:\.\d+)?)",
+               lambda m: f"@ {rupee}{inr(m.group(1)).removesuffix('.00')}", s)
+    s = _ONE.sub(lambda m: f"1 {m.group(1)}", s)
+    s = " ".join(s.split()).replace(" ,", ",").strip(" :")
+    if durations:
+        s = re.sub(r"^(\d+(?:\.\d+)? \w+)", lambda m: f"{m.group(1)} of {durations[0]}", s, count=1) \
+            if re.match(r"^\d", s) else f"{s} ({durations[0]} each)"
+    return s[:160]
+
+
 def valid_gstin(value: str) -> str:
     v = (value or "").strip().upper()
     return v if _GSTIN_RE.match(v) else ""
@@ -386,7 +411,7 @@ def render_proforma(pi: Proforma, *, extra_terms: str = "", disclaimer: str = ""
     for i, ln in enumerate(pi.lines, 1):
         desc = [P(E(ln.title), bold)]
         if ln.details:
-            desc.append(P(" &nbsp;·&nbsp; ".join(E(d) for d in ln.details[:14]), st("det", 7.4, color=muted, leading=9.4)))
+            desc.append(P("<br/>".join(E(d) for d in ln.details[:8]), st("det", 7.8, color=muted, leading=10)))
         data.append([P(str(i), body_c), desc, P(E(ln.sac or DEFAULT_SAC), body_c), P(E(ln.qty), body_c),
                      P(inr(ln.taxable), body_r), P(ln.rate, body_c), P(inr(ln.gst) if ln.gst else "Nil", body_r),
                      P(inr(ln.total), bold_r)])
