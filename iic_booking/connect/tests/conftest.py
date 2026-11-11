@@ -22,6 +22,25 @@ from iic_booking.users.tests.factories import UserFactory
 API = "/api/v1/connect"
 
 
+@pytest.fixture(autouse=True)
+def _connect_seed(request):
+    """Re-run the create-only seed of migration 0002 (General community, categories, badges).
+
+    Transactional tests flush the database, and ``--reuse-db`` keeps that flushed database for the next run, so
+    tests must not rely on migration data surviving.
+    """
+    marker = request.node.get_closest_marker("django_db")
+    if marker is None:
+        return
+    transactional = bool(marker.kwargs.get("transaction"))
+    request.getfixturevalue("transactional_db" if transactional else "db")
+    import importlib
+
+    from django.apps import apps as django_apps
+
+    importlib.import_module("iic_booking.connect.migrations.0002_seed_general_categories").seed(django_apps, None)
+
+
 @pytest.fixture
 def connect_on(settings):
     settings.IITR_CONNECT_ENABLED = True

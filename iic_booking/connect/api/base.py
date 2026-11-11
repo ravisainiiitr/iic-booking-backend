@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from ..permissions import ConnectEnabled
@@ -22,6 +23,8 @@ def apply_private_headers(response):
 
 class ConnectAPIView(APIView):
     permission_classes = [IsAuthenticated, ConnectEnabled]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "connect_read"
 
     def finalize_response(self, request, response, *args, **kwargs):
         response = super().finalize_response(request, response, *args, **kwargs)
