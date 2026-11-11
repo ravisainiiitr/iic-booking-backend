@@ -66,12 +66,12 @@ def test_intra_state_has_legal_fields_and_cgst_sgst():
     for needle in ("PROFORMA INVOICE", "NOT A TAX INVOICE", "PROFORMA NO.", "IIC-PI-20261111-", "DATE OF ISSUE",
                    "VALID UNTIL", "11 Dec 2026", "PLACE OF SUPPLY", "Uttarakhand (05)", "Shivalik Materials Pvt Ltd",
                    "Attn: Anita Sharma", "Unregistered", "998346", "CGST @ 9%", "SGST @ 9%", "1,180.00",
-                   "Rupees One Thousand One Hundred Eighty Only", "Authorised Signatory", "5 slots of 1.5 hours @ ₹3,000 per slot",
+                   "Rupees One Thousand One Hundred Eighty Only", "DECLARATION", "5 slots of 1.5 hours @ ₹3,000 per slot",
                    "Page 1 of 1"):
         assert needle in text, needle
     assert "IGST" not in text.replace("IGST applies", "")
     # Only what makes up the charge, each fact once: no typed inputs, no repeated duration, no GST line.
-    for gone in ("Number of samples", "Sample type", "slot duration", "GST (18%)", "per slots"):
+    for gone in ("Authorised Signatory", "arsric@", "Place of supply not given", "Number of samples", "Sample type", "slot duration", "GST (18%)", "per slots"):
         assert gone not in text, gone
 
 

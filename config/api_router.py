@@ -504,6 +504,7 @@ from iic_booking.equipment.api_views import (
     equipment_write_off_head_action,
     equipment_write_off_execute,
 )
+from iic_booking.equipment import proforma_views  # noqa: E402
 from iic_booking.equipment.api_document_views import (
     booking_invoice_pdf,
     booking_shipping_label_pdf,
@@ -1631,6 +1632,16 @@ urlpatterns = router.urls + [
     path("icpms/standards/full/", icpms_standards_full_list, name="icpms-standards-full-list"),
     path("proforma-invoice/calculate/", proforma_invoice_calculate, name="proforma-invoice-calculate"),
     path("proforma-invoice/download.pdf", proforma_invoice_pdf_download, name="proforma-invoice-pdf-download"),
+    # Saved proforma invoices: the user's own (pay / edit / cancel) and the staff reconciliation list.
+    path("proforma-invoices/", proforma_views.my_proformas, name="proforma-invoices"),
+    path("proforma-invoices/<int:proforma_id>/", proforma_views.proforma_detail, name="proforma-invoice-detail"),
+    path("proforma-invoices/<int:proforma_id>/pdf/", proforma_views.proforma_pdf, name="proforma-invoice-pdf"),
+    path("proforma-invoices/<int:proforma_id>/cancel/", proforma_views.proforma_cancel, name="proforma-invoice-cancel"),
+    path("proforma-invoices/<int:proforma_id>/revise/", proforma_views.proforma_revise, name="proforma-invoice-revise"),
+    path("proforma-invoices/<int:proforma_id>/pay-online/", proforma_views.proforma_pay_online, name="proforma-invoice-pay-online"),
+    path("proforma-invoices/<int:proforma_id>/offline-payment/", proforma_views.proforma_record_offline,
+         name="proforma-invoice-offline-payment"),
+    path("admin/proforma-invoices/", proforma_views.staff_proformas, name="admin-proforma-invoices"),
     path("bookings/<int:booking_id>/invoice.pdf", booking_invoice_pdf, name="booking-invoice-pdf"),
     path("bookings/<int:booking_id>/shipping-label.pdf", booking_shipping_label_pdf, name="booking-shipping-label-pdf"),
     path("bookings/<int:booking_id>/return-shipping-label.pdf", booking_return_shipping_label_pdf, name="booking-return-shipping-label-pdf"),
