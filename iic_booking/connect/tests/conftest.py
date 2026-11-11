@@ -41,6 +41,15 @@ def _connect_seed(request):
     importlib.import_module("iic_booking.connect.migrations.0002_seed_general_categories").seed(django_apps, None)
 
 
+@pytest.fixture(autouse=True)
+def _clear_connect_settings_cache():
+    from iic_booking.connect.services.threads import clear_settings_cache
+
+    clear_settings_cache()
+    yield
+    clear_settings_cache()
+
+
 @pytest.fixture
 def connect_on(settings):
     settings.IITR_CONNECT_ENABLED = True
@@ -48,10 +57,24 @@ def connect_on(settings):
     return settings
 
 
+class _FreshAccessClient(APIClient):
+    """force_authenticate reuses one user object across requests; production loads a fresh user per request, so
+    clear the per-request access snapshot before each call to match."""
+
+    def request(self, **kwargs):
+        from iic_booking.connect import access
+
+        user = getattr(self, "_connect_user", None)
+        if user is not None:
+            access.invalidate(user)
+        return super().request(**kwargs)
+
+
 def client_for(user=None):
-    cl = APIClient()
+    cl = _FreshAccessClient()
     if user is not None:
         cl.force_authenticate(user=user)
+        cl._connect_user = user
     return cl
 
 
@@ -76,6 +99,20 @@ def make_group(name=None):
     return EquipmentGroup.objects.create(name=name or f"Group {uuid.uuid4().hex[:6]}")
 
 
+_VISIBLE_DEPARTMENT = {}
+
+
+def visible_department():
+    """An internal department whose catalogue is visible (equipment of hidden departments is not listed)."""
+    dep = _VISIBLE_DEPARTMENT.get("dep")
+    if dep is None or not Department.objects.filter(pk=dep.pk).exists():
+        dep = make_department("Visible Dept")
+        Department.objects.filter(pk=dep.pk).update(equipment_visibility_enabled=True)
+        dep.refresh_from_db()
+        _VISIBLE_DEPARTMENT["dep"] = dep
+    return dep
+
+
 def make_equipment(group=None, department=None, **kwargs):
     defaults = {
         "name": f"CN EQ {uuid.uuid4().hex[:4]}",
@@ -83,7 +120,7 @@ def make_equipment(group=None, department=None, **kwargs):
         "slot_duration_minutes": 60,
         "user_rating_enabled": False,
         "status": "ACTIVE",
-        "internal_department": department,
+        "internal_department": department or visible_department(),
         "equipment_group": group,
     }
     defaults.update(kwargs)

@@ -208,3 +208,21 @@ def _group_deleted(sender, instance, **kwargs):
             archive_orphaned_communities()
 
     _after_commit(run)
+
+
+# --- Module settings cache -----------------------------------------------------------------------------------------
+
+
+def _settings_saved(sender, **kwargs):
+    from .services.threads import clear_settings_cache
+
+    clear_settings_cache()
+
+
+def _connect_settings_signal():
+    from .models import ConnectSettings
+
+    post_save.connect(_settings_saved, sender=ConnectSettings, dispatch_uid="connect_settings_cache_clear")
+
+
+_connect_settings_signal()

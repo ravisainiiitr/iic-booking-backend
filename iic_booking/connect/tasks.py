@@ -40,12 +40,15 @@ def sync_groups_task(group_ids):
 @shared_task(name="connect.nightly_membership_sync")
 @defer_during_peak("connect.nightly_membership_sync")
 def nightly_membership_sync():
-    """Full idempotent sync (catches temporary OIC / leave cover ending by time) and lifts ended suspensions."""
+    """Full idempotent sync (catches temporary OIC / leave cover ending by time), lifts ended suspensions and
+    removes uploads that were never attached to a post within a day."""
     if not _enabled():
         return None
+    from .services.attachments import purge_unbound
     from .services.membership import lift_expired_suspensions
     from .services.membership import sync_all
 
     lifted = lift_expired_suspensions()
     report = sync_all(dry_run=False, source="nightly")
-    return {"lifted_suspensions": lifted, **report.as_dict()}
+    purged = purge_unbound(older_than_hours=24)
+    return {"lifted_suspensions": lifted, "purged_unbound_uploads": purged, **report.as_dict()}
