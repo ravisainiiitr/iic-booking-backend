@@ -1,0 +1,66 @@
+# Permanently delete one saved proforma invoice that was made without signing in (a guest estimate, e.g. a smoke
+# test), with its history and stored PDF. Refuses anything with a user or any payment linked, so a real buyer's
+# proforma can never be removed this way. Prints only the number, total and what was removed.
+name: Delete guest proforma invoice
+
+on:
+  workflow_dispatch:
+    inputs:
+      number:
+        description: "Proforma number, exactly as printed (e.g. IIC-PI-20261112-0004-211E)"
+        required: true
+      confirm:
+        description: "Type DELETE to proceed"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  delete:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Delete the proforma
+        env:
+          NUMBER: ${{ github.event.inputs.number }}
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRM" = "DELETE"
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e NUMBER="$NUMBER" -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import os
+
+          import django
+
+          django.setup()
+          from django.db import transaction
+
+          from iic_booking.equipment.proforma_models import ProformaEvent, ProformaPayment, SavedProformaInvoice
+
+          number = os.environ["NUMBER"].strip()
+          record = SavedProformaInvoice.objects.filter(number=number).first()
+          if record is None:
+              raise SystemExit(f"Not deleted: no proforma {number}")
+          if record.user_id is not None:
+              raise SystemExit(f"Not deleted: {number} belongs to a signed-in user")
+          if ProformaPayment.objects.filter(proforma=record).exists():
+              raise SystemExit(f"Not deleted: {number} has payments linked")
+          if SavedProformaInvoice.objects.filter(replaces=record).exists() or record.replaces_id:
+              raise SystemExit(f"Not deleted: {number} is part of a revision chain")
+          pdf_name = record.pdf.name if record.pdf else ""
+          with transaction.atomic():
+              events = ProformaEvent.objects.filter(proforma=record)
+              n_events = events.count()
+              events._raw_delete(events.db)  # history rows refuse instance.delete(); this one-off removal is deliberate
+              record.delete()
+          removed_file = False
+          if pdf_name:
+              from django.core.files.storage import default_storage
+
+              if default_storage.exists(pdf_name):
+                  default_storage.delete(pdf_name)
+                  removed_file = True
+          print(f"deleted {number}: total {record.total}, {n_events} history rows, pdf removed: {removed_file}")
+          print("still present:", SavedProformaInvoice.objects.filter(number=number).exists())
+          PY
