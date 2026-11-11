@@ -788,6 +788,12 @@ def perform_booking_cancellation(
     current = Booking.objects.select_for_update().values_list("status", flat=True).get(pk=booking.pk)
     if current == BookingStatus.REFUNDED or (current == BookingStatus.CANCELLED and booking.status != current):
         raise CancellationValidationError("This booking has already been cancelled or refunded.")
+    if should_refund:
+        from .maintenance_settlement import refund_lock_reason
+
+        locked = refund_lock_reason(booking)
+        if locked:
+            raise CancellationValidationError(locked)
     all_slot_ids = list(booking.daily_slots.values_list("id", flat=True))
     is_full_cancel = set(slot_ids) == set(all_slot_ids) and partial_plan is None
     cancelled_slots = (
