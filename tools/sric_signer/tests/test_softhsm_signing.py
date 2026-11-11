@@ -96,6 +96,7 @@ def _portal_dsc():
     path = os.path.join(HERE, "..", "..", "..", "iic_booking", "gst_einvoice", "dsc.py")
     spec = importlib.util.spec_from_file_location("portal_dsc", path)
     mod = importlib.util.module_from_spec(spec)
+    sys.modules["portal_dsc"] = mod  # dataclasses look the module up while the class is being made
     spec.loader.exec_module(mod)
     return mod
 

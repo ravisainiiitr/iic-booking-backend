@@ -206,6 +206,18 @@ def _text(value) -> str:
     return str(value or "").strip()
 
 
+def _initialized(token) -> bool:
+    flags = getattr(token, "flags", None)
+    if flags is None:
+        return True
+    try:
+        from pkcs11.constants import TokenFlag
+
+        return bool(int(flags) & int(TokenFlag.TOKEN_INITIALIZED))
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def list_tokens(drivers: list[Driver], loader=None) -> list[TokenInfo]:
     """The tokens plugged in, for every usable driver. ``loader`` (tests) returns a python-pkcs11 ``lib``."""
     if loader is None:
@@ -225,6 +237,8 @@ def list_tokens(drivers: list[Driver], loader=None) -> list[TokenInfo]:
         for slot in slots:
             try:
                 token = slot.get_token()
+                if not _initialized(token):
+                    continue  # an empty, never-initialised slot (some drivers report it as a token)
                 info = TokenInfo(driver, slot.slot_id, (token.label or "").strip(),
                                  (token.manufacturer_id or "").strip(), _text(getattr(token, "serial", "")))
                 try:

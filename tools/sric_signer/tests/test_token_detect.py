@@ -167,6 +167,16 @@ def test_lists_plugged_in_tokens_with_their_certificates(tmp_path):
     assert "SURESH KUMAR" in t.title
 
 
+def test_uninitialised_slots_are_not_offered(tmp_path):
+    from pkcs11 import Attribute
+
+    cert = FakeObj({Attribute.VALUE: _cert_der(), Attribute.ID: b"", Attribute.LABEL: "Signing"})
+    ready, empty = FakeToken("DSC", [cert]), FakeToken("", [])
+    ready.flags, empty.flags = 0x400, 0x0
+    lib = FakeLib([FakeSlot(0, ready), FakeSlot(1, empty)])
+    assert [t.label for t in sric_token.list_tokens(_drivers(tmp_path), loader=lambda p: lib)] == ["DSC"]
+
+
 def test_no_token_plugged_in_and_broken_driver(tmp_path):
     assert sric_token.list_tokens(_drivers(tmp_path), loader=lambda p: FakeLib([])) == []
 

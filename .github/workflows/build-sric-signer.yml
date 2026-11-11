@@ -36,6 +36,7 @@ jobs:
       - name: Tests (SoftHSM2 run must not be skipped)
         working-directory: tools/sric_signer
         run: |
+          set -o pipefail
           python -m pytest tests -v -p no:cacheprovider -rs | tee pytest.log
           if grep -q "SKIPPED" pytest.log; then echo "::error::the SoftHSM2 signing tests were skipped"; exit 1; fi
 
