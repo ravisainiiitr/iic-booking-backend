@@ -131,11 +131,14 @@ def render(invoice) -> bytes:
     ink, muted, rule = colors.HexColor("#1E293B"), colors.HexColor("#5B6573"), colors.HexColor("#D6DBE4")
     tint, orange = colors.HexColor("#F3F6FB"), colors.HexColor("#C2410C")
     b2b = invoice.supply_type == SupplyType.B2B
+    credit = invoice.doc_type == "CRN"
+    doc_title = "CREDIT NOTE" if credit else "TAX INVOICE"
+    doc_label = "Credit Note No." if credit else "Invoice No."
     c = invoice.customer
 
     buf = io.BytesIO()
     cv = rl_canvas.Canvas(buf, pagesize=A4, invariant=1)
-    cv.setTitle(f"Tax Invoice {invoice.display_number}")
+    cv.setTitle(f"{'Credit Note' if credit else 'Tax Invoice'} {invoice.display_number}")
     cv.setAuthor(s.supplier_legal_name)
     cv.setSubject("GST tax invoice (sandbox demonstration)")
     cv.setCreator(look["service"])
@@ -198,12 +201,12 @@ def render(invoice) -> bytes:
     cv.setLineWidth(1.2)
     cv.line(M, y, W - M, y)
     y -= 20
-    text(M, y, "TAX INVOICE" + ("  (e-Invoice)" if b2b else ""), 15, bold, navy)
-    right(W - M, y, f"Invoice No. {invoice.display_number}", 10.5, bold, ink)
+    text(M, y, doc_title + ("  (e-Invoice)" if b2b else ""), 15, bold, navy)
+    right(W - M, y, f"{doc_label} {invoice.display_number}", 10.5, bold, ink)
     y -= 13
     text(M, y, "Original for recipient", 7.8, sans, muted)
     issued = invoice.invoice_date.strftime("%d %b %Y") if invoice.invoice_date else "-"
-    right(W - M, y, f"Invoice date: {issued}", 8.6, sans, ink)
+    right(W - M, y, f"{'Credit note' if credit else 'Invoice'} date: {issued}", 8.6, sans, ink)
     y -= 12
 
     # B2B: IRN block with the QR code.
@@ -236,7 +239,11 @@ def render(invoice) -> bytes:
     buyer.append(f"State: {_state(c.state_code)}")
     if c.email:
         buyer.append(c.email)
-    details = [("Place of supply", _state(invoice.place_of_supply)),
+    details = []
+    if credit and invoice.original_invoice_id:
+        orig = invoice.original_invoice
+        details.append(("Against invoice", f"{orig.invoice_number} dated {orig.invoice_date.strftime('%d %b %Y')}"))
+    details += [("Place of supply", _state(invoice.place_of_supply)),
                ("Supply", "Inter-state (IGST)" if invoice.inter_state else "Intra-state (CGST + SGST)"),
                ("Reverse charge", "No")]
     for label, value in (("Booking", invoice.booking_reference), ("FBR No.", invoice.fbr_number),
@@ -304,7 +311,7 @@ def render(invoice) -> bytes:
         ty -= 13
     cv.setFillColor(tint)
     cv.rect(tx - 6, ty - 18, 206, 18, stroke=0, fill=1)
-    text(tx, ty - 12.5, "Invoice total", 9.2, bold, navy)
+    text(tx, ty - 12.5, "Credit note total" if credit else "Invoice total", 9.2, bold, navy)
     right(W - M, ty - 12.5, f"{R} {_money(invoice.total)}", 9.6, bold, navy)
     ty -= 24
     words = Paragraph(f"<b>Amount in words:</b> {in_words(invoice.total)}<br/><b>Tax in words:</b> "
@@ -314,8 +321,12 @@ def render(invoice) -> bytes:
     y = min(ty, y - words.height - 6) - 6
 
     # Paid note and terms.
-    paid = ("Paid in full" + (f" - payment receipt {invoice.receipt_number}" if invoice.receipt_number else "")
-            + ". No amount is due against this invoice.")
+    if credit:
+        paid = (f"Credit note for a refund: {invoice.credit_reason}. It reduces the value and the GST of the invoice "
+                "above by the amounts shown.")
+    else:
+        paid = ("Paid in full" + (f" - payment receipt {invoice.receipt_number}" if invoice.receipt_number else "")
+                + ". No amount is due against this invoice.")
     notes = [f"<b>{paid}</b>"] + [line for line in s.terms.splitlines() if line.strip()]
     if invoice.notes and not invoice.notes.strip().startswith("#"):
         notes.append(invoice.notes.strip()[:300])

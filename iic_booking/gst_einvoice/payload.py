@@ -38,7 +38,7 @@ def build(invoice) -> dict:
     payload = {
         "Version": SCHEMA_VERSION,
         "TranDtls": {"TaxSch": "GST", "SupTyp": "B2B", "RegRev": "N", "IgstOnIntra": "N"},
-        "DocDtls": {"Typ": "INV", "No": invoice.invoice_number, "Dt": _d(invoice.invoice_date)},
+        "DocDtls": {"Typ": invoice.doc_type or "INV", "No": invoice.invoice_number, "Dt": _d(invoice.invoice_date)},
         "SellerDtls": {
             "Gstin": s.supplier_gstin, "LglNm": s.supplier_legal_name[:100], "TrdNm": s.supplier_trade_name[:100],
             "Addr1": s.supplier_address1[:100], "Loc": s.supplier_location[:50], "Pin": int(s.supplier_pincode),
@@ -74,6 +74,9 @@ def build(invoice) -> dict:
         if invoice.po_date:
             ref["PORefDt"] = _d(invoice.po_date)
         payload["RefDtls"] = {"ContrDtls": [ref]}
+    if invoice.doc_type == "CRN" and invoice.original_invoice_id:
+        orig = invoice.original_invoice
+        payload.setdefault("RefDtls", {})["PrecDocDtls"] = [{"InvNo": orig.invoice_number, "InvDt": _d(orig.invoice_date)}]
     if invoice.receipt_number:
         # The payment receipt the invoice refers to (free-text remark; the IRP keeps it with the invoice).
         payload.setdefault("RefDtls", {})["InvRm"] = f"Paid: receipt {invoice.receipt_number}"[:100]

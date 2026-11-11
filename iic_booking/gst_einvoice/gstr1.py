@@ -135,7 +135,8 @@ def build_month(year: int, month: int, *, start: date | None = None, end: date |
 
     s = EinvoiceSettings.get()
     lo, hi = _month_bounds(year, month, start, end)
-    in_range = EInvoice.objects.filter(invoice_date__gte=lo, invoice_date__lte=hi).exclude(invoice_number="")
+    in_range = (EInvoice.objects.filter(invoice_date__gte=lo, invoice_date__lte=hi, doc_type="INV")
+                .exclude(invoice_number=""))
     b2c = list(in_range.filter(supply_type=SupplyType.B2C, status=InvoiceStatus.SIGNED)
                .select_related("customer").prefetch_related("lines").order_by("invoice_number"))
     unsigned = list(in_range.filter(supply_type=SupplyType.B2C, status=InvoiceStatus.AWAITING_SIGNATURE)
@@ -250,8 +251,9 @@ def build_month(year: int, month: int, *, start: date | None = None, end: date |
         "documents_issued": len(numbers), "unsigned_excluded": len(unsigned),
     }
     if not notes:
-        warnings.append("No credit notes: the portal issues none" + ("" if summary["credit_notes_available"] else
-                        " (there is no credit-note flow yet)") + "; the CDNUR section is empty.")
+        warnings.append("No credit notes in this period; the CDNUR section is empty." if summary["credit_notes_available"]
+                        else "No credit notes: the portal issues none (there is no credit-note flow yet); the CDNUR "
+                             "section is empty.")
     return MonthExport(year, month, lo, hi, payload, warnings, summary)
 
 

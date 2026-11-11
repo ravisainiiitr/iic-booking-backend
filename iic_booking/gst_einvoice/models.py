@@ -163,11 +163,23 @@ class SupplyType(models.TextChoices):
     B2C = "B2C", _("Buyer without GSTIN: tax invoice signed with SRIC's DSC")
 
 
+class DocType(models.TextChoices):
+    INVOICE = "INV", _("Tax invoice")
+    CREDIT_NOTE = "CRN", _("Credit note")
+
+
 class EInvoice(models.Model):
     """One invoice. The number is allocated when it is final (after review, if any); until then it has a draft
     reference. Amounts and buyer details are frozen copies."""
 
     mode = models.CharField(max_length=10, default="sandbox", editable=False)
+    doc_type = models.CharField(max_length=3, choices=DocType.choices, default=DocType.INVOICE, db_index=True)
+    # Credit notes only: the invoice credited and the refund that caused it (one credit note per refund).
+    original_invoice = models.ForeignKey("self", on_delete=models.PROTECT, null=True, blank=True,
+                                         related_name="credit_notes")
+    refund = models.OneToOneField("external_services.ExternalRefund", on_delete=models.PROTECT, null=True,
+                                  blank=True, related_name="gst_credit_note")
+    credit_reason = models.CharField(max_length=300, blank=True, default="")
     provider = models.CharField(max_length=20, blank=True, default="")
     simulated = models.BooleanField(default=False, help_text=_("IRN data came from the mock sandbox, not from an IRP."))
     status = models.CharField(max_length=24, choices=InvoiceStatus.choices, default=InvoiceStatus.PENDING_REVIEW,
@@ -394,3 +406,22 @@ class SignerDevice(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+
+class CreditNotePermission(models.Model):
+    """The Main Administrator's decision that a refund of this one invoiced booking gets a credit note (GST refunded
+    too). Off unless a row exists for the invoice and is not revoked; there is no global switch. The decision and
+    any revocation are also written to the invoice's append-only history."""
+
+    invoice = models.OneToOneField(EInvoice, on_delete=models.PROTECT, related_name="credit_note_permission")
+    enabled_by = models.ForeignKey(USER, on_delete=models.PROTECT, related_name="+")
+    reason = models.CharField(max_length=500)
+    enabled_at = models.DateTimeField(auto_now_add=True)
+    revoked_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoke_reason = models.CharField(max_length=500, blank=True, default="")
+
+    @property
+    def active(self) -> bool:
+        return self.revoked_at is None
+

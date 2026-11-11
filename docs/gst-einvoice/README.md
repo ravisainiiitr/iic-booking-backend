@@ -112,6 +112,7 @@ The frontend page is `/accounts/gst-invoices`. It is linked from *GST invoices f
 
 - `gst_einvoice` 0001 creates the tables.
 - `gst_einvoice` 0002 adds the SAC 998397 @ 18% rule and the 15-minute schedule.
+- `gst_einvoice` 0003 adds credit notes (doc_type, original invoice, refund, reason) and the Main Administrator's credit-note permission table.
 - Nothing else changes.
 
 Deploy does not run migrations, so run the production migrations explicitly when this is released. The module stays
@@ -175,6 +176,52 @@ GSTN publishes no formal schema. The items below sit in `gstr1.FORMAT` and can b
 - UQC `NA` for services. The original brief said `OTH`; GSTN's advisory says `NA`.
 
 The ₹1 lakh limit is `gstr1.B2CL_LIMIT`.
+
+## Credit notes on refund (Main Administrator, case by case)
+
+### When no credit note is needed
+- A booking's tax invoice is issued after the work is done, so a refund normally never meets an invoice.
+- A full refund more than 48 hours before the slot goes to the wallet before any invoice exists.
+- Both stay as they were.
+
+### When a refund meets an invoice
+This happens in two cases:
+- **Advance invoice.** The user may already ask for the invoice before the work: *Request the GST invoice before
+  analysis is completed* (`external_services` `InvoiceOption.EARLY`). Before confirming, they must accept the
+  early-invoice disclosure, which says that if the work cannot be done, only the base amount may come back. The
+  acceptance is recorded on the booking's `InvoicePreference` with the policy version, a hash of the text and the
+  time. The option is off until `ExternalServicesSettings.early_invoice_allowed` is switched on, and the disclosure
+  wording still awaits SRIC's approval.
+- **Lab-failure refund after completion.**
+
+Without a credit note, such a refund leaves the GST out (`refunds.quote`), as before.
+
+### Allowing a credit note
+- **Who and how:** only the **Main Administrator**, for one issued portal invoice, with a reason. In the portal:
+  GST invoices → invoice → *Allow a credit note on refund*. The API is
+  `POST /api/v1/gst-einvoice/invoices/<id>/credit-note-permission/`, and `.../revoke/` withdraws it.
+- **Audit:** the decision is written to the invoice's append-only history.
+- **No global switch:** without this decision, nothing changes.
+
+### What happens on refund
+Once allowed, the refund returns the GST too, and recording the refund (`refunds._record`) issues the credit note.
+- **Series:** its own continuous series, **ECN/26-27/0001**. The suggested `EBP-CN/26-27/0001` is longer than the 16
+  characters GST allows for a document number.
+- **Reference:** it names the original invoice's number and date, in the PDF and in the e-invoice `PrecDocDtls`.
+- **Amounts:** the taxable value and the CGST/SGST or IGST split follow the invoice. A partial refund gets a pro-rata
+  credit note, and the total credited never exceeds the invoice.
+- **Buyer with a GSTIN:** registered as a **CRN** e-invoice with the sandbox / mock.
+- **No GSTIN:** a PDF signed with SRIC's DSC through the signer utility.
+- The buyer is told, and downloads the credit note with the booking.
+
+### In GSTR-1
+- **CDNUR:** credit notes against B2CL invoices.
+- **B2CS:** other B2C credit notes are netted into B2CS in the month of the note.
+- **Table 13:** the credit-note series.
+- **B2B credit notes:** like B2B invoices, they reach GSTR-1 (CDNR) from the e-invoice system, so the export leaves
+  them out.
+
+Migration: `gst_einvoice` 0003 (credit-note fields on the invoice, plus the permission table).
 
 ## Signatory: install and first run
 

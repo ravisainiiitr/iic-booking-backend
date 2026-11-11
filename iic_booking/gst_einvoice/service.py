@@ -471,7 +471,10 @@ def finalise(inv: EInvoice, actor, note: str = "") -> EInvoice:
         if inv.invoice_number:
             return inv
         today = timezone.localdate()
-        inv.series, inv.invoice_number = numbering.allocate(today)
+        from .models import DocType
+
+        prefix = "ECN" if inv.doc_type == DocType.CREDIT_NOTE else numbering.DEMO_PREFIX
+        inv.series, inv.invoice_number = numbering.allocate(today, prefix=prefix)
         inv.invoice_date = today
         inv.save(update_fields=["series", "invoice_number", "invoice_date"])
         _event(inv, "numbered", actor, before=inv.status, note=(note + f" Invoice number {inv.invoice_number}.").strip())
@@ -718,9 +721,13 @@ def deliver(inv_id) -> EInvoice:
     """Put the issued invoice on the booking's existing invoice request (OfficialInvoiceDocument) and tell the buyer."""
     from iic_booking.external_services.invoices import attach_portal_invoice
 
-    inv = EInvoice.objects.select_related("sric_request").get(pk=inv_id)
+    from .models import DocType
+
+    inv = EInvoice.objects.select_related("sric_request", "booking__user", "original_invoice").get(pk=inv_id)
     if not inv.issued or inv.delivered_at:
         return inv
+    if inv.doc_type == DocType.CREDIT_NOTE:
+        return _deliver_credit_note(inv)
     pdf = final_pdf(inv)
     doc = None
     if inv.sric_request_id and pdf:
@@ -732,6 +739,23 @@ def deliver(inv_id) -> EInvoice:
     _event(inv, "delivered", None, before=inv.status,
            note="Available to the buyer in My Bookings." if doc else "Demonstration invoice: nothing sent to a buyer.")
     return inv
+
+
+def _deliver_credit_note(note: EInvoice) -> EInvoice:
+    """The buyer is told; the credit note downloads from their booking (it does not replace the invoice)."""
+    from iic_booking.external_services import notifications
+
+    if note.booking_id and note.booking.user_id:
+        notifications.notify(
+            f"gst-credit-note:{note.pk}", [note.booking.user],
+            title=f"Credit note {note.invoice_number} for {note.booking_reference or note.booking_id}",
+            message=(f"A credit note of Rs. {note.total} against tax invoice {note.original_invoice.invoice_number} "
+                     "has been issued for your refund. You can download it with your booking."),
+            link=f"/my-bookings?booking={note.booking_id}")
+    note.delivered_at = timezone.now()
+    note.save(update_fields=["delivered_at"])
+    _event(note, "delivered", None, before=note.status, note="Buyer told; available with the booking.")
+    return note
 
 
 def process_pending(limit: int = 100) -> dict:
@@ -771,11 +795,14 @@ def register(year: int, month: int) -> dict:
     """The monthly register SRIC asked for (proposal section 5): every issued invoice, and the series summary for the
     document summary of GSTR-1 (Table 13)."""
     qs = (EInvoice.objects.filter(invoice_date__year=year, invoice_date__month=month)
-          .exclude(invoice_number="").select_related("customer", "series").order_by("invoice_number"))
+          .exclude(invoice_number="").select_related("customer", "series", "original_invoice")
+          .order_by("doc_type", "invoice_number"))
     rows = []
     for inv in qs:
         rows.append({
             "invoice_number": inv.invoice_number, "invoice_date": inv.invoice_date.isoformat(),
+            "doc_type": inv.doc_type,
+            "original_invoice": inv.original_invoice.invoice_number if inv.original_invoice_id else "",
             "status": inv.status, "status_label": inv.get_status_display(), "supply_type": inv.supply_type,
             "buyer": inv.customer.legal_name, "buyer_gstin": inv.customer.gstin, "place_of_supply": inv.place_of_supply,
             "irn": inv.irn, "ack_number": inv.ack_number, "receipt_number": inv.receipt_number,
@@ -790,7 +817,8 @@ def register(year: int, month: int) -> dict:
                                            "count": 0})
         entry["to"] = r["invoice_number"]
         entry["count"] += 1
-    issued = [r for r in rows if r["status"] in (InvoiceStatus.IRN_GENERATED, InvoiceStatus.SIGNED)]
+    issued = [r for r in rows if r["status"] in (InvoiceStatus.IRN_GENERATED, InvoiceStatus.SIGNED)
+              and r["doc_type"] == "INV"]
     return {
         "year": year, "month": month, "mode": "sandbox", "rows": rows, "series": list(series.values()),
         "totals": {k: f"{sum(Decimal(r[k]) for r in issued):.2f}" for k in ("taxable_value", "cgst", "sgst", "igst", "total")},
@@ -810,6 +838,10 @@ def invoice_dict(inv: EInvoice, *, detail: bool = False) -> dict:
     c = inv.customer
     out = {
         "id": inv.pk, "number": inv.display_number, "invoice_number": inv.invoice_number,
+        "doc_type": inv.doc_type, "doc_type_label": inv.get_doc_type_display(),
+        "original_invoice": ({"id": inv.original_invoice_id, "number": inv.original_invoice.invoice_number,
+                              "date": inv.original_invoice.invoice_date.isoformat()}
+                             if inv.original_invoice_id else None),
         "invoice_date": inv.invoice_date.isoformat() if inv.invoice_date else None,
         "status": inv.status, "status_label": inv.get_status_display(), "supply_type": inv.supply_type,
         "supply_type_label": inv.get_supply_type_display(), "mode": inv.mode, "provider": inv.provider,
@@ -850,20 +882,37 @@ def invoice_dict(inv: EInvoice, *, detail: bool = False) -> dict:
                                      if inv.signer_certificate_id else None)
         out["pdf_sha256"], out["signed_pdf_sha256"] = inv.pdf_sha256, inv.signed_pdf_sha256
         out["review_remarks"] = inv.review_remarks
+        out["credit_reason"] = inv.credit_reason
+        from .credit_notes import permission_for, remaining
+
+        perm = permission_for(inv) if inv.doc_type == "INV" else None
+        out["credit_note_permission"] = ({"enabled_by": _name(perm.enabled_by), "reason": perm.reason,
+                                          "enabled_at": _iso(perm.enabled_at)} if perm else None)
+        out["credit_notes"] = [{"id": n.pk, "number": n.display_number, "status": n.status,
+                                "status_label": n.get_status_display(), "total": f"{n.total:.2f}"}
+                               for n in inv.credit_notes.all()]
+        if inv.doc_type == "INV" and inv.issued:
+            left_taxable, left_total = remaining(inv)
+            out["credit_remaining"] = {"taxable_value": f"{left_taxable:.2f}", "total": f"{left_total:.2f}"}
     return out
 
 
 def buyer_view(user, booking_id) -> dict | None:
     """What the booking's owner sees: the portal invoice of their booking, when one exists."""
-    inv = EInvoice.objects.filter(booking_id=booking_id, booking__user=user).select_related("customer").first()
+    inv = (EInvoice.objects.filter(booking_id=booking_id, booking__user=user, doc_type="INV")
+           .select_related("customer").order_by("-created_at").first())
     if inv is None:
         return None
+    notes = [{"number": n.invoice_number, "date": n.invoice_date.isoformat() if n.invoice_date else None,
+              "total": f"{n.total:.2f}", "status_label": n.get_status_display(), "issued": n.issued,
+              "download_url": f"/api/v1/gst-einvoice/invoices/{n.pk}/pdf/" if n.issued else None}
+             for n in inv.credit_notes.all()]
     return {
         "number": inv.display_number, "status": inv.status, "status_label": inv.get_status_display(),
         "supply_type": inv.supply_type, "issued": inv.issued, "mode": inv.mode, "simulated": inv.simulated,
         "invoice_date": inv.invoice_date.isoformat() if inv.invoice_date else None, "irn": inv.irn,
         "ack_number": inv.ack_number, "total": f"{inv.total:.2f}", "receipt_number": inv.receipt_number,
-        "signed_at": _iso(inv.signed_at),
+        "signed_at": _iso(inv.signed_at), "credit_notes": notes,
         "download_url": (f"/api/v1/external-booking/invoices/documents/{inv.official_document_id}/download/"
                          if inv.official_document_id else None),
         "next_step": ("Download the invoice." if inv.issued else
