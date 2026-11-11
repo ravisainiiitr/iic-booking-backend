@@ -1,0 +1,26 @@
+# End-to-end check of the external offline-payment wallet recharge with the flagged test accounts: submit with a
+# receipt, scoped approval / rejection, single credit, reconciliation, cancel, legacy-endpoint refusal and who would
+# be notified. All data is created inside a database transaction that is rolled back; stored receipt files are
+# deleted; nothing is emailed or pushed. Prints ids, counts and PASS/FAIL only.
+name: E2E Offline Recharge
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - name: Run end-to-end test in the django container
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python - < scripts/ops/e2e_offline_recharge.py
