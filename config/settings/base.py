@@ -682,6 +682,7 @@ CORS_EXPOSE_HEADERS = [
     "Content-Disposition",
     "X-Export-Row-Count",
     "X-Results-Total-Bytes",
+    "X-Proforma-Numbers",
 ]
 
 # By Default swagger ui is available only to admin user(s). You can change permission classes to change that

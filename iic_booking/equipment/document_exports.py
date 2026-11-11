@@ -1,4 +1,5 @@
 import io
+import re
 from decimal import Decimal
 from typing import Any, Dict, Tuple
 
@@ -771,43 +772,25 @@ def _get_proforma_invoice_format():
 
 
 def _proforma_line_details(row: dict, rupees_label: str) -> list:
-    """The inputs the user entered and the charge breakup of one estimate line, as short text lines."""
-    from .proforma_pdf import inr
+    """What the charge of one estimate line is made of, short: "5 slots of 1.5 hours @ ₹3,000 per slot".
 
-    input_vals = row.get("input_labels_and_values") or row.get("input_values") or {}
-    lines = []
-    if isinstance(input_vals, dict):
-        from .input_display import format_input_value, formatted_as_text, humanize_key
+    Only the charge breakdown is shown (the inputs the user typed are not repeated), GST lines are left out (GST has
+    its own column), and a line's amount is added only when the charge has more than one part.
+    """
+    from .proforma_pdf import charge_text, dec, inr
 
-        for k, v in input_vals.items():
-            if v in (None, "", []) or str(k).startswith("_"):
-                continue
-            if isinstance(v, (list, dict)) or (isinstance(v, str) and v.strip()[:1] in ("[", "{")):
-                v = formatted_as_text(format_input_value({"field_key": k, "field_type": ""}, {k: v}), max_rows=10)
-            if isinstance(v, bool):
-                v = "Yes" if v else "No"
-            if "_" in str(k):
-                k = humanize_key(k)
-            vs = str(v).strip()
-            if not vs:
-                continue
-            kl = str(k).lower()
-            if v is False or (
-                vs.lower() in ("no", "false", "0", "n")
-                and ("?" in str(k) or "want" in kl or "avail" in kl or "opt" in kl)
-            ):
-                continue
-            lines.append(f"{k}: {vs}")
+    parts = []
     for b in row.get("charge_breakdown") or []:
         if not isinstance(b, dict):
             continue
-        desc = b.get("description", "")
-        amt = b.get("amount", 0)
-        try:
-            lines.append(f"{desc}: {rupees_label} {inr(amt)}")
-        except Exception:
-            lines.append(f"{desc}: {rupees_label} {amt}")
-    return lines
+        desc = " ".join(str(b.get("description") or "").split())
+        amount = dec(b.get("amount"))
+        if not desc or amount == 0 or re.match(r"(?i)^(c|s|i)?gst\b", desc):
+            continue
+        parts.append((charge_text(desc, rupees_label), amount))
+    if len(parts) > 1:
+        return [f"{text} = {rupees_label}{inr(amount)}" for text, amount in parts]
+    return [text for text, _ in parts]
 
 
 def _proforma_department(line_items: list) -> str:
@@ -862,7 +845,7 @@ def build_proforma_invoice_multi_pdf(
         eq_name = _safe_str(row.get("equipment_name", "")).strip() or "Equipment"
         eq_code = _safe_str(row.get("equipment_code", "")).strip()
         lines.append(Line(
-            title=f"{eq_name} ({eq_code})" if eq_code else eq_name,
+            title=f"{eq_name} ({eq_code})" if eq_code and eq_code.lower() not in eq_name.lower() else eq_name,
             details=_proforma_line_details(row, rupees),
             taxable=dec(row.get("base_charge")),
             gst=dec(row.get("gst_amount")),

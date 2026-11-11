@@ -8052,3 +8052,8 @@ from iic_booking.equipment.oic_request_audit_models import OicRequestAuditLog  #
 from iic_booking.equipment.config_audit_models import (  # noqa: E402
     EquipmentConfigAuditLog,
 )
+from iic_booking.equipment.proforma_models import (  # noqa: E402,F401
+    ProformaEvent,
+    ProformaPayment,
+    SavedProformaInvoice,
+)

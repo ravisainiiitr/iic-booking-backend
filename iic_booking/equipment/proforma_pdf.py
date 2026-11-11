@@ -73,6 +73,31 @@ def inr(v) -> str:
     return f"{sign}{whole}.{frac}"
 
 
+_DURATION = re.compile(r"\(\s*(?:slot\s+)?duration\s*:\s*([^()]*?)\s*\)", re.IGNORECASE)
+_ONE = re.compile(r"(?<![\d.])1 (sample|slot|hour|part|piece|element|set|unit|item)s\b", re.IGNORECASE)
+
+
+def charge_text(desc: str, rupee: str = "\u20b9") -> str:
+    """A charge-breakdown line made short and readable, each fact once.
+
+    "5.0 slots ( slot duration: 1.5 hours ) @ 3000.00 per slots ( slot duration: 1.5 hours )"
+    becomes "5 slots of 1.5 hours @ ₹3,000 per slot".
+    """
+    s = " ".join(str(desc or "").split()).rstrip(": ")
+    durations = [d.strip().lower() for d in _DURATION.findall(s) if d.strip()]
+    s = _DURATION.sub("", s)
+    s = re.sub(r"(?<![\d.])(\d+)\.0+(?!\d)", r"\1", s)  # 5.0 slots -> 5 slots
+    s = re.sub(r"\bper (\w+?)s\b", r"per \1", s)  # per slots -> per slot
+    s = re.sub(r"@\s*(?:\u20b9|Rs\.?)?\s*(\d+(?:\.\d+)?)",
+               lambda m: f"@ {rupee}{inr(m.group(1)).removesuffix('.00')}", s)
+    s = _ONE.sub(lambda m: f"1 {m.group(1)}", s)
+    s = " ".join(s.split()).replace(" ,", ",").strip(" :")
+    if durations:
+        s = re.sub(r"^(\d+(?:\.\d+)? \w+)", lambda m: f"{m.group(1)} of {durations[0]}", s, count=1) \
+            if re.match(r"^\d", s) else f"{s} ({durations[0]} each)"
+    return s[:160]
+
+
 def valid_gstin(value: str) -> str:
     v = (value or "").strip().upper()
     return v if _GSTIN_RE.match(v) else ""
@@ -143,11 +168,31 @@ class Proforma:
     valid_days: int = 30
     notes: list = field(default_factory=list)
     title: str = "Proforma Invoice"
+    # The issuing department's Accounts In Charge, printed as the contact instead of a central address.
+    department_email: str = ""
+    # A saved proforma that was cancelled or replaced by a revision prints this across every page (e.g. "CANCELLED").
+    void_mark: str = ""
+    void_note: str = ""
+
+
+def department_accounts_email(department) -> str:
+    """Email of the department's Accounts In Charge (the longest-serving active one); blank when it has none."""
+    if department is None:
+        return ""
+    from django.contrib.auth import get_user_model
+
+    from iic_booking.users.models.user_type import UserType
+
+    email = (
+        get_user_model().objects.filter(user_type=UserType.FINANCE, is_active=True, department_id=department.pk)
+        .exclude(email="").order_by("pk").values_list("email", flat=True).first()
+    )
+    return (email or "").strip()
 
 
 # --- supplier and look (from the receipt template) ---------------------------------------------------------------------
 
-def _supplier_and_look(department: str) -> tuple[Party, dict]:
+def _supplier_and_look(department: str, department_email: str = "") -> tuple[Party, dict]:
     try:
         from iic_booking.payments.receipts import template_values
 
@@ -165,7 +210,8 @@ def _supplier_and_look(department: str) -> tuple[Party, dict]:
         gstin=gstin,
         state=STATE_CODES.get(code, "Uttarakhand"),
         state_code=code,
-        email=t.get("contact_email") or "",
+        # The department's Accounts In Charge answers questions about its proforma; no central address is printed.
+        email=department_email or "",
     )
     look = {
         "brand": t.get("brand_color") or "#153F79",
@@ -250,7 +296,7 @@ def render_proforma(pi: Proforma, *, extra_terms: str = "", disclaimer: str = ""
 
     from .document_exports import _amount_in_words
 
-    supplier, look = _supplier_and_look(pi.department)
+    supplier, look = _supplier_and_look(pi.department, pi.department_email)
     sans, sans_b, has_rupee = _fonts()
     R = "₹" if has_rupee else "Rs."
     W, H = A4
@@ -386,7 +432,7 @@ def render_proforma(pi: Proforma, *, extra_terms: str = "", disclaimer: str = ""
     for i, ln in enumerate(pi.lines, 1):
         desc = [P(E(ln.title), bold)]
         if ln.details:
-            desc.append(P(" &nbsp;·&nbsp; ".join(E(d) for d in ln.details[:14]), st("det", 7.4, color=muted, leading=9.4)))
+            desc.append(P("<br/>".join(E(d) for d in ln.details[:8]), st("det", 7.8, color=muted, leading=10)))
         data.append([P(str(i), body_c), desc, P(E(ln.sac or DEFAULT_SAC), body_c), P(E(ln.qty), body_c),
                      P(inr(ln.taxable), body_r), P(ln.rate, body_c), P(inr(ln.gst) if ln.gst else "Nil", body_r),
                      P(inr(ln.total), bold_r)])
@@ -408,9 +454,7 @@ def render_proforma(pi: Proforma, *, extra_terms: str = "", disclaimer: str = ""
         else:
             cgst = (gst / 2).quantize(TWO, rounding=ROUND_HALF_UP)
             tax_rows = [("CGST", cgst), ("SGST", gst - cgst)]
-            tax_note = ("Intra-state supply within Uttarakhand: CGST and SGST apply." if pos_code
-                        else "Place of supply not given: shown as within Uttarakhand (CGST + SGST). "
-                             "Add your billing state or GSTIN to your profile for the correct split.")
+            tax_note = "CGST and SGST apply."
     else:
         tax_rows = []
         tax_note = "GST is not charged on these services for your user category."
@@ -477,16 +521,15 @@ def render_proforma(pi: Proforma, *, extra_terms: str = "", disclaimer: str = ""
                             ("LINEABOVE", (0, 0), (-1, 0), 0.8, rule), ("TOPPADDING", (0, 0), (-1, -1), 6)]))
     story += [pt, Spacer(1, 3.5 * mm)]
 
-    # Declaration and authorised signatory.
+    # Declaration and the computer-generated note (a proforma carries no signatory).
     disclaimer = (disclaimer or "").strip() or "This is a computer-generated proforma invoice and does not require a signature."
     decl = [P("DECLARATION", section), Spacer(1, 1.5 * mm),
             P("We declare that this proforma shows the actual price of the services described and that all "
-              "particulars are true and correct.", body)]
-    sign = [P(f"For {E(supplier.name)}", st("for", 8.6, sans_b, align=TA_RIGHT)),
-            P(E(supplier.organisation), st("fo", 7.8, color=muted, align=TA_RIGHT)), Spacer(1, 5 * mm),
-            P("Authorised Signatory", st("as", 8.6, sans_b, navy, TA_RIGHT)),
-            P(E(disclaimer), st("dis", 6.9, color=muted, align=TA_RIGHT))]
-    ds = Table([[decl, sign]], colWidths=[CW * 0.56, CW * 0.44])
+              "particulars are true and correct.", body), Spacer(1, 1.5 * mm),
+            P(E(disclaimer), st("dis", 7.4, sans_b, muted))]
+    if pi.void_note:
+        decl += [Spacer(1, 1.5 * mm), P(E(pi.void_note), st("void", 8.4, sans_b, colors.HexColor("#8A1C1C")))]
+    ds = Table([[decl]], colWidths=[CW])
     ds.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.9, gold), ("BACKGROUND", (0, 0), (-1, -1), cream),
                             ("VALIGN", (0, 0), (-1, -1), "TOP"), ("TOPPADDING", (0, 0), (-1, -1), 8),
                             ("BOTTOMPADDING", (0, 0), (-1, -1), 8), ("LEFTPADDING", (0, 0), (-1, -1), 10),
@@ -566,6 +609,16 @@ def render_proforma(pi: Proforma, *, extra_terms: str = "", disclaimer: str = ""
                 self.setFont(sans_b, 74)
                 self.drawCentredString(0, -26, "PROFORMA")
             self.restoreState()
+            if pi.void_mark:
+                # A cancelled or replaced proforma says so across every page, whatever the watermark setting.
+                self.saveState()
+                self.setFillColor(colors.HexColor("#B42318"))
+                self.setFillAlpha(0.22)
+                self.translate(W / 2, H / 2 + 40 * mm)
+                self.rotate(35)
+                self.setFont(sans_b, 64)
+                self.drawCentredString(0, 0, pi.void_mark.upper())
+                self.restoreState()
             self.saveState()
             self.setFillColor(gold)
             self.rect(0, FOOTER_H - 1 * mm, W, 0.7 * mm, stroke=0, fill=1)

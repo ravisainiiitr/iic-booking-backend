@@ -11,6 +11,8 @@ from pypdf import PdfReader
 
 from iic_booking.equipment.document_exports import build_proforma_invoice_multi_pdf
 from iic_booking.equipment.document_exports import build_proforma_invoice_pdf
+from iic_booking.equipment.document_exports import _proforma_line_details
+from iic_booking.equipment.proforma_pdf import charge_text
 from iic_booking.equipment.proforma_pdf import inr
 from iic_booking.equipment.proforma_pdf import pan_from_gstin
 from iic_booking.equipment.proforma_pdf import state_code_for
@@ -27,7 +29,11 @@ def _line(name="FE-SEM", code="IIC-SEM-01", base="1000.00", gst="180.00"):
     return {
         "equipment_name": name, "equipment_code": code,
         "input_labels_and_values": {"Number of samples": 4, "Coating required?": "No", "Sample type": "Powder"},
-        "charge_breakdown": [{"description": "Analysis charge (4 x 250)", "amount": base}],
+        "charge_breakdown": [
+            {"description": "5.0 slots ( slot duration: 1.5 hours ) @ 3000.00 per slots ( slot duration: 1.5 hours ):",
+             "amount": base},
+            {"description": "GST (18%):", "amount": gst},
+        ],
         "base_charge": base, "gst_amount": gst, "total_charge": str(total),
     }
 
@@ -60,11 +66,13 @@ def test_intra_state_has_legal_fields_and_cgst_sgst():
     for needle in ("PROFORMA INVOICE", "NOT A TAX INVOICE", "PROFORMA NO.", "IIC-PI-20261111-", "DATE OF ISSUE",
                    "VALID UNTIL", "11 Dec 2026", "PLACE OF SUPPLY", "Uttarakhand (05)", "Shivalik Materials Pvt Ltd",
                    "Attn: Anita Sharma", "Unregistered", "998346", "CGST @ 9%", "SGST @ 9%", "1,180.00",
-                   "Rupees One Thousand One Hundred Eighty Only", "Authorised Signatory", "Number of samples: 4",
+                   "Rupees One Thousand One Hundred Eighty Only", "DECLARATION", "5 slots of 1.5 hours @ ₹3,000 per slot",
                    "Page 1 of 1"):
         assert needle in text, needle
     assert "IGST" not in text.replace("IGST applies", "")
-    assert "Coating required" not in text  # a "No" answer to an optional extra is left out
+    # Only what makes up the charge, each fact once: no typed inputs, no repeated duration, no GST line.
+    for gone in ("Authorised Signatory", "arsric@", "Place of supply not given", "Number of samples", "Sample type", "slot duration", "GST (18%)", "per slots"):
+        assert gone not in text, gone
 
 
 def test_inter_state_buyer_gstin_gives_igst():
@@ -108,3 +116,21 @@ def test_helpers():
     assert state_code_for(gstin="27AAACS1234F1Z5", state="Delhi") == "27"  # the GSTIN wins
     assert pan_from_gstin("05AAALI0033R1Z5") == "AAALI0033R"
     assert pan_from_gstin("bad") == ""
+
+
+def test_charge_text_is_short_and_says_each_fact_once():
+    assert charge_text("5.0 slots ( slot duration: 1.5 hours ) @ 3000.00 per slots ( slot duration: 1.5 hours ):") == (
+        "5 slots of 1.5 hours @ ₹3,000 per slot")
+    assert charge_text("1.0 samples @ 500 per samples") == "1 sample @ ₹500 per sample"
+    assert charge_text("2.5 hours @ Rs. 1200 per hours") == "2.5 hours @ ₹1,200 per hour"
+
+
+def test_details_drop_inputs_and_gst_and_add_amounts_only_for_several_parts():
+    one = {"input_labels_and_values": {"No. of Samples": 15},
+           "charge_breakdown": [{"description": "15 samples @ 250 per samples", "amount": 3750},
+                                {"description": "GST (18%):", "amount": 675}]}
+    assert _proforma_line_details(one, "₹") == ["15 samples @ ₹250 per sample"]
+    two = {"charge_breakdown": [{"description": "15 samples @ 250 per samples", "amount": 3750},
+                                {"description": "Gold coating @ 100 per samples", "amount": 1500}]}
+    assert _proforma_line_details(two, "₹") == ["15 samples @ ₹250 per sample = ₹3,750.00",
+                                                    "Gold coating @ ₹100 per sample = ₹1,500.00"]
