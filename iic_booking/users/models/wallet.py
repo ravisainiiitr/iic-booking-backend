@@ -462,6 +462,7 @@ class WalletRechargeMode(models.TextChoices):
 
     PROJECT_GRANT = "project_grant", _("Recharge via Project Grant")
     DIRECT_CASH_DEPOSIT = "direct_cash_deposit", _("Direct Cash Deposit / Bank Transfer")
+    OFFLINE_PAYMENT = "offline_payment", _("Offline payment with receipt (external users)")
 
 
 class WalletRechargeRequestStatus(models.TextChoices):
@@ -1024,6 +1025,12 @@ class WalletRechargeRequestAuditLog(Model):
     message = TextField(_("Message"), blank=True)
     metadata = JSONField(_("Metadata"), default=dict, blank=True)
     created_at = DateTimeField(_("Created at"), auto_now_add=True)
+
+    def save(self, *args, **kwargs) -> None:
+        # Append-only: a row is written once and never changed.
+        if not self._state.adding:
+            raise ValueError("Wallet recharge audit log rows are append-only.")
+        super().save(*args, **kwargs)
 
     class Meta:
         verbose_name = _("Wallet Recharge Request Audit Log")

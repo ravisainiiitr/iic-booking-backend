@@ -57,6 +57,7 @@ from iic_booking.users.api.auth_views import (
     account_email_login,
     account_password,
 )
+from iic_booking.users.api import offline_recharge_views
 from iic_booking.users.api.mobile_session_views import (
     mobile_device_revoke,
     mobile_devices,
@@ -1364,6 +1365,13 @@ urlpatterns = router.urls + [
         wallet_imap_delete_email_if_processed,
         name="wallet-imap-delete-email-if-processed",
     ),
+    path("wallet/offline-recharge/", offline_recharge_views.offline_recharge_collection, name="wallet-offline-recharge"),
+    path("wallet/offline-recharge/queue/", offline_recharge_views.offline_recharge_queue, name="wallet-offline-recharge-queue"),
+    path("wallet/offline-recharge/<int:request_id>/", offline_recharge_views.offline_recharge_detail, name="wallet-offline-recharge-detail"),
+    path("wallet/offline-recharge/<int:request_id>/cancel/", offline_recharge_views.offline_recharge_cancel, name="wallet-offline-recharge-cancel"),
+    path("wallet/offline-recharge/<int:request_id>/approve/", offline_recharge_views.offline_recharge_approve, name="wallet-offline-recharge-approve"),
+    path("wallet/offline-recharge/<int:request_id>/reject/", offline_recharge_views.offline_recharge_reject, name="wallet-offline-recharge-reject"),
+    path("wallet/offline-recharge/<int:request_id>/reconcile/", offline_recharge_views.offline_recharge_reconcile, name="wallet-offline-recharge-reconcile"),
     path("wallet/recharge-requests/<int:request_id>/approve/", approve_wallet_recharge_request, name="wallet-recharge-request-approve"),
     path("wallet/recharge-requests/<int:request_id>/reject/", reject_wallet_recharge_request, name="wallet-recharge-request-reject"),
     path("wallet/recharge-requests/<int:request_id>/cancel/", cancel_wallet_recharge_request, name="wallet-recharge-request-cancel"),

@@ -2201,3 +2201,33 @@ class SupervisorInviteEventAdmin(admin.ModelAdmin):
         return False
 
 
+
+
+from .models.offline_recharge import OfflineRechargePayment  # noqa: E402
+
+
+@admin.register(OfflineRechargePayment)
+class OfflineRechargePaymentAdmin(admin.ModelAdmin):
+    """Read-only: external users' offline payment recharges are decided in the portal (scoped, audited)."""
+
+    list_display = (
+        "recharge_request",
+        "claimed_amount",
+        "payment_mode",
+        "transaction_reference",
+        "payment_date",
+        "reconciliation_status",
+        "created_at",
+    )
+    list_filter = ("reconciliation_status", "payment_mode")
+    search_fields = ("transaction_reference", "recharge_request__user__email", "payer_account_name")
+    raw_id_fields = ("recharge_request", "receipt", "wallet_transaction", "reconciled_by")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
