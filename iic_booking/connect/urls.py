@@ -2,6 +2,7 @@ from django.urls import path
 
 from .api import communities
 from .api import home
+from .api import search
 from .api import threads
 from .api import views
 
@@ -10,6 +11,8 @@ app_name = "connect"
 urlpatterns = [
     path("bootstrap/", views.BootstrapView.as_view(), name="bootstrap"),
     path("home/", home.HomeView.as_view(), name="home"),
+    path("search/", search.SearchView.as_view(), name="search"),
+    path("suggest/", search.SuggestView.as_view(), name="suggest"),
     # Communities and membership
     path("communities/", communities.CommunityListView.as_view(), name="communities"),
     path("communities/<slug:slug>/", communities.CommunityDetailView.as_view(), name="community"),

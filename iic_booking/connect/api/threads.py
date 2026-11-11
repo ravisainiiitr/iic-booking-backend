@@ -79,7 +79,7 @@ def _community_from(user, raw) -> Community:
     return access.get_community_or_404(user, slug=str(raw))
 
 
-def filtered_threads(request):
+def filtered_threads(request, *, apply_q: bool = True):
     """Thread list filters shared by the feed and search. Starts from the caller's visible threads."""
     user = request.user
     p = request.query_params
@@ -125,7 +125,7 @@ def filtered_threads(request):
         qs = qs.filter(created_at__date__gte=date_from)
     if date_to:
         qs = qs.filter(created_at__date__lte=date_to)
-    q = (p.get("q") or "").strip()[:200]
+    q = (p.get("q") or "").strip()[:200] if apply_q else ""
     rank = None
     if q:
         query = SearchQuery(q, search_type="websearch", config="english")
