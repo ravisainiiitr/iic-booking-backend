@@ -155,6 +155,7 @@ LOCAL_APPS = [
     # GST invoicing of facility charges (Dean SRIC proposal). SANDBOX ONLY; off unless GST_EINVOICE_ENABLED=true.
     # Configured from GST_EINVOICE_* environment variables only (see iic_booking/gst_einvoice/conf.py).
     "iic_booking.gst_einvoice.apps.GstEinvoiceConfig",
+    "iic_booking.connect.apps.ConnectConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -628,6 +629,13 @@ REST_FRAMEWORK = {
         "mobile_enroll": env("MOBILE_ENROLL_THROTTLE_RATE", default="20/hour"),
         "mobile_refresh_device": env("MOBILE_REFRESH_DEVICE_THROTTLE_RATE", default="30/hour"),
         "mobile_refresh_ip": env("MOBILE_REFRESH_IP_THROTTLE_RATE", default="3000/hour"),
+        # IITR Connect (per user). Writes = threads, replies, reactions, follows; reports and uploads are tighter.
+        "connect_read": env("CONNECT_READ_THROTTLE_RATE", default="1200/hour"),
+        "connect_write": env("CONNECT_WRITE_THROTTLE_RATE", default="120/hour"),
+        "connect_post": env("CONNECT_POST_THROTTLE_RATE", default="30/hour"),
+        "connect_upload": env("CONNECT_UPLOAD_THROTTLE_RATE", default="60/hour"),
+        "connect_search": env("CONNECT_SEARCH_THROTTLE_RATE", default="600/hour"),
+        "connect_report": env("CONNECT_REPORT_THROTTLE_RATE", default="20/hour"),
       },
     }
 
@@ -752,6 +760,13 @@ BUILD_DATE = env("BUILD_DATE", default="")
 PROVISIONING_VERSION = env("PROVISIONING_VERSION", default="2.0")
 PROVISIONING_ENABLED = env.bool("PROVISIONING_ENABLED", default=True)
 RESEARCH_COPILOT_VERSION = env("RESEARCH_COPILOT_VERSION", default="0.1.0")
+# IITR Connect: private technical discussion and knowledge platform. OFF by default; every /api/v1/connect/
+# endpoint answers 404 and every Connect signal / task is a no-op while it is off.
+IITR_CONNECT_ENABLED = env.bool("IITR_CONNECT_ENABLED", default=False)
+# Optional comma-separated pilot list: when set, only these signed-in users can use Connect.
+IITR_CONNECT_PILOT_EMAILS = env("IITR_CONNECT_PILOT_EMAILS", default="")
+# Private object-key prefix for Connect attachments (same private bucket as My Research / media).
+IITR_CONNECT_S3_PREFIX = env("IITR_CONNECT_S3_PREFIX", default="connect")
 RESEARCH_COPILOT_ENABLED = env.bool("RESEARCH_COPILOT_ENABLED", default=False)
 RESEARCH_COPILOT_MODEL = env("RESEARCH_COPILOT_MODEL", default="")
 RESEARCH_COPILOT_EMBEDDING_PROVIDER = env("RESEARCH_COPILOT_EMBEDDING_PROVIDER", default="local")
