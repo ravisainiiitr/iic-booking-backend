@@ -23,6 +23,10 @@ from iic_booking.equipment.config_audit_views import (
 from iic_booking.equipment.oic_request_audit import oic_request_audit_list
 from iic_booking.equipment.oic_request_registration_views import oic_registered_requests
 from iic_booking.equipment.booking_status_override_views import booking_status_override
+from iic_booking.equipment.maintenance_settlement_views import (
+    booking_maintenance_settle,
+    equipment_maintenance_settlement,
+)
 from iic_booking.equipment.peak_window_views import PeakWindowSettingView, peak_window_status
 from iic_booking.users.api.auth_views import (
     omniport_auth_url,
@@ -1753,6 +1757,16 @@ urlpatterns = router.urls + [
     path("equipments/<int:pk>/oic-requests/", oic_registered_requests, name="equipment-oic-requests"),
     path("oic-request-audit/", oic_request_audit_list, name="oic-request-audit"),
     path("bookings/<int:booking_id>/status-override/", booking_status_override, name="booking-status-override"),
+    path(
+        "bookings/<int:booking_id>/maintenance-settle/",
+        booking_maintenance_settle,
+        name="booking-maintenance-settle",
+    ),
+    path(
+        "equipments/<int:pk>/maintenance-settlement/",
+        equipment_maintenance_settlement,
+        name="equipment-maintenance-settlement",
+    ),
     path("bookings/<int:booking_id>/absent/", absent_booking, name="absent-booking"),
     path(
         "bookings/<int:booking_id>/extend-operator-absent-hold/",

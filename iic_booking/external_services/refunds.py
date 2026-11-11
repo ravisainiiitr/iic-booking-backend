@@ -284,6 +284,15 @@ def _record(booking, user, *, origin, destination, q: RefundQuote, account=None,
         raise RefundPolicyError("This booking has already been refunded.", status=409, code="already_refunded") from exc
 
 
+def _refuse_settled(booking) -> None:
+    """A booking settled by the OIC / Main Administrator during a maintenance hold is never refunded."""
+    from iic_booking.equipment.maintenance_settlement import refund_lock_reason
+
+    locked = refund_lock_reason(booking)
+    if locked:
+        raise RefundPolicyError(locked, code="refund_locked")
+
+
 def cancel(user, booking_id, *, destination: str = "wallet", bank_account_id=None, notes: str = "",
            expected_refund=None) -> dict:
     """The owner cancels a whole booking under the policy. ``expected_refund`` (the amount the user was shown) must
@@ -306,6 +315,7 @@ def cancel(user, booking_id, *, destination: str = "wallet", bank_account_id=Non
         booking = Booking.objects.select_for_update(of=("self",)).select_related("equipment").filter(pk=booking_id).first()
         if booking is None or booking.user_id != user.pk:
             raise RefundPolicyError("Booking not found.", status=404, code="not_found")
+        _refuse_settled(booking)
         disrupted = is_disrupted(booking)
         if booking.status not in ACTIVE_STATUSES and booking.status != BookingStatus.DISRUPTION_PENDING:
             raise RefundPolicyError("Only a booked or pending booking can be cancelled.", code="not_active")
@@ -459,6 +469,7 @@ def refund_lab_failure(actor, booking_id, *, kind: str, reason: str, portion_per
     portion = _portion(portion_percent)
     with transaction.atomic():
         booking = _lab_failure_booking(actor, booking_id, lock=True)
+        _refuse_settled(booking)
         q = quote(booking, penalty_percent=0, tier="lab_failure", include_shipping=portion == 100,
                   portion_percent=portion)
         if expected_refund is not None and _money(expected_refund) != _money(q.refund):

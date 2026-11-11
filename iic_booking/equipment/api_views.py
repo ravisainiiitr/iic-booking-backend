@@ -12868,6 +12868,11 @@ def refund_booking_internal(booking, refund_notes, performed_by):
         raise ValueError("Booking has already been refunded.")
     if booking.status == BookingStatus.BOOKING_NOT_UTILIZED:
         raise ValueError("Booking is marked as Not Utilized and cannot be refunded.")
+    from .maintenance_settlement import refund_lock_reason
+
+    locked = refund_lock_reason(booking)
+    if locked:
+        raise ValueError(locked)
     from iic_booking.external_services.refunds import invoice_requested
 
     if invoice_requested(booking):

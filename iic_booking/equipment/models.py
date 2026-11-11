@@ -5485,6 +5485,11 @@ class BookingCancellationRequest(models.Model):
         
         if self.status != BookingCancellationRequestStatus.PENDING:
             raise ValueError("Request is not in pending status")
+        from iic_booking.equipment.maintenance_settlement import refund_lock_reason
+
+        locked = refund_lock_reason(self.booking)
+        if locked:
+            raise ValueError(locked)
         
         # Process cancellation and refund in a transaction
         released_slot_ids = list(self.booking.daily_slots.values_list("id", flat=True))
