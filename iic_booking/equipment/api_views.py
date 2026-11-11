@@ -16181,6 +16181,16 @@ def _input_edit_changes_charge(booking, old_input_values, new_input_values) -> b
         return False
 
 
+def charge_recalculation_refund_refusal(booking) -> str:
+    """Why the refund of a charge-recalculation difference is not allowed ("" when it is): never on a Completed
+    booking, nor on one settled by the OIC / Main Administrator during a maintenance hold."""
+    if booking.status == BookingStatus.COMPLETED:
+        return "This booking is Completed, so the refund after the input change can no longer be made."
+    from .maintenance_settlement import refund_lock_reason
+
+    return refund_lock_reason(booking)
+
+
 def _credit_charge_recalculation_refund(booking_pk, *, expected_amount=None):
     """Credit the pending refund of a booking (negative ``charge_recalculation_pending_amount``) to the
     booking wallet and clear it. Locks the booking row so a refund is paid at most once.
@@ -16194,6 +16204,9 @@ def _credit_charge_recalculation_refund(booking_pk, *, expected_amount=None):
     pending = booking.charge_recalculation_pending_amount
     if pending is None or pending >= 0:
         raise ValueError("No pending refund for this booking.")
+    refusal = charge_recalculation_refund_refusal(booking)
+    if refusal:
+        raise ValueError(refusal)
     amount = abs(pending)
     if expected_amount is not None and amount != expected_amount:
         raise ValueError("The refund amount has changed. Please refresh the booking.")
