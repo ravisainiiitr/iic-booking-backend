@@ -133,6 +133,77 @@ python tools/sric_signer/sric_signer.py --cli --portal http://localhost:8000 --t
 To register the B2B invoices on the NIC sandbox, set `GST_EINVOICE_PROVIDER=nic_sandbox` and the sandbox credentials,
 then run the same steps.
 
+## GSTR-1 export (B2C invoices)
+
+The portal builds the GSTR-1 data for invoices to buyers **without a GSTIN** (`gstr1.py`). E-invoices are left out:
+the GST system fills them into GSTR-1 from the IRP.
+
+### Where to get it
+- In the portal: GST invoices → Monthly register → *GSTR-1 export*.
+- In the SRIC Invoice Signer: the *GSTR-1 export* row.
+- API: `GET /api/v1/gst-einvoice/gstr1/?from=YYYY-MM-DD&to=YYYY-MM-DD&kind=preview|json|xlsx` (SRIC reviewers), or
+  `/signer/api/gstr1/` (the signing utility's device token).
+
+### Files
+- There is one file per calendar month, with `fp` = MMYYYY, because SRIC files monthly. There is no quarterly or IFF
+  option.
+- A range over several months downloads as a zip, with one file per month.
+- JSON: the offline tool's upload format (`gstin`, `fp`, `b2cs`, `b2cl`, `cdnur`, `hsn.hsn_b2c`, `doc_issue`).
+- Excel: the offline tool's template sheets `b2cl`, `b2cs`, `cdnur`, `hsn(b2c)` and `docs`, plus a *read me* sheet.
+
+### Contents
+| Table | What goes in it |
+|---|---|
+| **B2CS (Table 7)** | Every intra-state B2C supply, and inter-state B2C invoices up to ₹1,00,000, by place of supply and rate |
+| **B2CL (Table 5)** | Inter-state B2C invoices above ₹1,00,000 (the limit from the August 2024 tax period), invoice by invoice |
+| **CDNUR (Table 9B)** | Credit notes against B2CL invoices |
+| **HSN (Table 12, B2C tab)** | SAC 998397 by rate. Services are reported with UQC `NA` and quantity 0 |
+| **Documents issued (Table 13)** | The month's whole invoice series, B2B e-invoices included, and the credit-note series: from, to, total, and 0 cancelled |
+
+Credit notes against B2CS supplies are netted into B2CS in the month the note is issued.
+
+**There are no credit notes yet.** The portal has no credit-note flow, so the CDNUR section is empty and the export
+says so.
+
+Only invoices signed with the DSC count as issued. Numbered B2C invoices still waiting for the signature are left out,
+and the export lists them as a warning.
+
+### To confirm with SRIC before the first filing
+GSTN publishes no formal schema. The items below sit in `gstr1.FORMAT` and can be adjusted:
+- the JSON `version` string of the offline tool SRIC uses;
+- the exact Excel template headers;
+- UQC `NA` for services. The original brief said `OTH`; GSTN's advisory says `NA`.
+
+The ₹1 lakh limit is `gstr1.B2CL_LIMIT`.
+
+## Signatory: install and first run
+
+1. Install the DSC token's own driver software (for example SafeNet Authentication Client, ePass2003, ProxKey).
+2. The Main Administrator registers the signatory's certificate (.cer) under GST invoices → Signing (DSC).
+3. Run `SRIC-Invoice-Signer-Setup-<version>.exe`. It is a per-user install, with Start-menu and desktop shortcuts and
+   an uninstaller. It is not code-signed yet, so SmartScreen may ask for confirmation.
+4. In the portal, under GST invoices → Signing (DSC) → *Link a signing utility*, copy the token shown (once). In the
+   signer, enter the portal address and the token, then click **Connect**.
+5. Plug in the DSC token. The signer finds the drivers of the common Indian DSC tokens (SafeNet/eToken, ePass2003,
+   ProxKey/Watchdata, mToken, Gemalto/Thales, HyperPKI, Trust Key, Bit4id, SafeSign, Longmai) and lists the tokens
+   that are plugged in, with their certificates. Choose yours. If it is not found, use **Browse for driver...**.
+6. Select the invoices, preview them, enter the PIN and click **Sign selected with DSC**.
+
+Details and messages: `tools/sric_signer/README.md`.
+
+### Getting the installer
+- Build it with the workflow *Build SRIC Invoice Signer*, which runs on pull requests that touch
+  `tools/sric_signer`, or by hand.
+- Download the artifact `sric-invoice-signer-windows`. It contains the exe, the installer and the exe's self-test
+  report.
+- Nothing is published as a release, and nothing is code-signed.
+
+### What has been tested
+- Signing through PKCS#11 has been tested against SoftHSM2, a software token, in CI. The portal's own verifier
+  accepts the result.
+- Token detection has been tested with a simulated Windows folder tree.
+- Signing with a real USB DSC token has **not** been verified. Do it once with SRIC's token before the pilot.
+
 ## What SRIC and NIC must still provide
 
 1. **NIC e-invoice sandbox access** for SRIC's GSTIN:
@@ -152,8 +223,8 @@ then run the same steps.
    - the signing utility, installed on the signatory's institute computer;
    - the token driver's PKCS#11 library (eToken, ePass2003, ProxKey, ...) on that computer.
 
-   To install the utility, use Python 3.11+ and run `pip install -r tools/sric_signer/requirements.txt`, or use a
-   packaged build.
+   The utility is a Windows installer, `SRIC-Invoice-Signer-Setup-<version>.exe` (see *Signatory: install and first
+   run* below). It needs no Python and no administrator rights.
 4. **Before any live use** (outside this change):
    - the tax consultant's confirmations (proposal section 11);
    - a production API user;

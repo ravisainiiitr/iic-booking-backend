@@ -20,6 +20,7 @@ urlpatterns = [
     path("invoices/<int:invoice_id>/check-gstin/", views.check_gstin_view, name="invoice-check-gstin"),
     path("invoices/<int:invoice_id>/pdf/", views.invoice_pdf_view, name="invoice-pdf"),
     path("register/", views.register_view, name="register"),
+    path("gstr1/", views.gstr1_view, name="gstr1"),
     # Signatories' DSC certificates (Main Administrator) and signing utilities (the signatory)
     path("certificates/", views.certificates_view, name="certificates"),
     path("certificates/<int:cert_id>/deactivate/", views.certificate_deactivate_view, name="certificate-deactivate"),
@@ -30,6 +31,7 @@ urlpatterns = [
     path("signer/api/queue/", views.signer_queue, name="signer-queue"),
     path("signer/api/invoices/<int:invoice_id>/pdf/", views.signer_pdf, name="signer-pdf"),
     path("signer/api/invoices/<int:invoice_id>/signed/", views.signer_upload, name="signer-upload"),
+    path("signer/api/gstr1/", views.signer_gstr1, name="signer-gstr1"),
     # Buyers
     path("my/bookings/<int:booking_id>/", views.buyer_booking_view, name="buyer-booking"),
 ]
