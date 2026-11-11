@@ -169,60 +169,22 @@ def create_proforma(user, items) -> ConsolidatedProforma:
 
 
 def proforma_pdf(proforma: ConsolidatedProforma) -> bytes:
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-    from reportlab.lib.units import cm
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    """The consolidated proforma for planned work, in the portal's proforma design (see equipment.proforma_pdf)."""
+    from iic_booking.equipment.proforma_pdf import Line, Proforma, buyer_from, dec, render_proforma
 
-    from iic_booking.equipment.document_exports import _pdf_letterhead_story_lines
-    from iic_booking.users.models import ExternalBillingProfile
-
-    title = "Consolidated Pro Forma Invoice — Not a GST Tax Invoice"
-    styles = getSampleStyleSheet()
-    small = ParagraphStyle("small", parent=styles["Normal"], fontSize=9, leading=12)
-    warn = ParagraphStyle("warn", parent=styles["Normal"], fontSize=10, leading=13, textColor=colors.HexColor("#8a1c1c"))
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=1.6 * cm, rightMargin=1.6 * cm, topMargin=1.4 * cm,
-                            bottomMargin=1.4 * cm, title=title)
-    story = list(_pdf_letterhead_story_lines(department_name="Institute Instrumentation Centre", document_title=title))
-    story.append(Paragraph(
-        "This consolidated pro forma invoice covers planned analysis work, for the organisation's approval. It is "
-        "<b>not a GST tax invoice</b>; the GST invoice is issued by the SRIC office, IIT Roorkee, only after the "
-        "payment is realised.", warn))
-    story.append(Spacer(1, 8))
-    user = proforma.user
-    billing = ExternalBillingProfile.objects.filter(user=user).first()
-    address = ", ".join(x for x in [
-        getattr(billing, "billing_address_line1", ""), getattr(billing, "billing_address_line2", ""),
-        getattr(billing, "billing_city", ""), getattr(billing, "billing_state", ""),
-        getattr(billing, "billing_pincode", ""), getattr(billing, "billing_country", ""),
-    ] if x)
-    meta = [
-        ["Reference", proforma.reference],
-        ["Billed to", getattr(billing, "billing_name", "") or getattr(user, "name", "") or user.email],
-        ["GSTIN", getattr(billing, "gstin", "") or "Not provided"],
-        ["Address", address or "Not provided"],
-        ["Generated", timezone.localtime(proforma.created_at).strftime("%d %b %Y %I:%M %p IST")],
-    ]
-    table = Table([[Paragraph(f"<b>{k}</b>", small), Paragraph(escape(str(v)), small)] for k, v in meta],
-                  colWidths=[3.6 * cm, 13.6 * cm])
-    table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
-    story += [table, Spacer(1, 10)]
-    rows = [["Planned work", "Amount (Rs.)"]]
-    rows += [[Paragraph(escape(item["description"]), small), item["amount"]] for item in proforma.items]
-    rows.append([Paragraph("<b>Total</b>", small), f"{proforma.total:.2f}"])
-    charges = Table(rows, colWidths=[13.2 * cm, 4.0 * cm])
-    charges.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#999999")),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eeeeee")),
-        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
-    ]))
-    story += [charges, Spacer(1, 8),
-              Paragraph("Charges of each booking are set by the portal at the time of booking and drawn from the "
-                        "credit approved against this pro forma invoice.", small)]
-    doc.build(story)
-    return buffer.getvalue()
+    pi = Proforma(
+        number=proforma.reference,
+        issued_at=proforma.created_at,
+        buyer=buyer_from(proforma.user),
+        lines=[Line(title=str(item.get("description") or "Planned analysis work"), taxable=dec(item.get("amount")))
+               for item in (proforma.items or [])],
+        department="Institute Instrumentation Centre",
+        title="Consolidated Proforma Invoice",
+        notes=["This consolidated proforma covers planned analysis work, for the organisation's approval. Charges of "
+               "each booking are set by the portal at the time of booking and drawn from the credit approved "
+               "against this proforma."],
+    )
+    return render_proforma(pi)
 
 
 # --- credit request ----------------------------------------------------------------------------------------------------
