@@ -1,13 +1,20 @@
 """The NIC sandbox adapter against a fake NIC sandbox (no network): authentication with the sandbox public key,
 SEK decryption, encrypted Generate IRN, the configurable header spelling / AppKey length / path prefixes, and that
-secrets never reach the attempt log."""
+secrets never reach the attempt log.
+
+The fake never decrypts with the RSA private key in this process: on some Windows builds of ``cryptography`` an RSA
+private-key operation corrupts the process's floating-point state (the portal itself only ever uses NIC's public
+key). The AppKey is captured through the adapter's seam instead, and the encrypted credentials are checked once in a
+child process."""
 
 import base64
 import json
+import subprocess
+import sys
 
 import pytest
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from iic_booking.gst_einvoice.providers.nic_sandbox import NicSandboxProvider, _aes_ecb
 
@@ -30,6 +37,7 @@ class FakeNic:
         self.sek = b"S" * 32
         self.calls = []
         self.app_key = None
+        self.auth_blob = ""
 
     def public_pem(self):
         return self.key.public_key().public_bytes(serialization.Encoding.PEM,
@@ -43,9 +51,8 @@ class FakeNic:
 
         self.calls.append((method, url, dict(headers or {})))
         if url.endswith("/auth"):
-            inner = js.loads(base64.b64decode(self.key.decrypt(base64.b64decode(json["Data"]), padding.PKCS1v15())))
-            assert inner["UserName"] == "sandbox-user" and inner["Password"] == "sandbox-pass"
-            self.app_key = base64.b64decode(inner["AppKey"])
+            self.auth_blob = json["Data"]
+            assert len(base64.b64decode(self.auth_blob)) == 256  # RSA-2048 ciphertext
             sek = base64.b64encode(_aes_ecb(self.app_key, self.sek, encrypt=True)).decode()
             return FakeResponse({"Status": 1, "Data": {"AuthToken": "tok-123", "Sek": sek,
                                                        "TokenExpiry": "2099-01-01 00:00:00"}})
@@ -58,8 +65,14 @@ class FakeNic:
 
 
 @pytest.fixture
-def nic(settings):
+def nic(settings, monkeypatch):
     fake = FakeNic()
+
+    def capture(length):
+        fake.app_key = bytes(range(length))
+        return fake.app_key
+
+    monkeypatch.setattr(NicSandboxProvider, "_new_app_key", staticmethod(capture))
     settings.GST_EINVOICE_PROVIDER = "nic_sandbox"
     settings.GST_EINVOICE_SANDBOX_CLIENT_ID = "sandbox-client"
     settings.GST_EINVOICE_SANDBOX_CLIENT_SECRET = "sandbox-secret"
@@ -84,6 +97,21 @@ def test_generate_irn_round_trip(nic):
     assert nic.calls[0][2]["client_id"] == "sandbox-client" and len(nic.app_key) == 32
     assert "sandbox-pass" not in json.dumps(result.request) and "sandbox-pass" not in json.dumps(result.response)
     assert result.response["SignedQRCode"].startswith("<signed JWT")
+
+
+def test_credentials_are_encrypted_with_the_sandbox_key(nic, tmp_path):
+    NicSandboxProvider(session=nic).generate_irn(PAYLOAD)
+    key_file = tmp_path / "nic.pem"
+    key_file.write_bytes(nic.key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                               serialization.NoEncryption()))
+    code = ("import base64,json,sys;from cryptography.hazmat.primitives import serialization;"
+            "from cryptography.hazmat.primitives.asymmetric import padding;"
+            "k=serialization.load_pem_private_key(open(sys.argv[1],'rb').read(),None);"
+            "d=json.loads(base64.b64decode(k.decrypt(base64.b64decode(sys.argv[2]),padding.PKCS1v15())));"
+            "print(d['UserName'],d['Password'],len(base64.b64decode(d['AppKey'])),d['ForceRefreshAccessToken'])")
+    out = subprocess.run([sys.executable, "-c", code, str(key_file), nic.auth_blob], capture_output=True, text=True,
+                         timeout=60, stdin=subprocess.DEVNULL)
+    assert out.stdout.split() == ["sandbox-user", "sandbox-pass", "32", "False"], out.stderr
 
 
 def test_open_points_follow_configuration(nic, settings):
@@ -120,3 +148,23 @@ def test_missing_credentials_are_reported_not_sent(settings):
     from iic_booking.gst_einvoice import conf
 
     assert "GST_EINVOICE_SANDBOX_PASSWORD" in conf.status()["problem"]
+
+
+def test_full_b2b_flow_through_the_nic_adapter(nic, monkeypatch):
+    """The whole B2B path with provider nic_sandbox (fake NIC answering): IRN of the IRP's form, not simulated."""
+    from django.core.cache import cache
+
+    from iic_booking.gst_einvoice import service
+    from iic_booking.gst_einvoice.providers import nic_sandbox
+
+    from .conftest import main_admin
+
+    cache.clear()
+    monkeypatch.setattr(nic_sandbox.requests, "Session", lambda: nic)
+    inv = service.create_demo({"legal_name": "Demo Analytics Pvt Ltd", "gstin": "07AAACX0000X1Z2", "address1": "12 Ring Road",
+                               "location": "New Delhi", "pincode": "110001", "amount": "9000"}, main_admin())
+    assert inv.status == "irn_generated" and inv.provider == "nic_sandbox" and not inv.simulated
+    assert inv.irn == "a" * 64 and inv.signed_qr == "eyJ.signed.qr" and inv.ack_number == "112010000000123"
+    with inv.pdf.open("rb") as fh:
+        assert fh.read().startswith(b"%PDF-")
+    assert inv.attempts.get().outcome == "success"

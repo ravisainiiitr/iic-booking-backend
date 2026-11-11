@@ -339,10 +339,9 @@ def render(invoice) -> bytes:
         cv.setLineWidth(0.7)
         cv.rect(x1, y1, x2 - x1, y2 - y1, stroke=1, fill=0)
         cv.setDash()
-        cv.setFont(sans, 7)
-        cv.setFillColor(muted)
-        cv.drawCentredString((x1 + x2) / 2, (y1 + y2) / 2 - 2, "Digital signature (DSC) of the authorised signatory")
+        # The box stays empty: the signer utility draws the visible DSC signature inside it.
         text(x1, y1 - 11, "Authorised Signatory", 8.2, bold)
+        right(x2, y1 - 11, "digital signature (DSC)", 7, sans, muted)
     p = Paragraph(
         "Prepared by the " + look["service"] + " under SRIC's GSTIN, in the portal's invoice series. "
         + ("Verify the signature in any PDF reader (Adobe Reader: Signature panel)." if not b2b else

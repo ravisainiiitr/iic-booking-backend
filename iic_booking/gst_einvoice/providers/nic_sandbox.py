@@ -59,6 +59,11 @@ class NicSandboxProvider(IrpProvider):
     simulated = False
     label = "the NIC e-invoice sandbox"
 
+    @staticmethod
+    def _new_app_key(length: int) -> bytes:
+        """A fresh random AppKey per authentication (a seam for tests)."""
+        return os.urandom(length)
+
     def __init__(self, session: requests.Session | None = None):
         self.http = session or requests.Session()
         self.base = conf.assert_sandbox_url(conf.sandbox_base_url())
@@ -90,7 +95,7 @@ class NicSandboxProvider(IrpProvider):
         missing = conf.missing_sandbox_credentials()
         if missing:
             raise RuntimeError("Sandbox credentials missing: " + ", ".join(missing))
-        app_key = os.urandom(self.options["appkey_bytes"])
+        app_key = self._new_app_key(self.options["appkey_bytes"])
         body = json.dumps({"UserName": self.creds["username"], "Password": self.creds["password"],
                            "AppKey": base64.b64encode(app_key).decode(), "ForceRefreshAccessToken": force})
         public_key = serialization.load_pem_public_key(self.creds["public_key_pem"].encode())
