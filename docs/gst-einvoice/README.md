@@ -133,6 +133,34 @@ python tools/sric_signer/sric_signer.py --cli --portal http://localhost:8000 --t
 To register the B2B invoices on the NIC sandbox, set `GST_EINVOICE_PROVIDER=nic_sandbox` and the sandbox credentials,
 then run the same steps.
 
+## Signatory: install and first run
+
+1. Install the DSC token's own driver software (for example SafeNet Authentication Client, ePass2003, ProxKey).
+2. The Main Administrator registers the signatory's certificate (.cer) under GST invoices → Signing (DSC).
+3. Run `SRIC-Invoice-Signer-Setup-<version>.exe`. It is a per-user install, with Start-menu and desktop shortcuts and
+   an uninstaller. It is not code-signed yet, so SmartScreen may ask for confirmation.
+4. In the portal, under GST invoices → Signing (DSC) → *Link a signing utility*, copy the token shown (once). In the
+   signer, enter the portal address and the token, then click **Connect**.
+5. Plug in the DSC token. The signer finds the drivers of the common Indian DSC tokens (SafeNet/eToken, ePass2003,
+   ProxKey/Watchdata, mToken, Gemalto/Thales, HyperPKI, Trust Key, Bit4id, SafeSign, Longmai) and lists the tokens
+   that are plugged in, with their certificates. Choose yours. If it is not found, use **Browse for driver...**.
+6. Select the invoices, preview them, enter the PIN and click **Sign selected with DSC**.
+
+Details and messages: `tools/sric_signer/README.md`.
+
+### Getting the installer
+- Build it with the workflow *Build SRIC Invoice Signer*, which runs on pull requests that touch
+  `tools/sric_signer`, or by hand.
+- Download the artifact `sric-invoice-signer-windows`. It contains the exe, the installer and the exe's self-test
+  report.
+- Nothing is published as a release, and nothing is code-signed.
+
+### What has been tested
+- Signing through PKCS#11 has been tested against SoftHSM2, a software token, in CI. The portal's own verifier
+  accepts the result.
+- Token detection has been tested with a simulated Windows folder tree.
+- Signing with a real USB DSC token has **not** been verified. Do it once with SRIC's token before the pilot.
+
 ## What SRIC and NIC must still provide
 
 1. **NIC e-invoice sandbox access** for SRIC's GSTIN:
@@ -152,8 +180,8 @@ then run the same steps.
    - the signing utility, installed on the signatory's institute computer;
    - the token driver's PKCS#11 library (eToken, ePass2003, ProxKey, ...) on that computer.
 
-   To install the utility, use Python 3.11+ and run `pip install -r tools/sric_signer/requirements.txt`, or use a
-   packaged build.
+   The utility is a Windows installer, `SRIC-Invoice-Signer-Setup-<version>.exe` (see *Signatory: install and first
+   run* below). It needs no Python and no administrator rights.
 4. **Before any live use** (outside this change):
    - the tax consultant's confirmations (proposal section 11);
    - a production API user;
