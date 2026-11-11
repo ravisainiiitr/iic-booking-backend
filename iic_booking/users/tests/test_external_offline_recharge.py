@@ -253,9 +253,11 @@ class SingleCreditTests(OfflineRechargeTestBase):
     def test_older_recharge_endpoints_cannot_decide_or_credit(self):
         req = self.submitted()
         anon = APIClient()
-        self.assertEqual(anon.post(f"/api/wallet/recharge-requests/{req.pk}/approve/", {}, format="json").status_code, 409)
+        self.assertIn(anon.post(f"/api/wallet/recharge-requests/{req.pk}/approve/", {}, format="json").status_code, (401, 403))
+        admin = self.client_for(self.admin)
+        self.assertEqual(admin.post(f"/api/wallet/recharge-requests/{req.pk}/approve/", {}, format="json").status_code, 409)
         self.assertEqual(
-            anon.post(f"/api/wallet/recharge-requests/{req.pk}/reject/", {"reason_text": "x"}, format="json").status_code,
+            admin.post(f"/api/wallet/recharge-requests/{req.pk}/reject/", {"reason_text": "x"}, format="json").status_code,
             409,
         )
         token = WalletRechargeRequest.objects.get(pk=req.pk).action_token
