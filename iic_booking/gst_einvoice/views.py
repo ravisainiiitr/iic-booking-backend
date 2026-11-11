@@ -148,6 +148,9 @@ def invoices_view(request):
     status_filter = request.query_params.get("status", "")
     if status_filter:
         qs = qs.filter(status__in=[x for x in status_filter.split(",") if x])
+    doc_type = request.query_params.get("doc_type", "")
+    if doc_type in ("INV", "CRN"):
+        qs = qs.filter(doc_type=doc_type)
     supply = request.query_params.get("supply", "")
     if supply in ("B2B", "B2C"):
         qs = qs.filter(supply_type=supply)
@@ -474,3 +477,20 @@ def gstr1_view(request):
 @_signer
 def signer_gstr1(request, device):
     return _gstr1_response(request)
+
+
+# --- credit notes: the Main Administrator allows one for a single invoice ------------------------------------------
+
+@_action
+def credit_note_allow_view(request, invoice_id):
+    from . import credit_notes
+
+    return credit_notes.allow(request.user, invoice_id, request.data.get("reason", "")).invoice
+
+
+@_action
+def credit_note_revoke_view(request, invoice_id):
+    from . import credit_notes
+
+    return credit_notes.revoke(request.user, invoice_id, request.data.get("reason", "")).invoice
+

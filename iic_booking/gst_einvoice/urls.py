@@ -19,6 +19,8 @@ urlpatterns = [
     path("invoices/<int:invoice_id>/buyer/", views.buyer_view, name="invoice-buyer"),
     path("invoices/<int:invoice_id>/check-gstin/", views.check_gstin_view, name="invoice-check-gstin"),
     path("invoices/<int:invoice_id>/pdf/", views.invoice_pdf_view, name="invoice-pdf"),
+    path("invoices/<int:invoice_id>/credit-note-permission/", views.credit_note_allow_view, name="credit-note-allow"),
+    path("invoices/<int:invoice_id>/credit-note-permission/revoke/", views.credit_note_revoke_view, name="credit-note-revoke"),
     path("register/", views.register_view, name="register"),
     path("gstr1/", views.gstr1_view, name="gstr1"),
     # Signatories' DSC certificates (Main Administrator) and signing utilities (the signatory)

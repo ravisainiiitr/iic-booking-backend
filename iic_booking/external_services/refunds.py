@@ -136,7 +136,9 @@ def quote(booking, *, penalty_percent: int, tier: str, include_shipping: bool = 
     keep = Decimal(100 - penalty_percent) / Decimal(100) * Decimal(portion_percent) / Decimal(100)
     service_refund = _money(refundable_base * keep)
     ship_refund_base = ship_base if include_shipping else ZERO
-    gst_refunded = not invoice_requested(booking)
+    # GST comes back too where the Main Administrator allowed a credit note for this booking's invoice
+    # (gst_einvoice.credit_notes); recording the refund then issues the credit note.
+    gst_refunded = not invoice_requested(booking) or _credit_note_allowed(booking)
     refund_base = service_refund + ship_refund_base
     refund_gst = _money(refund_base * rate) if gst_refunded else ZERO
     refund = min(paid, refund_base + refund_gst)
@@ -265,13 +267,21 @@ def my_accounts(user) -> list[dict]:
 
 # --- cancelling --------------------------------------------------------------------------------------------------------
 
+def _credit_note_allowed(booking) -> bool:
+    try:
+        from iic_booking.gst_einvoice.credit_notes import permitted_for_booking
+    except ImportError:
+        return False
+    return permitted_for_booking(booking)
+
+
 def _record(booking, user, *, origin, destination, q: RefundQuote, account=None, txn=None, actor=None,
             reason: str = "") -> ExternalRefund:
     snapshot = account_dict(account, full=True) if account is not None else {}
     status = RefundStatus.QUEUED if destination == RefundDestination.BANK else RefundStatus.CLOSED
     try:
         with transaction.atomic():
-            return ExternalRefund.objects.create(
+            refund = ExternalRefund.objects.create(
                 booking=booking, user=user, origin=origin, destination=destination, tier=q.tier,
                 penalty_percent=q.penalty_percent, paid_amount=q.paid, gst_paid=q.gst_paid,
                 return_shipping=q.shipping, refund_base=q.refund_base, refund_gst=q.refund_gst,
@@ -282,6 +292,12 @@ def _record(booking, user, *, origin, destination, q: RefundQuote, account=None,
             )
     except IntegrityError as exc:
         raise RefundPolicyError("This booking has already been refunded.", status=409, code="already_refunded") from exc
+    if q.gst_refunded and invoice_requested(booking):
+        # Only reached when a credit note was allowed (see quote): issue it once the refund is committed.
+        from iic_booking.gst_einvoice.credit_notes import on_refund_recorded
+
+        transaction.on_commit(lambda: on_refund_recorded(refund.pk))
+    return refund
 
 
 def _refuse_settled(booking) -> None:
