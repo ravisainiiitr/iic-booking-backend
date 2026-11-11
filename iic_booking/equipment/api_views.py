@@ -16225,32 +16225,11 @@ def _credit_charge_recalculation_refund(booking_pk, *, expected_amount=None):
     return booking, txn
 
 
-def _recalculate_booking_charge_and_adjust_wallet(
-    request, booking, payment_window_snapshot=None, instant_refund_allowed=False
-):
-    """Recalculate charge for a BOOKED booking after input_values update. Saves old charge, updates
-    booking with new charge and sets charge_recalculation_pending_amount (negative=refund, positive=extra to pay).
-    Does NOT debit the wallet here; the extra amount is paid with Pay Now / Deduct Money. A refund waits
-    for the OIC's Confirm refund unless ``instant_refund_allowed``, in which case it is credited at once.
-    Sends email to user and Supervisor with summary and breakup. Returns dict with
-    charge_recalculation_summary for API response.
-
-    ``payment_window_snapshot`` (the booking state before the edit) is given for the booking user's own
-    edits: an extra amount must then be paid within the payment window, otherwise the edit is reverted.
-    ``instant_refund_allowed`` is given for the booking user's own edit saved before the cancel /
-    reschedule cut-off (see ``input_edit_refund_window``).
-    """
-    from .input_edit_payment_window import (
-        INPUT_EDIT_PAYMENT_WINDOW_SECONDS,
-        clear_payment_window,
-        new_payment_deadline,
-    )
-
+def _compute_recalculated_charge(booking):
+    """(time minutes, charge, breakdown) for the booking's current ``input_values`` (GST and own-material charges
+    included). Reads only; works on unsaved input values."""
     equipment = booking.equipment
     charge_profile = booking.charge_profile
-    if not charge_profile or not equipment:
-        return {}
-
     safe_input_values = build_safe_input_values_for_charge_calculation(booking.input_values, equipment=equipment)
     from .print_3d_views import apply_print_analysis_to_input_values
     safe_input_values = apply_print_analysis_to_input_values(booking, safe_input_values)
@@ -16278,6 +16257,36 @@ def _recalculate_booking_charge_and_adjust_wallet(
     from .own_material_charges import add_material_charges
 
     new_charge, charge_breakdown = add_material_charges(booking, new_charge, charge_breakdown)
+    return calculated_time_minutes, new_charge, charge_breakdown
+
+
+def _recalculate_booking_charge_and_adjust_wallet(
+    request, booking, payment_window_snapshot=None, instant_refund_allowed=False
+):
+    """Recalculate charge for a BOOKED booking after input_values update. Saves old charge, updates
+    booking with new charge and sets charge_recalculation_pending_amount (negative=refund, positive=extra to pay).
+    Does NOT debit the wallet here; the extra amount is paid with Pay Now / Deduct Money. A refund waits
+    for the OIC's Confirm refund unless ``instant_refund_allowed``, in which case it is credited at once.
+    Sends email to user and Supervisor with summary and breakup. Returns dict with
+    charge_recalculation_summary for API response.
+
+    ``payment_window_snapshot`` (the booking state before the edit) is given for the booking user's own
+    edits: an extra amount must then be paid within the payment window, otherwise the edit is reverted.
+    ``instant_refund_allowed`` is given for the booking user's own edit saved before the cancel /
+    reschedule cut-off (see ``input_edit_refund_window``).
+    """
+    from .input_edit_payment_window import (
+        INPUT_EDIT_PAYMENT_WINDOW_SECONDS,
+        clear_payment_window,
+        new_payment_deadline,
+    )
+
+    equipment = booking.equipment
+    charge_profile = booking.charge_profile
+    if not charge_profile or not equipment:
+        return {}
+
+    calculated_time_minutes, new_charge, charge_breakdown = _compute_recalculated_charge(booking)
     refund_txn = None
     with transaction.atomic():
         # Read the charge state under a row lock so concurrent edits net against the same baseline.
@@ -16719,6 +16728,29 @@ def update_booking_input_values(request, booking_id):
         instant_refund_allowed = booking.status == BookingStatus.BOOKED and instant_refund_window(booking)[0]
 
     booking.input_values = current
+    if enable_recalc and booking.status == BookingStatus.COMPLETED and booking.charge_profile_id:
+        # A Completed booking's charge may go up, never down: the difference could not be refunded
+        # (charge_recalculation_refund_refusal), so the money would be stranded.
+        _t, would_charge, _b = _compute_recalculated_charge(booking)
+        cents = Decimal("0.01")
+        baseline = (
+            (booking.total_charge or Decimal("0")) - (booking.charge_recalculation_pending_amount or Decimal("0"))
+        ).quantize(cents)
+        would_charge = Decimal(would_charge).quantize(cents)
+        if would_charge < baseline:
+            return Response(
+                {
+                    "error": (
+                        f"This booking is Completed: these inputs would lower the charge from ₹{baseline} to "
+                        f"₹{would_charge}, and a Completed booking cannot be refunded. Keep inputs that do not "
+                        "lower the charge."
+                    ),
+                    "code": "completed_charge_cannot_decrease",
+                    "current_charge": str(baseline),
+                    "new_charge": str(would_charge),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
     update_fields = ["input_values"]
     if (
         not enable_recalc
