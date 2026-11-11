@@ -722,74 +722,32 @@ def build_return_shipping_label_pdf(*, booking, billing_profile) -> bytes:
 
 def build_proforma_invoice_pdf(*, data: Dict[str, Any], billing_profile) -> bytes:
     """
-    Proforma invoice for an equipment estimate.
+    Proforma invoice for a one-equipment estimate (see ``proforma_pdf`` for the layout and fields).
     Expected `data` to include:
       - equipment_name, equipment_code
       - base_charge, gst_amount, total_charge
-      - description (optional)
+      - description, department_name (optional)
     """
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import cm
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from django.utils import timezone
 
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=1.5 * cm,
-        leftMargin=1.5 * cm,
-        topMargin=1.5 * cm,
-        bottomMargin=1.5 * cm,
-    )
-    styles = getSampleStyleSheet()
-    h1 = ParagraphStyle("h1", parent=styles["Heading1"], fontSize=16, spaceAfter=8)
-    small = ParagraphStyle("small", parent=styles["Normal"], fontSize=9, leading=12)
-
-    bill_name = (getattr(billing_profile, "billing_name", "") or "").strip() or get_user_display_name(getattr(billing_profile, "user", None)) or "—"
-    gstin = (getattr(billing_profile, "gstin", "") or "").strip()
-
-    story = []
-    dept_name = (data.get("department_name") or "").strip() or getattr(settings, "ORG_DEPARTMENT_NAME", "") or getattr(settings, "ORG_LEGAL_NAME", "")
-    story.extend(_pdf_letterhead_story_lines(department_name=dept_name, document_title="Proforma Invoice"))
-    story.append(Paragraph(f"<b>Requested by</b><br/>{_safe_str(bill_name)}" + (f"<br/>GSTIN: {_safe_str(gstin)}" if gstin else ""), small))
-    story.append(Spacer(1, 0.5 * cm))
+    from .proforma_pdf import Line, Proforma, buyer_from, dec, new_number, render_proforma
 
     eq_name = _safe_str(data.get("equipment_name", "Equipment"))
     eq_code = _safe_str(data.get("equipment_code", ""))
-    desc = _safe_str(data.get("description", "")).strip() or f"{eq_name} ({eq_code})".strip()
-    base = _money(data.get("base_charge", "0"))
-    gst = _money(data.get("gst_amount", "0"))
-    total = _money(data.get("total_charge", "0"))
-
-    rows = [
-        ["Description", "Amount (₹)"],
-        [desc, base],
-    ]
-    try:
-        if Decimal(str(gst)) > 0:
-            rows.append(["GST", gst])
-    except Exception:
-        pass
-    rows.append(["Total", total])
-
-    t = Table(rows, colWidths=[12.0 * cm, 4.5 * cm], repeatRows=1)
-    t.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#153f79")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ]
-        )
+    title = f"{eq_name} ({eq_code})" if eq_code else eq_name
+    desc = _safe_str(data.get("description", "")).strip()
+    now = timezone.now()
+    user = getattr(billing_profile, "user", None)
+    pi = Proforma(
+        number=new_number(now),
+        issued_at=now,
+        buyer=buyer_from(user, billing_profile),
+        lines=[Line(title=title, details=[desc] if desc else [], taxable=dec(data.get("base_charge")),
+                    gst=dec(data.get("gst_amount")))],
+        department=(data.get("department_name") or "").strip(),
     )
-    story.append(t)
-    doc.build(story)
-    return buffer.getvalue()
+    fmt = _get_proforma_invoice_format()
+    return render_proforma(pi, extra_terms=fmt["terms_and_conditions"], disclaimer=fmt["disclaimer"])
 
 
 def _get_proforma_invoice_format():
@@ -812,6 +770,72 @@ def _get_proforma_invoice_format():
     }
 
 
+def _proforma_line_details(row: dict, rupees_label: str) -> list:
+    """The inputs the user entered and the charge breakup of one estimate line, as short text lines."""
+    from .proforma_pdf import inr
+
+    input_vals = row.get("input_labels_and_values") or row.get("input_values") or {}
+    lines = []
+    if isinstance(input_vals, dict):
+        from .input_display import format_input_value, formatted_as_text, humanize_key
+
+        for k, v in input_vals.items():
+            if v in (None, "", []) or str(k).startswith("_"):
+                continue
+            if isinstance(v, (list, dict)) or (isinstance(v, str) and v.strip()[:1] in ("[", "{")):
+                v = formatted_as_text(format_input_value({"field_key": k, "field_type": ""}, {k: v}), max_rows=10)
+            if isinstance(v, bool):
+                v = "Yes" if v else "No"
+            if "_" in str(k):
+                k = humanize_key(k)
+            vs = str(v).strip()
+            if not vs:
+                continue
+            kl = str(k).lower()
+            if v is False or (
+                vs.lower() in ("no", "false", "0", "n")
+                and ("?" in str(k) or "want" in kl or "avail" in kl or "opt" in kl)
+            ):
+                continue
+            lines.append(f"{k}: {vs}")
+    for b in row.get("charge_breakdown") or []:
+        if not isinstance(b, dict):
+            continue
+        desc = b.get("description", "")
+        amt = b.get("amount", 0)
+        try:
+            lines.append(f"{desc}: {rupees_label} {inr(amt)}")
+        except Exception:
+            lines.append(f"{desc}: {rupees_label} {amt}")
+    return lines
+
+
+def _proforma_department(line_items: list) -> str:
+    """The department of the equipment on the estimate: one name, "Multiple Departments", or blank."""
+    try:
+        eq_ids = set()
+        for li in line_items or []:
+            v = li.get("equipment_id") if isinstance(li, dict) else None
+            try:
+                eq_ids.add(int(v))
+            except Exception:
+                continue
+        if not eq_ids:
+            return ""
+        from .models import Equipment
+
+        names = {
+            (getattr(eq.internal_department, "name", "") or "").strip()
+            for eq in Equipment.objects.select_related("internal_department").filter(equipment_id__in=eq_ids)
+            if eq.internal_department_id
+        } - {""}
+        if len(names) == 1:
+            return names.pop()
+        return "Multiple Departments" if names else ""
+    except Exception:
+        return ""
+
+
 def build_proforma_invoice_multi_pdf(
     *,
     user,
@@ -822,226 +846,35 @@ def build_proforma_invoice_multi_pdf(
     total_amount: str,
 ) -> bytes:
     """
-    Proforma invoice PDF with IIT Roorkee letterhead, user details, date/time of request,
-    line items table (inputs & charge breakup), totals, terms text, and disclaimer.
-    Uses ProformaInvoiceFormat model for admin-editable terms and disclaimer.
+    Proforma invoice PDF for the estimate on the charges page: one line per equipment with the inputs and charge
+    breakup, GST split by place of supply, total in words, terms and disclaimer (admin-editable through
+    ProformaInvoiceFormat). Layout and legal fields: see ``proforma_pdf``.
     """
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import cm
-    from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from django.utils import timezone
 
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=1.5 * cm,
-        leftMargin=1.5 * cm,
-        topMargin=1.5 * cm,
-        bottomMargin=2.0 * cm,
+    from .proforma_pdf import Line, Proforma, buyer_from, dec, new_number, render_proforma
+
+    rupees = "\u20b9"
+    lines = []
+    for row in line_items or []:
+        if not isinstance(row, dict):
+            continue
+        eq_name = _safe_str(row.get("equipment_name", "")).strip() or "Equipment"
+        eq_code = _safe_str(row.get("equipment_code", "")).strip()
+        lines.append(Line(
+            title=f"{eq_name} ({eq_code})" if eq_code else eq_name,
+            details=_proforma_line_details(row, rupees),
+            taxable=dec(row.get("base_charge")),
+            gst=dec(row.get("gst_amount")),
+        ))
+    issued = request_date_time or timezone.now()
+    pi = Proforma(
+        number=new_number(issued),
+        issued_at=issued,
+        buyer=buyer_from(user),
+        lines=lines,
+        department=_proforma_department(line_items),
+        requested_at=issued,
     )
-    styles = getSampleStyleSheet()
-    h1 = ParagraphStyle("h1", parent=styles["Heading1"], fontSize=16, alignment=TA_CENTER, spaceAfter=6)
-    small = ParagraphStyle("small", parent=styles["Normal"], fontSize=9, leading=11)
-    small_left = ParagraphStyle("small_left", parent=small, alignment=TA_LEFT)
-    terms_style = ParagraphStyle("terms", parent=small, fontSize=9, alignment=TA_LEFT, spaceBefore=6, spaceAfter=4)
-    disclaimer_style = ParagraphStyle("disclaimer", parent=small, fontSize=8, alignment=TA_CENTER, textColor=colors.grey, spaceBefore=8)
-
-    # User requesting
-    user_name = get_user_display_name(user, fallback_to_email=False) or getattr(user, "get_full_name", lambda: "")() or "Guest"
-    user_email = getattr(user, "email", "") or "—"
-    user_dept = getattr(user, "department_name", "") or getattr(user, "department", None)
-    if user_dept and hasattr(user_dept, "name"):
-        user_dept = user_dept.name
-    user_dept = (user_dept or "—").strip() or "—"
-    user_type = getattr(user, "user_type", "") or "—"
-    if user_type:
-        user_type = str(user_type).replace("_", " ").title()
-
-    # Date and time: convert to local timezone and show on one line
-    req_dt = request_date_time
-    try:
-        from django.utils import timezone as tz
-        if hasattr(req_dt, "astimezone") and getattr(settings, "USE_TZ", True):
-            if tz.is_naive(req_dt):
-                req_dt = tz.make_aware(req_dt, tz.get_current_timezone())
-            else:
-                req_dt = req_dt.astimezone(tz.get_current_timezone())
-    except Exception:
-        pass
-    req_date_str = req_dt.strftime("%d-%b-%Y") if hasattr(req_dt, "strftime") else str(req_dt)
-    req_time_str = req_dt.strftime("%I:%M %p") if hasattr(req_dt, "strftime") else ""
-
-    story = []
-    # Derive department name: if all line items belong to the same internal department, show it; else show "Multiple Departments".
-    dept_name = ""
-    try:
-        eq_ids = []
-        for li in line_items or []:
-            v = li.get("equipment_id") if isinstance(li, dict) else None
-            if v is None:
-                continue
-            try:
-                eq_ids.append(int(v))
-            except Exception:
-                continue
-        if eq_ids:
-            from .models import Equipment
-            qs = Equipment.objects.select_related("internal_department").filter(equipment_id__in=list(set(eq_ids)))
-            names = set()
-            for eq in qs:
-                d = getattr(eq, "internal_department", None)
-                n = (getattr(d, "name", None) or "").strip() if d else ""
-                if n:
-                    names.add(n)
-            if len(names) == 1:
-                dept_name = list(names)[0]
-            elif len(names) > 1:
-                dept_name = "Multiple Departments"
-    except Exception:
-        dept_name = ""
-    dept_name = dept_name or (getattr(settings, "ORG_DEPARTMENT_NAME", "") or getattr(settings, "ORG_LEGAL_NAME", ""))
-    story.extend(_pdf_letterhead_story_lines(department_name=dept_name, document_title="Proforma Invoice"))
-    story.append(Paragraph(
-        f"<b>Requested by</b><br/>{_safe_str(user_name)}<br/>"
-        f"Email: {_safe_str(user_email)}<br/>Department: {_safe_str(user_dept)}<br/>User type: {_safe_str(user_type)}",
-        small,
-    ))
-    # Date and Time on one line, left-aligned
-    story.append(Paragraph(
-        f"<b>Date of request:</b> {_safe_str(req_date_str)} &nbsp;&nbsp;&nbsp; <b>Time of request:</b> {_safe_str(req_time_str)}",
-        small_left,
-    ))
-    story.append(Spacer(1, 0.5 * cm))
-
-    format_opts = _get_proforma_invoice_format()
-
-    # Use Rupee symbol (₹) if a supporting font is available, else "Rs."
-    rupee_font_name = _register_pdf_rupee_font()
-    rupees_label = _pdf_rupees_label()
-    if rupee_font_name:
-        small_rupee = ParagraphStyle("small_rupee", parent=small, fontName=rupee_font_name)
-    else:
-        small_rupee = small
-
-    # Header row: light text on dark background (Paragraph style with white text so it's readable)
-    header_font = rupee_font_name or "Helvetica-Bold"
-    header_style = ParagraphStyle(
-        "proforma_header",
-        parent=small,
-        fontName=header_font,
-        fontSize=9,
-        textColor=colors.white,
-        alignment=1,
-    )
-    small_center = ParagraphStyle("small_center", parent=small, alignment=1)
-
-    # Table headers and cells: use rupee symbol when font supports it (headers as Paragraphs so ₹ renders)
-    base_col = f"Base ({rupees_label})"
-    gst_col = f"GST ({rupees_label})"
-    total_col = f"Total ({rupees_label})"
-    header_row = [
-        Paragraph("S.No.", header_style),
-        Paragraph("Equipment", header_style),
-        Paragraph("Inputs & charge breakup", header_style),
-        Paragraph(base_col, header_style),
-        Paragraph(gst_col, header_style),
-        Paragraph(total_col, header_style),
-    ]
-    table_data = [header_row]
-    for idx, row in enumerate(line_items, 1):
-        eq_name = _safe_str(row.get("equipment_name", ""))
-        eq_code = _safe_str(row.get("equipment_code", ""))
-        eq_para = Paragraph(
-            f"{eq_name} ({eq_code})".replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"),
-            small_center,
-        )
-        input_vals = row.get("input_labels_and_values") or row.get("input_values") or {}
-        if isinstance(input_vals, dict):
-            from .input_display import format_input_value, formatted_as_text, humanize_key
-
-            input_parts = []
-            for k, v in input_vals.items():
-                if v in (None, "", []) or str(k).startswith("_"):
-                    continue
-                if isinstance(v, (list, dict)) or (isinstance(v, str) and v.strip()[:1] in ("[", "{")):
-                    v = formatted_as_text(format_input_value({"field_key": k, "field_type": ""}, {k: v}), max_rows=10)
-                if isinstance(v, bool):
-                    v = "Yes" if v else "No"
-                if "_" in str(k):
-                    k = humanize_key(k)
-                vs = str(v).strip()
-                if not vs:
-                    continue
-                kl = str(k).lower()
-                if v is False or (
-                    vs.lower() in ("no", "false", "0", "n")
-                    and ("?" in str(k) or "want" in kl or "avail" in kl or "opt" in kl)
-                ):
-                    continue
-                input_parts.append(f"{k}: {v}")
-        else:
-            input_parts = []
-        breakdown = row.get("charge_breakdown") or []
-        breakup_lines = list(input_parts)
-        for b in breakdown:
-            desc = b.get("description", "")
-            amt = b.get("amount", 0)
-            try:
-                breakup_lines.append(f"{desc}: {rupees_label}{Decimal(str(amt)).quantize(Decimal('0.01'))}")
-            except Exception:
-                breakup_lines.append(f"{desc}: {rupees_label}{amt}")
-        breakup_cell = "<br/>".join([line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") for line in breakup_lines]) if breakup_lines else "—"
-        base_c = _money(row.get("base_charge", "0"))
-        gst_c = _money(row.get("gst_amount", "0"))
-        tot_c = _money(row.get("total_charge", "0"))
-        table_data.append([str(idx), eq_para, Paragraph(breakup_cell, small_rupee), base_c, gst_c, tot_c])
-
-    table_data.append(["", "", "Subtotal", _money(subtotal), _money(total_gst), _money(total_amount)])
-    # Final row: total amount with amount in words (same row, words in column 2)
-    try:
-        total_dec = Decimal(str(total_amount))
-        amount_words = _amount_in_words(total_dec)
-    except Exception:
-        amount_words = "Rupees Only"
-    total_amount_para = Paragraph(
-        "Total amount<br/><font size='8'>" + amount_words.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") + "</font>",
-        small_center,
-    )
-    table_data.append(["", "", total_amount_para, "", "", _money(total_amount)])
-
-    # Wider equipment column to avoid overlap; slightly narrower breakup column
-    col_widths = [1.0 * cm, 3.9 * cm, 5.6 * cm, 2.0 * cm, 1.8 * cm, 2.2 * cm]
-    t = Table(table_data, colWidths=col_widths, repeatRows=1)
-    t.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#153f79")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                ("FONTNAME", (0, 0), (-1, 0), header_font),
-                ("FONTSIZE", (0, 0), (-1, 0), 9),
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("BACKGROUND", (0, -2), (-1, -2), colors.HexColor("#e2e8f0")),
-                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#cbd5e1")),
-                ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
-            ]
-        )
-    )
-    story.append(t)
-    story.append(Spacer(1, 0.3 * cm))
-    # Terms and conditions (admin-editable), just after the table
-    terms_text = format_opts["terms_and_conditions"]
-    if terms_text:
-        story.append(Paragraph(terms_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"), terms_style))
-    story.append(Spacer(1, 0.2 * cm))
-    # Disclaimer (admin-editable)
-    disclaimer_text = format_opts["disclaimer"]
-    if disclaimer_text:
-        story.append(Paragraph(disclaimer_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"), disclaimer_style))
-    doc.build(story)
-    return buffer.getvalue()
-
+    fmt = _get_proforma_invoice_format()
+    return render_proforma(pi, extra_terms=fmt["terms_and_conditions"], disclaimer=fmt["disclaimer"])
