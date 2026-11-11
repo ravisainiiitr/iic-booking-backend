@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .api import communities
+from .api import equipment
 from .api import home
 from .api import knowledge
 from .api import search
@@ -34,6 +35,8 @@ urlpatterns = [
     path("threads/<int:pk>/follow/", threads.ThreadFollowView.as_view(), name="thread-follow"),
     path("threads/<int:pk>/vote/", threads.ThreadVoteView.as_view(), name="thread-vote"),
     path("threads/<int:pk>/solution/", knowledge.ThreadSolutionView.as_view(), name="thread-solution"),
+    path("threads/<int:pk>/staff/", equipment.ThreadStaffToolsView.as_view(), name="thread-staff"),
+    path("equipment/<int:equipment_id>/discussions/", equipment.EquipmentDiscussionsView.as_view(), name="equipment-discussions"),
     # Knowledge Hub
     path("articles/", knowledge.ArticleListView.as_view(), name="articles"),
     path("articles/<int:pk>/", knowledge.ArticleDetailView.as_view(), name="article"),

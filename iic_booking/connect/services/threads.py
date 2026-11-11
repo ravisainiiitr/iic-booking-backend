@@ -145,7 +145,17 @@ def _check_duplicate(user, text: str) -> None:
 
 
 def badge_for(user, community_id: int, equipment_id: int | None = None) -> str:
-    return access.role_badge(user, community_id)
+    """Verified badge from assignments. In General IITR Discussions (no group membership), a thread linked to an
+    instrument shows the author's OIC / Lab Operator badge for that instrument."""
+    badge = access.role_badge(user, community_id)
+    if badge or not equipment_id:
+        return badge
+    snap = access.snapshot(user)
+    if snap.general_id != community_id:
+        return ""
+    from .staff_tools import staff_badge_for_equipment
+
+    return staff_badge_for_equipment(user, equipment_id)
 
 
 def resolve_tags(user, raw_tags) -> list[DiscussionTag]:
@@ -343,7 +353,7 @@ def create_thread(user, data: ThreadInput) -> DiscussionThread:
         last_activity_at=now,
         poll_closes_at=data.poll_closes_at if data.type == ThreadType.POLL else None,
     )
-    badge = badge_for(user, community.pk)
+    badge = badge_for(user, community.pk, thread.equipment_ref_id)
     post = DiscussionPost.objects.create(
         thread=thread,
         author=user,
@@ -389,7 +399,7 @@ def create_reply(user, thread: DiscussionThread, body, *, parent_id=None, attach
             raise ThreadError("The post you are replying to is not available.", "parent")
     html, text = _clean_body(body)
     _check_duplicate(user, text)
-    badge = badge_for(user, community.pk)
+    badge = badge_for(user, community.pk, thread.equipment_ref_id)
     post = DiscussionPost.objects.create(
         thread=thread,
         parent=parent,
