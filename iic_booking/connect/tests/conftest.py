@@ -39,6 +39,8 @@ def _connect_seed(request):
     from django.apps import apps as django_apps
 
     importlib.import_module("iic_booking.connect.migrations.0002_seed_general_categories").seed(django_apps, None)
+    # Email templates and digest schedules (create-only), for the same reason.
+    importlib.import_module("iic_booking.connect.migrations.0005_notification_templates_and_digests").create(django_apps, None)
 
 
 @pytest.fixture(autouse=True)
