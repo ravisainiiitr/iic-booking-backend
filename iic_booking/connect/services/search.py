@@ -230,3 +230,25 @@ def accepted_previews(user, threads) -> dict[int, dict]:
             "resolution_hours": round((t.solved_at - t.created_at).total_seconds() / 3600, 1) if t.solved_at else None,
         }
     return out
+
+
+def search_articles(user, q: str, limit: int = 5) -> list[dict]:
+    """Published Knowledge Hub articles the caller can read that match ``q``."""
+    from ..models import ArticleStatus
+    from .knowledge import is_guidance
+
+    q = normalise_query(q)
+    if not q:
+        return []
+    query = SearchQuery(q, search_type="websearch", config=CONFIG)
+    rows = (
+        access.visible_articles(user)
+        .filter(status=ArticleStatus.PUBLISHED, search_vector=query)
+        .select_related("community")
+        .annotate(rank=SearchRank(F("search_vector"), query))
+        .order_by("-rank")[:limit]
+    )
+    return [
+        {"id": a.pk, "title": a.title, "summary": a.summary, "community": a.community.name, "is_institutional_guidance": is_guidance(a)}
+        for a in rows
+    ]

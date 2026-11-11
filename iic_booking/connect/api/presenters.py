@@ -167,11 +167,22 @@ def thread_detail(thread: DiscussionThread, user) -> dict:
     data["opening_post"] = posts_payload([opening], user, thread)[0] if opening else None
     data["poll"] = thread_service.poll_payload(thread, user)
     data["accepted_post_id"] = thread.accepted_post_id
+    from ..models import ArticleStatus
+    from ..services import knowledge as knowledge_service
+    from ..services import solutions as solution_service
+
+    data["solution"] = solution_service.solution_payload(user, thread)
+    data["articles"] = [
+        {"id": a.pk, "title": a.title, "status": a.status}
+        for a in access.visible_articles(user).filter(source_thread=thread).exclude(status=ArticleStatus.ARCHIVED).order_by("-updated_at")[:5]
+    ]
     data["permissions"] = {
         "can_reply": access.can_post_in(user, thread.community_id)
         and (thread.status != "locked" or access.can_moderate(user, thread.community_id)),
         "can_moderate": access.can_moderate(user, thread.community_id),
         "can_edit": bool(opening and thread_service.can_edit(user, opening)),
         "can_delete": bool(opening and thread_service.can_delete(user, opening)),
+        "can_accept": solution_service.can_accept(user, thread),
+        "can_curate": knowledge_service.can_curate(user, thread.community_id),
     }
     return data

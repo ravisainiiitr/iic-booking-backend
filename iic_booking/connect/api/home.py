@@ -61,6 +61,7 @@ class HomeView(ConnectAPIView):
                 "technical_support": technical,
                 "announcements": announcements,
                 "active_contributors": active_contributors(user, now),
+                "articles": latest_articles(user),
             }
         )
 
@@ -149,3 +150,19 @@ class MentionCandidatesView(ConnectAPIView):
                 out.append({"id": row["id"], "name": row["name"] or "Portal user", "badge": access.role_badge(person, community.pk)})
         return Response({"results": out})
 
+
+
+def latest_articles(user, limit: int = 5) -> list[dict]:
+    from ..models import ArticleStatus
+    from ..services.knowledge import is_guidance
+
+    rows = (
+        access.visible_articles(user)
+        .filter(status=ArticleStatus.PUBLISHED)
+        .select_related("community")
+        .order_by("-published_at")[:limit]
+    )
+    return [
+        {"id": a.pk, "title": a.title, "community": a.community.name, "is_institutional_guidance": is_guidance(a), "published_at": a.published_at}
+        for a in rows
+    ]

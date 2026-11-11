@@ -53,6 +53,7 @@ class SearchView(ConnectAPIView):
             search_service.log_search(request.user, q, "search", paginator.page.paginator.count)
         response = paginator.get_paginated_response(results)
         response.data["facets"] = facets
+        response.data["articles"] = search_service.search_articles(request.user, q) if (request.query_params.get("page") or "1") == "1" else []
         return response
 
 

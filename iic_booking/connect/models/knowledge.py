@@ -51,6 +51,9 @@ class KnowledgeArticle(models.Model):
     status = models.CharField(max_length=16, choices=ArticleStatus.choices, default=ArticleStatus.DRAFT)
     # Shown as "Reviewed institutional guidance" only after an approved review by an authorised reviewer.
     is_institutional_guidance = models.BooleanField(default=False)
+    # Version an approved review covered. The guidance label is shown only while it equals ``version``, so any
+    # later edit drops the label until the article is reviewed again.
+    reviewed_version = models.PositiveIntegerField(null=True, blank=True)
     author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="connect_articles")
     reviewer = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
