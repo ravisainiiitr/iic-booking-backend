@@ -214,3 +214,41 @@ def test_thread_shows_promoted_article_link(k):
     assert detail["articles"][0]["id"] == aid and detail["permissions"]["can_curate"] is True
     assert client_for(k["other"]).get(f"{API}/threads/{k['tid']}/").json()["articles"] == []  # drafts are not shown to members
     assert DiscussionThread.objects.filter(pk=k["tid"]).exists()
+
+
+# --- Resolved by the person who asked ---------------------------------------------------------------------------
+
+
+def test_originator_accepting_marks_resolved(k):
+    body = accept(k["asker"], k["tid"], k["r2"]).json()
+    assert body["is_solved"] and body["is_resolved"] is True
+    assert body["solution"]["resolved_by_author"] is True and body["solution"]["can_confirm_resolved"] is False
+    ids = [t["id"] for t in client_for(k["other"]).get(f"{API}/threads/?status=resolved").json()["results"]]
+    assert k["tid"] in ids
+
+
+def test_moderator_accepted_answer_needs_originator_confirmation(k):
+    body = accept(k["oic"], k["tid"], k["r2"]).json()
+    assert body["is_solved"] and body["is_resolved"] is False
+    assert k["tid"] not in [t["id"] for t in client_for(k["other"]).get(f"{API}/threads/?status=resolved").json()["results"]]
+    asker_view = client_for(k["asker"]).get(f"{API}/threads/{k['tid']}/").json()
+    assert asker_view["solution"]["can_confirm_resolved"] is True
+    assert client_for(k["other"]).put(f"{API}/threads/{k['tid']}/solution/").status_code == 403
+    assert client_for(k["oic"]).put(f"{API}/threads/{k['tid']}/solution/").status_code == 403  # only the asker confirms
+    confirmed = client_for(k["asker"]).put(f"{API}/threads/{k['tid']}/solution/").json()
+    assert confirmed["is_resolved"] is True and confirmed["solution"]["resolved_at"]
+    assert ModerationAction.objects.filter(action="solution_confirm_resolved", target_id=str(k["tid"])).exists()
+
+
+def test_replacing_or_revoking_clears_resolved(k):
+    accept(k["asker"], k["tid"], k["r1"])
+    replaced = accept(k["oic"], k["tid"], k["r2"]).json()
+    assert replaced["is_solved"] and replaced["is_resolved"] is False
+    accept(k["asker"], k["tid"], k["r2"])  # re-accepting the same answer as the asker confirms it
+    assert client_for(k["asker"]).get(f"{API}/threads/{k['tid']}/").json()["is_resolved"] is True
+    revoked = client_for(k["asker"]).delete(f"{API}/threads/{k['tid']}/solution/").json()
+    assert revoked["is_resolved"] is False and revoked["is_solved"] is False
+
+
+def test_confirm_without_accepted_answer_is_refused(k):
+    assert client_for(k["asker"]).put(f"{API}/threads/{k['tid']}/solution/").status_code == 400

@@ -113,6 +113,8 @@ def filtered_threads(request, *, apply_q: bool = True):
     state = p.get("status")
     if state == "solved":
         qs = qs.filter(solved_at__isnull=False)
+    elif state == "resolved":
+        qs = qs.filter(solved_at__isnull=False, resolved_by_author_at__isnull=False)
     elif state == "unsolved":
         qs = qs.filter(type__in=list(svc.SOLVABLE_TYPES), solved_at__isnull=True)
     elif state == "unanswered" or p.get("sort") == "unanswered":
@@ -154,28 +156,51 @@ class ThreadListView(ConnectAPIView):
         page = paginator.paginate_queryset(qs, request, view=self)
         return paginator.get_paginated_response([thread_card(t) for t in page])
 
-    @extend_schema(tags=TAG, summary="Start a discussion")
+    @extend_schema(
+        tags=TAG,
+        summary="Start a discussion (announcements also take priority, expires_at, requires_acknowledgement, target_equipment_id, pin)",
+    )
     def post(self, request):
+        from django.db import transaction
+
+        from ..services import announcements as announcement_service
+        from ..services import notifications as notification_service
+
         d = request.data
         community = _community_from(request.user, d.get("community"))
         closes = parse_datetime(str(d.get("poll_closes_at") or "")) if d.get("poll_closes_at") else None
+        expires = parse_datetime(str(d.get("expires_at") or "")) if d.get("expires_at") else None
+        if d.get("expires_at") and expires is None:
+            return Response({"detail": "Give the expiry as a date and time.", "field": "expires_at"}, status=400)
         try:
-            thread = svc.create_thread(
-                request.user,
-                svc.ThreadInput(
-                    community=community,
-                    title=d.get("title"),
-                    body=d.get("body"),
-                    type=d.get("type") or ThreadType.GENERAL,
-                    category_id=_int(d.get("category_id")),
-                    equipment_id=d.get("equipment_id"),
-                    tags=d.get("tags") or [],
-                    attachments=d.get("attachments") or [],
-                    poll_options=d.get("poll_options") or [],
-                    poll_closes_at=closes,
-                    follow=d.get("follow", True) is not False,
-                ),
-            )
+            with transaction.atomic():
+                thread = svc.create_thread(
+                    request.user,
+                    svc.ThreadInput(
+                        community=community,
+                        title=d.get("title"),
+                        body=d.get("body"),
+                        type=d.get("type") or ThreadType.GENERAL,
+                        category_id=_int(d.get("category_id")),
+                        equipment_id=d.get("equipment_id"),
+                        tags=d.get("tags") or [],
+                        attachments=d.get("attachments") or [],
+                        poll_options=d.get("poll_options") or [],
+                        poll_closes_at=closes,
+                        follow=d.get("follow", True) is not False,
+                    ),
+                )
+                if thread.type == ThreadType.ANNOUNCEMENT:
+                    announcement = announcement_service.attach(
+                        request.user,
+                        thread,
+                        priority=d.get("priority") or None,
+                        expires_at=expires,
+                        requires_acknowledgement=d.get("requires_acknowledgement") is True,
+                        target_equipment_id=d.get("target_equipment_id") or None,
+                        pin=d.get("pin") is True,
+                    )
+                    notification_service.announcement_published(announcement)
         except (svc.ThreadError, svc.NotAllowed) as exc:
             return _error(exc)
         return Response(thread_detail(_annotated_thread(request.user, thread.pk), request.user), status=201)

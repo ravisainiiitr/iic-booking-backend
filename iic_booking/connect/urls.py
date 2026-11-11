@@ -4,6 +4,7 @@ from .api import communities
 from .api import equipment
 from .api import home
 from .api import knowledge
+from .api import notifications
 from .api import search
 from .api import threads
 from .api import views
@@ -36,6 +37,11 @@ urlpatterns = [
     path("threads/<int:pk>/vote/", threads.ThreadVoteView.as_view(), name="thread-vote"),
     path("threads/<int:pk>/solution/", knowledge.ThreadSolutionView.as_view(), name="thread-solution"),
     path("threads/<int:pk>/staff/", equipment.ThreadStaffToolsView.as_view(), name="thread-staff"),
+    path("threads/<int:pk>/acknowledge/", notifications.AcknowledgeView.as_view(), name="thread-acknowledge"),
+    # Notifications
+    path("notifications/", notifications.NotificationListView.as_view(), name="notifications"),
+    path("notifications/read/", notifications.NotificationReadView.as_view(), name="notifications-read"),
+    path("notifications/preferences/", notifications.NotificationPreferenceView.as_view(), name="notification-preferences"),
     path("equipment/<int:equipment_id>/discussions/", equipment.EquipmentDiscussionsView.as_view(), name="equipment-discussions"),
     # Knowledge Hub
     path("articles/", knowledge.ArticleListView.as_view(), name="articles"),

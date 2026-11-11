@@ -87,6 +87,9 @@ class DiscussionThread(models.Model):
     accepted_post = models.ForeignKey(
         "DiscussionPost", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
     )
+    # The person who asked confirmed that the accepted answer resolved their question ("Resolved" badge).
+    # Cleared when someone else replaces the answer or it is revoked.
+    resolved_by_author_at = models.DateTimeField(null=True, blank=True)
     poll_closes_at = models.DateTimeField(null=True, blank=True)
 
     reply_count = models.PositiveIntegerField(default=0)

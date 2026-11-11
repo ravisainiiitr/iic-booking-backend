@@ -5,6 +5,9 @@
   previous and new post.
 * Only a visible reply of the same thread can be accepted (never the opening post, a hidden or a deleted post).
 * ``solved_at`` is the time the current answer was accepted; resolution time = solved_at - created_at.
+* "Resolved": when the person who asked accepts an answer, or confirms one a moderator accepted, the thread is marked
+  resolved by its originator (``resolved_by_author_at``) and shows a distinct Resolved badge. Replacing the answer by
+  someone else, or revoking it, clears that confirmation.
 * Accepting an answer never changes equipment status, bookings or availability.
 """
 
@@ -49,11 +52,16 @@ def accept(user, thread: DiscussionThread, post_id) -> DiscussionThread:
     if post is None:
         raise ThreadError("Choose a visible reply in this discussion.", "post")
     previous = thread.accepted_post_id
+    by_author = user.pk == thread.author_id
     if previous == post.pk:
+        if by_author and not thread.resolved_by_author_at:
+            return confirm_resolved(user, thread)
         return thread
     now = timezone.now()
     AcceptedSolution.objects.update_or_create(thread=thread, defaults={"post": post, "accepted_by": user, "accepted_at": now})
-    DiscussionThread.objects.filter(pk=thread.pk).update(accepted_post=post, solved_at=now)
+    DiscussionThread.objects.filter(pk=thread.pk).update(
+        accepted_post=post, solved_at=now, resolved_by_author_at=now if by_author else None
+    )
     ModerationAction.objects.create(
         actor=user,
         community=thread.community,
@@ -77,7 +85,7 @@ def revoke(user, thread: DiscussionThread, reason: str = "") -> DiscussionThread
         raise NotAllowed("Only the person who asked or a moderator can change the accepted answer.")
     previous = thread.accepted_post_id
     AcceptedSolution.objects.filter(thread=thread).delete()
-    DiscussionThread.objects.filter(pk=thread.pk).update(accepted_post=None, solved_at=None)
+    DiscussionThread.objects.filter(pk=thread.pk).update(accepted_post=None, solved_at=None, resolved_by_author_at=None)
     ModerationAction.objects.create(
         actor=user,
         community=thread.community,
@@ -91,13 +99,36 @@ def revoke(user, thread: DiscussionThread, reason: str = "") -> DiscussionThread
     return thread
 
 
+@transaction.atomic
+def confirm_resolved(user, thread: DiscussionThread) -> DiscussionThread:
+    """The person who asked confirms that the accepted answer resolved their question."""
+    thread = DiscussionThread.objects.select_for_update().get(pk=thread.pk)
+    if thread.author_id != user.pk:
+        raise NotAllowed("Only the person who asked can mark this as resolved.")
+    if not thread.accepted_post_id:
+        raise ThreadError("Accept the answer that solved it first.")
+    if thread.resolved_by_author_at:
+        return thread
+    DiscussionThread.objects.filter(pk=thread.pk).update(resolved_by_author_at=timezone.now())
+    ModerationAction.objects.create(
+        actor=user,
+        community=thread.community,
+        action="solution_confirm_resolved",
+        target_type="thread",
+        target_id=str(thread.pk),
+        after={"post_id": thread.accepted_post_id},
+    )
+    thread.refresh_from_db()
+    return thread
+
+
 def clear_if_post_gone(post: DiscussionPost) -> None:
     """When an accepted reply is hidden, removed or deleted, the thread is no longer solved by it."""
     thread = post.thread
     if thread.accepted_post_id != post.pk or post.visibility == Visibility.VISIBLE:
         return
     AcceptedSolution.objects.filter(thread=thread).delete()
-    DiscussionThread.objects.filter(pk=thread.pk).update(accepted_post=None, solved_at=None)
+    DiscussionThread.objects.filter(pk=thread.pk).update(accepted_post=None, solved_at=None, resolved_by_author_at=None)
 
 
 def solution_payload(user, thread: DiscussionThread) -> dict | None:
@@ -114,6 +145,9 @@ def solution_payload(user, thread: DiscussionThread) -> dict | None:
         "accepted_by_author": row.accepted_by_id == thread.author_id,
         "accepted_at": row.accepted_at,
         "resolution_hours": hours,
+        "resolved_by_author": bool(thread.resolved_by_author_at),
+        "resolved_at": thread.resolved_by_author_at,
+        "can_confirm_resolved": thread.author_id == user.pk and not thread.resolved_by_author_at,
     }
 
 

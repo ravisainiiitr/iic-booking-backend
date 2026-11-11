@@ -45,6 +45,15 @@ class ThreadSolutionView(ConnectAPIView):
             return _error(exc)
         return Response(_thread_out(request.user, pk))
 
+    @extend_schema(tags=TAG, summary="The person who asked confirms the accepted answer resolved it (Resolved badge)")
+    def put(self, request, pk):
+        thread = access.get_thread_or_404(request.user, pk)
+        try:
+            ssvc.confirm_resolved(request.user, thread)
+        except (ThreadError, NotAllowed) as exc:
+            return _error(exc)
+        return Response(_thread_out(request.user, pk))
+
     @extend_schema(tags=TAG, summary="Revoke the accepted solution (thread author or a moderator; audited)")
     def delete(self, request, pk):
         thread = access.get_thread_or_404(request.user, pk)

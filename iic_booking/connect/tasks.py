@@ -52,3 +52,35 @@ def nightly_membership_sync():
     report = sync_all(dry_run=False, source="nightly")
     purged = purge_unbound(older_than_hours=24)
     return {"lifted_suspensions": lifted, "purged_unbound_uploads": purged, **report.as_dict()}
+
+
+@shared_task(name="connect.announcement_batch")
+@defer_during_peak("connect.announcement_batch")
+def announcement_batch_task(announcement_id, user_ids):
+    if not _enabled():
+        return None
+    from .services.notifications import deliver_announcement_batch
+
+    return deliver_announcement_batch(announcement_id, user_ids)
+
+
+@shared_task(name="connect.daily_digest")
+@defer_during_peak("connect.daily_digest")
+def daily_digest_task():
+    if not _enabled():
+        return None
+    from .models import EmailMode
+    from .services.notifications import send_digests
+
+    return send_digests(EmailMode.DAILY)
+
+
+@shared_task(name="connect.weekly_digest")
+@defer_during_peak("connect.weekly_digest")
+def weekly_digest_task():
+    if not _enabled():
+        return None
+    from .models import EmailMode
+    from .services.notifications import send_digests
+
+    return send_digests(EmailMode.WEEKLY)

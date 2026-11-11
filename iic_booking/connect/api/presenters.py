@@ -90,6 +90,7 @@ def thread_card(thread: DiscussionThread) -> dict:
         "is_solvable": thread.is_solvable,
         "is_solved": bool(thread.solved_at),
         "solved_at": thread.solved_at,
+        "is_resolved": bool(thread.solved_at and thread.resolved_by_author_at),
         "is_known_problem": thread.is_known_problem,
         "has_workaround": thread.has_workaround,
         "is_outdated": thread.is_outdated,
@@ -172,6 +173,9 @@ def thread_detail(thread: DiscussionThread, user) -> dict:
     from ..services import solutions as solution_service
 
     data["solution"] = solution_service.solution_payload(user, thread)
+    from ..services import announcements as announcement_service
+
+    data["announcement"] = announcement_service.payload(user, thread) if thread.type == "announcement" else None
     data["articles"] = [
         {"id": a.pk, "title": a.title, "status": a.status}
         for a in access.visible_articles(user).filter(source_thread=thread).exclude(status=ArticleStatus.ARCHIVED).order_by("-updated_at")[:5]
