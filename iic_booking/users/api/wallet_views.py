@@ -94,6 +94,35 @@ def _offline_payment_request_elsewhere(recharge_request):
     return None
 
 
+def _legacy_decision_forbidden(user, recharge_request):
+    """Who may approve or reject by request id (no email token): a signed-in Main Administrator, the
+    Department Administrator or Accounts In Charge of the request's department, or a portal user whose email is
+    on the request's configured approver list. Never the requester or the wallet owner."""
+    from iic_booking.users.wallet_recharge_workflow import get_recharge_approver_emails
+
+    def deny():
+        return Response(
+            {"error": "You are not allowed to decide this wallet recharge request.", "code": "not_an_approver"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if not getattr(user, "is_authenticated", False) or not getattr(user, "is_active", False):
+        return deny()
+    wallet_owner_id = getattr(getattr(recharge_request, "wallet", None), "user_id", None)
+    if user.pk in {recharge_request.user_id, wallet_owner_id}:
+        return deny()
+    ut = getattr(user, "user_type", None)
+    if ut == UserType.ADMIN:
+        return None
+    dept_id = getattr(recharge_request, "department_id", None)
+    if ut in (UserType.DEPT_ADMIN, UserType.FINANCE) and dept_id and getattr(user, "department_id", None) == dept_id:
+        return None
+    email = (getattr(user, "email", "") or "").strip().lower()
+    if email and email in {(e or "").strip().lower() for e in get_recharge_approver_emails(recharge_request)}:
+        return None
+    return deny()
+
+
 PROJECT_GRANT_RECHARGE_DISABLED_CODE = "project_grant_recharge_disabled"
 
 
@@ -2389,7 +2418,7 @@ def wallet_recharge_action_reject(request, token):
 
 
 @api_view(["POST"])
-@permission_classes([AllowAny])  # legacy path — prefer token endpoints
+@permission_classes([IsAuthenticated])  # email approvers use the token endpoints
 def approve_wallet_recharge_request(request, request_id):
     """Legacy approve by request id. Prefer /wallet/recharge-action/<token>/approve/."""
     from iic_booking.users.wallet_recharge_workflow import (
@@ -2413,6 +2442,9 @@ def approve_wallet_recharge_request(request, request_id):
     guard = _offline_payment_request_elsewhere(recharge_request)
     if guard is not None:
         return guard
+    forbidden = _legacy_decision_forbidden(request.user, recharge_request)
+    if forbidden is not None:
+        return forbidden
 
     if recharge_request.status != WalletRechargeRequestStatus.PENDING:
         page = already_processed_page(
@@ -2462,7 +2494,7 @@ def approve_wallet_recharge_request(request, request_id):
 
 
 @api_view(["POST"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def reject_wallet_recharge_request(request, request_id):
     """Legacy reject by request id. Prefer token endpoint with reason_code."""
     from iic_booking.users.models.wallet import WalletRechargeRejectionReason
@@ -2500,6 +2532,9 @@ def reject_wallet_recharge_request(request, request_id):
     guard = _offline_payment_request_elsewhere(recharge_request)
     if guard is not None:
         return guard
+    forbidden = _legacy_decision_forbidden(request.user, recharge_request)
+    if forbidden is not None:
+        return forbidden
 
     if recharge_request.status != WalletRechargeRequestStatus.PENDING:
         page = already_processed_page(
