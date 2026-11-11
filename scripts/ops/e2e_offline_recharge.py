@@ -173,8 +173,8 @@ def run():
     if not req_a:
         return
     detail = OfflineRechargePayment.objects.select_related("receipt").get(recharge_request_id=req_a)
-    if detail.receipt and detail.receipt.file:
-        STORED_FILES.append(detail.receipt.file.name)
+    if detail.receipt and detail.receipt.receipt_file:
+        STORED_FILES.append(detail.receipt.receipt_file.name)
     check("new request is Pending approval", (d1.get("request") or {}).get("state") == "pending")
 
     s1b, d1b = call(ext, "post", BASE, form(dept_id, ref_a), multipart=True)
@@ -239,8 +239,8 @@ def run():
     req_b = (d_b.get("request") or {}).get("id")
     if req_b:
         rb = OfflineRechargePayment.objects.select_related("receipt").get(recharge_request_id=req_b)
-        if rb.receipt and rb.receipt.file:
-            STORED_FILES.append(rb.receipt.file.name)
+        if rb.receipt and rb.receipt.receipt_file:
+            STORED_FILES.append(rb.receipt.receipt_file.name)
         s_rj0, _ = call(da, "post", f"{BASE}{req_b}/reject/", {"note": ""})
         check("reject without reason refused", s_rj0 == 400, f"status={s_rj0}")
         s_rj, d_rj = call(da, "post", f"{BASE}{req_b}/reject/", {"note": "E2E receipt unreadable"})
@@ -248,13 +248,15 @@ def run():
         _, mine = call(ext, "get", BASE)
         row = next((r for r in mine.get("requests") or [] if r.get("id") == req_b), {})
         check("user sees the rejection reason", row.get("decision_note") == "E2E receipt unreadable")
-        s_again, _ = call(ext, "post", BASE, form(dept_id, f"E2EB{TAG}"), multipart=True)
+        again = form(dept_id, f"E2EB{TAG}")
+        again["client_request_id"] = f"e2e-{TAG}-resubmit"
+        s_again, _ = call(ext, "post", BASE, again, multipart=True)
         check("rejected UTR can be submitted again", s_again == 201, f"status={s_again}")
         if s_again == 201:
             rid = OfflineRechargePayment.objects.filter(transaction_reference__icontains=f"E2EB{TAG}").exclude(
                 recharge_request_id=req_b).select_related("receipt").first()
-            if rid and rid.receipt and rid.receipt.file:
-                STORED_FILES.append(rid.receipt.file.name)
+            if rid and rid.receipt and rid.receipt.receipt_file:
+                STORED_FILES.append(rid.receipt.receipt_file.name)
             if rid:
                 s_c, _ = call(ext, "post", f"{BASE}{rid.recharge_request_id}/cancel/", {})
                 check("user cancels a pending request", s_c == 200, f"status={s_c}")
@@ -276,7 +278,39 @@ def run():
     check("no real (non-test) user would be notified about a test request", not real and real_mail == 0 and real_push == 0,
           f"real_recipients={len(real)} real_mail={real_mail} real_push={real_push}")
 
+def sweep_leftover_e2e_receipts():
+    """Delete receipt files earlier runs of this script left behind (a run that crashed before its own cleanup).
+    Only files in the receipt folders for yesterday, today and tomorrow whose bytes are exactly this script's
+    test receipt are touched."""
+    from django.core.files.storage import default_storage
+
+    removed = 0
+    today = timezone.now().date()
+    for offset in (-1, 0, 1):
+        folder = (today + timedelta(days=offset)).strftime("wallet_payment_receipts/%Y/%m/%d")
+        try:
+            _, files = default_storage.listdir(folder)
+        except Exception:  # noqa: BLE001 - folder missing or storage cannot list
+            continue
+        for fname in files:
+            if not (fname.startswith("receipt") or fname.startswith("IMG_E2E")):
+                continue
+            name = f"{folder}/{fname}"
+            try:
+                if default_storage.size(name) not in (len(PDF), len(JPEG)):
+                    continue
+                with default_storage.open(name, "rb") as fh:
+                    content = fh.read()
+                if content in (PDF, JPEG):
+                    default_storage.delete(name)
+                    removed += 1
+            except Exception as exc:  # noqa: BLE001
+                print("WARN | could not check a stored receipt |", type(exc).__name__)
+    info("leftover e2e receipts deleted", str(removed))
+
+
 def main():
+    sweep_leftover_e2e_receipts()
     with override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend"), \
             patch.object(Task, "apply_async", lambda *a, **k: None), \
             patch("iic_booking.communication.service.CommunicationService.send_push_notification", _record_push):
