@@ -114,16 +114,17 @@ def proforma_pay_online(request, proforma_id: int):
 @parser_classes([MultiPartParser, FormParser, JSONParser])
 def proforma_record_offline(request, proforma_id: int):
     """Multipart: the offline-recharge fields (amount?, payment_date, payment_mode, transaction_reference, payer_bank,
-    payer_account_name, paid_into?, remarks?, client_request_id?) and ``receipt``."""
+    payer_account_name, paid_into?, remarks?, client_request_id?) and ``receipt_file``."""
     from iic_booking.users import offline_recharge
 
     try:
-        req = store.record_offline_payment(request.user, proforma_id, request.data, request.FILES.get("receipt"))
+        req = store.record_offline_payment(request.user, proforma_id, request.data, request.FILES.get("receipt_file") or request.FILES.get("receipt"))
     except store.ProformaError as exc:
         return _error(exc)
     record = SavedProformaInvoice.objects.get(pk=proforma_id)
     return Response({"proforma": store.serialize(record, with_history=True),
-                     "request": offline_recharge.serialize(req, viewer=request.user)},
+                     "request": offline_recharge.serialize(req, viewer=request.user),
+                     "message": f"Payment details sent for approval against proforma {record.number}."},
                     status=status.HTTP_201_CREATED)
 
 
