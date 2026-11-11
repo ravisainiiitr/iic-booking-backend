@@ -118,8 +118,9 @@ def priced_lines(user, items: list) -> list[tuple]:
             raise ProformaError(err, field="items")
         line = Line(title=_title(equipment.name, equipment.code), details=_proforma_line_details(data, "₹"),
                     taxable=dec(data.get("base_charge")), gst=dec(data.get("gst_amount")))
-        request_item = {"equipment_id": equipment.pk, "input_values": inputs,
-                        "input_labels_and_values": item.get("input_labels_and_values") or {}}
+        request_item = {"equipment_id": equipment.pk, "equipment_code": equipment.code or "",
+                        "equipment_name": equipment.name or "", "profile_type": equipment.profile_type or "",
+                        "input_values": inputs, "input_labels_and_values": item.get("input_labels_and_values") or {}}
         out.append((equipment.internal_department, line, request_item))
     return out
 
@@ -147,7 +148,9 @@ def client_lines(line_items: list) -> list[tuple]:
         line = Line(title=_title(str(row.get("equipment_name") or ""), str(row.get("equipment_code") or "")),
                     details=_proforma_line_details(row, "₹"), taxable=dec(row.get("base_charge")),
                     gst=dec(row.get("gst_amount")))
-        request_item = {"equipment_id": eq.pk if eq else None, "input_values": _clean_inputs(row.get("input_values")),
+        request_item = {"equipment_id": eq.pk if eq else None, "equipment_code": str(row.get("equipment_code") or ""),
+                        "equipment_name": str(row.get("equipment_name") or ""),
+                        "input_values": _clean_inputs(row.get("input_values")),
                         "input_labels_and_values": row.get("input_labels_and_values") or {}}
         out.append((getattr(eq, "internal_department", None), line, request_item))
     return out
@@ -214,7 +217,12 @@ def issue_for_estimate(user, line_items: list, requested_at) -> list[SavedProfor
     items = [{"equipment_id": r.get("equipment_id"), "input_values": r.get("input_values") or {},
               "input_labels_and_values": r.get("input_labels_and_values") or {}}
              for r in (line_items or []) if isinstance(r, dict)]
-    if signed_in and items and all(i["equipment_id"] not in (None, "") for i in items):
+    from .api_views import _is_admin_panel_user
+
+    # Staff estimate charges for other user types (Book Equipment > Calculate charges), so their figures are kept as
+    # shown; everyone else's proforma is priced again for their own account.
+    if (signed_in and not _is_admin_panel_user(user) and items
+            and all(i["equipment_id"] not in (None, "") for i in items)):
         priced, source = priced_lines(user, items), ProformaAmountSource.SERVER
     else:
         priced, source = client_lines(line_items), ProformaAmountSource.CLIENT

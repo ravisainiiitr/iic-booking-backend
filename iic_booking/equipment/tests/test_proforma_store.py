@@ -177,3 +177,13 @@ def test_history_is_append_only(setup):
         event.save()
     with pytest.raises(RuntimeError):
         event.delete()
+
+
+def test_staff_estimates_keep_the_page_figures(setup):
+    # Staff price estimates for other user types on Book Equipment, so their proforma is not re-priced for themselves.
+    f, eq, user, client = setup
+    staff = UserFactory(user_type=UserType.ADMIN, admin_approved=True)
+    resp = _issue(f.client_for(staff), eq)
+    record = SavedProformaInvoice.objects.get(number=resp["X-Proforma-Numbers"])
+    assert record.amount_source == "CLIENT"
+    assert record.total == Decimal("99999.00")
