@@ -90,6 +90,9 @@ def active_contributors(user, now, limit: int = 8) -> list[dict]:
         scores[uid] = (accepted.get(uid, 0) * 5 + helpful.get(uid, 0) * 2, replies.get(uid, 0))
     top = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:limit]
     people = get_user_model().objects.in_bulk([uid for uid, _ in top])
+    from ..services.recognition import badges_for
+
+    badges = badges_for([uid for uid, _ in top])
     out = []
     for uid, (score, reply_count) in top:
         person = people.get(uid)
@@ -102,6 +105,7 @@ def active_contributors(user, now, limit: int = 8) -> list[dict]:
                 "accepted_answers": accepted.get(uid, 0),
                 "helpful_received": helpful.get(uid, 0),
                 "replies": reply_count,
+                "badges": badges.get(uid, []),
             }
         )
     return out

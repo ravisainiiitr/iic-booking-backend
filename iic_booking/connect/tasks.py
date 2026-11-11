@@ -51,7 +51,10 @@ def nightly_membership_sync():
     lifted = lift_expired_suspensions()
     report = sync_all(dry_run=False, source="nightly")
     purged = purge_unbound(older_than_hours=24)
-    return {"lifted_suspensions": lifted, "purged_unbound_uploads": purged, **report.as_dict()}
+    from .services.recognition import recompute
+
+    badges = recompute()
+    return {"lifted_suspensions": lifted, "purged_unbound_uploads": purged, "recognition": badges, **report.as_dict()}
 
 
 @shared_task(name="connect.announcement_batch")

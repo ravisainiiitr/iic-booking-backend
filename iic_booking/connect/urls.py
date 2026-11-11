@@ -1,9 +1,11 @@
 from django.urls import path
 
+from .api import admin_views
 from .api import communities
 from .api import equipment
 from .api import home
 from .api import knowledge
+from .api import moderation
 from .api import notifications
 from .api import search
 from .api import threads
@@ -51,6 +53,17 @@ urlpatterns = [
     path("posts/<int:pk>/", threads.PostDetailView.as_view(), name="post"),
     path("posts/<int:pk>/revisions/", threads.PostRevisionsView.as_view(), name="post-revisions"),
     path("posts/<int:pk>/react/", threads.PostReactView.as_view(), name="post-react"),
+    path("posts/<int:pk>/report/", moderation.ReportView.as_view(), name="post-report"),
+    path("posts/<int:pk>/moderate/", moderation.ModeratePostView.as_view(), name="post-moderate"),
+    path("threads/<int:pk>/lock/", moderation.ThreadLockView.as_view(), name="thread-lock"),
+    path("threads/<int:pk>/move/", moderation.ThreadMoveView.as_view(), name="thread-move"),
+    # Moderation
+    path("moderation/queue/", moderation.ModerationQueueView.as_view(), name="moderation-queue"),
+    path("moderation/dashboard/", moderation.ModerationDashboardView.as_view(), name="moderation-dashboard"),
+    path("moderation/log/", moderation.ModerationLogView.as_view(), name="moderation-log"),
+    path("moderation/community-admins/", moderation.CommunityAdminsView.as_view(), name="community-admins"),
+    path("analytics/", admin_views.AnalyticsView.as_view(), name="analytics"),
+    path("admin/settings/", admin_views.SettingsView.as_view(), name="admin-settings"),
     # Categories, tags, drafts, attachments
     path("categories/", threads.CategoryListView.as_view(), name="categories"),
     path("categories/<int:pk>/", threads.CategoryDetailView.as_view(), name="category"),
