@@ -22,5 +22,13 @@ jobs:
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
           test -n "$CID"
-          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
-            python - < scripts/ops/e2e_offline_recharge.py
+          SCRIPT=scripts/ops/e2e_offline_recharge.py
+          if [ ! -f "$SCRIPT" ]; then
+            # Diagnostic only: on 11 Nov 2026 the working tree lacked the script although HEAD had it.
+            echo "working tree has no $SCRIPT; pwd=$(pwd) HEAD=$(git rev-parse --short HEAD)"
+            git status --short | head -5 || true
+            ls scripts/ops 2>/dev/null | grep -c . || true
+          fi
+          # Read the script from the checked-out commit so the run never depends on the working tree.
+          git show "HEAD:$SCRIPT" | docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python -
