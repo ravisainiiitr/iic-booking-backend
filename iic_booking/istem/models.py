@@ -95,6 +95,9 @@ class IstemLinkOtp(models.Model):
     public_user_id = models.CharField(max_length=64)
     email_masked = models.CharField(max_length=255)
     code_hash = models.CharField(max_length=64)
+    whatsapp_code_hash = models.CharField(max_length=64, blank=True, default="", help_text=_(
+        "No longer used: the same code now goes to email and WhatsApp."))
+    whatsapp_masked = models.CharField(max_length=30, blank=True, default="")
     state = models.CharField(max_length=20, choices=LinkOtpState.choices, default=LinkOtpState.PENDING)
     attempts = models.PositiveSmallIntegerField(default=0)
     sent_at = models.DateTimeField(default=timezone.now)
@@ -186,6 +189,86 @@ class IstemEquipmentMapping(models.Model):
 
     def __str__(self):
         return f"{self.equipment} → {self.istem_equipment_id}"
+
+
+class IstemReferenceValue(models.Model):
+    """A value from one of I-STEM's reference lists, read by the Main Admin's "Sync from I-STEM" (8 Nov 2026), so
+    Equipment Create offers choices instead of free text. ``istem_id`` is empty for lists that have no ids (funding
+    agency types are sent by value)."""
+
+    KIND_FUNDING_AGENCY = "funding_agency"
+    KIND_FUNDING_AGENCY_TYPE = "funding_agency_type"
+    KIND_EQUIPMENT_CATEGORY = "equipment_category"
+    KIND_FACILITY = "facility"
+    KIND_CHOICES = [
+        (KIND_FUNDING_AGENCY, _("Funding agency")),
+        (KIND_FUNDING_AGENCY_TYPE, _("Funding agency type")),
+        (KIND_EQUIPMENT_CATEGORY, _("Equipment category")),
+        (KIND_FACILITY, _("Facility")),
+    ]
+
+    kind = models.CharField(max_length=32, choices=KIND_CHOICES)
+    istem_id = models.CharField(max_length=32, blank=True, default="")
+    name = models.CharField(max_length=255)
+    is_current = models.BooleanField(default=True, help_text=_("Present in I-STEM's list at the last sync."))
+    synced_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["kind", "name"]
+        constraints = [models.UniqueConstraint(fields=["kind", "istem_id", "name"], name="istem_reference_unique")]
+
+    def __str__(self) -> str:
+        return f"{self.kind}: {self.name} ({self.istem_id or '-'})"
+
+
+class IstemEquipmentDetails(models.Model):
+    """What I-STEM's Equipment Create needs for one portal instrument, kept on the portal (8 Nov 2026). Pre-filled from
+    the instrument record, completed by the Main Admin, and sent once; I-STEM's id for the new instrument is stored in
+    ``created_istem_equipment_id`` and becomes the instrument's I-STEM mapping."""
+
+    equipment = models.OneToOneField("equipment.Equipment", on_delete=models.CASCADE, related_name="istem_details")
+    # Required by I-STEM.
+    equipment_name = models.CharField(max_length=255, blank=True, default="")
+    equipment_make = models.CharField(max_length=255, blank=True, default="")
+    equipment_srno = models.CharField(max_length=120, blank=True, default="")
+    istem_department_id = models.CharField(max_length=32, blank=True, default="")
+    funding_agency_id = models.CharField(max_length=32, blank=True, default="")
+    funding_agency_type = models.CharField(max_length=120, blank=True, default="")
+    # Optional.
+    equipment_model = models.CharField(max_length=255, blank=True, default="")
+    equipment_abbr = models.CharField(max_length=64, blank=True, default="")
+    equipment_location = models.CharField(max_length=255, blank=True, default="")
+    equipment_website = models.CharField(max_length=255, blank=True, default="")
+    equipment_description = models.TextField(blank=True, default="")
+    equipment_project_id = models.CharField(max_length=64, blank=True, default="")
+    equipment_rate = models.CharField(max_length=32, blank=True, default="")
+    equipment_fov_rate = models.CharField(max_length=32, blank=True, default="")
+    equipment_cif_rate = models.CharField(max_length=32, blank=True, default="")
+    equipment_other_rate = models.CharField(max_length=32, blank=True, default="")
+    category = models.CharField(max_length=64, blank=True, default="")
+    facility_id = models.CharField(max_length=32, blank=True, default="")
+    supplier_name = models.CharField(max_length=255, blank=True, default="")
+    supplier_email_id = models.CharField(max_length=255, blank=True, default="")
+    service_provider_name = models.CharField(max_length=255, blank=True, default="")
+    service_provider_email_id = models.CharField(max_length=255, blank=True, default="")
+    last_amc_done = models.CharField(max_length=32, blank=True, default="")
+    pooling_status = models.CharField(max_length=64, blank=True, default="")
+    # Outcome of Equipment Create.
+    created_istem_equipment_id = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    created_at_istem = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True, default="")
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("I-STEM equipment details")
+        verbose_name_plural = _("I-STEM equipment details")
+
+    def __str__(self) -> str:
+        return f"I-STEM details for equipment {self.equipment_id}"
 
 
 class IstemCodeMapping(models.Model):

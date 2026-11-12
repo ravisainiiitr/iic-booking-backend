@@ -19,7 +19,14 @@ from django.db import transaction
 from django.utils import timezone
 
 from .booking_events import BookingEventType, create_booking_event
-from .models import Booking, BookingSampleTrace, BookingStatus, SampleTraceStatus, SlotStatus
+from .models import (
+    Booking,
+    BookingDisruptionKind,
+    BookingSampleTrace,
+    BookingStatus,
+    SampleTraceStatus,
+    SlotStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,72 +140,95 @@ def override_status(booking_id: int, *, target: str, reason: str, actor, notify_
             raise OverrideRefused(f"{status_label(booking.status)} can be changed to: {allowed}.")
 
         previous = booking.status
-        update_fields = ["status"]
-        slot_status = _SLOT_STATUS_FOR[target]
-        changed_slots = booking.daily_slots.exclude(status=slot_status).update(status=slot_status)
+        extra = {}
+        if previous == BookingStatus.DISRUPTION_PENDING and booking.disruption_kind == BookingDisruptionKind.MAINTENANCE:
+            # A maintenance hold decided by the Main Administrator can no longer be refunded (maintenance_settlement).
+            from .maintenance_settlement import SETTLED_MARKER
 
-        removed_traces: list[int] = []
-        if target == BookingStatus.BOOKED:
-            # Not Utilized trace rows would keep the lab from recording the analysis on the reopened booking.
-            removed_traces = list(
-                BookingSampleTrace.objects.filter(
-                    booking=booking, status=SampleTraceStatus.NOT_UTILIZED
-                ).values_list("id", flat=True)
-            )
-            BookingSampleTrace.objects.filter(id__in=removed_traces).delete()
-        else:
-            trace_status = (
-                SampleTraceStatus.COMPLETED if target == BookingStatus.COMPLETED else SampleTraceStatus.NOT_UTILIZED
-            )
-            BookingSampleTrace.objects.create(
-                booking=booking,
-                status=trace_status,
-                reason=f"Status set to {status_label(target)} by the Main Administrator: {reason}",
-                created_by=actor,
-            )
-
-        if previous == BookingStatus.DISRUPTION_PENDING:
-            from .maintenance_policy import clear_disruption_policy_fields
-
-            clear_disruption_policy_fields(booking, keep_quota_anchor=True)
-            update_fields += [
-                "maintenance_disruption_flag",
-                "maintenance_decision_deadline_at",
-                "maintenance_reschedule_extra_week",
-                "maintenance_operational_marked_at",
-                "maintenance_auto_reschedule_pending",
-                "disruption_kind",
-                "disruption_reason",
-                "disruption_release_slot_status",
-            ]
-        if target == BookingStatus.COMPLETED:
-            booking.completed_at = timezone.now()
-            update_fields.append("completed_at")
-        booking.status = target
-        booking.save(update_fields=update_fields)
-
-        event = create_booking_event(
-            booking=booking,
-            event_type=BookingEventType.STATUS_CHANGED,
-            previous_status=previous,
-            new_status=target,
-            comment=(
-                f"Status changed from {status_label(previous)} to {status_label(target)} by the Main Administrator. "
-                f"Reason: {reason}"
-            ),
-            created_by=actor,
-            send_notification=notify_user,
-            metadata={
-                OVERRIDE_MARKER: True,
-                "reason": reason,
-                "changed_slot_count": changed_slots,
-                "removed_sample_trace_ids": removed_traces,
-                "user_notified": notify_user,
-            },
+            extra[SETTLED_MARKER] = True
+        event = apply_status_change(
+            booking,
+            target=target,
+            reason=reason,
+            actor=actor,
+            actor_label="the Main Administrator",
+            notify_user=notify_user,
+            metadata={OVERRIDE_MARKER: True, **extra},
         )
     logger.info(
         "booking status override booking_id=%s %s->%s by user_id=%s", booking.booking_id, previous, target, actor.pk
     )
     return OverrideResult(
         booking=booking, previous_status=previous, new_status=target, event_id=event.event_id, notified=notify_user
+    )
+
+
+def apply_status_change(
+    booking: Booking, *, target: str, reason: str, actor, actor_label: str, notify_user: bool, metadata: dict
+):
+    """Set ``target`` on a booking already locked by the caller: slots, sample trace, disruption fields, history entry
+    (and the user's "Booking Status Updated" email). Returns the history event."""
+    previous = booking.status
+    update_fields = ["status"]
+    slot_status = _SLOT_STATUS_FOR[target]
+    changed_slots = booking.daily_slots.exclude(status=slot_status).update(status=slot_status)
+
+    removed_traces: list[int] = []
+    if target == BookingStatus.BOOKED:
+        # Not Utilized trace rows would keep the lab from recording the analysis on the reopened booking.
+        removed_traces = list(
+            BookingSampleTrace.objects.filter(
+                booking=booking, status=SampleTraceStatus.NOT_UTILIZED
+            ).values_list("id", flat=True)
+        )
+        BookingSampleTrace.objects.filter(id__in=removed_traces).delete()
+    else:
+        trace_status = (
+            SampleTraceStatus.COMPLETED if target == BookingStatus.COMPLETED else SampleTraceStatus.NOT_UTILIZED
+        )
+        BookingSampleTrace.objects.create(
+            booking=booking,
+            status=trace_status,
+            reason=f"Status set to {status_label(target)} by {actor_label}: {reason}",
+            created_by=actor,
+        )
+
+    if previous == BookingStatus.DISRUPTION_PENDING:
+        from .maintenance_policy import clear_disruption_policy_fields
+
+        clear_disruption_policy_fields(booking, keep_quota_anchor=True)
+        update_fields += [
+            "maintenance_disruption_flag",
+            "maintenance_decision_deadline_at",
+            "maintenance_reschedule_extra_week",
+            "maintenance_operational_marked_at",
+            "maintenance_auto_reschedule_pending",
+            "disruption_kind",
+            "disruption_reason",
+            "disruption_release_slot_status",
+        ]
+    if target == BookingStatus.COMPLETED:
+        booking.completed_at = timezone.now()
+        update_fields.append("completed_at")
+    booking.status = target
+    booking.save(update_fields=update_fields)
+
+    return create_booking_event(
+        booking=booking,
+        event_type=BookingEventType.STATUS_CHANGED,
+        previous_status=previous,
+        new_status=target,
+        comment=(
+            f"Status changed from {status_label(previous)} to {status_label(target)} by {actor_label}. "
+            f"Reason: {reason}"
+        ),
+        created_by=actor,
+        send_notification=notify_user,
+        metadata={
+            **metadata,
+            "reason": reason,
+            "changed_slot_count": changed_slots,
+            "removed_sample_trace_ids": removed_traces,
+            "user_notified": notify_user,
+        },
     )

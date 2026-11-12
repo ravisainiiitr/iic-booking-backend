@@ -138,22 +138,18 @@ def equipment_proforma_invoice_pdf(request, equipment_id: int):
     gst_amount = (base_charge * gst_percent / Decimal("100")).quantize(Decimal("0.01")) if gst_percent > 0 else Decimal("0.00")
     total = (base_charge + gst_amount).quantize(Decimal("0.01"))
 
+    from .proforma_store import ProformaError, issue_single, pdf_bytes
+
     billing = _get_or_create_billing_profile(request.user)
-    pdf = build_proforma_invoice_pdf(
-        data={
-            "equipment_name": equipment.name,
-            "equipment_code": equipment.code,
-            "department_name": getattr(getattr(equipment, "internal_department", None), "name", None) or "",
-            "description": request.data.get("description") or "",
-            "base_charge": str(base_charge),
-            "gst_amount": str(gst_amount),
-            "total_charge": str(total),
-        },
-        billing_profile=billing,
-    )
-    filename = f"proforma_{equipment.code or equipment.id}.pdf"
+    try:
+        record = issue_single(user=request.user, billing_profile=billing, equipment=equipment, base_charge=base_charge,
+                              gst_amount=gst_amount, description=str(request.data.get("description") or ""))
+    except ProformaError as exc:
+        return Response(exc.payload(), status=exc.status)
+    pdf = pdf_bytes(record)
     resp = HttpResponse(pdf, content_type="application/pdf")
-    resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+    resp["Content-Disposition"] = f'attachment; filename="{record.number}.pdf"'
+    resp["X-Proforma-Numbers"] = record.number
     return resp
 
 
@@ -199,18 +195,20 @@ def proforma_invoice_pdf_download(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    from .proforma_store import ProformaError, issue_for_estimate, merged_pdf
+
     request_dt = timezone.now()
     pdf_user = request.user if request.user and request.user.is_authenticated else None
-    pdf = build_proforma_invoice_multi_pdf(
-        user=pdf_user,
-        request_date_time=request_dt,
-        line_items=line_items,
-        subtotal=subtotal,
-        total_gst=total_gst,
-        total_amount=total_amount,
-    )
-    filename = f"proforma_invoice_{request_dt.strftime('%Y%m%d_%H%M%S')}.pdf"
+    try:
+        records = issue_for_estimate(pdf_user, line_items, request_dt)
+    except ProformaError as exc:
+        return Response(exc.payload(), status=exc.status)
+    pdf = merged_pdf(records)
+    numbers = [r.number for r in records]
+    filename = numbers[0] if len(numbers) == 1 else f"proforma_invoices_{request_dt.strftime('%Y%m%d_%H%M%S')}"
     resp = HttpResponse(pdf, content_type="application/pdf")
-    resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+    resp["Content-Disposition"] = f'attachment; filename="{filename}.pdf"'
+    # Every proforma in the file is saved: the page links to them under My proforma invoices.
+    resp["X-Proforma-Numbers"] = ",".join(numbers)
     return resp
 

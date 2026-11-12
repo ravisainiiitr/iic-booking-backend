@@ -3864,10 +3864,55 @@ def _strip_booking_money_for_viewer(context, booking, data: dict) -> dict:
     return strip_booking_money(data)
 
 
-class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin, serializers.ModelSerializer):
+class _RefundLockedFieldMixin:
+    """``refund_locked``: the OIC or Main Administrator settled this booking during a maintenance hold, so it can no
+    longer be refunded (``maintenance_settlement``). A list is answered with one query for the whole page."""
+
+    def _refund_locked_ids(self):
+        if hasattr(self, "_refund_locked_cache"):
+            return self._refund_locked_cache
+        ids = None
+        parent = getattr(self, "parent", None)
+        if isinstance(parent, serializers.ListSerializer) and parent.instance is not None:
+            from .maintenance_settlement import SETTLED_MARKER
+
+            pks = [b.pk for b in parent.instance]
+            ids = set(
+                BookingEvent.objects.filter(booking_id__in=pks, **{f"metadata__{SETTLED_MARKER}": True})
+                .values_list("booking_id", flat=True)
+            )
+        self._refund_locked_cache = ids
+        return ids
+
+    def get_refund_locked(self, obj) -> bool:
+        ids = self._refund_locked_ids()
+        if ids is not None:
+            return obj.pk in ids
+        from .maintenance_settlement import is_refund_locked
+
+        return is_refund_locked(obj)
+
+
+class BookingSerializer(_RefundLockedFieldMixin, _ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin, serializers.ModelSerializer):
     """Serializer for Booking model. Shows 'Booked' for PENDING (user-facing)."""
     
     booking_id = serializers.SerializerMethodField()
+    has_online_payment = serializers.SerializerMethodField()
+
+    def get_has_online_payment(self, obj):
+        """True when part or all of the booking was paid through the payment gateway, so a receipt exists."""
+        from django.db.models import Q
+
+        from iic_booking.payments.models import Payment, PaymentOrderStatus
+        from iic_booking.payments.receipts import RECEIPT_STATUSES
+
+        try:
+            return Payment.objects.filter(status__in=RECEIPT_STATUSES, payment_order__status=PaymentOrderStatus.PAID).filter(
+                Q(payment_order__booking_id=obj.pk) | Q(payment_order__external_checkout__booking_id=obj.pk)
+            ).exists()
+        except Exception:
+            return False
+
     results_deadline = serializers.SerializerMethodField()
     results_overdue = serializers.SerializerMethodField()
     results_paused = serializers.SerializerMethodField()
@@ -3893,6 +3938,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     disruption_kind = serializers.CharField(read_only=True, allow_null=True)
     maintenance_decision_deadline_at = serializers.DateTimeField(read_only=True, allow_null=True)
     maintenance_auto_reschedule_pending = serializers.BooleanField(read_only=True)
+    refund_locked = serializers.SerializerMethodField()
     auto_reschedule = serializers.SerializerMethodField()
     equipment_is_operational = serializers.SerializerMethodField()
     equipment_operator_unavailable_after_booking_end_hours = serializers.IntegerField(
@@ -4160,6 +4206,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'disruption_kind',
             'maintenance_decision_deadline_at',
             'maintenance_auto_reschedule_pending',
+            'refund_locked',
             'auto_reschedule',
             'equipment_is_operational',
             'equipment_profile_type',
@@ -4171,6 +4218,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'total_charge',
             'wallet_amount_applied',
             'amount_due',
+            'has_online_payment',
             'payment_settled_at',
             'settlement_department',
             'settlement_department_name',
@@ -4305,7 +4353,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
         """The I-STEM record the portal keeps for this booking when automatic FBR is on (else None)."""
         from iic_booking.istem.booking_status import automatic_status
 
-        return automatic_status(obj)
+        return automatic_status(obj, include_reason=True)
 
     def get_istem_portal_url(self, obj):
         from .models import get_equipment_istem_portal_url
@@ -4725,7 +4773,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
         return BookingSampleTraceSerializer(events, many=True, context=self.context).data
 
 
-class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin, serializers.ModelSerializer):
+class BookingListSerializer(_RefundLockedFieldMixin, _ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin, serializers.ModelSerializer):
     """Lightweight serializer for list/table view. Excludes heavy fields (daily_slots, charge_breakdown, input_fields, sample_trace)."""
     booking_id = serializers.SerializerMethodField()
     results_deadline = serializers.SerializerMethodField()
@@ -4762,6 +4810,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
     maintenance_reschedule_extra_week = serializers.BooleanField(read_only=True)
     maintenance_operational_marked_at = serializers.DateTimeField(read_only=True, allow_null=True)
     maintenance_auto_reschedule_pending = serializers.BooleanField(read_only=True)
+    refund_locked = serializers.SerializerMethodField()
     auto_reschedule = serializers.SerializerMethodField()
     disruption_kind = serializers.CharField(read_only=True, allow_null=True)
     disruption_release_slot_status = serializers.CharField(read_only=True, allow_null=True)
@@ -4834,7 +4883,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
             'equipment_user_rating_enabled', 'equipment_enable_remote_analysis', 'equipment_status', 'equipment_is_operational',
             'maintenance_disruption_flag', 'maintenance_decision_deadline_at', 'maintenance_reschedule_extra_week',
             'maintenance_operational_marked_at', 'disruption_kind', 'disruption_release_slot_status',
-            'maintenance_auto_reschedule_pending', 'auto_reschedule',
+            'maintenance_auto_reschedule_pending', 'refund_locked', 'auto_reschedule',
             'charge_profile', 'user_type_snapshot', 'total_time_minutes', 'total_hours',
             'total_charge', 'status', 'status_display', 'list_status', 'list_status_group', 'start_time', 'end_time',
             'equipment_weekly_view_display',

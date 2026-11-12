@@ -530,6 +530,48 @@ def _scan_details(label: SampleShipmentLabel) -> dict:
     }
 
 
+def public_status(token) -> dict:
+    """What anyone who scans a parcel's label sees, signed in or not (9 Nov 2026): the booking, equipment, the person's
+    name (already printed on the label), the department, whether it is paid, and the sample's latest status with its
+    history (e.g. Received at Office, Result ready, Disposed). No contact details, amounts or staff names."""
+    from iic_booking.equipment.booking_payment_service import booking_payment_fully_settled
+    from iic_booking.users.display import get_user_display_name
+
+    label = _label_by_token(token)
+    if label is None:
+        raise LogisticsError("This label was not found. It may have been replaced by a newer label.", status=404,
+                             code="not_found")
+    booking = label.booking
+    equipment = booking.equipment
+    department = getattr(equipment, "internal_department", None)
+    events = list(booking.sample_trace_events.order_by("created_at", "id"))
+
+    def _label(e) -> str:
+        return "Received at Office" if e.status in OFFICE_RECEIVED else e.get_status_display()
+
+    timeline = [{"status": e.status, "label": _label(e), "at": timezone.localtime(e.created_at).isoformat()}
+                for e in events]
+    paid = booking_payment_fully_settled(booking)
+    return {
+        "label_reference": label.reference,
+        "booking_reference": getattr(booking, "virtual_booking_id", "") or booking.pk,
+        "equipment": equipment.name,
+        "department": getattr(department, "name", "") or "",
+        "user_name": get_user_display_name(booking.user),
+        "sample_count": label.sample_count,
+        "booking_status": booking.get_status_display(),
+        "payment": "Paid" if paid else "Payment pending",
+        "current_status": timeline[-1]["label"] if timeline else "Not received at the office yet",
+        "updated_at": timeline[-1]["at"] if timeline else "",
+        "timeline": timeline,
+        "slot_ranges": [
+            {"start": timezone.localtime(s.start_datetime).isoformat(),
+             "end": timezone.localtime(s.end_datetime).isoformat()}
+            for s in booking.daily_slots.order_by("start_datetime")
+        ],
+    }
+
+
 def scan(user, token) -> dict:
     """Process a scanned label for ``user``. Returns the details plus ``outcome``:
     ``received_at_office`` | ``payment_pending`` | ``already_received`` | ``details``."""

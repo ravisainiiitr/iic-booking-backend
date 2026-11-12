@@ -333,11 +333,12 @@ def test_retries_stop_at_the_attempt_limit(live):
 
 def test_definite_refusal_is_failed_for_review(live):
     link, job = _queue(ready_booking())
-    body = {"status": False, "message": "This slot is already booked."}
+    # A slot already booked moves to the next hour instead (test_istem_slots); any other refusal is held for review.
+    body = {"status": False, "message": "Invalid equipment for this institute."}
     service.process_job(job.pk, client_factory=factory(FakeTransport(token_response(), json_response(body))))
     link.refresh_from_db()
     assert link.sync_state == SyncState.CREATE_FAILED
-    assert "already booked" in link.review_reason
+    assert "Invalid equipment" in link.review_reason
     assert IstemApiAttempt.objects.get().outcome == AttemptOutcome.DEFINITE_FAILURE
 
 
@@ -522,6 +523,8 @@ def _enable_user_creation(settings, user):
 
 def test_create_user_blocked_on_missing_local_profile_data(live):
     booking = _booking_with_unlinked_user()
+    booking.user.gender = ""
+    booking.user.save(update_fields=["gender"])
     _enable_user_creation(live, booking.user)
     user_link = service.enqueue_user_link(booking.user, trigger="test")
     job = IstemOutboxJob.objects.get(operation=Operation.ENSURE_USER)
@@ -529,7 +532,7 @@ def test_create_user_blocked_on_missing_local_profile_data(live):
     assert service.process_job(job.pk, client_factory=factory(transport)) == JobState.BLOCKED
     assert transport.calls == []
     user_link.refresh_from_db()
-    assert "user_organisation" in user_link.review_reason
+    assert "user_gender" in user_link.review_reason
 
 
 @pytest.fixture
@@ -588,6 +591,39 @@ def test_duplicate_user_response_maps_when_explicitly_accepted(live, complete_pr
     body = {"status": False, "message": "User already exists with this email", "user_id": 777}
     service.process_job(job.pk, client_factory=factory(FakeTransport(token_response(), json_response(body))))
     assert IstemUserLink.objects.get(user=booking.user).public_user_id == "777"
+
+
+def test_existing_istem_user_is_linked_automatically_even_with_otp_linking_on(live, complete_profile, django_capture_on_commit_callbacks):
+    """[USER 2026-11-08] no user action: the existing I-STEM user id is stored and the parked booking goes ahead."""
+    live.ISTEM_ACCEPT_DUPLICATE_USER_ID = True
+    live.ISTEM_OTP_LINKING_ENABLED = True
+    booking = _booking_with_unlinked_user()
+    _enable_user_creation(live, booking.user)
+    link, job = _queue(booking)
+    service.process_job(job.pk)
+    user_job = IstemOutboxJob.objects.get(operation=Operation.ENSURE_USER)
+    body = {"result": "ERROR", "message": "EmailId already exists", "data": [{"user_id": "60016", "user_email": booking.user.email}]}
+    with django_capture_on_commit_callbacks(execute=True):
+        service.process_job(user_job.pk, client_factory=factory(FakeTransport(token_response(), json_response(body))))
+    user_link = IstemUserLink.objects.get(user=booking.user)
+    assert (user_link.state, user_link.public_user_id) == (UserLinkState.LINKED, "60016")
+    link.refresh_from_db()
+    assert link.sync_state == SyncState.CREATE_READY
+
+
+def test_a_user_waiting_for_an_otp_is_linked_automatically(live, django_capture_on_commit_callbacks):
+    live.ISTEM_ACCEPT_DUPLICATE_USER_ID = True
+    booking = _booking_with_unlinked_user()
+    IstemUserLink.objects.create(user=booking.user, state=UserLinkState.AWAITING_OTP, candidate_public_user_id="60016",
+                                 candidate_email=booking.user.email)
+    user_link = service.enqueue_user_link(booking.user, trigger="test")
+    job = IstemOutboxJob.objects.get(operation=Operation.ENSURE_USER)
+    transport = FakeTransport()
+    with django_capture_on_commit_callbacks(execute=True):
+        assert service.process_job(job.pk, client_factory=factory(transport)) == JobState.DONE
+    assert transport.calls == []
+    user_link.refresh_from_db()
+    assert (user_link.state, user_link.public_user_id) == (UserLinkState.LINKED, "60016")
 
 
 def test_manual_user_link_requires_permission_and_evidence(shadow):

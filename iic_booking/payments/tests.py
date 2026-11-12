@@ -161,20 +161,22 @@ class SettleIdempotencyTests(TestCase):
             status=PaymentOrderStatus.CREATED,
             idempotency_key="idem-book-1",
         )
-        settle_order_success(
-            razorpay_order_id=order.razorpay_order_id,
-            razorpay_payment_id="pay_book_1",
-        )
-        booking.refresh_from_db()
-        self.assertEqual(booking.status, BookingStatus.BOOKED)
-        self.assertIsNotNone(booking.payment_settled_at)
-        self.assertEqual(booking.amount_due, Decimal("0.00"))
+        with patch("iic_booking.whatsapp.hooks.booking_confirmed_by_payment") as confirmed:
+            settle_order_success(
+                razorpay_order_id=order.razorpay_order_id,
+                razorpay_payment_id="pay_book_1",
+            )
+            booking.refresh_from_db()
+            self.assertEqual(booking.status, BookingStatus.BOOKED)
+            self.assertIsNotNone(booking.payment_settled_at)
+            self.assertEqual(booking.amount_due, Decimal("0.00"))
 
-        # Idempotent second call
-        settle_order_success(
-            razorpay_order_id=order.razorpay_order_id,
-            razorpay_payment_id="pay_book_1",
-        )
+            # Idempotent second call
+            settle_order_success(
+                razorpay_order_id=order.razorpay_order_id,
+                razorpay_payment_id="pay_book_1",
+            )
+        confirmed.assert_called_once()
         booking.refresh_from_db()
         self.assertEqual(booking.status, BookingStatus.BOOKED)
 

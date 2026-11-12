@@ -122,8 +122,12 @@ class RegisterSerializer(serializers.Serializer):
         help_text="Start date of program/course/position (optional). Used with end date; if duration > 1 year, access is put on hold until revalidation.",
     )
     program_end_date = serializers.DateField(
-        required=True,
-        help_text="Current program/employment validity (date). Access is disabled after this date.",
+        required=False,
+        allow_null=True,
+        help_text=(
+            "Current program/employment validity (date). Access is disabled after this date. Required for IIT Roorkee "
+            "users; external users do not give one (9 Nov 2026)."
+        ),
     )
     profile_picture = serializers.ImageField(
         required=False,
@@ -213,8 +217,10 @@ class RegisterSerializer(serializers.Serializer):
                 attrs["organization_request"] = None  # prefer department when both sent
         else:
             attrs["organization_request"] = None
-        # Validate program dates: end_date required; if start_date given, start <= end
+        # Validate program dates: end date required except for external users; if start_date given, start <= end
         end_date = attrs.get("program_end_date")
+        if not end_date and attrs.get("user_type") not in set(UserType.get_external_user_codes()):
+            raise serializers.ValidationError({"program_end_date": "Enter the date your programme or employment ends."})
         start_date = attrs.get("program_start_date")
         if end_date:
             if isinstance(end_date, str):

@@ -51,6 +51,8 @@ from iic_booking.users.models.wallet_sric_settings import WalletSricSettings
 logger = logging.getLogger(__name__)
 
 REJECTION_REASON_LABELS = dict(WalletRechargeRejectionReason.choices)
+# Modes paid by the user outside the portal: never deferred, never turned into a credit on decline.
+OFFLINE_CASH_MODES = (WalletRechargeMode.DIRECT_CASH_DEPOSIT, WalletRechargeMode.OFFLINE_PAYMENT)
 
 
 class RechargeAlreadyProcessed(Exception):
@@ -155,7 +157,7 @@ def populate_request_snapshots(recharge_request: WalletRechargeRequest) -> None:
     if recharge_request.department_id:
         dept_grant = resolve_department_grant_code(recharge_request.department)
     project_grant = ""
-    if getattr(recharge_request, "recharge_mode", None) != WalletRechargeMode.DIRECT_CASH_DEPOSIT:
+    if getattr(recharge_request, "recharge_mode", None) not in OFFLINE_CASH_MODES:
         if recharge_request.project_id:
             project_grant = (recharge_request.project.project_code or "").strip()
         elif (recharge_request.project_details or "").strip():
@@ -258,7 +260,7 @@ def find_department_administrators(department) -> list:
 
 
 def _is_cash_mode(recharge_request: WalletRechargeRequest) -> bool:
-    return getattr(recharge_request, "recharge_mode", None) == WalletRechargeMode.DIRECT_CASH_DEPOSIT
+    return getattr(recharge_request, "recharge_mode", None) in OFFLINE_CASH_MODES
 
 
 def decline_converts_to_credit(recharge_request: WalletRechargeRequest) -> bool:
@@ -555,7 +557,8 @@ def _credit_wallet_and_adjust(locked: WalletRechargeRequest, description: str) -
         defaults={"balance": Decimal("0.00")},
     )
     balance_before = Decimal(sub_wallet.balance)
-    sub_wallet.credit(amount, description, related_user=locked.user)
+    # Kept on the instance so a caller (offline payment recharge) can link the request to its one credit.
+    locked._credit_transaction = sub_wallet.credit(amount, description, related_user=locked.user)
     overdraft_adjusted = min(amount, -balance_before) if balance_before < 0 else Decimal("0.00")
 
     budget = amount - overdraft_adjusted
@@ -832,7 +835,7 @@ def cancel_request(
 
 
 def _mode_option(mode: str) -> str:
-    return "direct_cash" if mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT else "project_grant"
+    return "direct_cash" if mode in OFFLINE_CASH_MODES else "project_grant"
 
 
 def get_recharge_cc_emails(mode: str, department=None) -> list[str]:

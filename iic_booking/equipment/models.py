@@ -3823,7 +3823,7 @@ class Booking(models.Model):
         help_text=_('Booking status')
     )
 
-    # Payment (external: wallet partial + SBIePay / offline UTR for remainder)
+    # Payment (external: wallet partial + online / offline UTR for remainder)
     wallet_amount_applied = models.DecimalField(
         max_digits=10,
         decimal_places=2,
@@ -5485,6 +5485,11 @@ class BookingCancellationRequest(models.Model):
         
         if self.status != BookingCancellationRequestStatus.PENDING:
             raise ValueError("Request is not in pending status")
+        from iic_booking.equipment.maintenance_settlement import refund_lock_reason
+
+        locked = refund_lock_reason(self.booking)
+        if locked:
+            raise ValueError(locked)
         
         # Process cancellation and refund in a transaction
         released_slot_ids = list(self.booking.daily_slots.values_list("id", flat=True))
@@ -8043,7 +8048,13 @@ from iic_booking.equipment.slot_exchange_models import (  # noqa: E402
     SlotExchangeRequest,
     SlotExchangeStatus,
 )
+from iic_booking.equipment.operations_audit_models import OperationsAuditEvent  # noqa: E402,F401
 from iic_booking.equipment.oic_request_audit_models import OicRequestAuditLog  # noqa: E402,F401
 from iic_booking.equipment.config_audit_models import (  # noqa: E402
     EquipmentConfigAuditLog,
+)
+from iic_booking.equipment.proforma_models import (  # noqa: E402,F401
+    ProformaEvent,
+    ProformaPayment,
+    SavedProformaInvoice,
 )

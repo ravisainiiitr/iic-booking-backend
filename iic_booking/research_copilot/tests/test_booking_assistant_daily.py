@@ -1,4 +1,4 @@
-"""IITR Assistant day-to-day layer: intent table, booking cards with next-step chips, confirm-gated changes,
+"""IITR Equipment Booking Assistant day-to-day layer: intent table, booking cards with next-step chips, confirm-gated changes,
 role-aware help, wallet/recharge answers, clean sources and the latency guards."""
 
 from __future__ import annotations

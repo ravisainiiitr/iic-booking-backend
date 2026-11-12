@@ -628,6 +628,15 @@ def admin_api_router():
             final_name = (obj.approved_name or obj.name).strip()
             if not final_name:
                 return Response({"error": "Organization name is required."}, status=status.HTTP_400_BAD_REQUEST)
+            if obj.created_department_id:
+                # Added by a user and already in use: accept it, renamed if the name was corrected.
+                from iic_booking.users import provisional_organisations as provisional
+
+                try:
+                    provisional.approve(obj, final_name, request.user)
+                except provisional.OrganisationError as exc:
+                    return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"detail": "Approved.", "created_department_id": obj.created_department_id})
             if Department.objects.filter(name=final_name).exists():
                 return Response(
                     {"error": f"A department with name '{final_name}' already exists."},
@@ -646,6 +655,27 @@ def admin_api_router():
             obj.save(update_fields=["approved_name", "status", "created_department", "approved_by"])
             return Response({"detail": "Approved.", "created_department_id": dept.id})
 
+        @action(detail=True, methods=["post"], url_path="merge")
+        def merge(self, request, pk=None):
+            """A user-added organisation duplicates a listed one: move its users and records there and delete it."""
+            from iic_booking.users import provisional_organisations as provisional
+
+            obj = self.get_object()
+            if obj.status != OrganizationRequest.Status.PENDING or not obj.created_department_id:
+                return Response(
+                    {"error": "Only an organisation added by a user and not yet verified can be merged."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                target = Department.objects.get(pk=int(request.data.get("department_id")))
+            except (Department.DoesNotExist, TypeError, ValueError):
+                return Response({"error": "Choose the organisation to merge into."}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                provisional.merge(obj, target, request.user)
+            except provisional.OrganisationError as exc:
+                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": f"Merged into {target.name}.", "created_department_id": target.pk})
+
         @action(detail=True, methods=["post"], url_path="reject")
         def reject(self, request, pk=None):
             obj = self.get_object()
@@ -654,6 +684,11 @@ def admin_api_router():
                     {"error": f"Request is already {obj.get_status_display()}."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            if obj.created_department_id:
+                from iic_booking.users import provisional_organisations as provisional
+
+                provisional.reject(obj, request.user)
+                return Response({"detail": "Rejected. Its users will be asked for their organisation again."})
             obj.status = OrganizationRequest.Status.REJECTED
             obj.approved_by = request.user
             obj.save(update_fields=["status", "approved_by"])
@@ -3893,6 +3928,12 @@ def admin_api_router():
         def waitlist_clear(self, request, pk=None):
             """Clear the waitlist for this equipment (Admin, OIC, Lab Operator, Department Administrator)."""
             equipment = self.get_object()
+            from iic_booking.equipment.operations_audit import record_waitlist_entries
+
+            record_waitlist_entries(
+                WaitlistEntry.objects.filter(equipment=equipment).exclude(status="OPT_OUT").select_related("equipment", "user"),
+                "waitlist_staff_cleared", actor=request.user,
+            )
             deleted, _ = WaitlistEntry.objects.filter(equipment=equipment).delete()
             record_staff_action(request.user, "waitlist.clear", equipment_id=equipment.equipment_id, deleted=deleted)
             return Response({
@@ -4138,6 +4179,9 @@ def admin_api_router():
                 booking_id=booking.booking_id,
                 over_quota=bool(quota_info["quota_warning"]),
             )
+            from iic_booking.equipment.operations_audit import record
+
+            record("waitlist_staff_confirmed", equipment=equipment, subject=entry.user, actor=request.user, booking=booking)
             entry.delete()
             return Response(
                 {

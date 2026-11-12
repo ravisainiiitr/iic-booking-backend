@@ -136,7 +136,9 @@ def quote(booking, *, penalty_percent: int, tier: str, include_shipping: bool = 
     keep = Decimal(100 - penalty_percent) / Decimal(100) * Decimal(portion_percent) / Decimal(100)
     service_refund = _money(refundable_base * keep)
     ship_refund_base = ship_base if include_shipping else ZERO
-    gst_refunded = not invoice_requested(booking)
+    # GST comes back too where the Main Administrator allowed a credit note for this booking's invoice
+    # (gst_einvoice.credit_notes); recording the refund then issues the credit note.
+    gst_refunded = not invoice_requested(booking) or _credit_note_allowed(booking)
     refund_base = service_refund + ship_refund_base
     refund_gst = _money(refund_base * rate) if gst_refunded else ZERO
     refund = min(paid, refund_base + refund_gst)
@@ -265,13 +267,21 @@ def my_accounts(user) -> list[dict]:
 
 # --- cancelling --------------------------------------------------------------------------------------------------------
 
+def _credit_note_allowed(booking) -> bool:
+    try:
+        from iic_booking.gst_einvoice.credit_notes import permitted_for_booking
+    except ImportError:
+        return False
+    return permitted_for_booking(booking)
+
+
 def _record(booking, user, *, origin, destination, q: RefundQuote, account=None, txn=None, actor=None,
             reason: str = "") -> ExternalRefund:
     snapshot = account_dict(account, full=True) if account is not None else {}
     status = RefundStatus.QUEUED if destination == RefundDestination.BANK else RefundStatus.CLOSED
     try:
         with transaction.atomic():
-            return ExternalRefund.objects.create(
+            refund = ExternalRefund.objects.create(
                 booking=booking, user=user, origin=origin, destination=destination, tier=q.tier,
                 penalty_percent=q.penalty_percent, paid_amount=q.paid, gst_paid=q.gst_paid,
                 return_shipping=q.shipping, refund_base=q.refund_base, refund_gst=q.refund_gst,
@@ -282,6 +292,21 @@ def _record(booking, user, *, origin, destination, q: RefundQuote, account=None,
             )
     except IntegrityError as exc:
         raise RefundPolicyError("This booking has already been refunded.", status=409, code="already_refunded") from exc
+    if q.gst_refunded and invoice_requested(booking):
+        # Only reached when a credit note was allowed (see quote): issue it once the refund is committed.
+        from iic_booking.gst_einvoice.credit_notes import on_refund_recorded
+
+        transaction.on_commit(lambda: on_refund_recorded(refund.pk))
+    return refund
+
+
+def _refuse_settled(booking) -> None:
+    """A booking settled by the OIC / Main Administrator during a maintenance hold is never refunded."""
+    from iic_booking.equipment.maintenance_settlement import refund_lock_reason
+
+    locked = refund_lock_reason(booking)
+    if locked:
+        raise RefundPolicyError(locked, code="refund_locked")
 
 
 def cancel(user, booking_id, *, destination: str = "wallet", bank_account_id=None, notes: str = "",
@@ -306,6 +331,7 @@ def cancel(user, booking_id, *, destination: str = "wallet", bank_account_id=Non
         booking = Booking.objects.select_for_update(of=("self",)).select_related("equipment").filter(pk=booking_id).first()
         if booking is None or booking.user_id != user.pk:
             raise RefundPolicyError("Booking not found.", status=404, code="not_found")
+        _refuse_settled(booking)
         disrupted = is_disrupted(booking)
         if booking.status not in ACTIVE_STATUSES and booking.status != BookingStatus.DISRUPTION_PENDING:
             raise RefundPolicyError("Only a booked or pending booking can be cancelled.", code="not_active")
@@ -459,6 +485,7 @@ def refund_lab_failure(actor, booking_id, *, kind: str, reason: str, portion_per
     portion = _portion(portion_percent)
     with transaction.atomic():
         booking = _lab_failure_booking(actor, booking_id, lock=True)
+        _refuse_settled(booking)
         q = quote(booking, penalty_percent=0, tier="lab_failure", include_shipping=portion == 100,
                   portion_percent=portion)
         if expected_refund is not None and _money(expected_refund) != _money(q.refund):

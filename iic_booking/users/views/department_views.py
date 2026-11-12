@@ -41,6 +41,11 @@ def department_list(request):
     Returns:
         Response: List of departments; or by_subcategory when group_by_subcategory=true (separate list per Educational Institute, Govt R&D, Industry per state).
     """
+    from iic_booking.users.provisional_organisations import unverified_department_ids
+
+    # Organisations users added themselves are listed (so others pick them rather than add them again), marked
+    # unverified until the admin has checked them.
+    unverified = unverified_department_ids()
     # Get filter parameters
     department_type_filter = request.query_params.get('type')
     external_subcategory = request.query_params.get('external_subcategory')  # educational_institute | govt_rnd | industries
@@ -68,13 +73,14 @@ def department_list(request):
             ).order_by("name")
             dept_data = DepartmentListSerializer(depts, many=True).data
             for d in dept_data:
-                d["verified"] = True
+                d["verified"] = d.get("id") not in unverified
             pending = [
                 {"id": r.id, "name": r.name, "verified": False}
                 for r in OrganizationRequest.objects.filter(
                     state=state,
                     external_subcategory=subcat_key,
                     status=OrganizationRequest.Status.PENDING,
+                    created_department__isnull=True,
                 ).order_by("name")
             ]
             by_subcategory[subcat_label] = {
@@ -112,7 +118,7 @@ def department_list(request):
 
     # All departments in the list are approved/verified (they exist in the system). Mark them for signup UI.
     for d in departments_data:
-        d["verified"] = True
+        d["verified"] = d.get("id") not in unverified
 
     # For Govt R&D signup: append pending organization requests (unverified) so user can request new org.
     pending_organization_requests = []
@@ -125,6 +131,7 @@ def department_list(request):
             state=state,
             external_subcategory=ExternalDepartmentSubcategory.GOVT_RND,
             status=OrganizationRequest.Status.PENDING,
+            created_department__isnull=True,
         ).order_by("name")
         pending_organization_requests = [
             {"id": r.id, "name": r.name, "verified": False}

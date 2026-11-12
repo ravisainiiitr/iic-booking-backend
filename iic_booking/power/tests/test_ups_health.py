@@ -198,7 +198,7 @@ def test_model_down_falls_back_to_the_rules_summary(world):
 def test_deterministic_fallback_gateway_is_not_used_as_ai(world):
     class Local(FakeInferenceProvider):
         def complete(self, *a, **k):
-            return LLMResult(text="I am IITR Assistant. Ask about booking and more things here.",
+            return LLMResult(text="I am IITR Equipment Booking Assistant. Ask about booking and more things here.",
                              model="fallback", provider="local")
 
     assert advisor.summarise(world["ups"], _attention(world), [], gateway=Local())[1] == "rules"

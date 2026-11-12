@@ -18,7 +18,7 @@ Integrations:
   switched off so boto3 cannot find real credentials.
 * Razorpay: no key id / secret, so order creation and the legacy wallet client refuse before any network call. The
   webhook secret is a local constant; ``scripts/extbook_local/mock_razorpay.py`` signs simulated events with it and
-  injects a fake gateway client in its own process only. SBIePay: no merchant, gateway URL points at a dead local port.
+  injects a fake gateway client in its own process only.
 * SRIC, OpenAI, Ollama, channels/Redis: off or in-memory. Celery runs tasks inline (local.py); worker and beat
   processes are refused and the database beat schedule is never used, so scheduled jobs only run when invoked with
   ``extbook-local.ps1 task``.
@@ -59,8 +59,7 @@ os.environ["DJANGO_EMAIL_BACKEND"] = "django.core.mail.backends.console.EmailBac
 for _name in (
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_SES_ACCESS_KEY_ID",
     "AWS_SES_SECRET_ACCESS_KEY", "AWS_SES_SMTP_USERNAME", "AWS_SES_SMTP_PASSWORD", "RAZORPAY_KEY_ID",
-    "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET", "SRIC_API_KEY", "OPENAI_API_KEY", "SBIEPAY_MERCHANT_ID",
-    "SBIEPAY_ENCRYPTION_KEY",
+    "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET", "SRIC_API_KEY", "OPENAI_API_KEY",
 ):
     os.environ[_name] = ""
 for _name in ("AWS_PROFILE", "AWS_DEFAULT_PROFILE"):
@@ -111,12 +110,6 @@ AWS_SES_SECRET_ACCESS_KEY = ""
 RAZORPAY_KEY_ID = ""
 RAZORPAY_KEY_SECRET = ""
 RAZORPAY_WEBHOOK_SECRET = "acceptance-local-webhook-secret-not-a-real-secret"
-SBIEPAY_MERCHANT_ID = ""
-SBIEPAY_ENCRYPTION_KEY = ""
-SBIEPAY_GATEWAY_URL = "http://127.0.0.1:9/sbiepay-disabled-in-acceptance"
-SBIEPAY_SUCCESS_URL = ""
-SBIEPAY_FAILURE_URL = ""
-SBIEPAY_PUSH_URL = ""
 
 # Other integrations off.
 SRIC_API_KEY = ""

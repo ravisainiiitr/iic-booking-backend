@@ -99,4 +99,7 @@ def send_reminder_for_booking(booking: "Booking") -> None:
         template_context=template_context,
         metadata=metadata,
     )
+    from iic_booking.whatsapp.hooks import booking_reminder as whatsapp_booking_reminder
+
+    whatsapp_booking_reminder(booking)  # nothing unless WhatsApp is on and the user opted in; never raises
     logger.info("Booking reminder email sent to %s for booking_id=%s", booking.user.email, booking.booking_id)

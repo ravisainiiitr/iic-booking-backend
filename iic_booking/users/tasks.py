@@ -225,6 +225,14 @@ def sync_legacy_wallet_ledger() -> dict:
     return result
 
 
+@shared_task(name="users.alert_sric_settlement_overdue")
+def alert_sric_settlement_overdue() -> dict:
+    """Daily: tell the Accounts In Charge and the Main Administrator about wallet credits SRIC has not settled in time."""
+    from iic_booking.users.sric_ledger_status import send_overdue_settlement_alert
+
+    return send_overdue_settlement_alert()
+
+
 @shared_task(name="users.read_sric_cashbook_mailbox")
 @defer_during_peak("users.read_sric_cashbook_mailbox")
 def read_sric_cashbook_mailbox() -> dict:

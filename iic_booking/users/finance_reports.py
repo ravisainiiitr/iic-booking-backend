@@ -19,7 +19,6 @@ from django.utils import timezone
 
 from iic_booking.equipment.booking_report_metrics import CHARGED_STATUSES, REFUNDED_STATUSES
 from iic_booking.equipment.models import Booking, BookingStatus
-from iic_booking.users.models.payment import PaymentGatewayStatus, PaymentGatewayTransaction
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.wallet import (
     WalletRechargeMode,
@@ -341,26 +340,14 @@ def build_finance_report(*, user: Any, date_from: date, date_to: date) -> dict[s
         ]
     )
     direct_cash_deposit = _dec(
-        approved_recharges.filter(recharge_mode=WalletRechargeMode.DIRECT_CASH_DEPOSIT).aggregate(
+        approved_recharges.filter(
+            recharge_mode__in=(WalletRechargeMode.DIRECT_CASH_DEPOSIT, WalletRechargeMode.OFFLINE_PAYMENT)
+        ).aggregate(
             total=Sum("amount")
         )["total"]
     )
 
     online_payments = Decimal("0.00")
-    try:
-        online_payments = _dec(
-            PaymentGatewayTransaction.objects.filter(
-                department_id=department_id,
-                status=PaymentGatewayStatus.SUCCESS,
-                created_at__date__gte=date_from,
-                created_at__date__lte=date_to,
-            )
-            .exclude(user__is_test_account=True)
-            .aggregate(total=Sum("amount"))["total"]
-        )
-    except Exception:
-        online_payments = Decimal("0.00")
-
     # Razorpay PaymentOrder totals (base amounts settled) + pending settlements UTRs
     razorpay_online = Decimal("0.00")
     razorpay_pending_settlements = Decimal("0.00")

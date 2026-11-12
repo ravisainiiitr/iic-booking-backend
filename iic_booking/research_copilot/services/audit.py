@@ -45,7 +45,7 @@ def audit_message_replied(*, user, conversation, confidence: float | None, escal
 
 
 def audit_assistant_turn(*, user, conversation, detail: dict) -> None:
-    """One row per IITR Assistant turn for trial metrics: intent, outcome, typed or button, the user's roles.
+    """One row per IITR Equipment Booking Assistant turn for trial metrics: intent, outcome, typed or button, the user's roles.
     Never the message text."""
     write_audit(
         action=AuditAction.ASSISTANT_TURN,

@@ -1,5 +1,8 @@
 # WhatsApp notifications (Meta WhatsApp Business Cloud API)
 
+> Templates are now managed from the catalogue in code: see **Template management** at the end of this page. Template
+> names and wording in the sections below are history; `iic_booking/whatsapp/template_catalogue.py` is what counts.
+
 Built 3 Nov 2026. **Off by default.** Nothing is sent until the switch and the four Meta values below are set, and then
 only to users who opted in under *Profile → WhatsApp notifications*.
 
@@ -54,6 +57,10 @@ conversations a month are free). The portal sends only the three utility templat
 
 - Opt-in: `GET/PUT /api/whatsapp/me/` (the profile card). The number defaults to the profile phone, normalised to
   E.164 (ten digits are read as an Indian mobile).
+- Sending fails closed: while `WHATSAPP_PILOT_NUMBERS` is set, only those numbers receive messages; with no list, nobody does unless `WHATSAPP_ALLOW_ALL` is on. Checked when queued and again when sent.
+- Every consent change is kept in `WhatsAppConsentEvent` with its time and source.
+- Meta events are handled once (`WhatsAppWebhookEvent`, no content or number stored). Incoming messages from people with an opt-in record are kept in `WhatsAppInbound`, readable only by the Main Administrator (`/api/whatsapp/inbound/`). Both are deleted after `WHATSAPP_RETENTION_DAYS` (default 90) by the daily `whatsapp.purge_expired` task; consent history is kept.
+- An incoming message keeps two times: `meta_timestamp` (when Meta says it was sent, in UTC; empty if Meta's value is missing or malformed, and on rows stored before this field existed) and `received_at` (when this server stored it). The message is stored either way.
 - A user who replies **STOP** is opted out (START opts them back in); opting out before a queued message is sent
   cancels it.
 - Delivery status (sent → delivered → read, or failed with Meta's reason) arrives on the webhook, which only accepts
@@ -61,3 +68,47 @@ conversations a month are free). The portal sends only the three utility templat
 - Network errors and Meta 5xx / 429 are retried with backoff (Celery task `whatsapp.deliver`); a refusal (e.g. a
   template that is not approved) is recorded as failed and not retried.
 - `GET /api/whatsapp/status/` (Main Administrator): whether it is configured and on, opted-in users, messages by status.
+
+## One-time codes
+
+Before this there was no mobile OTP on the portal: every OTP went by email, and `CommunicationService.send_sms` is still an unfinished stub. WhatsApp codes (`iic_booking/whatsapp/otp.py`) are always in addition to the email, never instead of it, so nobody is locked out when WhatsApp is off or fails.
+
+| Use | Who gets it | Consent |
+|---|---|---|
+| Proving a number: `POST /api/whatsapp/me/verify/send/`, then `POST /api/whatsapp/me/verify/confirm/` with `otp` (profile card) | The user's opted-in number | The opt-in |
+| Sign-in OTP (`auth/login/request-otp/`) | Only a number the user proved, while it is still their current number and they are opted in. The profile phone number alone never gets one, because it has never been checked | The opt-in |
+| I-STEM registration and account link | The same OTP as the email, to the mobile number on I-STEM when there is one, with `ISTEM_WHATSAPP_OTP_ENABLED` on | The person asking for the OTP; the screen says it also goes on WhatsApp. Kept in `WhatsAppConsentEvent`. STOP is honoured |
+
+Forgot-password and wallet OTPs stay email-only on purpose: a password change lasts, and wallet codes authorise money.
+
+- **Gates:** `WHATSAPP_ENABLED` and the settings above, the pilot list or `WHATSAPP_ALLOW_ALL`, and `iitr_verification_code` approved at Meta for the configured account. At most 5 codes per number in 15 minutes.
+- **The code is not stored.** `WhatsAppMessage` keeps no parameters for these rows, and the code is removed from any Meta error text. It is sent once with no retry and a short timeout (3 s to connect, 6 s to read), because the email already carries it.
+- **Changing the number undoes the proof.** A code for the old number cannot prove the new one. STOP ends sign-in codes.
+- **Migrations:** `whatsapp` 0007 and `istem` 0011.
+
+**Before turning on `ISTEM_WHATSAPP_OTP_ENABLED` (default off).** The 31 Oct 2026 committee rule sent the OTP to the email on I-STEM. With this setting the same code also goes to the mobile on I-STEM, so holding that number is enough to prove the account, and a direct registration then creates an approved account with the email marked verified. A reassigned number is the risk. The record cannot show which channel was used: it notes that the code went to both (`EMAIL_OR_WHATSAPP_OTP`). The WhatsApp template `iitr_verification_code` states 5 minutes. Sign-in and number-proving codes last 10, so for them it errs on the short side.
+
+## Template management
+
+`iic_booking/whatsapp/template_catalogue.py` is the approved list: 11 templates, each with its name, wording, values, examples, recipient and trigger. It sends nothing; these commands only talk to Meta's template API.
+
+| Command | What it does |
+|---|---|
+| `manage.py whatsapp_sync_templates --dry-run` | The default. Lists exactly what would be submitted. Changes nothing, here or at Meta. Add `--show-wording` for the text |
+| `manage.py whatsapp_sync_templates --status` | Stores Meta's status, category, language and rejection reason, then prints the report |
+| `manage.py whatsapp_sync_templates --submit --batch-size 5` | Submits missing templates, one batch. Run it again for the next batch |
+| `manage.py whatsapp_sync_templates --correct <name>` | One edit of one rejected template, after its wording changed in the catalogue |
+| `manage.py whatsapp_template_report [--refresh]` | Approved, pending, rejected, paused or disabled, missing, requiring correction, and not wired |
+
+**Settings:** `WHATSAPP_WABA_ID` has no default. Every command first checks that this account's name at Meta equals `WHATSAPP_WABA_EXPECTED_NAME`, so templates cannot go to the test account by mistake. The token is the existing `WHATSAPP_ACCESS_TOKEN`.
+
+**Rules:**
+- A name and language already at Meta is never submitted again, whatever its status. Meta refuses it anyway (error 100, subcode 2388024).
+- A rejected template is never resubmitted automatically. `--correct` needs someone to ask, a changed wording, and fewer than 3 earlier corrections. It edits the existing template, because Meta refuses a new one with that name.
+- A rate limit, token, permission, network or server error stops the batch. Meta allows 100 new templates an hour per account.
+- Every action goes in `WhatsAppTemplateAudit`, with no token, ID or number.
+- The daily task `whatsapp.sync_template_statuses` refreshes statuses (GET only).
+
+**Sending:** `notify` and `deliver` both require an `APPROVED` row for the configured account. Anything else is recorded as skipped. Opt-in, the pilot list and `WHATSAPP_ENABLED` still apply first. Approved templates belong to their account: the sender must be in the same WABA as `WHATSAPP_WABA_ID` before a message can succeed.
+
+**Not in the catalogue, because the portal has no such step:** a reschedule request or refusal, since users cannot request one. **Left out on purpose:** bookings created as Pending or Awaiting payment, checkout opening, a refund starting, and a sample being accepted; email and in-portal notices cover these. Also not covered: wallet recharges, payments on external checkouts before the booking exists, and internal wallet refunds as "refund completed".

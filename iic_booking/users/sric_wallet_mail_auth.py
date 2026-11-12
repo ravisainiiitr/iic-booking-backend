@@ -6,7 +6,7 @@ email counts as genuine when either
 
 * a trusted mail server (configured authserv-id) recorded spf / dkim / dmarc = pass for the sender's domain, or
 * it never crossed the public Internet: every Received hop came from a private (campus) address or a configured
-  trusted range. The campus gateway adds its marker header only to mail arriving from outside (the SRIC portal's
+  trusted range, and a hop that names a sending server records its address. The campus gateway adds its marker header only to mail arriving from outside (the SRIC portal's
   internal-only mail never carries it), so the marker may be absent; when present it must appear exactly once
   with the expected value.
 
@@ -70,6 +70,17 @@ def authentication_results_pass(msg: Message, sender_domain: str, trusted_ids: l
     return ""
 
 
+def _names_another_sender(received: str) -> bool:
+    """A hop written by a server for mail handed over by a different server. A hop with no "from" is mail made on that
+    machine, and one whose "from" and "by" names match is local delivery on it (LMTP)."""
+    flat = " ".join(str(received).split())
+    match = re.match(r"from\s+(\S+)", flat, flags=re.I)
+    if not match:
+        return False
+    receiver = re.search(r"\bby\s+(\S+)", flat, flags=re.I)
+    return not receiver or receiver.group(1).lower() != match.group(1).lower()
+
+
 def _hop_ips(received: str) -> list[str]:
     flat = " ".join(str(received).split())
     part = re.split(r"\bby\b", flat, maxsplit=1, flags=re.I)[0]
@@ -87,7 +98,10 @@ def internal_relay(msg: Message, trusted_ranges: list[str]) -> tuple[bool, str]:
         except ValueError:
             continue
     for hop in hops:
-        for raw in _hop_ips(hop):
+        addresses = _hop_ips(hop)
+        if not addresses and _names_another_sender(hop):
+            return False, "relayed from a server with no address recorded"
+        for raw in addresses:
             try:
                 ip = ipaddress.ip_address(raw)
             except ValueError:

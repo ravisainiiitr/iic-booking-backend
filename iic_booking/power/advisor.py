@@ -1,6 +1,6 @@
 """Plain-language UPS health summary for the Officer in Charge.
 
-The portal's own language model (the IITR Assistant's gateway: a local Ollama model by default, so no
+The portal's own language model (the IITR Equipment Booking Assistant's gateway: a local Ollama model by default, so no
 per-call cost) words the summary from the findings of ``analysis.assess`` only. It is told not to add facts, and its
 reply is checked; if the model is unreachable, slow or replies badly, the summary is composed from the findings
 instead. ``summary_source`` records which.

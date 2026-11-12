@@ -150,7 +150,12 @@ LOCAL_APPS = [
     "iic_booking.courier_tracking.apps.CourierTrackingConfig",
     "iic_booking.external_services.apps.ExternalServicesConfig",
     "iic_booking.istem.apps.IstemConfig",
+    "iic_booking.integration_health.apps.IntegrationHealthConfig",
     "iic_booking.whatsapp.apps.WhatsAppConfig",
+    # GST invoicing of facility charges (Dean SRIC proposal). SANDBOX ONLY; off unless GST_EINVOICE_ENABLED=true.
+    # Configured from GST_EINVOICE_* environment variables only (see iic_booking/gst_einvoice/conf.py).
+    "iic_booking.gst_einvoice.apps.GstEinvoiceConfig",
+    "iic_booking.connect.apps.ConnectConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -606,7 +611,13 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         # DRF throttle format example: "5/min", "1/hour"
         "sync_enroll": env("DSA_SYNC_ENROLL_THROTTLE_RATE", default="10/hour"),
+        "payments_user": env("PAYMENTS_USER_THROTTLE_RATE", default="30/min"),
+        "payments_webhook": env("PAYMENTS_WEBHOOK_THROTTLE_RATE", default="600/min"),
         "provisioning_session": env("PROVISIONING_SESSION_THROTTLE_RATE", default="30/hour"),
+        # Public receipt check (payments.views.verify_receipt), per IP.
+        "receipt_verify": env("RECEIPT_VERIFY_THROTTLE_RATE", default="60/hour"),
+        # Public view of a parcel's label QR code (external_services.views.sample_label_public), per IP.
+        "sample_label_public": env("SAMPLE_LABEL_PUBLIC_THROTTLE_RATE", default="120/hour"),
         # Research Copilot only (portal-wide traffic is not throttled by these)
         "research_copilot_user": env("RESEARCH_COPILOT_USER_THROTTLE", default="300/hour"),
         "research_copilot_read": env("RESEARCH_COPILOT_READ_THROTTLE", default="300/hour"),
@@ -618,6 +629,13 @@ REST_FRAMEWORK = {
         "mobile_enroll": env("MOBILE_ENROLL_THROTTLE_RATE", default="20/hour"),
         "mobile_refresh_device": env("MOBILE_REFRESH_DEVICE_THROTTLE_RATE", default="30/hour"),
         "mobile_refresh_ip": env("MOBILE_REFRESH_IP_THROTTLE_RATE", default="3000/hour"),
+        # IITR Connect (per user). Writes = threads, replies, reactions, follows; reports and uploads are tighter.
+        "connect_read": env("CONNECT_READ_THROTTLE_RATE", default="1200/hour"),
+        "connect_write": env("CONNECT_WRITE_THROTTLE_RATE", default="120/hour"),
+        "connect_post": env("CONNECT_POST_THROTTLE_RATE", default="30/hour"),
+        "connect_upload": env("CONNECT_UPLOAD_THROTTLE_RATE", default="60/hour"),
+        "connect_search": env("CONNECT_SEARCH_THROTTLE_RATE", default="600/hour"),
+        "connect_report": env("CONNECT_REPORT_THROTTLE_RATE", default="20/hour"),
       },
     }
 
@@ -675,6 +693,7 @@ CORS_EXPOSE_HEADERS = [
     "Content-Disposition",
     "X-Export-Row-Count",
     "X-Results-Total-Bytes",
+    "X-Proforma-Numbers",
 ]
 
 # By Default swagger ui is available only to admin user(s). You can change permission classes to change that
@@ -741,6 +760,13 @@ BUILD_DATE = env("BUILD_DATE", default="")
 PROVISIONING_VERSION = env("PROVISIONING_VERSION", default="2.0")
 PROVISIONING_ENABLED = env.bool("PROVISIONING_ENABLED", default=True)
 RESEARCH_COPILOT_VERSION = env("RESEARCH_COPILOT_VERSION", default="0.1.0")
+# IITR Connect: private technical discussion and knowledge platform. OFF by default; every /api/v1/connect/
+# endpoint answers 404 and every Connect signal / task is a no-op while it is off.
+IITR_CONNECT_ENABLED = env.bool("IITR_CONNECT_ENABLED", default=False)
+# Optional comma-separated pilot list: when set, only these signed-in users can use Connect.
+IITR_CONNECT_PILOT_EMAILS = env("IITR_CONNECT_PILOT_EMAILS", default="")
+# Private object-key prefix for Connect attachments (same private bucket as My Research / media).
+IITR_CONNECT_S3_PREFIX = env("IITR_CONNECT_S3_PREFIX", default="connect")
 RESEARCH_COPILOT_ENABLED = env.bool("RESEARCH_COPILOT_ENABLED", default=False)
 RESEARCH_COPILOT_MODEL = env("RESEARCH_COPILOT_MODEL", default="")
 RESEARCH_COPILOT_EMBEDDING_PROVIDER = env("RESEARCH_COPILOT_EMBEDDING_PROVIDER", default="local")
@@ -772,7 +798,7 @@ RESEARCH_COPILOT_INTELLIGENCE_ENABLED = env.bool("RESEARCH_COPILOT_INTELLIGENCE_
 RESEARCH_COPILOT_KNOWLEDGE_ENABLED = env.bool("RESEARCH_COPILOT_KNOWLEDGE_ENABLED", default=False)
 # Guided booking / cancellation / reschedule flows in chat. Execution stays gated by COPILOT_BOOKING_*.
 RESEARCH_COPILOT_ACTIONS_ENABLED = env.bool("RESEARCH_COPILOT_ACTIONS_ENABLED", default=False)
-# IITR Assistant: live availability, equipment Q&A and confirm-gated booking cards (read paths ON).
+# IITR Equipment Booking Assistant: live availability, equipment Q&A and confirm-gated booking cards (read paths ON).
 # In-chat booking execution still needs COPILOT_BOOKING_CREATE; otherwise the summary links to the booking page.
 BOOKING_ASSISTANT_ENABLED = env.bool("BOOKING_ASSISTANT_ENABLED", default=True)
 # "auto" uses the LLM as an intent planner only when the provider is OpenAI with a key; "on"/"off" force it.
@@ -863,6 +889,9 @@ MY_RESEARCH_GROUP_MAX_ATTACHMENTS = env.int("MY_RESEARCH_GROUP_MAX_ATTACHMENTS",
 # --- External booking workflow pilot (external_services.pilot) ---
 # Off: the new external rules apply to external test accounts (User.is_test_account) only.
 EXTERNAL_WORKFLOW_ALL_EXTERNAL_USERS = env.bool("EXTERNAL_WORKFLOW_ALL_EXTERNAL_USERS", default=False)
+# Off: wallet recharge against an offline payment with a receipt (users.offline_recharge) is open to external
+# test accounts only. On: to every external user with a wallet of their own.
+EXTERNAL_OFFLINE_RECHARGE_ALL_EXTERNAL_USERS = env.bool("EXTERNAL_OFFLINE_RECHARGE_ALL_EXTERNAL_USERS", default=False)
 # Off: only internal test accounts are offered online payment when their wallet falls short.
 INTERNAL_GATEWAY_FALLBACK_ALL_USERS = env.bool("INTERNAL_GATEWAY_FALLBACK_ALL_USERS", default=False)
 # --- I-STEM integration (https://www.istem.gov.in/) ---
@@ -888,6 +917,9 @@ ISTEM_USER_CREATION_ENABLED = env.bool("ISTEM_USER_CREATION_ENABLED", default=Fa
 ISTEM_ACCEPT_DUPLICATE_USER_ID = env.bool("ISTEM_ACCEPT_DUPLICATE_USER_ID", default=False)
 # A user already registered on I-STEM proves the account by an OTP sent to its I-STEM email (no staff step).
 ISTEM_OTP_LINKING_ENABLED = env.bool("ISTEM_OTP_LINKING_ENABLED", default=False)
+# Send I-STEM registration and linking OTPs on WhatsApp too, to the mobile number registered on I-STEM. Off by default:
+# it lets holding that number stand in for the email as proof of the I-STEM account (docs/whatsapp.md).
+ISTEM_WHATSAPP_OTP_ENABLED = env.bool("ISTEM_WHATSAPP_OTP_ENABLED", default=False)
 # While set, "Already registered on I-STEM?" on the registration form works only with this key (the test link
 # /auth?istem_test=<key>), and accounts registered through it are test accounts. Empty: open to every external user.
 ISTEM_REGISTRATION_TEST_KEY = env("ISTEM_REGISTRATION_TEST_KEY", default="")
@@ -910,6 +942,9 @@ ISTEM_AUTO_CONFIRM = env.bool("ISTEM_AUTO_CONFIRM", default=True)
 # Automatic FBR: bookings whose charge profile requires an I-STEM FBR are registered, confirmed and executed on I-STEM
 # by the portal; the booking pages show that progress instead of asking the user to enter an FBR number (2 Nov 2026).
 ISTEM_AUTOMATIC_FBR = env.bool("ISTEM_AUTOMATIC_FBR", default=False)
+# Stop a booking on an I-STEM instrument before payment when the user's I-STEM link or billing details are missing
+# (8 Nov 2026): off | test_accounts | all.
+ISTEM_BOOKING_GATE = env("ISTEM_BOOKING_GATE", default="test_accounts")
 # FBR Execute after local completion; also needs a confirmation_id, so it does nothing while Confirm is off.
 ISTEM_EXECUTE_ENABLED = env.bool("ISTEM_EXECUTE_ENABLED", default=False)
 ISTEM_EXECUTE_UPDATED_BY = env("ISTEM_EXECUTE_UPDATED_BY", default="")
@@ -991,6 +1026,14 @@ WHATSAPP_VERIFY_TOKEN = env("WHATSAPP_VERIFY_TOKEN", default="")
 WHATSAPP_API_VERSION = env("WHATSAPP_API_VERSION", default="v21.0")
 WHATSAPP_TEMPLATE_LANGUAGE = env("WHATSAPP_TEMPLATE_LANGUAGE", default="en")
 WHATSAPP_PILOT_NUMBERS = env.list("WHATSAPP_PILOT_NUMBERS", default=[])
+# Sending to every opted-in user needs this explicit switch: an empty pilot list alone sends to nobody.
+WHATSAPP_ALLOW_ALL = env.bool("WHATSAPP_ALLOW_ALL", default=False)
+# Incoming messages and webhook records are deleted after this many days. Consent history is kept.
+WHATSAPP_RETENTION_DAYS = env.int("WHATSAPP_RETENTION_DAYS", default=90)
+# The account whose message templates the portal manages (manage.py whatsapp_sync_templates). Unset: nothing is managed,
+# and no message can be sent because no template counts as approved. The name is checked at Meta before any change.
+WHATSAPP_WABA_ID = env("WHATSAPP_WABA_ID", default="")
+WHATSAPP_WABA_EXPECTED_NAME = env("WHATSAPP_WABA_EXPECTED_NAME", default="Indian Institute of Technology Roorkee")
 # Android: Firebase Cloud Messaging HTTP v1 (path to the service-account JSON, kept outside the repository).
 CALLS_FCM_SERVICE_ACCOUNT_FILE = env("CALLS_FCM_SERVICE_ACCOUNT_FILE", default="")
 # The same key as one base64 line, for the production env file (takes priority over the file). Never logged.
@@ -1003,21 +1046,27 @@ CALLS_APNS_BUNDLE_ID = env("CALLS_APNS_BUNDLE_ID", default="ac.in.iitr.iicbookin
 CALLS_APNS_USE_SANDBOX = env.bool("CALLS_APNS_USE_SANDBOX", default=True)
 
 
+# Razorpay: off unless switched on; the key must match the mode (rzp_test_ / rzp_live_); live needs a second switch.
+RAZORPAY_ENABLED = env.bool("RAZORPAY_ENABLED", default=False)
+RAZORPAY_MODE = env("RAZORPAY_MODE", default="test")
+RAZORPAY_LIVE_ALLOWED = env.bool("RAZORPAY_LIVE_ALLOWED", default=False)
+# In test mode only accounts marked as test accounts may pay online. Never turned off outside the unit-test settings.
+RAZORPAY_TEST_MODE_TEST_ACCOUNTS_ONLY = env.bool("RAZORPAY_TEST_MODE_TEST_ACCOUNTS_ONLY", default=True)
 RAZORPAY_KEY_ID = env("RAZORPAY_KEY_ID", default="")
+# Merchant name shown in Razorpay Checkout and on receipts. Must equal the business name on the Razorpay account
+# (Dashboard > Account & Settings > Business details); the institute's bank records give DEAN SRIC IIT ROORKEE.
+RAZORPAY_CHECKOUT_NAME = env("RAZORPAY_CHECKOUT_NAME", default="DEAN SRIC IIT ROORKEE")
+# GSTIN of the SRIC office, printed on payment receipts as on SRIC's own receipts (from the SRIC receipt the user shared,
+# 8 Nov 2026). Shown for reference only: the receipt is not a tax invoice.
+RECEIPT_INSTITUTE_GSTIN = env("RECEIPT_INSTITUTE_GSTIN", default="05AAALI0033R1Z5")
+# Secret for the verification code printed on receipts (payments/receipt_verification.py). Blank = SECRET_KEY.
+# Must stay fixed once receipts are issued: changing it changes every code.
+RECEIPT_VERIFY_SECRET = env("RECEIPT_VERIFY_SECRET", default="")
+# A captured payment not in any Razorpay settlement after this many days is raised for Finance.
+RAZORPAY_UNSETTLED_ALERT_DAYS = env.int("RAZORPAY_UNSETTLED_ALERT_DAYS", default=5)
 RAZORPAY_KEY_SECRET = env("RAZORPAY_KEY_SECRET", default="")
 RAZORPAY_WEBHOOK_SECRET = env("RAZORPAY_WEBHOOK_SECRET", default="")
 
-
-# SBIePay (legacy — new online payments use Razorpay)
-SBIEPAY_MERCHANT_ID = env("SBIEPAY_MERCHANT_ID", default="")
-SBIEPAY_ENCRYPTION_KEY = env("SBIEPAY_ENCRYPTION_KEY", default="")
-SBIEPAY_GATEWAY_URL = env(
-    "SBIEPAY_GATEWAY_URL",
-    default="https://test.sbiepay.sbi/secure/AggregatorHostedListener",
-)
-SBIEPAY_SUCCESS_URL = env("SBIEPAY_SUCCESS_URL", default="")
-SBIEPAY_FAILURE_URL = env("SBIEPAY_FAILURE_URL", default="")
-SBIEPAY_PUSH_URL = env("SBIEPAY_PUSH_URL", default="")
 
 # SRIC office integration API (replaces email when key is set)
 SRIC_API_KEY = env("SRIC_API_KEY", default="")

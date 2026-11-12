@@ -98,10 +98,28 @@ def test_outside_audience_cannot_enroll(user_type):
     assert resp.status_code == 403
     assert resp.data["code"] == "APP_AUDIENCE"
     assert resp.data["error"] == (
-        "The IIC Booking app is currently available to Officers In Charge and Lab Operators. "
+        "The IIT Roorkee Equipment Booking app is currently available to Officers In Charge and Lab Operators. "
         "Please use https://equip.iitr.ac.in in your browser."
     )
     assert not MobileDeviceSession.objects.filter(user=user).exists()
+
+
+@pytest.mark.parametrize("user_type", [UserType.STUDENT, UserType.FACULTY, UserType.EXTERNAL, UserType.DEPT_ADMIN, UserType.MANAGER, UserType.OPERATOR])
+def test_test_accounts_of_any_type_can_use_the_app(user_type):
+    user = make_user(user_type)
+    User.objects.filter(pk=user.pk).update(is_test_account=True)
+    user.refresh_from_db()
+    assert enroll(user).status_code == 201
+
+
+def test_a_test_account_does_not_open_the_app_to_real_users_of_its_type():
+    test_student = make_user(UserType.STUDENT)
+    User.objects.filter(pk=test_student.pk).update(is_test_account=True)
+    test_student.refresh_from_db()
+    assert enroll(test_student).status_code == 201
+    real_student = make_user(UserType.STUDENT)
+    resp = enroll(real_student)
+    assert resp.status_code == 403 and resp.data["code"] == "APP_AUDIENCE"
 
 
 def test_narrowing_audience_signs_out_on_next_refresh():
@@ -361,7 +379,7 @@ def test_main_admin_can_open_the_app_to_everyone():
     resp = web_client(admin).patch(SETTINGS_URL, {"audience_user_types": "everyone"}, format="json")
     assert resp.status_code == 200, resp.data
     assert resp.data["everyone"] is True
-    assert resp.data["refusal_message"] == "The IIC Booking app is available to every portal user."
+    assert resp.data["refusal_message"] == "The IIT Roorkee Equipment Booking app is available to every portal user."
     for user_type in (UserType.EXTERNAL, UserType.RND, UserType.INSTITUTE, UserType.EXTERNAL_STARTUP_MSME,
                       UserType.STARTUP_INCUBATED_IITR, UserType.OTHER, UserType.FACULTY, UserType.STUDENT,
                       UserType.DEPT_ADMIN, UserType.FINANCE):

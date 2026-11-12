@@ -6,4 +6,4 @@ from django.apps import AppConfig
 class ResearchCopilotConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "iic_booking.research_copilot"
-    verbose_name = "IITR Assistant"
+    verbose_name = "IITR Equipment Booking Assistant"

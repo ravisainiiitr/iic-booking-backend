@@ -82,13 +82,24 @@ def user_creation_enabled() -> bool:
 
 
 def accept_duplicate_user_id() -> bool:
-    """Map automatically from a duplicate-user response; off until I-STEM documents that response's structure."""
+    """Link automatically to the existing I-STEM user a Create User answer reports for this email or mobile, with no
+    OTP ([USER 2026-11-08] linking needs no user action). Takes precedence over ``ISTEM_OTP_LINKING_ENABLED`` in the
+    automatic flow; the OTP stays available for linking by hand from the profile."""
     return bool(_setting("ISTEM_ACCEPT_DUPLICATE_USER_ID", False))
 
 
+def whatsapp_otp_enabled() -> bool:
+    """Offer the OTP on WhatsApp as well, to the mobile number on I-STEM. Also needs the portal's WhatsApp to be ready."""
+    if not _setting("ISTEM_WHATSAPP_OTP_ENABLED", False):
+        return False
+    from iic_booking.whatsapp.otp import available
+
+    return available()
+
+
 def otp_linking_enabled() -> bool:
-    """Link a user I-STEM reports as already registered once they enter an OTP sent to the I-STEM email. Takes
-    precedence over ``ISTEM_ACCEPT_DUPLICATE_USER_ID`` whenever the I-STEM email is known."""
+    """Link a user I-STEM reports as already registered once they enter an OTP sent to the I-STEM email (used when
+    ``ISTEM_ACCEPT_DUPLICATE_USER_ID`` is off and the I-STEM email is known)."""
     return bool(_setting("ISTEM_OTP_LINKING_ENABLED", False))
 
 
@@ -108,6 +119,20 @@ def internal_billing() -> dict:
         "billing_address": str(_setting("ISTEM_INTERNAL_BILLING_ADDRESS", "") or "").strip(),
         "billing_state": str(_setting("ISTEM_INTERNAL_BILLING_STATE", "") or "").strip(),
         "gstin": str(_setting("ISTEM_INTERNAL_GSTIN", "") or "").strip().upper(),
+    }
+
+
+def institute_address() -> dict:
+    """The institute's postal identity, sent as the address of internal users in Create User ([USER 2026-11-08]
+    automatic linking; internal users are billed to the institute and have no address of their own)."""
+    return {
+        "organisation": str(_setting("ISTEM_INSTITUTE_ORGANISATION", "Indian Institute of Technology Roorkee") or "").strip(),
+        "address": str(_setting("ISTEM_INSTITUTE_ADDRESS", "Indian Institute of Technology Roorkee") or "").strip(),
+        "city": str(_setting("ISTEM_INSTITUTE_CITY", "Roorkee") or "").strip(),
+        "district": str(_setting("ISTEM_INSTITUTE_DISTRICT", "Haridwar") or "").strip(),
+        "state": str(_setting("ISTEM_INSTITUTE_STATE", "Uttarakhand") or "").strip(),
+        "country": str(_setting("ISTEM_INSTITUTE_COUNTRY", "India") or "").strip(),
+        "pin": str(_setting("ISTEM_INSTITUTE_PIN", "247667") or "").strip(),
     }
 
 

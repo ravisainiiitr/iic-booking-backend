@@ -47,3 +47,13 @@ STORAGES = {
 # The sign-up limit shares the in-process cache across the whole test run; tests that exercise it enable it
 # explicitly with the ``settings`` fixture.
 REGISTRATION_MAX_ATTEMPTS_PER_IP_PER_HOUR = 0
+
+# Unit tests: the gateway is on in test mode with a dummy key (tests replace the Razorpay client with a fake).
+# Existing tests pay as ordinary accounts; tests of the test-accounts-only rule switch it back on.
+RAZORPAY_ENABLED = True
+RAZORPAY_MODE = "test"
+RAZORPAY_KEY_ID = "rzp_test_unittest"
+RAZORPAY_KEY_SECRET = "unit-test-key-secret"
+RAZORPAY_TEST_MODE_TEST_ACCOUNTS_ONLY = False
+# Receipts never fetch payment details from Razorpay in tests (they use what the settlement stored).
+RECEIPT_FETCH_PAYMENT_DETAILS = False

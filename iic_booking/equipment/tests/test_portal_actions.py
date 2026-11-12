@@ -1,4 +1,4 @@
-"""Portal actions: one catalogue for search and the IITR Assistant, limited to the user's role."""
+"""Portal actions: one catalogue for search and the IITR Equipment Booking Assistant, limited to the user's role."""
 
 from __future__ import annotations
 
@@ -94,7 +94,7 @@ def test_main_admin_switches_slot_exchange_and_others_cannot(lab):
     assert choices == [{"id": lab.xrd.pk, "name": lab.xrd.name, "code": lab.xrd.code, "on": True}]
 
 
-# --- IITR Assistant -----------------------------------------------------------------------------------------
+# --- IITR Equipment Booking Assistant -----------------------------------------------------------------------------------------
 
 def _reply(resp):
     body = resp.json()

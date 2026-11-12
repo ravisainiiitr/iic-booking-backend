@@ -79,6 +79,50 @@ def _is_wallet_recharge_ops_staff(user) -> bool:
     return ut in (UserType.ADMIN, UserType.FINANCE)
 
 
+def _offline_payment_request_elsewhere(recharge_request):
+    """External offline-payment recharges are decided only through /wallet/offline-recharge/ (scoped approvers)."""
+    from iic_booking.users.models.wallet import WalletRechargeMode
+
+    if getattr(recharge_request, "recharge_mode", None) == WalletRechargeMode.OFFLINE_PAYMENT:
+        return Response(
+            {
+                "error": "This is an offline payment recharge; it is handled on the Offline payment recharges screen.",
+                "code": "offline_payment_request",
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
+    return None
+
+
+def _legacy_decision_forbidden(user, recharge_request):
+    """Who may approve or reject by request id (no email token): a signed-in Main Administrator, the
+    Department Administrator or Accounts In Charge of the request's department, or a portal user whose email is
+    on the request's configured approver list. Never the requester or the wallet owner."""
+    from iic_booking.users.wallet_recharge_workflow import get_recharge_approver_emails
+
+    def deny():
+        return Response(
+            {"error": "You are not allowed to decide this wallet recharge request.", "code": "not_an_approver"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if not getattr(user, "is_authenticated", False) or not getattr(user, "is_active", False):
+        return deny()
+    wallet_owner_id = getattr(getattr(recharge_request, "wallet", None), "user_id", None)
+    if user.pk in {recharge_request.user_id, wallet_owner_id}:
+        return deny()
+    ut = getattr(user, "user_type", None)
+    if ut == UserType.ADMIN:
+        return None
+    dept_id = getattr(recharge_request, "department_id", None)
+    if ut in (UserType.DEPT_ADMIN, UserType.FINANCE) and dept_id and getattr(user, "department_id", None) == dept_id:
+        return None
+    email = (getattr(user, "email", "") or "").strip().lower()
+    if email and email in {(e or "").strip().lower() for e in get_recharge_approver_emails(recharge_request)}:
+        return None
+    return deny()
+
+
 PROJECT_GRANT_RECHARGE_DISABLED_CODE = "project_grant_recharge_disabled"
 
 
@@ -2245,6 +2289,9 @@ def wallet_recharge_action_detail(request, token):
         ).get(action_token=action_token)
     except WalletRechargeRequest.DoesNotExist:
         return Response({"error": "Invalid or expired approval link."}, status=status.HTTP_404_NOT_FOUND)
+    guard = _offline_payment_request_elsewhere(recharge_request)
+    if guard is not None:
+        return guard
     return Response(serialize_request_public(recharge_request), status=status.HTTP_200_OK)
 
 
@@ -2267,6 +2314,9 @@ def wallet_recharge_action_approve(request, token):
         recharge_request = WalletRechargeRequest.objects.get(action_token=action_token)
     except WalletRechargeRequest.DoesNotExist:
         return Response({"error": "Invalid or expired approval link."}, status=status.HTTP_404_NOT_FOUND)
+    guard = _offline_payment_request_elsewhere(recharge_request)
+    if guard is not None:
+        return guard
 
     if recharge_request.status != WalletRechargeRequestStatus.PENDING:
         page = already_processed_page(
@@ -2321,6 +2371,9 @@ def wallet_recharge_action_reject(request, token):
         recharge_request = WalletRechargeRequest.objects.get(action_token=action_token)
     except WalletRechargeRequest.DoesNotExist:
         return Response({"error": "Invalid or expired approval link."}, status=status.HTTP_404_NOT_FOUND)
+    guard = _offline_payment_request_elsewhere(recharge_request)
+    if guard is not None:
+        return guard
 
     if not can_sric_decline(recharge_request):
         page = already_processed_page(
@@ -2365,7 +2418,7 @@ def wallet_recharge_action_reject(request, token):
 
 
 @api_view(["POST"])
-@permission_classes([AllowAny])  # legacy path — prefer token endpoints
+@permission_classes([IsAuthenticated])  # email approvers use the token endpoints
 def approve_wallet_recharge_request(request, request_id):
     """Legacy approve by request id. Prefer /wallet/recharge-action/<token>/approve/."""
     from iic_booking.users.wallet_recharge_workflow import (
@@ -2385,6 +2438,13 @@ def approve_wallet_recharge_request(request, request_id):
             {"error": "Wallet recharge request not found."},
             status=status.HTTP_404_NOT_FOUND,
         )
+
+    guard = _offline_payment_request_elsewhere(recharge_request)
+    if guard is not None:
+        return guard
+    forbidden = _legacy_decision_forbidden(request.user, recharge_request)
+    if forbidden is not None:
+        return forbidden
 
     if recharge_request.status != WalletRechargeRequestStatus.PENDING:
         page = already_processed_page(
@@ -2434,7 +2494,7 @@ def approve_wallet_recharge_request(request, request_id):
 
 
 @api_view(["POST"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def reject_wallet_recharge_request(request, request_id):
     """Legacy reject by request id. Prefer token endpoint with reason_code."""
     from iic_booking.users.models.wallet import WalletRechargeRejectionReason
@@ -2468,6 +2528,13 @@ def reject_wallet_recharge_request(request, request_id):
             {"error": "Wallet recharge request not found."},
             status=status.HTTP_404_NOT_FOUND,
         )
+
+    guard = _offline_payment_request_elsewhere(recharge_request)
+    if guard is not None:
+        return guard
+    forbidden = _legacy_decision_forbidden(request.user, recharge_request)
+    if forbidden is not None:
+        return forbidden
 
     if recharge_request.status != WalletRechargeRequestStatus.PENDING:
         page = already_processed_page(
@@ -2526,8 +2593,13 @@ def get_my_recharge_requests(request):
     Returns:
         - requests: List of wallet recharge requests
     """
-    queryset = WalletRechargeRequest.objects.filter(user=request.user, is_deleted=False)
-    
+    from iic_booking.users.models.wallet import WalletRechargeMode
+
+    # Offline payment recharges have their own list (/wallet/offline-recharge/) with receipt and reconciliation.
+    queryset = WalletRechargeRequest.objects.filter(user=request.user, is_deleted=False).exclude(
+        recharge_mode=WalletRechargeMode.OFFLINE_PAYMENT
+    )
+
     # Filter by status if provided
     status_filter = request.query_params.get('status')
     if status_filter:
@@ -2712,6 +2784,10 @@ def attach_receipt_to_approved_recharge_request(request, request_id):
             status=status.HTTP_404_NOT_FOUND,
         )
 
+    guard = _offline_payment_request_elsewhere(recharge_request)
+    if guard is not None:
+        return guard
+
     # Offline payment (bank transfer / cash deposit): the proof and UTR go in with the pending request, so the
     # Accounts In Charge can check them against the SRIC testing grant before approving; still editable after.
     from iic_booking.users.models.wallet import WalletRechargeMode
@@ -2858,6 +2934,10 @@ def cancel_wallet_recharge_request(request, request_id):
             status=status.HTTP_404_NOT_FOUND,
         )
 
+    guard = _offline_payment_request_elsewhere(recharge_request)
+    if guard is not None:
+        return guard
+
     was_verified = bool(recharge_request.user_otp_verified)
     try:
         cancel_request(
@@ -2912,6 +2992,10 @@ def resend_wallet_recharge_notification(request, request_id):
             {"error": "Recharge request not found, already processed, or you don't have permission to access it."},
             status=status.HTTP_404_NOT_FOUND,
         )
+
+    guard = _offline_payment_request_elsewhere(recharge_request)
+    if guard is not None:
+        return guard
 
     if not recharge_request.user_otp_verified:
         return Response(

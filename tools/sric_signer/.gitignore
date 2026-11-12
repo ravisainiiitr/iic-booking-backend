@@ -1,0 +1,5 @@
+dist/
+build/
+packaging/version_info.txt
+__pycache__/
+!packaging/sric_signer.spec

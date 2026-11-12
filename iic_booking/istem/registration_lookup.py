@@ -19,7 +19,6 @@ from datetime import timedelta
 from django.conf import settings
 from django.core import signing
 from django.core.cache import cache
-from django.core.mail import send_mail
 from django.utils.crypto import constant_time_compare, salted_hmac
 
 from . import conf
@@ -28,7 +27,7 @@ from .redaction import mask
 
 logger = logging.getLogger(__name__)
 
-OTP_TTL = timedelta(minutes=10)
+OTP_TTL = timedelta(minutes=5)
 MAX_ATTEMPTS = 5
 LOOKUPS_PER_HOUR_PER_IP = 10
 LOOKUPS_PER_HOUR_PER_EMAIL = 5
@@ -89,24 +88,31 @@ def test_otp_inbox(email: str) -> str:
     return inbox if "staging" in conf.base_url().lower() else ""
 
 
-def _send_otp(email: str, code: str) -> None:
-    subject = "OTP to register with your I-STEM account - IIC Booking Portal, IIT Roorkee"
-    body = (f"Your one-time password to register on the IIC Booking Portal with your I-STEM account is: {code}\n\n"
-            f"It expires in {int(OTP_TTL.total_seconds() // 60)} minutes. Do not share it with anyone.\n\n"
-            "If you did not start a registration on the IIC Booking Portal, ignore this email.")
-    recipient = email
+def _send_otp(email: str, code: str, *, name: str = "") -> None:
+    from iic_booking.communication.utils import get_frontend_absolute_url
+
+    from .otp_email import PORTAL_NAME, send_otp_email
+
+    minutes = int(OTP_TTL.total_seconds() // 60)
+    recipient, wrap = email, None
     redirect = test_otp_inbox(email)
     if redirect:
         recipient = redirect
-        subject = f"[I-STEM staging test] {subject} (for {email})"
+        wrap = lambda subject: f"[I-STEM staging test] {subject} (for {email})"  # noqa: E731
         logger.info("I-STEM registration OTP for a test address sent to the test inbox")
-    send_mail(subject=subject, message=body, from_email=settings.DEFAULT_FROM_EMAIL, recipient_list=[recipient],
-              fail_silently=False)
+    send_otp_email(
+        "istem_registration_otp_email", recipients=[recipient], subject_wrap=wrap,
+        context={"name": name or "there", "otp": code, "minutes": minutes, "masked_email": mask(email), "link": get_frontend_absolute_url("/auth")},
+        fallback_subject="Your OTP to register with your I-STEM account",
+        fallback_body=(f"Your one-time password to register on the {PORTAL_NAME} with your I-STEM account is: {code}\n\n"
+                       f"It expires in {minutes} minutes. Do not share it with anyone.\n\n"
+                       f"If you did not start a registration on the {PORTAL_NAME}, ignore this email."),
+    )
 
 
 def start(email: str, mobile: str, *, client_ip: str = "", test_key: str = "", client_factory=None) -> dict:
     """Find the I-STEM account registered with ``email`` or ``mobile`` (both must match when both are given) and send
-    an OTP to the email registered on I-STEM."""
+    an OTP to the email registered on I-STEM, and the same OTP on WhatsApp to the mobile on I-STEM when there is one."""
     from .models import IstemUserLink
     from .service import default_client
 
@@ -149,18 +155,29 @@ def start(email: str, mobile: str, *, client_ip: str = "", test_key: str = "", c
                                       "account. Sign in instead, or contact the IIC office.", http_status=409)
     token = secrets.token_urlsafe(24)
     code = f"{secrets.randbelow(10 ** 6):06d}"
-    cache.set(_KEY.format(token), {
+    pending = {
         "public_user_id": row["user_id"], "email": email, "code_hash": _hash(token, code), "attempts": 0,
         "profile": row["profile"], "test_account": bool(_test_key()),
-    }, timeout=int(OTP_TTL.total_seconds()))
+    }
+    cache.set(_KEY.format(token), pending, timeout=int(OTP_TTL.total_seconds()))
     try:
-        _send_otp(email, code)
+        profile = row["profile"]
+        _send_otp(email, code, name=" ".join(str(profile.get(k) or "").strip() for k in ("first_name", "last_name")).strip() or str(profile.get("name") or "").strip())
     except Exception:
         cache.delete(_KEY.format(token))
         logger.exception("I-STEM registration OTP email failed")
         raise RegistrationLookupError("send_failed", "The OTP email could not be sent. Please try again later.",
                                       http_status=502)
-    return {"token": token, "email_masked": mask(email), "expires_in": int(OTP_TTL.total_seconds())}
+    on_whatsapp = ""
+    mobile_on_istem = str(row["profile"].get("mobile") or "")
+    if mobile_on_istem and conf.whatsapp_otp_enabled():
+        from iic_booking.whatsapp.otp import send_on_request
+
+        on_whatsapp = send_on_request(mobile_on_istem, code, purpose="istem_register")
+        if on_whatsapp:
+            pending["whatsapp_sent"] = True
+            cache.set(_KEY.format(token), pending, timeout=int(OTP_TTL.total_seconds()))
+    return {"token": token, "email_masked": mask(email), "whatsapp_masked": on_whatsapp, "expires_in": int(OTP_TTL.total_seconds())}
 
 
 def verify(token: str, code: str) -> dict:
@@ -171,7 +188,7 @@ def verify(token: str, code: str) -> dict:
         raise RegistrationLookupError("expired", "This OTP has expired. Please look up your I-STEM account again.")
     code = "".join(ch for ch in (code or "") if ch.isdigit())
     if len(code) != 6:
-        raise RegistrationLookupError("invalid_code", "Enter the 6-digit OTP from the email.")
+        raise RegistrationLookupError("invalid_code", "Enter the 6-digit OTP.")
     if not constant_time_compare(pending["code_hash"], _hash(token, code)):
         pending["attempts"] += 1
         if pending["attempts"] >= MAX_ATTEMPTS:
@@ -184,12 +201,12 @@ def verify(token: str, code: str) -> dict:
     profile = pending["profile"]
     link_token = signing.dumps(
         {"public_user_id": pending["public_user_id"], "email": pending["email"], "profile": profile,
-         "test_account": bool(pending.get("test_account"))}, salt=_SALT
+         "test_account": bool(pending.get("test_account")), "channel": "email_or_whatsapp" if pending.get("whatsapp_sent") else "email"}, salt=_SALT
     )
     return {"profile": profile, "link_token": link_token}
 
 
-def link_new_user(user, link_token: str) -> bool:
+def link_new_user(user, link_token: str, *, mark_test_account: bool = True) -> bool:
     """After registration: link ``user`` to the verified I-STEM account and fill blank billing details.
     The token must be recent and issued for the email the account registered with; otherwise nothing happens."""
     from .choices import EvidenceType
@@ -209,10 +226,16 @@ def link_new_user(user, link_token: str) -> bool:
     link, _ = IstemUserLink.objects.get_or_create(user=user)
     link.istem_profile = data.get("profile") or {}
     link.save(update_fields=["istem_profile", "updated_at"])
-    _link_user(link, str(data["public_user_id"]), reason="existing I-STEM user registered with email OTP",
-               evidence_type=EvidenceType.EMAIL_OTP, evidence_reference=f"registration OTP to {mask(user.email)}")
+    if data.get("channel") == "email_or_whatsapp":
+        mobile = str((data.get("profile") or {}).get("mobile") or "")
+        _link_user(link, str(data["public_user_id"]), reason="existing I-STEM user registered with an OTP sent to email and WhatsApp",
+                   evidence_type=EvidenceType.EMAIL_OR_WHATSAPP_OTP,
+                   evidence_reference=f"registration OTP to {mask(user.email)} and on WhatsApp to number ending {mobile[-2:]}")
+    else:
+        _link_user(link, str(data["public_user_id"]), reason="existing I-STEM user registered with email OTP",
+                   evidence_type=EvidenceType.EMAIL_OTP, evidence_reference=f"registration OTP to {mask(user.email)}")
     apply_istem_profile(user, link.istem_profile)
-    if data.get("test_account") and not user.is_test_account:
+    if mark_test_account and data.get("test_account") and not user.is_test_account:
         user.is_test_account = True  # registered through the I-STEM test link
         user.save(update_fields=["is_test_account"])
     return True

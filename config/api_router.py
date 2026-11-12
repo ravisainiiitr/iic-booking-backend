@@ -21,8 +21,13 @@ from iic_booking.equipment.config_audit_views import (
     equipment_config_audit_list,
 )
 from iic_booking.equipment.oic_request_audit import oic_request_audit_list
+from iic_booking.equipment.operations_audit import operations_audit
 from iic_booking.equipment.oic_request_registration_views import oic_registered_requests
 from iic_booking.equipment.booking_status_override_views import booking_status_override
+from iic_booking.equipment.maintenance_settlement_views import (
+    booking_maintenance_settle,
+    equipment_maintenance_settlement,
+)
 from iic_booking.equipment.peak_window_views import PeakWindowSettingView, peak_window_status
 from iic_booking.users.api.auth_views import (
     omniport_auth_url,
@@ -53,6 +58,7 @@ from iic_booking.users.api.auth_views import (
     account_email_login,
     account_password,
 )
+from iic_booking.users.api import offline_recharge_views
 from iic_booking.users.api.mobile_session_views import (
     mobile_device_revoke,
     mobile_devices,
@@ -232,16 +238,14 @@ from iic_booking.users.api.project_views import (
 )
 from iic_booking.users.api.billing_views import external_billing_profile_me
 from iic_booking.users.api.payment_views import (
-    sbiepay_initiate,
-    sbiepay_return_success,
-    sbiepay_return_failure,
-    sbiepay_transaction_status,
     submit_payment_utr,
     submit_wallet_recharge_receipt,
     finance_payment_receipts_list,
     finance_payment_receipt_process,
 )
 from iic_booking.payments.views import admin_fee_settings
+from iic_booking.payments.views import admin_receipt_template
+from iic_booking.payments.views import verify_receipt
 from iic_booking.users.api.finance_reports_views import (
     finance_report_dashboard,
     finance_report_drilldown,
@@ -501,6 +505,7 @@ from iic_booking.equipment.api_views import (
     equipment_write_off_head_action,
     equipment_write_off_execute,
 )
+from iic_booking.equipment import proforma_views  # noqa: E402
 from iic_booking.equipment.api_document_views import (
     booking_invoice_pdf,
     booking_shipping_label_pdf,
@@ -526,6 +531,7 @@ from iic_booking.equipment.completion_reminders import bookings_awaiting_complet
 from iic_booking.equipment.results_deadline import results_overdue_view
 from iic_booking.equipment.maintenance_views import maintenance_status_view
 from iic_booking.equipment.admin_dashboard_summary import admin_dashboard_summary
+from iic_booking.integration_health.views import integration_health, integration_health_run
 from iic_booking.equipment.global_search import global_search
 from iic_booking.equipment.my_activity import my_activity
 from iic_booking.livefeed.views import create_peer as live_create_peer, my_sessions as live_my_sessions, peer_detail as live_peer_detail
@@ -625,9 +631,20 @@ from iic_booking.istem.api_views import (
     istem_department_mappings,
     istem_equipment_mappings_verify,
     istem_institute,
+    istem_profile_readiness,
+    istem_reference_sync,
+    istem_equipment_details,
+    istem_equipment_create,
 )
 
-from iic_booking.whatsapp.views import whatsapp_me, whatsapp_status, whatsapp_webhook
+from iic_booking.whatsapp.views import (
+    whatsapp_inbound,
+    whatsapp_me,
+    whatsapp_status,
+    whatsapp_verify_confirm,
+    whatsapp_verify_send,
+    whatsapp_webhook,
+)
 
 router = DefaultRouter() if settings.DEBUG else SimpleRouter()
 router.register("users", UserViewSet, basename="user")
@@ -725,6 +742,8 @@ urlpatterns = router.urls + [
     # IIC Research Copilot (feature-flagged in views; default OFF)
     path("v1/research-copilot/", include("iic_booking.research_copilot.urls")),
     path("v1/my-research/", include("iic_booking.my_research.urls")),
+    # IITR Connect (behind IITR_CONNECT_ENABLED; 404 while off)
+    path("v1/connect/", include("iic_booking.connect.urls")),
     path("v1/training/", include("iic_booking.training.urls")),
     # Online learning before training (modules, SOP sign-off, quizzes) and the booking logbook
     path("v1/learning/", include("iic_booking.learning.urls")),
@@ -750,6 +769,8 @@ urlpatterns = router.urls + [
         include((external_services_urls.admin_urlpatterns, "external_services_admin")),
     ),
     path("v1/external-booking/", include("iic_booking.external_services.urls")),
+    # GST invoices of facility charges, prepared by the portal (sandbox only; gst_einvoice.conf)
+    path("v1/gst-einvoice/", include("iic_booking.gst_einvoice.urls")),
     # Facility user groups + group email (Main Admin)
     path("v1/admin/facility-groups/", include("iic_booking.facility_groups.urls")),
     path("v1/portal-migration/booking-status/", portal_booking_status, name="portal-migration-booking-status-v1"),
@@ -1070,7 +1091,10 @@ urlpatterns = router.urls + [
     path("live/peers/<int:peer_id>/", live_peer_detail, name="live-peer"),
     path("calls/", calls, name="calls"),
     path("whatsapp/me/", whatsapp_me, name="whatsapp-me"),
+    path("whatsapp/me/verify/send/", whatsapp_verify_send, name="whatsapp-verify-send"),
+    path("whatsapp/me/verify/confirm/", whatsapp_verify_confirm, name="whatsapp-verify-confirm"),
     path("whatsapp/status/", whatsapp_status, name="whatsapp-status"),
+    path("whatsapp/inbound/", whatsapp_inbound, name="whatsapp-inbound"),
     path("whatsapp/webhook/", whatsapp_webhook, name="whatsapp-webhook"),
     path("calls/config/", call_config, name="calls-config"),
     path("calls/options/", call_options, name="calls-options"),
@@ -1166,12 +1190,9 @@ urlpatterns = router.urls + [
         admin_fee_settings,
         name="admin-payments-fee-settings",
     ),
+    path("admin/payments/receipt-template/", admin_receipt_template, name="admin-payments-receipt-template"),
+    path("receipts/verify/", verify_receipt, name="receipt-verify"),
 
-    # SBIePay payment gateway (initiate deprecated — use Razorpay)
-    path("payments/sbiepay/initiate/", sbiepay_initiate, name="sbiepay-initiate"),
-    path("payments/sbiepay/success/", sbiepay_return_success, name="sbiepay-success"),
-    path("payments/sbiepay/failure/", sbiepay_return_failure, name="sbiepay-failure"),
-    path("payments/sbiepay/status/", sbiepay_transaction_status, name="sbiepay-status"),
     path("payments/utr/submit/", submit_payment_utr, name="payment-utr-submit"),
     path(
         "payments/wallet-recharge-receipt/",
@@ -1350,6 +1371,13 @@ urlpatterns = router.urls + [
         wallet_imap_delete_email_if_processed,
         name="wallet-imap-delete-email-if-processed",
     ),
+    path("wallet/offline-recharge/", offline_recharge_views.offline_recharge_collection, name="wallet-offline-recharge"),
+    path("wallet/offline-recharge/queue/", offline_recharge_views.offline_recharge_queue, name="wallet-offline-recharge-queue"),
+    path("wallet/offline-recharge/<int:request_id>/", offline_recharge_views.offline_recharge_detail, name="wallet-offline-recharge-detail"),
+    path("wallet/offline-recharge/<int:request_id>/cancel/", offline_recharge_views.offline_recharge_cancel, name="wallet-offline-recharge-cancel"),
+    path("wallet/offline-recharge/<int:request_id>/approve/", offline_recharge_views.offline_recharge_approve, name="wallet-offline-recharge-approve"),
+    path("wallet/offline-recharge/<int:request_id>/reject/", offline_recharge_views.offline_recharge_reject, name="wallet-offline-recharge-reject"),
+    path("wallet/offline-recharge/<int:request_id>/reconcile/", offline_recharge_views.offline_recharge_reconcile, name="wallet-offline-recharge-reconcile"),
     path("wallet/recharge-requests/<int:request_id>/approve/", approve_wallet_recharge_request, name="wallet-recharge-request-approve"),
     path("wallet/recharge-requests/<int:request_id>/reject/", reject_wallet_recharge_request, name="wallet-recharge-request-reject"),
     path("wallet/recharge-requests/<int:request_id>/cancel/", cancel_wallet_recharge_request, name="wallet-recharge-request-cancel"),
@@ -1609,6 +1637,16 @@ urlpatterns = router.urls + [
     path("icpms/standards/full/", icpms_standards_full_list, name="icpms-standards-full-list"),
     path("proforma-invoice/calculate/", proforma_invoice_calculate, name="proforma-invoice-calculate"),
     path("proforma-invoice/download.pdf", proforma_invoice_pdf_download, name="proforma-invoice-pdf-download"),
+    # Saved proforma invoices: the user's own (pay / edit / cancel) and the staff reconciliation list.
+    path("proforma-invoices/", proforma_views.my_proformas, name="proforma-invoices"),
+    path("proforma-invoices/<int:proforma_id>/", proforma_views.proforma_detail, name="proforma-invoice-detail"),
+    path("proforma-invoices/<int:proforma_id>/pdf/", proforma_views.proforma_pdf, name="proforma-invoice-pdf"),
+    path("proforma-invoices/<int:proforma_id>/cancel/", proforma_views.proforma_cancel, name="proforma-invoice-cancel"),
+    path("proforma-invoices/<int:proforma_id>/revise/", proforma_views.proforma_revise, name="proforma-invoice-revise"),
+    path("proforma-invoices/<int:proforma_id>/pay-online/", proforma_views.proforma_pay_online, name="proforma-invoice-pay-online"),
+    path("proforma-invoices/<int:proforma_id>/offline-payment/", proforma_views.proforma_record_offline,
+         name="proforma-invoice-offline-payment"),
+    path("admin/proforma-invoices/", proforma_views.staff_proformas, name="admin-proforma-invoices"),
     path("bookings/<int:booking_id>/invoice.pdf", booking_invoice_pdf, name="booking-invoice-pdf"),
     path("bookings/<int:booking_id>/shipping-label.pdf", booking_shipping_label_pdf, name="booking-shipping-label-pdf"),
     path("bookings/<int:booking_id>/return-shipping-label.pdf", booking_return_shipping_label_pdf, name="booking-return-shipping-label-pdf"),
@@ -1727,6 +1765,10 @@ urlpatterns = router.urls + [
     path("istem/institute/", istem_institute, name="istem-institute"),
     path("istem/equipment-mappings/verify/", istem_equipment_mappings_verify, name="istem-equipment-mappings-verify"),
     path("istem/equipment-mappings/<int:equipment_id>/", istem_equipment_mapping_save, name="istem-equipment-mapping-save"),
+    path("istem/profile-readiness/", istem_profile_readiness, name="istem-profile-readiness"),
+    path("istem/reference/sync/", istem_reference_sync, name="istem-reference-sync"),
+    path("istem/equipment-details/<int:equipment_id>/", istem_equipment_details, name="istem-equipment-details"),
+    path("istem/equipment-details/<int:equipment_id>/create/", istem_equipment_create, name="istem-equipment-create"),
     path("bookings/<int:booking_id>/istem-fbr/", update_booking_istem_fbr, name="booking-istem-fbr-update"),
     path("bookings/<int:booking_id>/istem-fbr/review/", review_booking_istem_fbr, name="booking-istem-fbr-review"),
     path("bookings/<int:booking_id>/complete/", complete_booking, name="complete-booking"),
@@ -1738,7 +1780,18 @@ urlpatterns = router.urls + [
     path("equipment-config-audit/<int:pk>/", equipment_config_audit_detail, name="equipment-config-audit-detail"),
     path("equipments/<int:pk>/oic-requests/", oic_registered_requests, name="equipment-oic-requests"),
     path("oic-request-audit/", oic_request_audit_list, name="oic-request-audit"),
+    path("admin/operations-audit/", operations_audit, name="admin-operations-audit"),
     path("bookings/<int:booking_id>/status-override/", booking_status_override, name="booking-status-override"),
+    path(
+        "bookings/<int:booking_id>/maintenance-settle/",
+        booking_maintenance_settle,
+        name="booking-maintenance-settle",
+    ),
+    path(
+        "equipments/<int:pk>/maintenance-settlement/",
+        equipment_maintenance_settlement,
+        name="equipment-maintenance-settlement",
+    ),
     path("bookings/<int:booking_id>/absent/", absent_booking, name="absent-booking"),
     path(
         "bookings/<int:booking_id>/extend-operator-absent-hold/",
@@ -2018,6 +2071,8 @@ urlpatterns = router.urls + [
     path("admin/search-synonyms/", search_synonym_list, name="admin-search-synonyms"),
     path("admin/search-synonyms/<int:pk>/", search_synonym_detail, name="admin-search-synonym-detail"),
     path("admin/dashboard-summary/", admin_dashboard_summary, name="admin-dashboard-summary"),
+    path("admin/integration-health/", integration_health, name="admin-integration-health"),
+    path("admin/integration-health/run/", integration_health_run, name="admin-integration-health-run"),
     path("admin/insights/equipment/", admin_insights_equipment, name="admin-insights-equipment"),
     path("admin/insights/users/", admin_insights_users, name="admin-insights-users"),
     path("admin/insights/cancellations/", admin_insights_cancellations, name="admin-insights-cancellations"),

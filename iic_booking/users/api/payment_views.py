@@ -1,4 +1,4 @@
-"""SBIePay, UTR receipts, and finance payment APIs."""
+"""UTR receipts and finance payment APIs."""
 
 from __future__ import annotations
 
@@ -20,19 +20,9 @@ from iic_booking.users.models.payment import (
     DepartmentPaymentReceipt,
     DepartmentPaymentReceiptPurpose,
     DepartmentPaymentReceiptStatus,
-    PaymentGateway,
-    PaymentGatewayStatus,
-    PaymentGatewayTransaction,
-    PaymentPurpose,
 )
 from iic_booking.users.models.wallet import WalletRechargeRequest
-from iic_booking.users.payment_settlement import settle_payment_gateway_transaction
 from iic_booking.users.repositories.wallet_repository import resolve_internal_department_for_wallet_recharge
-from iic_booking.users.sbiepay_service import (
-    build_initiate_payload,
-    generate_merchant_order_ref,
-    parse_gateway_response,
-)
 
 
 def _is_finance_or_admin(user) -> bool:
@@ -68,101 +58,6 @@ def _serialize_receipt(r: DepartmentPaymentReceipt) -> dict:
         "has_receipt_file": bool(receipt_file_url),
         "created_at": r.created_at.isoformat() if r.created_at else None,
     }
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def sbiepay_initiate(request):
-    """Deprecated: online payments use Razorpay. Returns 410 Gone."""
-    return Response(
-        {
-            "error": "SBIePay initiate is deprecated. Use POST /api/payments/razorpay/create-order/ instead.",
-            "code": "SBIEPAY_DEPRECATED",
-        },
-        status=status.HTTP_410_GONE,
-    )
-
-
-@api_view(["GET", "POST"])
-@permission_classes([])
-def sbiepay_return_success(request):
-    """SBIePay success return URL — verify and settle."""
-    enc = request.POST.get("encData") or request.GET.get("encData") or request.data.get("encData")
-    ref = request.POST.get("merchant_order_ref") or request.GET.get("merchantOrderRef")
-    return _handle_sbiepay_return(request, enc, ref, success=True)
-
-
-@api_view(["GET", "POST"])
-@permission_classes([])
-def sbiepay_return_failure(request):
-    enc = request.POST.get("encData") or request.GET.get("encData")
-    ref = request.POST.get("merchant_order_ref") or request.GET.get("merchantOrderRef")
-    return _handle_sbiepay_return(request, enc, ref, success=False)
-
-
-def _handle_sbiepay_return(request, enc, ref, *, success: bool):
-    parsed = parse_gateway_response(enc or "") if enc else {}
-    if not ref and parsed:
-        ref = parsed.get("merchant_order_ref") or parsed.get("f4")
-    if not ref:
-        return Response({"error": "Missing order reference."}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        txn = PaymentGatewayTransaction.objects.get(merchant_order_ref=ref)
-    except PaymentGatewayTransaction.DoesNotExist:
-        return Response({"error": "Unknown transaction."}, status=status.HTTP_404_NOT_FOUND)
-
-    txn.raw_response = {**(txn.raw_response or {}), "return": parsed, "success_flag": success}
-    if parsed.get("gateway_ref"):
-        txn.gateway_transaction_id = str(parsed["gateway_ref"])[:128]
-    if not success:
-        txn.status = PaymentGatewayStatus.FAILED
-        txn.save(update_fields=["status", "raw_response", "gateway_transaction_id", "updated_at"])
-        frontend = getattr(settings, "FRONTEND_URL", "http://localhost:5173")
-        if txn.booking_id:
-            return Response(
-                {"redirect": f"{frontend}/bookings/{txn.booking_id}/payment?status=failed&ref={ref}"},
-                status=status.HTTP_200_OK,
-            )
-        return Response(
-            {"redirect": f"{frontend}/wallet?payment=failed&ref={ref}"},
-            status=status.HTTP_200_OK,
-        )
-
-    try:
-        settle_payment_gateway_transaction(txn)
-    except Exception as e:
-        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    frontend = getattr(settings, "FRONTEND_URL", "http://localhost:5173")
-    if txn.booking_id:
-        return Response(
-            {"redirect": f"{frontend}/bookings/{txn.booking_id}/next-steps?payment=success&ref={ref}"},
-            status=status.HTTP_200_OK,
-        )
-    return Response(
-        {"redirect": f"{frontend}/wallet?payment=success&ref={ref}"},
-        status=status.HTTP_200_OK,
-    )
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def sbiepay_transaction_status(request):
-    ref = (request.query_params.get("ref") or "").strip()
-    if not ref:
-        return Response({"error": "ref is required."}, status=status.HTTP_400_BAD_REQUEST)
-    txn = get_object_or_404(PaymentGatewayTransaction, merchant_order_ref=ref, user=request.user)
-    return Response(
-        {
-            "merchant_order_ref": txn.merchant_order_ref,
-            "status": txn.status,
-            "amount": str(txn.amount),
-            "purpose": txn.purpose,
-            "booking_id": txn.booking_id,
-            "verified_at": txn.verified_at.isoformat() if txn.verified_at else None,
-        }
-    )
 
 
 @api_view(["POST"])
@@ -205,6 +100,13 @@ def submit_payment_utr(request):
     department = resolve_internal_department_for_wallet_recharge(wallet, int(department_id))
     if not department:
         return Response({"error": "Invalid department."}, status=status.HTTP_400_BAD_REQUEST)
+    if purpose == DepartmentPaymentReceiptPurpose.WALLET_RECHARGE:
+        # A wallet recharge by bank reference is a Direct Cash Deposit / Bank Transfer: the same switch decides.
+        from iic_booking.users.api.wallet_views import _direct_cash_recharge_disabled_response
+        from iic_booking.users.models.wallet_sric_settings import direct_cash_recharge_enabled
+
+        if not direct_cash_recharge_enabled(department=department.pk):
+            return _direct_cash_recharge_disabled_response()
 
     booking = None
     recharge_req = None
@@ -295,14 +197,26 @@ def finance_payment_receipts_list(request):
 def finance_payment_receipt_process(request, receipt_id: int):
     if not _is_finance_or_admin(request.user):
         return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
-    receipt = get_object_or_404(
-        DepartmentPaymentReceipt.objects.select_related("booking", "wallet_recharge_request", "department", "user"),
-        pk=receipt_id,
-    )
-    if receipt.status != DepartmentPaymentReceiptStatus.PENDING:
-        return Response({"error": "Already processed."}, status=status.HTTP_400_BAD_REQUEST)
+    get_object_or_404(DepartmentPaymentReceipt, pk=receipt_id)
 
     with transaction.atomic():
+        # Locked and re-checked inside the transaction so two clicks never process (and credit) twice.
+        receipt = (
+            DepartmentPaymentReceipt.objects.select_for_update(of=("self",))
+            .select_related("booking", "wallet_recharge_request", "department", "user")
+            .get(pk=receipt_id)
+        )
+        if receipt.status != DepartmentPaymentReceiptStatus.PENDING:
+            return Response({"error": "Already processed."}, status=status.HTTP_400_BAD_REQUEST)
+        if receipt.wallet_recharge_request_id:
+            # The proof of a recharge request: the request's own approval credits the wallet, never this receipt.
+            return Response(
+                {
+                    "error": "This receipt belongs to a wallet recharge request; approve or reject the request instead.",
+                    "code": "receipt_of_recharge_request",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         receipt.status = DepartmentPaymentReceiptStatus.PROCESSED
         receipt.finance_processed_at = timezone.now()
         receipt.finance_processed_by = request.user
@@ -317,12 +231,17 @@ def finance_payment_receipt_process(request, receipt_id: int):
             # recorded for Finance and never revives the booking (no effect on any other booking).
             confirm = settlement_hook(booking, realised_at=receipt.created_at, source="offline")
             booking.payment_settled_at = timezone.now()
-            if confirm and booking.status == BookingStatus.PENDING_PAYMENT:
+            newly_confirmed = confirm and booking.status == BookingStatus.PENDING_PAYMENT
+            if newly_confirmed:
                 booking.status = BookingStatus.BOOKED
             if not booking.istem_fbr_status and charge_profile_requires_istem_fbr(booking.charge_profile):
                 for k, v in initial_istem_fbr_fields_for_charge_profile(booking.charge_profile).items():
                     setattr(booking, k, v)
             booking.save(update_fields=["payment_settled_at", "status", "istem_fbr_status", "updated_at"])
+            if newly_confirmed:
+                from iic_booking.whatsapp.hooks import booking_confirmed_by_payment
+
+                booking_confirmed_by_payment(booking)  # nothing unless WhatsApp is on and the user opted in; never raises
 
         elif receipt.purpose == DepartmentPaymentReceiptPurpose.WALLET_RECHARGE:
             wallet = receipt.user.get_accessible_wallet()

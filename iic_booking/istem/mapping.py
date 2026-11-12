@@ -1,8 +1,8 @@
 """Builds I-STEM request payloads from local data. Pure validation and formatting: no network, no writes.
 
 Every mandatory value comes from real local data or an administrator-maintained mapping. When a value cannot be
-established the field is reported in ``errors`` and nothing is substituted (the one exception is the GSTIN
-placeholder I-STEM accepts where no GSTIN applies).
+established the field is reported in ``errors`` and nothing is substituted (exceptions: the GSTIN placeholder I-STEM
+accepts where no GSTIN applies, and Create User's institute address for internal users and city as district).
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from django.utils import timezone
 
@@ -63,6 +63,23 @@ def istem_hour_window(start, end, shift_hours: int = 0):
     if last_hour < last:
         last_hour += step
     return first + shift_hours * step, last_hour + shift_hours * step
+
+
+def create_shift_hours(booking, link) -> int | None:
+    """How many hours the window sent with Create Booking was moved (0 when nothing was sent yet); None when the stored
+    window is not the booking's hourly window moved by whole hours (the booking itself changed)."""
+    requested = getattr(link, "create_payload", None) or {}
+    sent_from, sent_to = requested.get("preferred_timings_from"), requested.get("preferred_timings_to")
+    if not sent_from:
+        return 0
+    start, end = booking_slot_window(booking)
+    if not start or not end:
+        return None
+    for shift in range(0, 24):
+        first, last = istem_hour_window(start, end, shift)
+        if (format_booking_datetime(first), format_booking_datetime(last)) == (sent_from, sent_to):
+            return shift
+    return None
 
 
 def istem_window_fits_day(start, end, shift_hours: int) -> bool:
@@ -122,37 +139,112 @@ def _ten_digit_mobile(raw: str) -> str | None:
     return digits if re.fullmatch(r"[0-9]{10}", digits) else None
 
 
-def collect_public_user_profile(user) -> dict:
-    """Local values for each Create User field; ``None`` where the local data model has no source.
+# I-STEM Create User accepts exactly these salutations (staging, 8 Nov 2026: "Invalid salutation. Must be Mr., Ms.,
+# Dr., or Prof."). Mrs and Miss become Ms.; there is none for gender Other, so such a user needs a title in their name.
+ISTEM_SALUTATIONS = ("Mr.", "Ms.", "Dr.", "Prof.")
+_TITLES = {"dr": "Dr.", "prof": "Prof.", "professor": "Prof.", "mr": "Mr.", "mrs": "Ms.", "ms": "Ms.", "miss": "Ms."}
+_GENDER_SALUTATION = {"Male": "Mr.", "Female": "Ms."}
 
-    No local source exists for user_organisation, user_salutation, user_district or a separate personal address,
-    so those stay ``None`` and Create User is blocked until a data source is agreed (no values are invented).
-    """
-    name = (user.name or "").strip()
-    first, _, last = name.rpartition(" ")
+# Create User ``user_type`` when no PUBLIC_USER_TYPE code mapping is set ([USER 2026-11-08] linking is automatic, so
+# every portal user type needs a value). An administrator mapping always wins.
+DEFAULT_PUBLIC_USER_TYPES = {
+    "student": "Academic User", "individual_student": "Academic User", "faculty": "Academic User",
+    "external": "Academic User", "RND": "National Research Lab User", "Industry": "Industry User",
+    "startup_incubated_iitr": "Startup/MSME User", "external_startup_msme": "Startup/MSME User",
+    "other": "Industry User",
+}
+
+
+def _split_name(raw: str) -> tuple[str | None, str | None, str | None]:
+    """(salutation from a leading title, first name, last name). "Dr. Asha Verma" -> ("Dr.", "Asha", "Verma")."""
+    words = [w for w in re.split(r"\s+", (raw or "").strip()) if w]
+    title = None
+    while words and words[0].rstrip(".").lower() in _TITLES:
+        title = title or _TITLES[words.pop(0).rstrip(".").lower()]
+    if len(words) < 2:
+        return title, (words[0] if words else None), None
+    return title, " ".join(words[:-1]), words[-1]
+
+
+def _salutation(user, title: str | None, gender: str | None) -> str | None:
+    if title:
+        return title
+    designation = (getattr(user, "designation", "") or "").lower()
+    if "prof" in designation:
+        return "Prof."
+    if (user.user_type or "") == "faculty" or "scientist" in designation:
+        return "Dr."
+    return _GENDER_SALUTATION.get(gender or "")
+
+
+def _is_internal(user) -> bool:
+    from iic_booking.users.models.user_type import UserType
+
+    return UserType.is_internal_user(user.user_type or "")
+
+
+def _organisation(user, billing) -> str | None:
+    if _is_internal(user):
+        return conf.institute_address()["organisation"] or None
+    department = getattr(user, "department", None)
+    for candidate in (getattr(department, "name", ""), getattr(getattr(user, "organization_request", None), "name", ""),
+                      getattr(billing, "billing_name", "") if billing else ""):
+        if (candidate or "").strip():
+            return candidate.strip()
+    return None
+
+
+def collect_public_user_profile(user) -> dict:
+    """Local values for each Create User field; ``None`` where the profile has no value (the user is then told what to
+    complete). [USER 2026-11-08] the portal creates or finds the I-STEM user itself, so every field has a source:
+    external users' address from their billing profile (the city doubles as the district, which the profile does not
+    hold); internal users the institute's address (``conf.institute_address``) and, without a billing profile of their
+    own, the institute's billing identity as in Create Booking."""
+    title, first, last = _split_name(user.name or "")
+    gender = LOCAL_GENDER_TO_ISTEM.get((user.gender or "").strip().lower())
     billing = getattr(user, "external_billing_profile", None)
-    billing_address = None
+    profile = {
+        "user_first_name": first, "user_last_name": last, "user_email": (user.email or "").strip() or None,
+        "user_contactno": _ten_digit_mobile(user.phone_number or ""), "user_organisation": _organisation(user, billing),
+        "user_gender": gender, "user_salutation": _salutation(user, title, gender),
+        "user_address": None, "user_city": None, "user_district": None, "user_state": None, "user_country": None,
+        "user_pin": None, "billing_user_name": None, "billing_address": None,
+    }
     if billing is not None:
+        line = ", ".join(p.strip() for p in (billing.billing_address_line1, billing.billing_address_line2) if p and p.strip())
+        city = (billing.billing_city or "").strip()
         parts = [billing.billing_address_line1, billing.billing_address_line2, billing.billing_city,
                  billing.billing_pincode, billing.billing_country]
-        billing_address = ", ".join(p.strip() for p in parts if p and p.strip()) or None
-    return {
-        "user_first_name": first.strip() or None,
-        "user_last_name": last.strip() or None,
-        "user_email": (user.email or "").strip() or None,
-        "user_contactno": _ten_digit_mobile(user.phone_number or ""),
-        "user_organisation": None,
-        "user_gender": LOCAL_GENDER_TO_ISTEM.get((user.gender or "").strip().lower()),
-        "user_salutation": None,
-        "user_address": None,
-        "user_city": None,
-        "user_district": None,
-        "user_state": None,
-        "user_country": None,
-        "user_pin": None,
-        "billing_user_name": (billing.billing_name or "").strip() or None if billing else None,
-        "billing_address": billing_address,
-    }
+        profile.update({
+            "user_address": line or None, "user_city": city or None, "user_district": city or None,
+            "user_state": (billing.billing_state or "").strip() or None,
+            "user_country": (billing.billing_country or "").strip() or "India",
+            "user_pin": (billing.billing_pincode or "").strip() or None,
+            "billing_user_name": (billing.billing_name or "").strip() or None,
+            "billing_address": ", ".join(p.strip() for p in parts if p and p.strip()) or None,
+        })
+    elif _is_internal(user):
+        institute = conf.institute_address()
+        billing_identity = conf.internal_billing()
+        profile.update({
+            "user_address": institute["address"] or None, "user_city": institute["city"] or None,
+            "user_district": institute["district"] or None, "user_state": institute["state"] or None,
+            "user_country": institute["country"] or None, "user_pin": institute["pin"] or None,
+            "billing_user_name": billing_identity["billing_user_name"] or None,
+            "billing_address": billing_identity["billing_address"] or None,
+        })
+    return profile
+
+
+def public_user_type(user) -> tuple[str | None, str | None]:
+    """(Create User user_type, error): the administrator's PUBLIC_USER_TYPE mapping, else the built-in default."""
+    value, error = resolve_code(CodeType.PUBLIC_USER_TYPE, user.user_type or "", allowed=contract.PUBLIC_USER_TYPES)
+    if error and error.startswith("no active"):
+        if (user.user_type or "") in DEFAULT_PUBLIC_USER_TYPES:
+            return DEFAULT_PUBLIC_USER_TYPES[user.user_type], None
+        if _is_internal(user):
+            return "Academic User", None
+    return value, error
 
 
 def build_public_user_payload(user, institute_id: str | None) -> MappingResult:
@@ -171,7 +263,7 @@ def build_public_user_payload(user, institute_id: str | None) -> MappingResult:
         result.errors["user_pin"] = "must be 6 digits (SOP)"
     if "user_gender" in result.payload and result.payload["user_gender"] not in contract.USER_GENDERS:
         result.errors["user_gender"] = "must be Male/Female/Other"
-    user_type, error = resolve_code(CodeType.PUBLIC_USER_TYPE, user.user_type or "", allowed=contract.PUBLIC_USER_TYPES)
+    user_type, error = public_user_type(user)
     if error:
         result.errors["user_type"] = error
     else:
@@ -194,6 +286,26 @@ def _whole_number(value) -> str | None:
     if d < 0 or d != d.to_integral_value():
         return None
     return str(int(d))
+
+
+def _add_eq_rate(p: dict, errors: dict, profile_type: str, profile) -> None:
+    """eq_rate, the unit rate I-STEM asks for. Per-sample and per-hour profiles have one: their primary unit charge.
+    Other profiles (formula, multi-parameter, sample + element) price a booking as a whole, so the rate is the booking
+    total divided by the number of samples ([USER 2026-11-08] rule (a)), rounded to a whole rupee as I-STEM expects
+    integers; the total sent stays the booking's exact total."""
+    if profile_type in ("SAMPLE", "HOUR"):
+        rate = _whole_number(getattr(profile, "primary_unit_charge", None))
+        if rate is None:
+            errors["eq_rate"] = "unit rate is not a whole rupee amount (I-STEM expects an integer)"
+        else:
+            p["eq_rate"] = rate
+        return
+    total, count = p.get("total_est_amt"), p.get("booking_no_sample")
+    if total is None or count is None:
+        errors["eq_rate"] = "needs the booking total and the sample count (booking total ÷ samples)"
+        return
+    rate = (Decimal(total) / Decimal(count)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    p["eq_rate"] = str(int(rate))
 
 
 def booking_slot_window(booking):
@@ -263,8 +375,11 @@ def _add_internal_billing(p: dict, errors: dict) -> None:
     _add_gstin(p, errors, institute["gstin"])
 
 
-def build_create_booking_payload(booking, user_link) -> MappingResult:
-    """The 19 fields I-STEM confirmed as mandatory. Optional fields are omitted (permitted by I-STEM)."""
+def build_create_booking_payload(booking, user_link, *, shift_hours: int = 0) -> MappingResult:
+    """The 19 fields I-STEM confirmed as mandatory. Optional fields are omitted (permitted by I-STEM).
+
+    ``shift_hours``: the preferred window is moved that many hours later, when I-STEM answered that the booking's own
+    hour is already booked (two 30-minute IIC bookings share one I-STEM hour)."""
     result = MappingResult()
     p = result.payload
     equipment = booking.equipment
@@ -286,7 +401,7 @@ def build_create_booking_payload(booking, user_link) -> MappingResult:
     if not start or not end or end <= start:
         result.errors["preferred_timings_from"] = "the booking has no allocated slot window"
     else:
-        first, last = istem_hour_window(start, end)
+        first, last = istem_hour_window(start, end, shift_hours)
         p["preferred_timings_from"] = format_booking_datetime(first)
         p["preferred_timings_to"] = format_booking_datetime(last)
 
@@ -354,15 +469,6 @@ def build_create_booking_payload(booking, user_link) -> MappingResult:
         result.errors["total_est_amt"] = "total charge is not a whole rupee amount (I-STEM expects an integer; no rounding rule agreed)"
     else:
         p["total_est_amt"] = total
-    if profile_type not in ("SAMPLE", "HOUR"):
-        result.errors["eq_rate"] = f"no single rate for '{profile_type}' charge profiles"
-    else:
-        rate = _whole_number(getattr(profile, "primary_unit_charge", None))
-        if rate is None:
-            result.errors["eq_rate"] = "unit rate is not a whole rupee amount (I-STEM expects an integer)"
-        else:
-            p["eq_rate"] = rate
-
     key = (mapping.sample_count_input_key or "").strip() if mapping else ""
     if not key:
         result.errors["booking_no_sample"] = "the equipment mapping does not name the input field holding the sample count"
@@ -373,6 +479,8 @@ def build_create_booking_payload(booking, user_link) -> MappingResult:
             result.errors["booking_no_sample"] = f"input field {key} does not hold a positive whole sample count"
         else:
             p["booking_no_sample"] = count
+
+    _add_eq_rate(p, result.errors, profile_type, profile)
 
     minutes = booking.total_time_minutes or 0
     if minutes <= 0:
@@ -430,13 +538,11 @@ def build_confirm_payload(booking, link, *, approved_on, booking_payload: dict |
         first, last = istem_hour_window(start, end, shift)
         p["allocated_timings_from"] = format_booking_datetime(first)
         p["allocated_timings_to"] = format_booking_datetime(last)
-        requested = link.create_payload or {}
-        unshifted = [format_booking_datetime(t) for t in istem_hour_window(start, end)]
-        for key, sent in (("preferred_timings_from", unshifted[0]), ("preferred_timings_to", unshifted[1])):
-            if requested.get(key) and requested[key] != sent:
-                result.errors["allocated_timings_from"] = (
-                    "the local slot window differs from the window sent with Create Booking; reconcile the booking first"
-                )
+        # The window sent with Create Booking may already be moved by whole hours (its hour was booked on I-STEM).
+        if create_shift_hours(booking, link) is None:
+            result.errors["allocated_timings_from"] = (
+                "the local slot window differs from the window sent with Create Booking; reconcile the booking first"
+            )
     if result.errors:
         result.payload = {}
         return result
@@ -475,9 +581,9 @@ def build_execute_payload(booking, link) -> MappingResult:
     """FBR Execute: request_id + confirmation_id from the link, completion data from the completed local booking.
 
     Dates are IST calendar dates (YYYY-MM-DD). allocation_date is "the date the equipment/slot was actually allocated
-    to the user" [SPEC]: the IST date of the first allocated local slot (the slot sent as allocated_timings_from).
-    completion_date is the IST date of ``Booking.completed_at``. Neither may be in the future, and the service cannot
-    have completed before its slot date.
+    to the user" [SPEC]: the IST date of the first allocated local slot (the slot sent as allocated_timings_from), or
+    the completion date when the work was completed before that slot ([USER 2026-11-09]: the day it was really used).
+    completion_date is the IST date of ``Booking.completed_at``. Neither may be in the future.
 
     A late cancellation that kept part of the fee (``link.retained_amount`` set) is closed instead of cancelled
     ([TEAM 2026-10-30]); see ``_build_retention_payload``.
@@ -508,10 +614,12 @@ def build_execute_payload(booking, link) -> MappingResult:
     allocated = ist(start).date() if start else None
     if allocated is None:
         result.errors["allocation_date"] = "the booking has no allocated slot window"
+    elif completed is not None and completed < allocated:
+        # [USER 2026-11-09] Completed before the slot date (e.g. samples analysed early): the equipment was actually
+        # used on the completion date, so that is the allocation date sent; FBR Execute then goes ahead at once.
+        p["allocation_date"] = format_execute_date(booking.completed_at)
     elif allocated > today:
         result.errors["allocation_date"] = "allocation_date is in the future (I-STEM refuses future allocation dates)"
-    elif completed is not None and completed < allocated:
-        result.errors["allocation_date"] = "the booking was completed before its allocated slot date; check the booking"
     else:
         p["allocation_date"] = format_execute_date(start)
     amount, error = _final_amount(booking)

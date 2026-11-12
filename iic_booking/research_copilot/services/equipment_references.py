@@ -3,7 +3,7 @@
 Staff who look after an instrument (Main Administrator, its Department Administrator, its Officer in Charge or Lab
 Operator) add the URLs of the manufacturer's product page, datasheet, manual or application notes. The portal fetches
 each one, keeps its text as a ``KnowledgeDocument`` of category ``manufacturer_reference`` scoped to the instrument,
-and indexes it for the IITR Assistant's answers, which cite the URL. The instrument's own record is never changed.
+and indexes it for the IITR Equipment Booking Assistant's answers, which cite the URL. The instrument's own record is never changed.
 
 Fetching rules:
 - http(s) only, to public addresses (a host that resolves to a private, loopback or link-local address is refused);

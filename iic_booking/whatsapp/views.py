@@ -1,5 +1,6 @@
 """WhatsApp endpoints: the signed-in user's opt-in, the Main Administrator's status, and Meta's webhook."""
 
+import hmac
 import json
 import logging
 
@@ -23,10 +24,37 @@ def whatsapp_me(request):
     if request.method == "GET":
         return Response(opt_in_status(request.user))
     try:
+        # "prompt" = the one-tap question on the dashboard; anything else is the profile card.
+        source = "prompt" if request.data.get("source") == "prompt" else "profile"
         return Response(set_opt_in(request.user, opted_in=bool(request.data.get("opted_in")),
-                                   phone=str(request.data.get("phone") or "")))
+                                   phone=str(request.data.get("phone") or ""), source=source))
     except OptInError as exc:
         return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def whatsapp_verify_send(request):
+    """Send a code to the user's opted-in number, to prove that it is theirs."""
+    from .otp import VerificationError, start_verification
+
+    try:
+        return Response(start_verification(request.user))
+    except VerificationError as exc:
+        return Response({"error": exc.message, "code": exc.code}, status=exc.http_status)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def whatsapp_verify_confirm(request):
+    """Body: ``otp``. A correct code marks the number as proved, so sign-in codes may also go to it."""
+    from .otp import VerificationError, confirm_verification
+
+    try:
+        confirm_verification(request.user, str(request.data.get("otp") or ""))
+    except VerificationError as exc:
+        return Response({"error": exc.message, "code": exc.code}, status=exc.http_status)
+    return Response(opt_in_status(request.user))
 
 
 @api_view(["GET"])
@@ -40,14 +68,32 @@ def whatsapp_status(request):
     return Response(status_summary())
 
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def whatsapp_inbound(request):
+    """Main Administrator only: the latest incoming messages. They are personal data, so no other role can read them."""
+    from iic_booking.department_modules.access import is_main_admin
+
+    from .models import WhatsAppInbound
+
+    if not is_main_admin(request.user):
+        return Response({"error": "Only the Main Administrator can see incoming WhatsApp messages."}, status=status.HTTP_403_FORBIDDEN)
+    rows = WhatsAppInbound.objects.select_related("user")[:100]
+    return Response({"retention_days": conf.retention_days(), "results": [
+        {"id": r.pk, "user_id": r.user_id, "from": r.from_e164, "kind": r.kind, "text": r.text, "action": r.action,
+         "meta_timestamp": r.meta_timestamp, "received_at": r.received_at} for r in rows]})
+
+
 @api_view(["GET", "POST"])
 @authentication_classes([])
 @permission_classes([AllowAny])
 def whatsapp_webhook(request):
-    """Meta's webhook. GET: subscription check (hub.verify_token). POST: signed delivery statuses and replies."""
+    """Meta's webhook. GET: subscription check (hub.verify_token). POST: signed delivery statuses and replies.
+    Works while sending is off (WHATSAPP_ENABLED), so the webhook can be verified and STOP honoured before any pilot."""
     if request.method == "GET":
         token = request.query_params.get("hub.verify_token", "")
-        if conf.verify_token() and token == conf.verify_token() and request.query_params.get("hub.mode") == "subscribe":
+        expected = conf.verify_token()
+        if expected and hmac.compare_digest(token.encode(), expected.encode()) and request.query_params.get("hub.mode") == "subscribe":
             return HttpResponse(request.query_params.get("hub.challenge", ""), content_type="text/plain")
         return HttpResponse(status=403)
     raw = request.body

@@ -110,6 +110,9 @@ def invalidate_audience_cache() -> None:
 def user_in_app_audience(user) -> bool:
     if user is None or not getattr(user, "is_authenticated", False):
         return False
+    # Test accounts of any type may always try the app, so it can be tested without opening it to real users of that type.
+    if getattr(user, "is_test_account", False):
+        return True
     return getattr(user, "user_type", None) in set(audience_user_types())
 
 
@@ -121,7 +124,7 @@ def is_everyone(types: list[str] | None = None) -> bool:
 def audience_message(types: list[str] | None = None) -> str:
     types = audience_user_types() if types is None else types
     if is_everyone(types):
-        return "The IIC Booking app is available to every portal user."
+        return "The IIT Roorkee Equipment Booking app is available to every portal user."
     phrases = [_ROLE_PHRASES.get(t, t) for t in SELECTABLE_USER_TYPES if t in types]
     phrases = [p for p in phrases if p != "Administrators"] or phrases
     if not phrases:
@@ -131,7 +134,7 @@ def audience_message(types: list[str] | None = None) -> str:
     else:
         who = ", ".join(phrases[:-1]) + " and " + phrases[-1]
     return (
-        f"The IIC Booking app is currently available to {who}. "
+        f"The IIT Roorkee Equipment Booking app is currently available to {who}. "
         f"Please use {PORTAL_URL} in your browser."
     )
 
