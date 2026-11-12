@@ -42,6 +42,13 @@ from version import VERSION
 
 CONFIG = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "SRIC Invoice Signer", "config.json")
 TIMEOUT = (10, 60)
+EXPORT_KINDS = [
+    ("all", "All (zip)"),
+    ("json", "GSTR-1 JSON (upload)"),
+    ("invoice_register", "Invoice Register (Excel)"),
+    ("credit_note_register", "Credit Note Register (Excel)"),
+    ("b2b_register", "B2B e-invoices (Excel, verify GSTR-1)"),
+]
 
 
 class SignerError(Exception):
@@ -95,7 +102,8 @@ class Portal:
         return data
 
     def gstr1(self, start: str, end: str, kind: str) -> tuple[str, bytes]:
-        """(file name, content): the GSTR-1 B2C export built by the portal; one file per month, a zip for several."""
+        """(file name, content): a monthly B2C file built by the portal (``kind``: json, xlsx, invoice_register,
+        credit_note_register, or all three in one zip); one file per month, a zip for several."""
         import re
 
         from urllib.parse import urlencode
@@ -587,21 +595,25 @@ def gui() -> int:
         refresh()
 
     # --- GSTR-1 export (built by the portal; one file per month, a zip when the range covers several) ---
-    export = tk.LabelFrame(root, text="GSTR-1 export (B2C invoices: buyers without a GSTIN)")
+    export = tk.LabelFrame(root, text="Monthly export: GSTR-1 JSON and registers")
     export.pack(fill="x", padx=12, pady=(0, 6))
     import datetime as _dt
 
     first = _dt.date.today().replace(day=1)
-    tk.Label(export, text="From").pack(side="left", padx=(6, 2))
+    row1 = tk.Frame(export)
+    row1.pack(fill="x")
+    row2 = tk.Frame(export)
+    row2.pack(fill="x")
+    tk.Label(row1, text="From").pack(side="left", padx=(6, 2))
     from_var = tk.StringVar(value=first.isoformat())
-    tk.Entry(export, textvariable=from_var, width=12).pack(side="left")
-    tk.Label(export, text="To").pack(side="left", padx=(8, 2))
+    tk.Entry(row1, textvariable=from_var, width=12).pack(side="left")
+    tk.Label(row1, text="To").pack(side="left", padx=(8, 2))
     to_var = tk.StringVar(value=_dt.date.today().isoformat())
-    tk.Entry(export, textvariable=to_var, width=12).pack(side="left")
-    kind_var = tk.StringVar(value="json")
-    tk.Radiobutton(export, text="JSON (GST offline tool / portal upload)", variable=kind_var, value="json").pack(
-        side="left", padx=(10, 0))
-    tk.Radiobutton(export, text="Excel (to enter by hand)", variable=kind_var, value="xlsx").pack(side="left")
+    tk.Entry(row1, textvariable=to_var, width=12).pack(side="left")
+    tk.Label(row1, text="(one file of each kind per month; a zip when there are several)").pack(side="left", padx=8)
+    kind_var = tk.StringVar(value="all")
+    for value, text in EXPORT_KINDS:
+        tk.Radiobutton(row2, text=text, variable=kind_var, value=value).pack(side="left", padx=(6, 0))
 
     def save_gstr1():
         if state["portal"] is None:
@@ -614,13 +626,13 @@ def gui() -> int:
             return
         ext = os.path.splitext(name)[1]
         path = filedialog.asksaveasfilename(initialfile=name, defaultextension=ext,
-                                            filetypes=[("GSTR-1 file", f"*{ext}"), ("All files", "*.*")])
+                                            filetypes=[("Export file", f"*{ext}"), ("All files", "*.*")])
         if path:
             with open(path, "wb") as fh:
                 fh.write(data)
-            say(f"Saved {path}" + (" (one file per month inside)" if ext == ".zip" else ""))
+            say(f"Saved {path}" + (" (the month's files inside)" if ext == ".zip" else ""))
 
-    tk.Button(export, text="Save GSTR-1 file...", command=save_gstr1).pack(side="right", padx=6)
+    tk.Button(row1, text="Save export...", command=save_gstr1).pack(side="right", padx=6)
 
     actions = tk.Frame(root)
     actions.pack(fill="x", padx=12, pady=(0, 4))
@@ -649,9 +661,12 @@ def main(argv=None) -> int:
     ap.add_argument("--token-label", help="token label, when several tokens are plugged in")
     ap.add_argument("--pkcs12", help="TEST DSC file, sandbox demonstration only")
     ap.add_argument("--all", action="store_true", help="sign every invoice waiting")
-    ap.add_argument("--gstr1", nargs=2, metavar=("FROM", "TO"), help="save the GSTR-1 (B2C) export, dates YYYY-MM-DD")
-    ap.add_argument("--gstr1-format", choices=("json", "xlsx"), default="json")
-    ap.add_argument("--out", default=".", help="folder for the GSTR-1 file")
+    ap.add_argument("--gstr1", nargs=2, metavar=("FROM", "TO"),
+                    help="save the monthly B2C export (GSTR-1 JSON and registers), dates YYYY-MM-DD")
+    ap.add_argument("--gstr1-format", choices=[k for k, _t in EXPORT_KINDS] + ["xlsx"], default="json",
+                    help="json: GSTR-1 JSON; invoice_register / credit_note_register: Excel registers; all: the "
+                         "four in one zip; b2b_register: e-invoices, to verify GSTR-1; xlsx: the offline tool's Excel template")
+    ap.add_argument("--out", default=".", help="folder for the exported file")
     ap.add_argument("--invoice", action="append", help="sign this invoice number (repeatable)")
     args = ap.parse_args(argv)
     if args.self_test:
