@@ -181,6 +181,22 @@ def create_session(*, payload: dict, request=None, actor=None) -> tuple[Provisio
         device_type=device_type,
     )
 
+    # One-click installer: a setup key stands in for the administrator who downloaded the
+    # package (single use, short-lived). It fixes the department and never mixes with a
+    # different signed-in user.
+    setup_key = None
+    raw_setup_key = str(payload.get("setup_key") or "").strip()
+    if raw_setup_key:
+        from iic_booking.device_provisioning import setup_keys as setup_keys_mod
+
+        setup_key = setup_keys_mod.consume(
+            raw_setup_key,
+            device_type=device_type,
+            client_ip=_client_ip(request),
+            mark=False,
+        )
+        actor = setup_key.created_by
+
     # Resolve department: explicit payload, else authenticated admin's department.
     department = None
     raw_dept = payload.get("department_id")
@@ -193,6 +209,8 @@ def create_session(*, payload: dict, request=None, actor=None) -> tuple[Provisio
             raise ValueError("department_not_found")
     elif actor is not None and getattr(actor, "department_id", None):
         department = getattr(actor, "department", None)
+    if setup_key is not None:
+        department = setup_key.department
 
     dept_policy = policy_mod.get_policy(department) if department else None
     # Departments that predate R.2.3 have no policy row and previously fell back to
@@ -234,6 +252,12 @@ def create_session(*, payload: dict, request=None, actor=None) -> tuple[Provisio
             requested_equipment_id = int(raw_eq)
         except (TypeError, ValueError):
             raise ValueError("equipment_not_found") from None
+
+    if setup_key is not None:
+        # Burn the key only once every validation above has passed.
+        from iic_booking.device_provisioning import setup_keys as setup_keys_mod
+
+        setup_keys_mod.claim(setup_key)
 
     proof = secrets.token_urlsafe(32)
     now = timezone.now()
@@ -287,6 +311,11 @@ def create_session(*, payload: dict, request=None, actor=None) -> tuple[Provisio
         detail={"device_type": device_type, "hostname": hostname, "fingerprint": fingerprint},
         client_ip=session.client_ip,
     )
+
+    if setup_key is not None:
+        from iic_booking.device_provisioning import setup_keys as setup_keys_mod
+
+        setup_keys_mod.mark_session(setup_key, session, client_ip=client_ip)
 
     if requested_equipment_id and device_type == DeviceType.EQUIPMENT_PC:
         write_audit(

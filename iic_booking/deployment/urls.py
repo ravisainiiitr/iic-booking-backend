@@ -2,7 +2,7 @@
 
 from django.urls import path
 
-from iic_booking.deployment import mobile_app_views, views
+from iic_booking.deployment import mobile_app_views, views, wizard_one_click
 
 app_name = "deployment"
 
@@ -31,6 +31,16 @@ urlpatterns = [
         "wizard/releases/<uuid:release_id>/download-ticket/",
         views.wizard_download_ticket,
         name="wizard-ticket",
+    ),
+    path(
+        "wizard/releases/latest/one-click-ticket/",
+        wizard_one_click.wizard_one_click_ticket,
+        name="wizard-one-click-ticket",
+    ),
+    path(
+        "wizard/one-click/<str:token>/",
+        wizard_one_click.wizard_one_click_download,
+        name="wizard-one-click-download",
     ),
     path(
         "wizard/download/<str:token>/",
