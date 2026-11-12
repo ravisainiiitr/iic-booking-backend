@@ -50,7 +50,7 @@ def _ready(equipment, admin):
     clear_token_cache()
     return save_details(admin, equipment.pk, {"equipment_make": "Bruker", "equipment_srno": "SN-42", "istem_department_id": "164",
                                               "funding_agency_id": "109", "funding_agency_type": "Internal Funding",
-                                              "supplier_name": "Bruker India"})
+                                              "supplier_name": "Bruker India", "alert_mailid": "oic.xrf@iitr.ac.in"})
 
 
 def test_reference_lists_are_stored_with_their_ids():
@@ -71,7 +71,10 @@ def test_details_are_prefilled_and_missing_fields_named():
     assert body["saved"] is False
     assert body["details"]["equipment_make"] == "Bruker" and body["details"]["equipment_model"] == "S8 Tiger"
     assert body["details"]["istem_department_id"] == "164"
-    assert set(body["problems"]) == {"equipment_srno", "funding_agency_id", "funding_agency_type"}
+    assert set(body["problems"]) == {"equipment_srno", "funding_agency_id", "funding_agency_type", "alert_mailid"}
+    # The two support answers default to No.
+    assert (body["details"]["pre_experiment_support"], body["details"]["post_experiment_support"]) == ("No", "No")
+    assert body["choices"]["yes_no"] == [{"id": "Yes", "name": "Yes"}, {"id": "No", "name": "No"}]
 
 
 def test_only_the_main_admin():
@@ -177,3 +180,27 @@ def test_every_documented_field_is_sent_and_istem_example_values_are_accepted():
     assert payload["equipment_project_id"] == "" and payload["pooling_status"] == "" and payload["last_amc_done"] == ""
     assert payload["equipment_fov_rate"] == "" and payload["supplier_email_id"] == ""
     assert save_details(admin, equipment.pk, {"category": "Unknown"})["problems"]["category"]
+
+
+def test_alert_email_and_support_answers_are_sent_and_checked():
+    """[STAGING 2026-11-12] I-STEM refuses Equipment Create without alert_mailid, pre_experiment_support and
+    post_experiment_support (none of them in its Swagger)."""
+    admin = _admin()
+    equipment = _equipment(_department("C"), "XRF")
+    _ready(equipment, admin)
+    payload = build_payload(IstemEquipmentDetails.objects.get(equipment=equipment), "213")
+    assert (payload["alert_mailid"], payload["pre_experiment_support"], payload["post_experiment_support"]) == (
+        "oic.xrf@iitr.ac.in", "No", "No")
+    problems = save_details(admin, equipment.pk, {"alert_mailid": "not-an-email", "pre_experiment_support": "Maybe"})["problems"]
+    assert set(problems) == {"alert_mailid", "pre_experiment_support"}
+    assert save_details(admin, equipment.pk, {"alert_mailid": "lab@iitr.ac.in", "pre_experiment_support": "Yes"})["problems"] == {}
+
+
+def test_alert_email_defaults_to_the_officer_in_charge():
+    from iic_booking.equipment.models import EquipmentManager
+    from iic_booking.users.tests.factories import UserFactory
+
+    equipment = _equipment(_department("C"), "XRF")
+    oic = UserFactory(email="oic.default@iitr.ac.in")
+    EquipmentManager.objects.create(equipment=equipment, manager=oic)
+    assert get_details(_admin(), equipment.pk)["details"]["alert_mailid"] == "oic.default@iitr.ac.in"

@@ -33,6 +33,10 @@ FACILITIES_PATH = "api/facilities"  # GET -> equipment_facility_id
 CREATE_EQUIPMENT_REQUIRED_FIELDS = (
     "equipment_name", "equipment_make", "equipment_srno", "equipment_department_id", "equipment_agency_id",
     "funding_agency_type",
+    # [STAGING 2026-11-12] Not in the Swagger, but refused without them: "The Alert to be sent (Email id) field is
+    # required", "The Pre-Experiment Support field is required", "The Post-Experiment Support field is required".
+    # Yes / No accepted for the two support fields (equipment 61421 created with No / No).
+    "alert_mailid", "pre_experiment_support", "post_experiment_support",
 )
 CREATE_EQUIPMENT_OPTIONAL_FIELDS = (
     "institute_id", "equipment_model", "equipment_abbr", "equipment_location", "equipment_website",
