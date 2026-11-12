@@ -12,7 +12,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from django.db.models import Q
 from django.utils import timezone
 
 from iic_booking.research_copilot.services.booking_refs import display_ref
@@ -420,9 +419,10 @@ def wallet_transactions(turn: Turn, payload: dict[str, Any]) -> dict[str, Any]:
         .select_related("sub_wallet__department")
         .order_by("-created_at")
     )
-    if caps.wallet_is_shared:
-        # Same visibility as the Wallet page: on a shared wallet a student sees only their own debits plus credits.
-        qs = qs.filter(Q(related_user_id=turn.user.pk) | Q(transaction_type=SubWalletTransaction.TransactionType.CREDIT))
+    # Same visibility as the Wallet page (owner and internal IITR students see every transaction).
+    from iic_booking.users.wallet_visibility import visible_wallet_transactions
+
+    qs = visible_wallet_transactions(turn.user, caps.wallet, qs)
     rows = list(qs[:MAX_ROWS])
     if not rows:
         lines = ["No wallet transactions yet."]
