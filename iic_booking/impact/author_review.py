@@ -127,7 +127,8 @@ def recent_works(candidate: ResearcherAuthorCandidate, limit: int = 5) -> list[d
 # --------------------------------------------------------------------------- decisions
 def decide(actor, researcher, *, confirm_ids: list[int], reject_ids: list[int]) -> dict:
     """Confirm and/or reject the researcher's waiting records. Only waiting (or earlier-decided) records of this
-    researcher can be changed; automatic links are left alone. Returns the researcher's updated state."""
+    researcher can be changed. Automatic links are changed only by the researcher themself (the sign-in prompt asks
+    every faculty member to confirm them); administrators leave them alone. Returns the researcher's updated state."""
     if not can_decide_for(actor, researcher):
         raise AuthorReviewError("You cannot confirm author records for this researcher.", status=403, code="forbidden")
     confirm_ids, reject_ids = set(map(int, confirm_ids or [])), set(map(int, reject_ids or []))
@@ -143,13 +144,15 @@ def decide(actor, researcher, *, confirm_ids: list[int], reject_ids: list[int]) 
         if missing:
             raise AuthorReviewError("Some records do not belong to this researcher.", status=404, code="not_found")
         now = timezone.now()
+        is_self = actor.pk == researcher.pk
         for pk, c in rows.items():
-            if c.status == AuthorLinkStatus.AUTO_LINKED:
-                continue  # automatic links are not changed here
+            if c.status == AuthorLinkStatus.AUTO_LINKED and not is_self:
+                continue  # only the researcher confirms or rejects an automatic link
             new = AuthorLinkStatus.CONFIRMED if pk in confirm_ids else AuthorLinkStatus.REJECTED
             if c.status == new:
                 continue
-            newly_confirmed += new == AuthorLinkStatus.CONFIRMED
+            # An automatic link the researcher confirms was already being scanned: nothing new to look up.
+            newly_confirmed += new == AuthorLinkStatus.CONFIRMED and c.status != AuthorLinkStatus.AUTO_LINKED
             c.status, c.decided_by, c.decided_at = new, actor, now
             c.save(update_fields=["status", "decided_by", "decided_at", "updated_at"])
         if newly_confirmed:
@@ -157,6 +160,49 @@ def decide(actor, researcher, *, confirm_ids: list[int], reject_ids: list[int]) 
     out = researcher_out(researcher, actor)
     out["scan_started"] = bool(newly_confirmed)
     return out
+
+
+SELF_SEARCH_CACHE = "impact:author-self-search:{}"
+SELF_SEARCH_EVERY_SECONDS = 7 * 24 * 3600
+
+
+def start_self_search(user) -> bool:
+    """A faculty member with no author records yet: search OpenAlex by their name (and the institute) in the
+    background, at most once a week, so the sign-in prompt has records to show next time. True when queued."""
+    from iic_booking.users.models.user_type import UserType
+
+    if getattr(user, "user_type", None) != UserType.FACULTY:
+        return False
+    if ResearcherAuthorCandidate.objects.filter(user=user).exists():
+        return False
+    from .author_linking import institute_ror
+
+    if not institute_ror():
+        return False
+    if not cache.add(SELF_SEARCH_CACHE.format(user.pk), 1, SELF_SEARCH_EVERY_SECONDS):
+        return False
+    from .tasks import impact_author_self_search_task
+
+    try:
+        impact_author_self_search_task.delay(user.pk)
+    except Exception:  # broker down: try again on a later sign-in
+        cache.delete(SELF_SEARCH_CACHE.format(user.pk))
+        logger.warning("could not queue author search user=%s", user.pk, exc_info=True)
+        return False
+    return True
+
+
+def self_search(user_id: int) -> dict:
+    from . import author_linking
+
+    user = get_user_model().objects.filter(pk=user_id, is_active=True).first()
+    if user is None:
+        return {"skipped": "user not found"}
+    cands = author_linking.link_user(user, apply=True)
+    linked = [c for c in cands if c["status"] == AuthorLinkStatus.AUTO_LINKED]
+    if linked:
+        _start_follow_up(user.pk)
+    return {"candidates": len(cands), "auto_linked": len(linked)}
 
 
 def _start_follow_up(user_id: int) -> None:
