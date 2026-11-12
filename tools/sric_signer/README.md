@@ -41,14 +41,18 @@ the SRIC signatory's DSC token, on the signatory's own computer (Dean SRIC propo
 
 6. **Monthly export: GSTR-1 JSON and registers.**
    - Pick the dates in the *Monthly export* row and one of:
-     - **All three (zip)**: the three files below for each month.
+     - **All (zip)**: the four files below for each month.
      - **GSTR-1 JSON (upload)**: the file to upload to the GST portal or offline tool.
      - **Invoice Register (Excel)**: invoice by invoice: buyer, place of supply, taxes, receipt, booking, DSC
        signature, GSTR-1 table, and credit notes issued against it.
      - **Credit Note Register (Excel)**: credit note by credit note, with the original invoice's number, date, value
        and return period, and how it goes into GSTR-1.
+     - **B2B e-invoices (Excel, verify GSTR-1)**: the e-invoices and their credit notes (buyers with a GSTIN), with
+       IRN and acknowledgement and the GSTR-1 table each should appear in by itself (4A B2B, 9B CDNR). Compare it
+       with the auto-populated GSTR-1 on the GST portal and fill *Found in GSTR-1 (Y/N)*.
    - Click **Save export...**. The portal builds the files: one of each per month, a zip when there are several.
-   - Only documents to buyers without a GSTIN are included; e-invoices reach GSTR-1 automatically.
+   - The JSON and the first two registers cover buyers without a GSTIN; e-invoices reach GSTR-1 automatically,
+     which the B2B register lets SRIC verify.
    - Documents still waiting for the DSC are listed in the registers as *not in the JSON*: sign them, then export
      again. The registers' totals add up only what the JSON contains.
 

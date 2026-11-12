@@ -25,7 +25,7 @@ def test_gstr1_request_and_file_name(monkeypatch):
 def test_all_three_files_and_the_registers_are_offered(monkeypatch, tmp_path):
     """The window and the command line offer GSTR-1 JSON, Invoice Register, Credit Note Register and all three."""
     kinds = [k for k, _t in sric_signer.EXPORT_KINDS]
-    assert kinds == ["all", "json", "invoice_register", "credit_note_register"]
+    assert kinds == ["all", "json", "invoice_register", "credit_note_register", "b2b_register"]
 
     class Zip(Resp):
         content = b"PK\x03\x04"

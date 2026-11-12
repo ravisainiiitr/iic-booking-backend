@@ -96,7 +96,7 @@ def test_credit_note_register_gives_the_original_invoice(factory, ext_on, django
     assert Decimal(str(irow["Net Value"])) == inv.total - note.total
 
 
-def test_all_three_files_per_month_in_one_zip(invoices):  # noqa: F811
+def test_all_files_per_month_in_one_zip(invoices):  # noqa: F811
     import jsonschema
 
     start, end = _this_month()
@@ -107,14 +107,14 @@ def test_all_three_files_per_month_in_one_zip(invoices):  # noqa: F811
         files = sorted(zf.namelist())
         assert files == sorted([f"CreditNoteRegister-B2C-05AAALI0033R1Z5-{fp}-sandbox.xlsx",
                                 f"GSTR1-B2C-05AAALI0033R1Z5-{fp}-sandbox.json",
-                                f"InvoiceRegister-B2C-05AAALI0033R1Z5-{fp}-sandbox.xlsx", "READ-ME.txt"])
+                                f"InvoiceRegister-B2C-05AAALI0033R1Z5-{fp}-sandbox.xlsx", "READ-ME.txt", f"B2B-EInvoiceRegister-05AAALI0033R1Z5-{fp}-sandbox.xlsx"])
         jsonschema.validate(json.loads(zf.read(f"GSTR1-B2C-05AAALI0033R1Z5-{fp}-sandbox.json")), GSTR1_B2C_SCHEMA)
         _wb, _h, rows, _t = _sheet(zf.read(f"CreditNoteRegister-B2C-05AAALI0033R1Z5-{fp}-sandbox.xlsx"))
         assert rows == []  # header and an empty totals row: no credit notes this month
     prev = (start - timezone.timedelta(days=1)).replace(day=1)
     _name, data, _ = gstr1.export(prev, end, "all")
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        assert len([f for f in zf.namelist() if f != "READ-ME.txt"]) == 6  # three per month
+        assert len([f for f in zf.namelist() if f != "READ-ME.txt"]) == 8  # four per month
 
 
 def test_signing_utility_downloads_the_registers(invoices):  # noqa: F811
@@ -126,10 +126,41 @@ def test_signing_utility_downloads_the_registers(invoices):  # noqa: F811
     url = f"/api/v1/gst-einvoice/signer/api/gstr1/?from={start.isoformat()}&to={end.isoformat()}"
     tool = client_for()
     for kind, stem in (("invoice_register", "InvoiceRegister"), ("credit_note_register", "CreditNoteRegister"),
-                       ("all", "GSTR1-and-registers")):
+                       ("b2b_register", "B2B-EInvoiceRegister"), ("all", "GSTR1-and-registers")):
         r = tool.get(f"{url}&kind={kind}", HTTP_AUTHORIZATION=f"SricSigner {token}")
         assert r.status_code == 200 and stem in r["Content-Disposition"], kind
     assert tool.get(f"{url}&kind=pdf", HTTP_AUTHORIZATION=f"SricSigner {token}").status_code == 400
     body = client_for(make_user(user_type="finance")).get(
         f"/api/v1/gst-einvoice/gstr1/?from={start.isoformat()}&to={end.isoformat()}").json()
     assert set(body["kinds"]) == set(gstr1.KINDS)
+
+
+def test_b2b_register_lists_e_invoices_to_verify_gstr1(invoices):  # noqa: F811
+    start, end = _this_month()
+    name, data, _ = gstr1.export(start, end, "b2b_register")
+    assert name.startswith("B2B-EInvoiceRegister-05AAALI0033R1Z5-")
+    wb, headers, rows, total = _sheet(data)
+    assert headers == [h for h, _w in registers.B2B_COLUMNS]
+    [row] = rows  # only the B2B e-invoice; no B2C invoice is listed
+    b2b = EInvoice.objects.get(pk=invoices["b2b"].pk)
+    assert (row["Document No."], row["Buyer GSTIN"]) == (b2b.invoice_number, "07AAACX0000X1Z2")
+    assert b2b.irn and row["IRN Generated"] == "Yes"
+    assert row["Expected in GSTR-1 Table"] == "4A B2B" and row["IRN"] == b2b.irn
+    assert row["Sandbox Mock (not a real IRN)"] == "Yes" and total["Document Value"] == float(b2b.total)
+    assert row["Found in GSTR-1 (Y/N)"] is None  # for SRIC to fill while comparing
+    assert any("auto-populated GSTR-1" in (r[0].value or "") for r in wb["read me"].iter_rows())
+
+
+def test_b2b_credit_note_is_expected_in_cdnr(factory, ext_on, django_capture_on_commit_callbacks):
+    booking, inv = _issued(factory)  # Delhi buyer with a GSTIN: IRN from the mock
+    credit_notes.allow(main_admin(), inv.pk, "Instrument down for maintenance; refund with GST")
+    _refund(booking, django_capture_on_commit_callbacks)
+    note = EInvoice.objects.get(doc_type=DocType.CREDIT_NOTE)
+    start, end = _this_month()
+    _wb, _h, rows, total = _sheet(gstr1.export(start, end, "b2b_register")[1])
+    by_no = {r["Document No."]: r for r in rows}
+    crn = by_no[note.invoice_number]
+    assert (crn["Document Type"], crn["Expected in GSTR-1 Table"], crn["Original Invoice No."]) == (
+        "Credit Note (CRN)", "9B CDNR", inv.invoice_number)
+    assert by_no[inv.invoice_number]["Expected in GSTR-1 Table"] == "4A B2B"
+    assert total["Document Value"] == 0.0  # invoice less its full credit note

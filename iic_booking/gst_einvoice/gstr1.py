@@ -334,7 +334,8 @@ KINDS = {
     "xlsx": "GSTR-1 Excel (the offline tool's template sheets)",
     "invoice_register": "Invoice Register (Excel, invoice by invoice)",
     "credit_note_register": "Credit Note Register (Excel, with the original invoice)",
-    "all": "All three: GSTR-1 JSON, Invoice Register and Credit Note Register",
+    "b2b_register": "B2B E-Invoice Register (Excel, to verify GSTR-1 auto-population)",
+    "all": "All: GSTR-1 JSON, Invoice Register, Credit Note Register and B2B E-Invoice Register",
 }
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -354,6 +355,9 @@ def _month_files(y: int, m: int, start: date, end: date, kind: str) -> tuple[lis
         files.append((registers.filename(reg), registers.to_excel(reg)))
     if kind in ("credit_note_register", "all"):
         reg = registers.credit_note_register(y, m, start=start, end=end)
+        files.append((registers.filename(reg), registers.to_excel(reg)))
+    if kind in ("b2b_register", "all"):
+        reg = registers.b2b_register(y, m, start=start, end=end)
         files.append((registers.filename(reg), registers.to_excel(reg)))
     return files, f"{e.fp}: " + ("; ".join(e.warnings) or "no warnings")
 
@@ -378,11 +382,13 @@ def export(start: date, end: date, kind: str) -> tuple[str, bytes, str]:
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, data in files:
             zf.writestr(name, data)
-        zf.writestr("READ-ME.txt", "One file of each kind per month (SRIC files GSTR-1 monthly). B2C documents only "
-                    "(buyers without a GSTIN). SANDBOX DEMONSTRATION.\n\n" + "\n".join(notes))
+        zf.writestr("READ-ME.txt", "One file of each kind per month (SRIC files GSTR-1 monthly). GSTR-1 JSON and the Invoice / "
+                    "Credit Note Registers: B2C documents (buyers without a GSTIN). B2B E-Invoice Register: "
+                    "e-invoices, to verify GSTR-1 auto-population. SANDBOX DEMONSTRATION.\n\n" + "\n".join(notes))
     gstin = _supplier_gstin()
     label = {"all": "GSTR1-and-registers", "json": "GSTR1", "xlsx": "GSTR1",
-             "invoice_register": "InvoiceRegister", "credit_note_register": "CreditNoteRegister"}[kind]
+             "invoice_register": "InvoiceRegister", "credit_note_register": "CreditNoteRegister",
+             "b2b_register": "B2B-EInvoiceRegister"}[kind]
     first, last = f"{months[0][1]:02d}{months[0][0]}", f"{months[-1][1]:02d}{months[-1][0]}"
     period = first if first == last else f"{first}-to-{last}"
     return f"{label}-B2C-{gstin}-{period}-sandbox.zip", buf.getvalue(), "application/zip"

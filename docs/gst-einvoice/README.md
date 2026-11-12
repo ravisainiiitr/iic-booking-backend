@@ -142,7 +142,7 @@ the GST system fills them into GSTR-1 from the IRP.
 ### Where to get it
 - In the portal: GST invoices → Monthly register → *GSTR-1 export*.
 - In the SRIC Invoice Signer: the *Monthly export* row.
-- API: `GET /api/v1/gst-einvoice/gstr1/?from=YYYY-MM-DD&to=YYYY-MM-DD&kind=preview|json|xlsx|invoice_register|credit_note_register|all` (SRIC reviewers), or
+- API: `GET /api/v1/gst-einvoice/gstr1/?from=YYYY-MM-DD&to=YYYY-MM-DD&kind=preview|json|xlsx|invoice_register|credit_note_register|b2b_register|all` (SRIC reviewers), or
   `/signer/api/gstr1/` (the signing utility's device token).
 
 ### Files
@@ -159,7 +159,14 @@ the GST system fills them into GSTR-1 from the IRP.
 - **Credit Note Register** (`credit_note_register`): one row per B2C credit note of the month: number, date, status,
   whether it is in the JSON, GSTR-1 treatment (CDNUR or netted in B2CS), the original invoice's number, date, value,
   return period and table, buyer, place of supply, taxes, reason, refund, receipt, booking, signed on/by, DSC serial.
-- **All three** (`all`): GSTR-1 JSON, Invoice Register and Credit Note Register of each month in one zip.
+- **B2B E-Invoice Register** (`b2b_register`): the e-invoices and their credit notes (buyers with a GSTIN) of the
+  month, to verify that the GST system carried them into GSTR-1: type, number, date, status, IRN generated, expected
+  GSTR-1 table (4A B2B / 9B CDNR), buyer GSTIN, name and state, place of supply, taxes, value, IRN, Ack no. and date,
+  whether the IRN came from the sandbox mock, the original invoice of a credit note, receipt, booking, and two blank
+  columns for SRIC (*Found in GSTR-1 (Y/N)*, *Remarks*). Its totals are net of credit notes, documents with an IRN
+  only. Mock IRNs never appear on the GST portal.
+- **All** (`all`): GSTR-1 JSON, Invoice Register, Credit Note Register and B2B E-Invoice Register of each month in one
+  zip.
 - The registers list every numbered document, including those still waiting for the DSC (marked *not in the JSON*);
   their totals row adds up only the rows the JSON contains, so they reconcile with it.
 

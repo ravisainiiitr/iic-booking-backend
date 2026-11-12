@@ -8,8 +8,11 @@ DSC through the signing utility):
 
 Both list every numbered document of the month, including those still waiting for the DSC; the column
 "In GSTR-1 JSON" says which rows the JSON of the same month contains, and the totals row adds up only those, so the
-registers reconcile with the JSON. B2B documents (with a GSTIN) are e-invoices and reach GSTR-1 from the IRP; they
-are not in these registers.
+registers reconcile with the JSON.
+
+* B2B E-Invoice Register (Excel): the e-invoices and their credit notes (buyers with a GSTIN), with IRN and
+  acknowledgement and the GSTR-1 table each should appear in by itself (4A B2B / 9B CDNR), so SRIC can verify that the
+  GST system carried them into GSTR-1.
 """
 
 from __future__ import annotations
@@ -184,6 +187,68 @@ def credit_note_register(year: int, month: int, *, start: date | None = None, en
     return Register("Credit Note Register", CREDIT_NOTE_COLUMNS, rows, totals, notes, year, month, s.supplier_gstin)
 
 
+B2B_COLUMNS = [
+    ("Sl. No.", 7), ("Document Type", 14), ("Document No.", 16), ("Document Date", 12), ("Status", 22),
+    ("IRN Generated", 10), ("Expected in GSTR-1 Table", 18), ("Buyer GSTIN", 17), ("Buyer Name", 28),
+    ("Buyer State", 16), ("Place of Supply", 18), ("Supply", 10), ("Reverse Charge", 9), ("SAC", 9),
+    ("GST Rate %", 9), ("Taxable Value", 14), ("CGST", 12), ("SGST", 12), ("IGST", 12), ("Document Value", 14),
+    ("IRN", 40), ("Ack No.", 18), ("Ack Date", 18), ("Sandbox Mock (not a real IRN)", 12),
+    ("Original Invoice No.", 16), ("Original Invoice Date", 12), ("Receipt No.", 20), ("Booking Ref.", 16),
+    ("Found in GSTR-1 (Y/N)", 12), ("Remarks", 30),
+]
+
+
+def b2b_register(year: int, month: int, *, start: date | None = None, end: date | None = None) -> Register:
+    """B2B e-invoices and their credit notes (buyers with a GSTIN) of the month, to check against GSTR-1: the GST
+    system copies each IRN-registered document into GSTR-1 (Table 4A B2B, Table 9B CDNR) by itself. SRIC fills the
+    last two columns while comparing with the auto-populated GSTR-1."""
+    from .models import ISSUED_STATUSES, DocType, EInvoice, EinvoiceSettings, SupplyType
+
+    s = EinvoiceSettings.get()
+    lo, hi = _month_bounds(year, month, start, end)
+    qs = (EInvoice.objects.filter(supply_type=SupplyType.B2B, invoice_date__gte=lo, invoice_date__lte=hi)
+          .exclude(invoice_number="").select_related("customer", "original_invoice").prefetch_related("lines")
+          .order_by("doc_type", "invoice_number"))
+    rows, totals = [], {k: ZERO for k in ("Taxable Value", "CGST", "SGST", "IGST", "Document Value")}
+    with_irn = without = mock = 0
+    for i, doc in enumerate(qs, start=1):
+        crn = doc.doc_type == DocType.CREDIT_NOTE
+        has_irn = doc.status in ISSUED_STATUSES and bool(doc.irn)
+        sac, rate = _rates(doc)
+        c = doc.customer
+        orig = doc.original_invoice
+        rows.append([
+            i, "Credit Note (CRN)" if crn else "Invoice (INV)", doc.invoice_number, doc.invoice_date,
+            doc.get_status_display(), "Yes" if has_irn else "No",
+            ("9B CDNR" if crn else "4A B2B") if has_irn else "Not expected (no IRN yet)", c.gstin, c.legal_name,
+            _state(c.state_code), _state(doc.place_of_supply), "Inter-state" if doc.inter_state else "Intra-state",
+            "N", sac, rate, doc.taxable_value, doc.cgst, doc.sgst, doc.igst, doc.total, doc.irn, doc.ack_number,
+            _when(doc.ack_date), "Yes" if doc.simulated else "No", orig.invoice_number if orig else "",
+            orig.invoice_date if orig else None, doc.receipt_number, doc.booking_reference, "", "",
+        ])
+        if has_irn:
+            with_irn += 1
+            mock += doc.simulated
+            sign = -1 if crn else 1
+            for k, v in (("Taxable Value", doc.taxable_value), ("CGST", doc.cgst), ("SGST", doc.sgst),
+                         ("IGST", doc.igst), ("Document Value", doc.total)):
+                totals[k] += sign * v
+        else:
+            without += 1
+    notes = [f"B2B e-invoices and credit notes (buyers with a GSTIN) dated {lo:%d-%m-%Y} to {hi:%d-%m-%Y}: "
+             f"{len(rows)}; with an IRN: {with_irn}.",
+             "The GST system copies every document with an IRN into GSTR-1 by itself: invoices to Table 4A (B2B), "
+             "credit notes to Table 9B (CDNR). They are not in the B2C GSTR-1 JSON. Compare this register with the "
+             "auto-populated GSTR-1 on the GST portal and fill 'Found in GSTR-1 (Y/N)'.",
+             "Totals: net of credit notes (credit notes subtracted), documents with an IRN only."]
+    if without:
+        notes.append(f"{without} document(s) have no IRN yet and will not appear in GSTR-1 until registered.")
+    if mock:
+        notes.append(f"{mock} IRN(s) came from the sandbox mock, not from an IRP: they will never appear on the GST "
+                     "portal. This is a sandbox demonstration.")
+    return Register("B2B E-Invoice Register", B2B_COLUMNS, rows, totals, notes, year, month, s.supplier_gstin)
+
+
 def to_excel(reg: Register) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
@@ -192,7 +257,8 @@ def to_excel(reg: Register) -> bytes:
     ws = wb.active
     ws.title = reg.title
     headers = [h for h, _w in reg.columns]
-    ws.append([f"{reg.title} - B2C (buyers without a GSTIN) - GSTIN {reg.gstin} - return period {reg.fp} - "
+    scope = "B2B (buyers with a GSTIN)" if reg.title.startswith("B2B") else "B2C (buyers without a GSTIN)"
+    ws.append([f"{reg.title} - {scope} - GSTIN {reg.gstin} - return period {reg.fp} - "
                "SANDBOX DEMONSTRATION, not for filing"])
     ws["A1"].font = Font(bold=True, size=12)
     ws.append([])
@@ -205,7 +271,7 @@ def to_excel(reg: Register) -> bytes:
     for row in reg.rows:
         ws.append(row)
     total_row = [""] * len(headers)
-    total_row[1] = "Total (in GSTR-1 JSON)"
+    total_row[1] = "Total (with IRN, net)" if reg.title.startswith("B2B") else "Total (in GSTR-1 JSON)"
     for k, v in reg.totals.items():
         total_row[headers.index(k)] = v
     ws.append(total_row)
@@ -233,5 +299,7 @@ def to_excel(reg: Register) -> bytes:
 
 
 def filename(reg: Register) -> str:
+    if reg.title.startswith("B2B"):
+        return f"B2B-EInvoiceRegister-{reg.gstin}-{reg.fp}-sandbox.xlsx"
     stem = "InvoiceRegister" if reg.title == "Invoice Register" else "CreditNoteRegister"
     return f"{stem}-B2C-{reg.gstin}-{reg.fp}-sandbox.xlsx"

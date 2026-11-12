@@ -43,10 +43,11 @@ from version import VERSION
 CONFIG = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "SRIC Invoice Signer", "config.json")
 TIMEOUT = (10, 60)
 EXPORT_KINDS = [
-    ("all", "All three (zip)"),
+    ("all", "All (zip)"),
     ("json", "GSTR-1 JSON (upload)"),
     ("invoice_register", "Invoice Register (Excel)"),
     ("credit_note_register", "Credit Note Register (Excel)"),
+    ("b2b_register", "B2B e-invoices (Excel, verify GSTR-1)"),
 ]
 
 
@@ -594,7 +595,7 @@ def gui() -> int:
         refresh()
 
     # --- GSTR-1 export (built by the portal; one file per month, a zip when the range covers several) ---
-    export = tk.LabelFrame(root, text="Monthly export: GSTR-1 JSON and registers (B2C: buyers without a GSTIN)")
+    export = tk.LabelFrame(root, text="Monthly export: GSTR-1 JSON and registers")
     export.pack(fill="x", padx=12, pady=(0, 6))
     import datetime as _dt
 
@@ -664,7 +665,7 @@ def main(argv=None) -> int:
                     help="save the monthly B2C export (GSTR-1 JSON and registers), dates YYYY-MM-DD")
     ap.add_argument("--gstr1-format", choices=[k for k, _t in EXPORT_KINDS] + ["xlsx"], default="json",
                     help="json: GSTR-1 JSON; invoice_register / credit_note_register: Excel registers; all: the "
-                         "three in one zip; xlsx: the offline tool's Excel template")
+                         "four in one zip; b2b_register: e-invoices, to verify GSTR-1; xlsx: the offline tool's Excel template")
     ap.add_argument("--out", default=".", help="folder for the exported file")
     ap.add_argument("--invoice", action="append", help="sign this invoice number (repeatable)")
     args = ap.parse_args(argv)
