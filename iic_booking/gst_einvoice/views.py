@@ -456,7 +456,8 @@ def _gstr1_response(request):
     try:
         if kind == "preview":
             return Response({"months": gstr1.preview(start, end), "b2cl_limit": f"{gstr1.B2CL_LIMIT:.2f}",
-                             "format": {k: v for k, v in gstr1.FORMAT.items() if k != "excel_sheets"}})
+                             "format": {k: v for k, v in gstr1.FORMAT.items() if k != "excel_sheets"},
+                             "kinds": gstr1.KINDS})
         name, data, ctype = gstr1.export(start, end, kind)
     except ValueError as exc:
         raise EinvoiceError(str(exc), field="to") from exc

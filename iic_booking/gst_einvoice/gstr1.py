@@ -181,6 +181,13 @@ def build_month(year: int, month: int, *, start: date | None = None, end: date |
                     b2cs[key][k] += v[k]
 
     notes = credit_note_rows(lo, hi)
+    unsigned_notes = sorted(EInvoice.objects.filter(doc_type="CRN", supply_type=SupplyType.B2C,
+                                                    status=InvoiceStatus.AWAITING_SIGNATURE, invoice_date__gte=lo,
+                                                    invoice_date__lte=hi).exclude(invoice_number="")
+                            .values_list("invoice_number", flat=True))
+    if unsigned_notes:
+        warnings.append(f"{len(unsigned_notes)} B2C credit note(s) of this period still wait for the DSC and are not "
+                        "included: " + ", ".join(unsigned_notes) + ". Sign them before filing.")
     cdnur = []
     for note in (n for n in notes if n.supply_type == "B2C"):
         if note.original_b2cl:
@@ -322,27 +329,69 @@ def to_excel(export: MonthExport) -> bytes:
     return out.getvalue()
 
 
+KINDS = {
+    "json": "GSTR-1 JSON (upload to the GST portal / offline tool)",
+    "xlsx": "GSTR-1 Excel (the offline tool's template sheets)",
+    "invoice_register": "Invoice Register (Excel, invoice by invoice)",
+    "credit_note_register": "Credit Note Register (Excel, with the original invoice)",
+    "all": "All three: GSTR-1 JSON, Invoice Register and Credit Note Register",
+}
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _month_files(y: int, m: int, start: date, end: date, kind: str) -> tuple[list[tuple[str, bytes]], str]:
+    """The files of one month for ``kind`` and the month's warnings."""
+    from . import registers
+
+    e = build_month(y, m, start=start, end=end)
+    files = []
+    if kind in ("json", "all"):
+        files.append((e.filename("json"), to_json(e)))
+    if kind == "xlsx":
+        files.append((e.filename("xlsx"), to_excel(e)))
+    if kind in ("invoice_register", "all"):
+        reg = registers.invoice_register(y, m, start=start, end=end)
+        files.append((registers.filename(reg), registers.to_excel(reg)))
+    if kind in ("credit_note_register", "all"):
+        reg = registers.credit_note_register(y, m, start=start, end=end)
+        files.append((registers.filename(reg), registers.to_excel(reg)))
+    return files, f"{e.fp}: " + ("; ".join(e.warnings) or "no warnings")
+
+
 def export(start: date, end: date, kind: str) -> tuple[str, bytes, str]:
-    """(file name, content, content type) for [start, end]: one file per month, zipped when there are several."""
-    if kind not in ("json", "xlsx"):
-        raise ValueError("Choose json or xlsx.")
+    """(file name, content, content type) for [start, end]: one file per month and kind; a zip when there are several
+    (several months, or ``all``: GSTR-1 JSON + Invoice Register + Credit Note Register for each month)."""
+    if kind not in KINDS:
+        raise ValueError("Choose one of: " + ", ".join(KINDS) + ".")
     months = months_in(start, end)
     if len(months) > 24:
         raise ValueError("Choose at most 24 months.")
-    exports = [build_month(y, m, start=start, end=end) for y, m in months]
-    render = to_json if kind == "json" else to_excel
-    ctype = "application/json" if kind == "json" else \
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    if len(exports) == 1:
-        e = exports[0]
-        return e.filename(kind), render(e), ctype
+    files, notes = [], []
+    for y, m in months:
+        f, note = _month_files(y, m, start, end, kind)
+        files.extend(f)
+        notes.append(note)
+    if len(files) == 1:
+        name, data = files[0]
+        return name, data, "application/json" if name.endswith(".json") else XLSX
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for e in exports:
-            zf.writestr(e.filename(kind), render(e))
-        zf.writestr("READ-ME.txt", "One GSTR-1 file per month (SRIC files monthly). SANDBOX DEMONSTRATION.\n\n"
-                    + "\n".join(f"{e.fp}: " + ("; ".join(e.warnings) or "no warnings") for e in exports))
-    return f"GSTR1-B2C-{exports[0].fp}-to-{exports[-1].fp}-sandbox.zip", buf.getvalue(), "application/zip"
+        for name, data in files:
+            zf.writestr(name, data)
+        zf.writestr("READ-ME.txt", "One file of each kind per month (SRIC files GSTR-1 monthly). B2C documents only "
+                    "(buyers without a GSTIN). SANDBOX DEMONSTRATION.\n\n" + "\n".join(notes))
+    gstin = _supplier_gstin()
+    label = {"all": "GSTR1-and-registers", "json": "GSTR1", "xlsx": "GSTR1",
+             "invoice_register": "InvoiceRegister", "credit_note_register": "CreditNoteRegister"}[kind]
+    first, last = f"{months[0][1]:02d}{months[0][0]}", f"{months[-1][1]:02d}{months[-1][0]}"
+    period = first if first == last else f"{first}-to-{last}"
+    return f"{label}-B2C-{gstin}-{period}-sandbox.zip", buf.getvalue(), "application/zip"
+
+
+def _supplier_gstin() -> str:
+    from .models import EinvoiceSettings
+
+    return EinvoiceSettings.get().supplier_gstin
 
 
 def preview(start: date, end: date) -> list[dict]:
