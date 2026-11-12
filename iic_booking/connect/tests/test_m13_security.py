@@ -110,7 +110,11 @@ def test_unauthenticated_is_rejected_everywhere(world):
         path = fill(route, world)
         for method in ("get", "post", "put", "patch", "delete"):
             res = getattr(client_for(), method)(path, {}, format="json")
-            assert res.status_code in (401, 403, 404, 405), (method, path, res.status_code)
+            if route.endswith("/public/") and method == "get":
+                # The public preview is open by design (communities and General Discussions titles only).
+                assert res.status_code == 200, path
+            else:
+                assert res.status_code in (401, 403, 404, 405), (method, path, res.status_code)
             assert SECRET not in res.content.decode(errors="ignore"), (method, path)
 
 

@@ -631,6 +631,7 @@ REST_FRAMEWORK = {
         "mobile_refresh_ip": env("MOBILE_REFRESH_IP_THROTTLE_RATE", default="3000/hour"),
         # IITR Connect (per user). Writes = threads, replies, reactions, follows; reports and uploads are tighter.
         "connect_read": env("CONNECT_READ_THROTTLE_RATE", default="1200/hour"),
+        "connect_public": env("CONNECT_PUBLIC_THROTTLE_RATE", default="300/hour"),
         "connect_write": env("CONNECT_WRITE_THROTTLE_RATE", default="120/hour"),
         "connect_post": env("CONNECT_POST_THROTTLE_RATE", default="30/hour"),
         "connect_upload": env("CONNECT_UPLOAD_THROTTLE_RATE", default="60/hour"),

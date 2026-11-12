@@ -7,6 +7,7 @@ from .api import home
 from .api import knowledge
 from .api import moderation
 from .api import notifications
+from .api import public
 from .api import search
 from .api import threads
 from .api import views
@@ -15,6 +16,7 @@ app_name = "connect"
 
 urlpatterns = [
     path("bootstrap/", views.BootstrapView.as_view(), name="bootstrap"),
+    path("public/", public.PublicPreviewView.as_view(), name="public-preview"),
     path("home/", home.HomeView.as_view(), name="home"),
     path("search/", search.SearchView.as_view(), name="search"),
     path("suggest/", search.SuggestView.as_view(), name="suggest"),
