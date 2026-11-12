@@ -13,18 +13,16 @@ import pytest
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from iic_booking.sync.models import (
-    AgentCommand,
-    AgentCommandStatus,
-    AgentCommandType,
-    AgentDiagnosticState,
-    AgentHeartbeat,
-    AgentLifecycleStatus,
-    AgentSupportBundle,
-    AlertEvent,
-    DepartmentSyncAgent,
-    SecurityAuditEvent,
-)
+from iic_booking.sync.models import AgentCommand
+from iic_booking.sync.models import AgentCommandStatus
+from iic_booking.sync.models import AgentCommandType
+from iic_booking.sync.models import AgentDiagnosticState
+from iic_booking.sync.models import AgentHeartbeat
+from iic_booking.sync.models import AgentLifecycleStatus
+from iic_booking.sync.models import AgentSupportBundle
+from iic_booking.sync.models import AlertEvent
+from iic_booking.sync.models import DepartmentSyncAgent
+from iic_booking.sync.models import SecurityAuditEvent
 from iic_booking.sync.services import headless
 from iic_booking.sync.services.dataplane import CommandService
 from iic_booking.sync.services.heartbeat import HeartbeatService
@@ -185,7 +183,7 @@ def test_offline_alert_is_debounced_and_notified_once(settings):
 
     t0 = timezone.now()
     with patch("iic_booking.communication.service.CommunicationService.send_email") as send, patch(
-        "iic_booking.communication.in_app.notify_in_app"
+        "iic_booking.communication.in_app.notify_in_app",
     ) as bell:
         headless.run_all(now=t0)
         assert AgentDiagnosticState.objects.get(sync_agent=agent).health == "offline"
@@ -213,7 +211,7 @@ def test_recovery_resolves_and_tells_admins_once():
     DepartmentSyncAgent.objects.filter(pk=agent.pk).update(last_heartbeat_at=timezone.now() - timedelta(minutes=30))
     agent.refresh_from_db()
     with patch("iic_booking.communication.service.CommunicationService.send_email"), patch(
-        "iic_booking.communication.in_app.notify_in_app"
+        "iic_booking.communication.in_app.notify_in_app",
     ) as bell:
         headless.run_all(now=timezone.now())
         AlertEvent.objects.filter(sync_agent=agent).update(created_at=timezone.now() - timedelta(minutes=30))
@@ -294,7 +292,7 @@ def test_restart_has_cooldown_and_old_agents_refuse_new_actions():
 def test_support_bundle_is_stored_apart_and_downloadable():
     agent = _agent()
     cmd = AgentCommand.objects.create(
-        sync_agent=agent, command_type=AgentCommandType.COLLECT_SUPPORT_BUNDLE, status=AgentCommandStatus.ACKNOWLEDGED
+        sync_agent=agent, command_type=AgentCommandType.COLLECT_SUPPORT_BUNDLE, status=AgentCommandStatus.ACKNOWLEDGED,
     )
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -322,10 +320,10 @@ def test_support_bundle_is_stored_apart_and_downloadable():
 def test_bad_bundle_is_rejected_not_stored():
     agent = _agent()
     cmd = AgentCommand.objects.create(
-        sync_agent=agent, command_type=AgentCommandType.COLLECT_SUPPORT_BUNDLE, status=AgentCommandStatus.ACKNOWLEDGED
+        sync_agent=agent, command_type=AgentCommandType.COLLECT_SUPPORT_BUNDLE, status=AgentCommandStatus.ACKNOWLEDGED,
     )
     CommandService().complete(
-        agent, cmd.id, result_payload={"bundle_zip_base64": base64.b64encode(b"not a zip").decode()}
+        agent, cmd.id, result_payload={"bundle_zip_base64": base64.b64encode(b"not a zip").decode()},
     )
     cmd.refresh_from_db()
     assert "bundle_error" in cmd.result_payload

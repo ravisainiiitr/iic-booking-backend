@@ -28,19 +28,17 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from iic_booking.sync.admin.constants import heartbeat_timeout_seconds
-from iic_booking.sync.models import (
-    AgentDiagnosticState,
-    AgentHealthState,
-    AgentHeartbeat,
-    AgentLifecycleStatus,
-    AgentSupportBundle,
-    AlertEvent,
-    AlertLifecycleStatus,
-    AlertSeverity,
-    DepartmentSyncAgent,
-    SyncLogCategory,
-    SyncLogSeverity,
-)
+from iic_booking.sync.models import AgentDiagnosticState
+from iic_booking.sync.models import AgentHealthState
+from iic_booking.sync.models import AgentHeartbeat
+from iic_booking.sync.models import AgentLifecycleStatus
+from iic_booking.sync.models import AgentSupportBundle
+from iic_booking.sync.models import AlertEvent
+from iic_booking.sync.models import AlertLifecycleStatus
+from iic_booking.sync.models import AlertSeverity
+from iic_booking.sync.models import DepartmentSyncAgent
+from iic_booking.sync.models import SyncLogCategory
+from iic_booking.sync.models import SyncLogSeverity
 from iic_booking.sync.services.logging import write_sync_log
 
 logger = logging.getLogger(__name__)
@@ -185,7 +183,7 @@ def evaluate(agent: DepartmentSyncAgent, state: AgentDiagnosticState | None, *, 
     last = agent.last_heartbeat_at
     if last is None:
         return AgentHealthState.UNKNOWN, reasons + [
-            _reason("DSA_OFFLINE", "info", "The agent has never sent a heartbeat.")
+            _reason("DSA_OFFLINE", "info", "The agent has never sent a heartbeat."),
         ]
     timeout = heartbeat_timeout_seconds()
     silent = (now - last).total_seconds()
@@ -193,7 +191,7 @@ def evaluate(agent: DepartmentSyncAgent, state: AgentDiagnosticState | None, *, 
     if offline:
         mins = int(silent // 60)
         reasons.append(
-            _reason("DSA_OFFLINE", "critical", f"No heartbeat for {mins} min (last {timezone.localtime(last):%d %b %H:%M}).")
+            _reason("DSA_OFFLINE", "critical", f"No heartbeat for {mins} min (last {timezone.localtime(last):%d %b %H:%M})."),
         )
 
     diag = (state.diagnostics if state else None) or {}
@@ -243,7 +241,7 @@ def _diagnostic_reasons(diag: dict, state: AgentDiagnosticState | None, now) -> 
     if net.get("enabled"):
         if net.get("adapter_found") is False or net.get("adapter_up") is False:
             out.append(
-                _reason("EQUIPMENT_NETWORK_DOWN", "critical", "Equipment Network adapter is missing or disconnected.")
+                _reason("EQUIPMENT_NETWORK_DOWN", "critical", "Equipment Network adapter is missing or disconnected."),
             )
         elif net.get("ip_matches_config") is False:
             out.append(
@@ -252,7 +250,7 @@ def _diagnostic_reasons(diag: dict, state: AgentDiagnosticState | None, now) -> 
                     "warning",
                     f"Equipment Network adapter has {net.get('adapter_ip') or 'no IP'}, "
                     f"configured {net.get('configured_ip')}.",
-                )
+                ),
             )
 
     uploads = _section(diag, "uploads")
@@ -264,7 +262,7 @@ def _diagnostic_reasons(diag: dict, state: AgentDiagnosticState | None, now) -> 
                 "critical",
                 f"{uploads.get('pending')} upload(s) waiting; oldest for {int(age)} min. "
                 f"Last error: {uploads.get('last_error') or 'none'}",
-            )
+            ),
         )
     failed = int(_num(uploads.get("failed")) or 0) + int(_num(uploads.get("detected_files_failed")) or 0)
     if failed > 0:
@@ -278,7 +276,7 @@ def _diagnostic_reasons(diag: dict, state: AgentDiagnosticState | None, now) -> 
     skew = state.clock_skew_seconds if state else None
     if skew is not None and abs(skew) > _setting("DSA_CLOCK_SKEW_SECONDS"):
         out.append(
-            _reason("CLOCK_SKEW", "warning", f"Agent clock is {abs(skew):.0f} s {'ahead' if skew > 0 else 'behind'}.")
+            _reason("CLOCK_SKEW", "warning", f"Agent clock is {abs(skew):.0f} s {'ahead' if skew > 0 else 'behind'}."),
         )
     return out
 
@@ -298,7 +296,7 @@ def _equipment_pc_reasons(pc: dict, now) -> list[dict]:
         out.append(_reason("EQPC_OFFLINE", "warning", f"Equipment PC {name} is offline ({when}).", subject=name))
     elif pc.get("share_ok") is False:
         out.append(
-            _reason("EQPC_SHARE", "warning", f"Equipment PC {name}: results share not reachable.", subject=name)
+            _reason("EQPC_SHARE", "warning", f"Equipment PC {name}: results share not reachable.", subject=name),
         )
     return out
 
@@ -448,7 +446,7 @@ def notify_due(agent: DepartmentSyncAgent, now=None) -> int:
             details__notified_at__isnull=False,
             details__recovery_told__isnull=True,
             resolved_at__gte=now - timedelta(days=2),
-        )
+        ),
     )
     if not due and not recovered:
         return 0
@@ -531,7 +529,7 @@ def _email(users, agent, *, context: dict) -> None:
                 template_context=ctx,
                 metadata={"sync_agent_id": str(agent.id), "kind": "dsa_headless_alert"},
             )
-        except Exception:  # noqa: BLE001 - one failed email must not stop the others
+        except Exception:
             logger.exception("dsa.headless email failed agent=%s user=%s", agent.id, user.pk)
 
 
@@ -543,7 +541,7 @@ def _email(users, agent, *, context: dict) -> None:
 def run_all(now=None) -> dict:
     now = now or timezone.now()
     agents = DepartmentSyncAgent.objects.select_related("department").exclude(
-        status__in=SKIPPED_STATUSES
+        status__in=SKIPPED_STATUSES,
     ).filter(is_active=True)
     summary = {"agents": 0, "opened": 0, "resolved": 0, "notified": 0}
     for agent in agents:
@@ -554,7 +552,7 @@ def run_all(now=None) -> dict:
             summary["resolved"] += result["resolved"]
             if agent.status != AgentLifecycleStatus.MAINTENANCE:
                 summary["notified"] += notify_due(agent, now)
-        except Exception:  # noqa: BLE001 - one agent must not stop the rest
+        except Exception:
             logger.exception("dsa.headless evaluation failed agent=%s", agent.id)
     summary["retention"] = apply_retention(now)
     return summary
@@ -574,8 +572,8 @@ def apply_retention(now=None, *, batch: int = 5000) -> dict:
     i_cutoff = now - timedelta(days=_setting("DSA_INCIDENT_RETENTION_DAYS"))
     ids = list(
         AlertEvent.objects.filter(
-            details__source=SOURCE, status=AlertLifecycleStatus.RESOLVED, resolved_at__lt=i_cutoff
-        ).values_list("id", flat=True)[:batch]
+            details__source=SOURCE, status=AlertLifecycleStatus.RESOLVED, resolved_at__lt=i_cutoff,
+        ).values_list("id", flat=True)[:batch],
     )
     out["incidents"] = AlertEvent.objects.filter(id__in=ids).delete()[0] if ids else 0
     return out

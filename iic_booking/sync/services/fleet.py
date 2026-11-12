@@ -16,25 +16,27 @@ from typing import Any
 from django.http import HttpResponse
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
-from rest_framework import serializers, status
-from rest_framework.decorators import api_view, authentication_classes, permission_classes
-from rest_framework.permissions import BasePermission, IsAuthenticated
+from rest_framework import serializers
+from rest_framework import status
+from rest_framework.decorators import api_view
+from rest_framework.decorators import authentication_classes
+from rest_framework.decorators import permission_classes
+from rest_framework.permissions import BasePermission
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from iic_booking.sync.admin.constants import heartbeat_timeout_seconds
 from iic_booking.sync.authentication import SyncAgentUser
-from iic_booking.sync.models import (
-    AgentCommand,
-    AgentCommandPriority,
-    AgentCommandStatus,
-    AgentCommandType,
-    AgentDiagnosticState,
-    AgentHealthState,
-    AgentLifecycleStatus,
-    AgentSupportBundle,
-    AlertEvent,
-    DepartmentSyncAgent,
-)
+from iic_booking.sync.models import AgentCommand
+from iic_booking.sync.models import AgentCommandPriority
+from iic_booking.sync.models import AgentCommandStatus
+from iic_booking.sync.models import AgentCommandType
+from iic_booking.sync.models import AgentDiagnosticState
+from iic_booking.sync.models import AgentHealthState
+from iic_booking.sync.models import AgentLifecycleStatus
+from iic_booking.sync.models import AgentSupportBundle
+from iic_booking.sync.models import AlertEvent
+from iic_booking.sync.models import DepartmentSyncAgent
 from iic_booking.sync.portal_auth import PORTAL_ADMIN_AUTH
 from iic_booking.sync.services import headless
 
@@ -173,7 +175,7 @@ def serialize_summary(agent: DepartmentSyncAgent, state: AgentDiagnosticState | 
 
 def _fleet_queryset():
     return DepartmentSyncAgent.objects.select_related("department").exclude(
-        status__in=HIDDEN_STATUSES
+        status__in=HIDDEN_STATUSES,
     )
 
 
@@ -194,7 +196,7 @@ def fleet_list(request):
         open_counts[row] = open_counts.get(row, 0) + 1
     rows = [serialize_summary(a, states.get(a.id), open_counts.get(a.id, 0), now) for a in agents]
     rows.sort(key=lambda r: (_HEALTH_ORDER.get(r["health"], 9), r["department"], r["agent_name"]))
-    counts = {h: 0 for h in AgentHealthState.values}
+    counts = dict.fromkeys(AgentHealthState.values, 0)
     for r in rows:
         counts[r["health"]] = counts.get(r["health"], 0) + 1
     return Response(
@@ -204,7 +206,7 @@ def fleet_list(request):
             "heartbeat_timeout_seconds": heartbeat_timeout_seconds(),
             "server_time": now.isoformat(),
             "results": rows,
-        }
+        },
     )
 
 
@@ -252,16 +254,16 @@ def fleet_detail(request, agent_id):
     now = timezone.now()
     state = AgentDiagnosticState.objects.filter(sync_agent=agent).first()
     incidents = list(
-        AlertEvent.objects.filter(sync_agent=agent, details__source=headless.SOURCE).order_by("-created_at")[:100]
+        AlertEvent.objects.filter(sync_agent=agent, details__source=headless.SOURCE).order_by("-created_at")[:100],
     )
     open_count = sum(1 for i in incidents if i.status not in ("RESOLVED", "EXPIRED"))
     commands = list(
-        AgentCommand.objects.filter(sync_agent=agent).select_related("created_by").order_by("-created_at")[:25]
+        AgentCommand.objects.filter(sync_agent=agent).select_related("created_by").order_by("-created_at")[:25],
     )
     bundles = list(
         AgentSupportBundle.objects.filter(sync_agent=agent)
         .defer("content")
-        .order_by("-created_at")[:10]
+        .order_by("-created_at")[:10],
     )
     latest_hb = agent.heartbeats.order_by("-reported_at").first()
     return Response(
@@ -298,7 +300,7 @@ def fleet_detail(request, agent_id):
                 for b in bundles
             ],
             "actions": _actions_for(state),
-        }
+        },
     )
 
 
@@ -335,7 +337,7 @@ def fleet_action(request, agent_id):
         )
     if AgentCommand.objects.filter(sync_agent=agent, command_type=command_type, status__in=_OPEN_COMMAND).exists():
         return Response(
-            {"detail": _("The same action is already waiting for this agent.")}, status=status.HTTP_409_CONFLICT
+            {"detail": _("The same action is already waiting for this agent.")}, status=status.HTTP_409_CONFLICT,
         )
     cooldown = spec.get("cooldown_minutes")
     if cooldown and not force:
@@ -354,7 +356,7 @@ def fleet_action(request, agent_id):
     from iic_booking.sync.services.security_audit import SecurityAuditService
 
     if not SecurityService().authorize_remote_command(
-        agent, command_type=command_type, user_name=user_label, ip_address=ip
+        agent, command_type=command_type, user_name=user_label, ip_address=ip,
     ):
         return Response({"detail": _("Command not authorized for this agent.")}, status=status.HTTP_403_FORBIDDEN)
 
@@ -389,7 +391,7 @@ def fleet_action(request, agent_id):
 def fleet_incident_acknowledge(request, agent_id, incident_id):
     """POST /api/v1/sync/admin/fleet/{id}/incidents/{incident}/acknowledge/ — stop reminders for this incident."""
     alert = AlertEvent.objects.filter(
-        pk=incident_id, sync_agent_id=agent_id, details__source=headless.SOURCE
+        pk=incident_id, sync_agent_id=agent_id, details__source=headless.SOURCE,
     ).first()
     if alert is None:
         return Response({"detail": _("Incident not found.")}, status=status.HTTP_404_NOT_FOUND)
