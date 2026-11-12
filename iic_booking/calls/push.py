@@ -174,7 +174,11 @@ def stop_ringing_devices(session) -> int:
 
     if not fcm_configured():
         return 0
-    data = {"type": "call_ended", "call_id": str(session.id)}
+    from iic_booking.users.display import get_user_display_name
+
+    # How it ended and who rang let the phone show "Missed call". Apps that do not know these fields ignore them.
+    data = {"type": "call_ended", "call_id": str(session.id), "status": str(session.status),
+            "caller_name": get_user_display_name(session.caller, fallback_to_email=False)}
     sent = 0
     for device in CallDevice.objects.filter(user=session.callee, platform=DevicePlatform.ANDROID, revoked_at__isnull=True):
         sent += send_fcm(device.token, data, 60) == "sent"
