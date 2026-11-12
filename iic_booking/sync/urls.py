@@ -10,6 +10,7 @@ from iic_booking.livefeed import views as livefeed_views
 from iic_booking.power import views as power_views
 from iic_booking.sync import views
 from iic_booking.sync.installer import views as installer_views
+from iic_booking.sync.installer import one_click as installer_one_click
 from iic_booking.sync.services import fleet as fleet_views
 from iic_booking.lab_infrastructure.views import configuration_ack as lab_configuration_ack
 
@@ -162,6 +163,16 @@ urlpatterns = [
         "installer/releases/<uuid:release_id>/download/",
         installer_views.release_download,
         name="installer-release-download",
+    ),
+    path(
+        "installer/releases/latest/one-click-ticket/",
+        installer_one_click.one_click_ticket,
+        name="installer-one-click-ticket",
+    ),
+    path(
+        "installer/releases/one-click/<path:token>/",
+        installer_one_click.one_click_download,
+        name="installer-one-click-download",
     ),
     path("installer/equipment-tree/", installer_views.equipment_tree, name="installer-equipment-tree"),
     path("installer/link/", installer_views.link_equipment, name="installer-link"),

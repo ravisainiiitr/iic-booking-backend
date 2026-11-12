@@ -64,6 +64,10 @@ class AuditAction(models.TextChoices):
     PROVISION_COMPLETED = "provision_completed", _("Provision Completed")
     PROVISION_FAILED = "provision_failed", _("Provision Failed")
     DEVICE_REPLACED = "device_replaced", _("Device Replaced")
+    # One-click setup packages
+    SETUP_KEY_ISSUED = "setup_key_issued", _("Setup Key Issued")
+    SETUP_KEY_USED = "setup_key_used", _("Setup Key Used")
+    SETUP_KEY_REJECTED = "setup_key_rejected", _("Setup Key Rejected")
 
 
 class ProvisioningMode(models.TextChoices):
@@ -438,3 +442,45 @@ class DeviceAuditLog(models.Model):
 
 # Alias for docs / API naming clarity (Pending Installations = open sessions).
 PendingDevice = ProvisioningSession
+
+
+class InstallerSetupKey(models.Model):
+    """
+    Single-use, short-lived pre-authorisation embedded in a one-click installer download.
+
+    Issued by a signed-in administrator from the Deployment Center; the installer presents it
+    when registering its provisioning session, which is then treated as registered by that
+    administrator (the department policy still decides auto-approval). Only a hash is stored.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    device_type = models.CharField(max_length=32, choices=DeviceType.choices, default=DeviceType.DSA)
+    key_hash = models.CharField(max_length=128)
+    key_prefix = models.CharField(max_length=16, db_index=True)
+    department = models.ForeignKey(
+        "users.Department",
+        on_delete=models.CASCADE,
+        related_name="installer_setup_keys",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="installer_setup_keys",
+    )
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    used_session = models.ForeignKey(
+        ProvisioningSession,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="setup_keys",
+    )
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.device_type} setup key {self.key_prefix}... (department {self.department_id})"
