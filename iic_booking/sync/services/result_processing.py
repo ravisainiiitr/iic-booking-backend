@@ -103,6 +103,10 @@ class ResultProcessingService:
         if booking is None:
             raise ResultImportError("Booking not found.", code="BOOKING_MISSING")
 
+        from iic_booking.sync.services.booking_result_gate import ensure_booking_accepts_results
+
+        ensure_booking_accepts_results(booking)
+
         equipment = Equipment.objects.filter(pk=equipment_id).first()
         if equipment is None:
             raise ResultImportError("Equipment not found.", code="EQUIPMENT_MISSING")
