@@ -173,7 +173,7 @@ def hall_of_frames(request):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def acknowledgers(request):
-    """Everyone whose publication acknowledging IIC has been approved, for the scrolling list in the home page hero
+    """Everyone whose publication acknowledging IIT Roorkee facilities has been approved, for the scrolling list in the home page hero
     (most publications first). Independent of the Hall of Frames switch; researchers the Main Administrator took off
     the home page are left out."""
     from .recognition import hall_of_frames as build

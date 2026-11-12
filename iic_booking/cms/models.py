@@ -237,7 +237,7 @@ class _ResearchRecognition(models.Model):
 
 
 class HallOfFrameEntry(_ResearchRecognition):
-    """Researchers who acknowledged IIC facilities in a publication, shown in the home page carousel (approved only,
+    """Researchers who acknowledged IIT Roorkee facilities (IIC or a department hosted on the portal) in a publication, shown in the home page carousel (approved only,
     by ``order``)."""
 
     publication = models.ForeignKey(
