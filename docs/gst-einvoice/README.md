@@ -141,8 +141,8 @@ the GST system fills them into GSTR-1 from the IRP.
 
 ### Where to get it
 - In the portal: GST invoices → Monthly register → *GSTR-1 export*.
-- In the SRIC Invoice Signer: the *GSTR-1 export* row.
-- API: `GET /api/v1/gst-einvoice/gstr1/?from=YYYY-MM-DD&to=YYYY-MM-DD&kind=preview|json|xlsx` (SRIC reviewers), or
+- In the SRIC Invoice Signer: the *Monthly export* row.
+- API: `GET /api/v1/gst-einvoice/gstr1/?from=YYYY-MM-DD&to=YYYY-MM-DD&kind=preview|json|xlsx|invoice_register|credit_note_register|all` (SRIC reviewers), or
   `/signer/api/gstr1/` (the signing utility's device token).
 
 ### Files
@@ -150,7 +150,18 @@ the GST system fills them into GSTR-1 from the IRP.
   option.
 - A range over several months downloads as a zip, with one file per month.
 - JSON: the offline tool's upload format (`gstin`, `fp`, `b2cs`, `b2cl`, `cdnur`, `hsn.hsn_b2c`, `doc_issue`).
-- Excel: the offline tool's template sheets `b2cl`, `b2cs`, `cdnur`, `hsn(b2c)` and `docs`, plus a *read me* sheet.
+- Excel (`xlsx`): the offline tool's template sheets `b2cl`, `b2cs`, `cdnur`, `hsn(b2c)` and `docs`, plus a *read me*
+  sheet.
+- **Invoice Register** (`invoice_register`, `registers.py`): one row per B2C tax invoice of the month: number, date,
+  status, whether it is in the JSON, GSTR-1 table (B2CS/B2CL), buyer and address, place of supply, intra/inter-state,
+  SAC, rate, taxable value, CGST, SGST, IGST, round-off, invoice value, receipt number and date, booking, FBR,
+  equipment, facility, signed on/by, DSC certificate serial, credit notes issued against it, credited and net value.
+- **Credit Note Register** (`credit_note_register`): one row per B2C credit note of the month: number, date, status,
+  whether it is in the JSON, GSTR-1 treatment (CDNUR or netted in B2CS), the original invoice's number, date, value,
+  return period and table, buyer, place of supply, taxes, reason, refund, receipt, booking, signed on/by, DSC serial.
+- **All three** (`all`): GSTR-1 JSON, Invoice Register and Credit Note Register of each month in one zip.
+- The registers list every numbered document, including those still waiting for the DSC (marked *not in the JSON*);
+  their totals row adds up only the rows the JSON contains, so they reconcile with it.
 
 ### Contents
 | Table | What goes in it |
@@ -163,8 +174,8 @@ the GST system fills them into GSTR-1 from the IRP.
 
 Credit notes against B2CS supplies are netted into B2CS in the month the note is issued.
 
-**There are no credit notes yet.** The portal has no credit-note flow, so the CDNUR section is empty and the export
-says so.
+Credit notes are issued only where the Main Administrator allowed one for an invoice (see *Credit notes on refund*);
+in a month without any, the CDNUR section is empty and the export says so.
 
 Only invoices signed with the DSC count as issued. Numbered B2C invoices still waiting for the signature are left out,
 and the export lists them as a warning.
