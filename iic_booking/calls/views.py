@@ -128,6 +128,18 @@ def call_decline_from_device(request, call_id):
     return Response({"status": session.status if session else "unknown"})
 
 
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def call_status_from_device(request, call_id):
+    """The native incoming-call screen (iPhone) asks whether the call is still ringing, with the push's action token."""
+    try:
+        state = service.status_with_token(call_id, str(request.data.get("token") or ""))
+    except CallNotAllowed as exc:
+        return _refusal(exc)
+    return Response({"status": state})
+
+
 def _silent_payload(equipment) -> dict:
     rule = CallSilentHours.objects.filter(equipment_id=equipment.pk).first()
     values = silent.DEFAULTS if rule is None else {

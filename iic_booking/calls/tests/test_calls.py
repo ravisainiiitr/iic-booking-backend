@@ -186,6 +186,18 @@ def test_decline_from_the_native_incoming_screen_with_the_action_token(w):
     assert APIClient().post(f"/api/calls/{session.pk}/device-decline/", {"token": token}, format="json").json() == {"status": "declined"}
 
 
+def test_iphone_asks_whether_the_call_still_rings_with_the_action_token(w):
+    session = CallSession.objects.get(pk=call(w).json()["id"])
+    token = service.action_token(session)
+    url = f"/api/calls/{session.pk}/device-status/"
+    assert APIClient().post(url, {"token": token}, format="json").json() == {"status": "ringing"}
+    assert APIClient().post(url, {"token": "forged"}, format="json").status_code == 400
+    other = CallSession.objects.get(pk=call(w, role="oic").json()["id"])
+    assert APIClient().post(f"/api/calls/{other.pk}/device-status/", {"token": token}, format="json").status_code == 400
+    APIClient().post(f"/api/calls/{session.pk}/device-decline/", {"token": token}, format="json")
+    assert APIClient().post(url, {"token": token}, format="json").json() == {"status": "declined"}
+
+
 def test_devices_register_refresh_and_revoke(w):
     url = "/api/calls/devices/"
     assert api(w.operator).post(url, {"platform": "android", "device_id": "inst-1", "token": "t1"}, format="json").json() == {"ok": True}

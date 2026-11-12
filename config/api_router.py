@@ -536,7 +536,7 @@ from iic_booking.equipment.global_search import global_search
 from iic_booking.equipment.my_activity import my_activity
 from iic_booking.livefeed.views import create_peer as live_create_peer, my_sessions as live_my_sessions, peer_detail as live_peer_detail
 from iic_booking.power.views import ups_health, ups_health_run, ups_history, ups_list
-from iic_booking.calls.views import call_action, call_config, call_decline_from_device, call_detail, call_devices, call_options, call_silent_hours, calls
+from iic_booking.calls.views import call_action, call_config, call_decline_from_device, call_status_from_device, call_detail, call_devices, call_options, call_silent_hours, calls
 from iic_booking.equipment.portal_actions import portal_action_equipment, portal_action_run, portal_actions_list
 from iic_booking.equipment.search_synonym_views import search_synonym_detail, search_synonym_list
 from iic_booking.equipment.similar_availability import similar_availability
@@ -1102,6 +1102,7 @@ urlpatterns = router.urls + [
     path("calls/silent-hours/<int:equipment_id>/", call_silent_hours, name="calls-silent-hours"),
     path("calls/<uuid:call_id>/", call_detail, name="call-detail"),
     path("calls/<uuid:call_id>/device-decline/", call_decline_from_device, name="call-device-decline"),
+    path("calls/<uuid:call_id>/device-status/", call_status_from_device, name="call-device-status"),
     path("calls/<uuid:call_id>/<slug:action>/", call_action, name="call-action"),
     path("profiles/me/onboarding/", profile_me_onboarding, name="profile-me-onboarding"),
     path("portal-actions/", portal_actions_list, name="portal-actions"),
