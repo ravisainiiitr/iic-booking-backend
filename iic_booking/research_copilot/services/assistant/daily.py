@@ -602,17 +602,16 @@ def howto_wallet(user, conversation, params, text):
 
 
 def transactions(user, conversation, params, text):
-    from django.db.models import Q
-
     from iic_booking.users.models import SubWalletTransaction
 
     caps = _caps(user)
     if caps.wallet is None:
         return C.reply("Your wallet has no transactions yet.", actions=[C.link("Open Wallet", "/wallet")], intent="transactions")
     qs = SubWalletTransaction.objects.filter(sub_wallet__wallet=caps.wallet).order_by("-created_at")
-    if caps.wallet_is_shared:
-        # Same visibility as the Wallet page: on a shared wallet a student sees only their own debits plus credits.
-        qs = qs.filter(Q(related_user_id=user.pk) | Q(transaction_type=SubWalletTransaction.TransactionType.CREDIT))
+    # Same visibility as the Wallet page (owner and internal IITR students see every transaction).
+    from iic_booking.users.wallet_visibility import visible_wallet_transactions
+
+    qs = visible_wallet_transactions(user, caps.wallet, qs)
     rows = list(qs[:8])
     if not rows:
         lines = ["No wallet transactions yet."]

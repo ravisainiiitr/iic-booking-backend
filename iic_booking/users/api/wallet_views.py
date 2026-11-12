@@ -612,8 +612,8 @@ def get_wallet_transactions(request):
         except Exception:
             pass
 
-    # Faculty wallet owner sees all; student on shared wallet sees their debits + all credits
-    is_shared_wallet_student = wallet.user_id != request.user.id
+    # The owner and internal IITR students on the wallet see every transaction (wallet_visibility).
+    from iic_booking.users.wallet_visibility import visible_wallet_transactions
 
     active_rows = []
     for sw in SubWallet.objects.filter(wallet=wallet).select_related("department"):
@@ -622,13 +622,7 @@ def get_wallet_transactions(request):
             .select_related("sub_wallet", "sub_wallet__department", "related_user")
             .order_by("-created_at")
         )
-        if is_shared_wallet_student:
-            txn_qs = base_qs.filter(
-                Q(related_user_id=request.user.id)
-                | Q(transaction_type=SubWalletTransaction.TransactionType.CREDIT)
-            )
-        else:
-            txn_qs = base_qs
+        txn_qs = visible_wallet_transactions(request.user, wallet, base_qs)
         transactions = list(txn_qs[:5000])
         # balance_after for newest-first list
         running = Decimal(str(sw.balance or 0)).quantize(Decimal("0.01"))
@@ -814,9 +808,8 @@ def get_sub_wallet_transactions(request, department_id):
     """Get transaction history for the sub-wallet of the given department.
     Query params: limit (default 50), offset (default 0).
     Each transaction includes balance_after (sub-wallet balance after that transaction).
-    Students on a shared (faculty) wallet see debits related to themselves plus all credits
-    (recharges are credited with related_user=wallet owner, so they must not be filtered out);
-    faculty wallet owners see all transactions.
+    The wallet owner and internal IITR students on the wallet see every transaction; anyone else on a wallet that
+    is not their own sees the debits made for them plus all credits (``users.wallet_visibility``).
     """
     from decimal import Decimal
     from ..models import SubWalletTransaction
@@ -837,18 +830,12 @@ def get_sub_wallet_transactions(request, department_id):
     limit = int(request.GET.get("limit", 50))
     offset = int(request.GET.get("offset", 0))
 
-    # Faculty wallet owner sees all; student on shared wallet sees their debits + all credits (incl. recharges)
-    is_shared_wallet_student = wallet.user_id != request.user.id
+    from iic_booking.users.wallet_visibility import visible_wallet_transactions
+
     base_qs = SubWalletTransaction.objects.filter(sub_wallet=sub_wallet).select_related(
         "sub_wallet", "sub_wallet__department", "related_user"
     ).order_by("-created_at")
-    if is_shared_wallet_student:
-        txn_qs = base_qs.filter(
-            Q(related_user_id=request.user.id)
-            | Q(transaction_type=SubWalletTransaction.TransactionType.CREDIT)
-        )
-    else:
-        txn_qs = base_qs
+    txn_qs = visible_wallet_transactions(request.user, sub_wallet.wallet, base_qs)
     total_count = txn_qs.count()
     transactions = list(txn_qs[offset:offset + limit])
 

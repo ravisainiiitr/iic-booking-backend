@@ -229,7 +229,8 @@ class TestMatrix:
         SubWalletTransaction.objects.create(sub_wallet=sub, transaction_type=T.CREDIT, amount=500, description="recharge")
         student_view = _act(world, world.conversation(), A.VIEW_WALLET_TRANSACTIONS)
         descriptions = {i["description"] for i in student_view["cards"][0]["items"]}
-        assert descriptions == {"student", "recharge"}
+        # Internal IITR students on a shared wallet see every transaction, as the owner does.
+        assert descriptions == {"faculty own", "student", "recharge"}
         faculty_view = _act(world, world.conversation(user=faculty), A.VIEW_WALLET_TRANSACTIONS, user=faculty)
         assert len(faculty_view["cards"][0]["items"]) == 3
 
