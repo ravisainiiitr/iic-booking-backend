@@ -50,6 +50,10 @@ FIELDS = (
     ("istem_department_id", "equipment_department_id", "I-STEM department", True),
     ("funding_agency_id", "equipment_agency_id", "Funding agency", True),
     ("funding_agency_type", "funding_agency_type", "Funding agency type", True),
+    # I-STEM refuses Equipment Create without these three (not in its Swagger; its answer names them).
+    ("alert_mailid", "alert_mailid", "Alert email (I-STEM sends this instrument's alerts here)", True),
+    ("pre_experiment_support", "pre_experiment_support", "Pre-experiment support", True),
+    ("post_experiment_support", "post_experiment_support", "Post-experiment support", True),
     ("equipment_model", "equipment_model", "Model", False),
     ("equipment_abbr", "equipment_abbr", "Short name", False),
     ("equipment_location", "equipment_location", "Location", False),
@@ -71,7 +75,9 @@ FIELDS = (
 )
 EDITABLE = tuple(f[0] for f in FIELDS)
 RATE_FIELDS = ("equipment_rate", "equipment_fov_rate", "equipment_cif_rate", "equipment_other_rate")
-EMAIL_FIELDS = ("supplier_email_id", "service_provider_email_id")
+EMAIL_FIELDS = ("supplier_email_id", "service_provider_email_id", "alert_mailid")
+YES_NO_FIELDS = ("pre_experiment_support", "post_experiment_support")
+YES_NO = ("Yes", "No")
 NUMERIC_ID = re.compile(r"^[0-9]{1,12}$")
 
 
@@ -147,7 +153,20 @@ def _prefill(equipment) -> IstemEquipmentDetails:
         equipment_location=" ".join((equipment.location or "").split())[:255],
         equipment_description=(equipment.description or "").strip(),
         supplier_name=(equipment.supplier_name or "").strip()[:255],
+        alert_mailid=_oic_email(equipment),
     )
+
+
+def _oic_email(equipment) -> str:
+    """The instrument's first Officer In-charge email, as the default alert address."""
+    try:
+        from iic_booking.equipment.reports import get_oic_emails_for_equipment
+
+        emails = [e for e in get_oic_emails_for_equipment(equipment.pk) if e]
+    except Exception:  # a default only: never block the form
+        logger.warning("istem create: OIC email lookup failed for equipment=%s", equipment.pk, exc_info=True)
+        return ""
+    return emails[0][:255] if emails else ""
 
 
 def _details(equipment) -> tuple[IstemEquipmentDetails, bool]:
@@ -176,6 +195,10 @@ def problems(details: IstemEquipmentDetails) -> dict[str, str]:
         # I-STEM's own example sends the category by name ("Fabrication"); its id is accepted too.
         if value and known and value not in {v["id"] for v in known if v["id"]} | {v["name"] for v in known}:
             out[name] = "Choose a value from I-STEM's list."
+    for name in YES_NO_FIELDS:
+        value = getattr(details, name)
+        if value and value not in YES_NO:
+            out[name] = "Choose Yes or No."
     for name in RATE_FIELDS:
         value = getattr(details, name)
         if value and not re.fullmatch(r"[0-9]{1,9}(\.[0-9]{1,2})?", value):
@@ -262,6 +285,7 @@ def _serialize(equipment, details: IstemEquipmentDetails, saved: bool) -> dict:
             "funding_agency_types": _choices(IstemReferenceValue.KIND_FUNDING_AGENCY_TYPE),
             "equipment_categories": _choices(IstemReferenceValue.KIND_EQUIPMENT_CATEGORY),
             "facilities": _choices(IstemReferenceValue.KIND_FACILITY),
+            "yes_no": [{"id": v, "name": v} for v in YES_NO],
         },
     }
 

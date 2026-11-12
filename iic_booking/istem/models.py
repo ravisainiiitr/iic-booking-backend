@@ -253,6 +253,10 @@ class IstemEquipmentDetails(models.Model):
     service_provider_email_id = models.CharField(max_length=255, blank=True, default="")
     last_amc_done = models.CharField(max_length=32, blank=True, default="")
     pooling_status = models.CharField(max_length=64, blank=True, default="")
+    # Required by I-STEM's Equipment Create although its Swagger lists them nowhere (staging, 12 Nov 2026).
+    alert_mailid = models.CharField(max_length=255, blank=True, default="")
+    pre_experiment_support = models.CharField(max_length=8, blank=True, default="No")
+    post_experiment_support = models.CharField(max_length=8, blank=True, default="No")
     # Outcome of Equipment Create.
     created_istem_equipment_id = models.CharField(max_length=64, blank=True, default="", db_index=True)
     created_at_istem = models.DateTimeField(null=True, blank=True)
