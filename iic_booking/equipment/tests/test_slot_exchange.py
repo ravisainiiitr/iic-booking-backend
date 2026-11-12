@@ -196,7 +196,9 @@ def test_api_options_show_booker_and_my_bookings(lab, sent):
     resp = factory.client_for(bob).get(f"/api/slot-exchanges/options/?slot_id={_slots(a)[0].pk}")
     assert resp.status_code == 200, resp.content
     body = resp.json()
-    assert body["booker"]["email"] == alice.email
+    # Bob is a student: he sees who booked, not their email or mobile.
+    assert body["booker"]["name"]
+    assert body["booker"]["email"] is None and body["booker"]["phone"] is None
     assert body["exchange_available"] is True
     assert [m["booking_id"] for m in body["my_bookings"]] == [b.pk]
 
@@ -235,3 +237,14 @@ def test_django_admin_equipment_page_has_the_switch(lab):
     resp = client.get(f"/admin/equipment/equipment/{eq.pk}/change/")
     assert resp.status_code == 200
     assert b'name="slot_exchange_enabled"' in resp.content
+
+
+def test_api_options_show_booker_contact_to_faculty_and_to_the_booker(lab, sent):
+    factory, eq, alice, bob, a, b = lab
+    faculty = UserFactory(user_type=UserType.FACULTY, admin_approved=True)
+    slot_id = _slots(a)[0].pk
+    resp = factory.client_for(faculty).get(f"/api/slot-exchanges/options/?slot_id={slot_id}")
+    assert resp.status_code == 200, resp.content
+    assert resp.json()["booker"]["email"] == alice.email
+    resp = factory.client_for(alice).get(f"/api/slot-exchanges/options/?slot_id={slot_id}")
+    assert resp.json()["booker"]["email"] == alice.email

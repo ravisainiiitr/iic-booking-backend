@@ -18,6 +18,7 @@ from rest_framework.response import Response
 from . import slot_exchange as sx
 from .models import Booking, BookingStatus, DailySlot
 from .slot_exchange_models import SlotExchangeRequest, SlotExchangeStatus
+from .slot_booking_identity import viewer_sees_peer_contact
 
 
 def _error(exc: sx.ExchangeError, http_status=status.HTTP_400_BAD_REQUEST):
@@ -90,7 +91,9 @@ def slot_exchange_options(request):
         "slot_id": slot.pk,
         "booking_id": booking.pk,
         "booking_ref": booking.virtual_booking_id or f"{equipment.code}-#{booking.pk}",
-        "booker": sx.booker_details(booking.user),
+        "booker": sx.booker_details(
+            booking.user, include_contact=booking.user_id == user.pk or viewer_sees_peer_contact(user)
+        ),
         "is_own_booking": booking.user_id == user.pk,
         "equipment": {"id": equipment.pk, "name": equipment.name, "code": equipment.code,
                       "slot_exchange_enabled": bool(equipment.slot_exchange_enabled)},

@@ -2,7 +2,8 @@
 
 Staff of the slot's equipment (Main Admin; Department Administrator of its department; Officer In-charge
 incl. active temporary OIC; its Lab Operators) see every booker. Anyone else sees only the status, plus
-the booker details of their own bookings.
+the booker details of their own bookings. Other internal users see an internal booker's name and
+department; faculty also see their email and mobile number, students do not.
 """
 
 from __future__ import annotations
@@ -39,6 +40,14 @@ def booking_identity_equipment_ids(user) -> set[int] | None:
     return set()
 
 
+# Students see who booked a slot (name, department) but not that person's email or mobile number.
+PEER_CONTACT_HIDDEN_USER_TYPES = (UserType.STUDENT, UserType.INDIVIDUAL_STUDENT)
+
+
+def viewer_sees_peer_contact(user) -> bool:
+    return str(getattr(user, "user_type", "") or "") not in PEER_CONTACT_HIDDEN_USER_TYPES
+
+
 class SlotBookingIdentityPolicy:
     def __init__(self, user):
         authenticated = user is not None and getattr(user, "is_authenticated", False)
@@ -47,6 +56,7 @@ class SlotBookingIdentityPolicy:
         self.viewer_internal = authenticated and str(getattr(user, "user_type", "") or "").lower() in (
             UserType.get_internal_user_codes()
         )
+        self.viewer_sees_peer_contact = viewer_sees_peer_contact(user)
 
     def allows(self, slot) -> bool:
         if not getattr(slot, "booking_id", None):
@@ -76,13 +86,16 @@ class SlotBookingIdentityPolicy:
 STAFF_ONLY_SLOT_FIELDS = ("booking_sample_status_display", "booking_sample_accepted", "booking_auto_reschedule_note")
 
 
-def peer_slot_booking_identity(data: dict, slot) -> dict:
-    """Booker details another internal user may see: identity and contact, not the lab's working fields."""
+def peer_slot_booking_identity(data: dict, slot, *, include_contact: bool = True) -> dict:
+    """Booker details another internal user may see: identity and (unless hidden) contact, not the lab's working fields."""
     for key in STAFF_ONLY_SLOT_FIELDS:
         if key in data:
             data[key] = None
     user = getattr(getattr(slot, "booking", None), "user", None)
-    if user is not None:
+    if not include_contact:
+        data["booking_user_email"] = None
+        data["booking_user_phone"] = None
+    elif user is not None:
         data["booking_user_email"] = (getattr(user, "email", "") or "").strip() or None
         data["booking_user_phone"] = (getattr(user, "phone_number", "") or "").strip() or None
     return data

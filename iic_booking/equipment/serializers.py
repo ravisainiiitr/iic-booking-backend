@@ -1566,7 +1566,7 @@ class DailySlotSerializer(serializers.ModelSerializer):
             from .slot_booking_identity import mask_slot_booking_identity, peer_slot_booking_identity
 
             if policy.allows_peer(instance):
-                peer_slot_booking_identity(data, instance)
+                peer_slot_booking_identity(data, instance, include_contact=policy.viewer_sees_peer_contact)
             else:
                 mask_slot_booking_identity(data)
         return data
