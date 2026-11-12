@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from django.conf import settings
 
 GRAPH_BASE = "https://graph.facebook.com"
@@ -65,8 +67,21 @@ def template_name(event: str) -> str:
 def pilot_numbers() -> set[str]:
     """While set, messages go only to these numbers (E.164, e.g. +919876543210): a pilot before opening to all."""
     raw = _s("WHATSAPP_PILOT_NUMBERS", "") or ""
-    items = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")
-    return {str(x).strip() for x in items if str(x).strip()}
+    items = raw if isinstance(raw, (list, tuple)) else re.split(r"[,;\s]*[,;\n][,;\s]*", str(raw))
+    # Written the way people write numbers (9876543210, 91 98765 43210, +91-98765-43210): compared in the stored form,
+    # +919876543210, so the format of the secret never blocks a pilot number (9 Nov 2026).
+    from .service import OptInError, normalize_phone
+
+    out = set()
+    for x in items:
+        text = str(x).strip()
+        if not text:
+            continue
+        try:
+            out.add(normalize_phone(text))
+        except OptInError:
+            out.add(text)
+    return out
 
 
 def allow_all() -> bool:

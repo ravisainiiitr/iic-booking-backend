@@ -619,7 +619,7 @@ def docs_rag(*, user, text: str) -> dict:
 MANUAL_NOT_FOUND_MARKER = "NOT_IN_MANUAL"
 
 _MANUAL_SYSTEM_PROMPT = (
-    "You are IITR Assistant. Answer the user's question about the instrument \"{name}\" "
+    "You are IITR Equipment Booking Assistant. Answer the user's question about the instrument \"{name}\" "
     "using ONLY the numbered manual excerpts provided.\n"
     "Rules:\n"
     "- Every factual statement must end with its excerpt number in square brackets, e.g. [2].\n"

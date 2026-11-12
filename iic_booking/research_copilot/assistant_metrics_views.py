@@ -1,4 +1,4 @@
-"""IITR Assistant trial metrics for the Main Administrator: counts only, no message text."""
+"""IITR Equipment Booking Assistant trial metrics for the Main Administrator: counts only, no message text."""
 
 from __future__ import annotations
 

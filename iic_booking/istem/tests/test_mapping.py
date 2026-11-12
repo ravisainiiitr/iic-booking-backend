@@ -145,9 +145,21 @@ def test_values_that_would_need_inventing_or_rounding_are_blocked(field, kwargs)
     assert field not in result.payload
 
 
-def test_charge_profile_without_a_single_rate_blocks_eq_rate():
-    booking = ready_booking(profile_type="MULTI_PARAM")
-    assert "eq_rate" in _payload(booking).errors
+@pytest.mark.parametrize("profile_type", ["GENERIC", "MULTI_PARAM", "SAMPLE_ELEMENT"])
+def test_profiles_without_a_single_rate_send_total_divided_by_samples(profile_type):
+    # [USER 2026-11-08] rule (a): eq_rate = booking total / number of samples; the total itself is sent unchanged.
+    p = _payload(ready_booking(profile_type=profile_type)).payload
+    assert (p["total_est_amt"], p["booking_no_sample"], p["eq_rate"]) == ("1500", "3", "500")
+
+
+def test_total_divided_by_samples_is_rounded_to_a_whole_rupee():
+    p = _payload(ready_booking(profile_type="GENERIC", total=Decimal("1000.00"), samples="3")).payload
+    assert (p["total_est_amt"], p["eq_rate"]) == ("1000", "333")
+
+
+def test_no_rate_without_a_sample_count():
+    result = _payload(ready_booking(profile_type="GENERIC", samples=""))
+    assert "eq_rate" in result.errors and "booking_no_sample" in result.errors
 
 
 def test_empty_gstin_is_sent_as_the_placeholder_istem_accepts():
@@ -237,12 +249,44 @@ def test_billing_name_must_be_alphabetic():
 # --- Create User -------------------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("institute_id", [None, "", "abc"])
-def test_create_user_payload_is_blocked_without_institute_id_or_unavailable_profile_fields(institute_id):
+def test_create_user_payload_is_blocked_without_institute_id_or_profile_data(institute_id):
     booking = make_booking()
+    booking.user.gender, booking.user.phone_number = "", ""
     result = build_public_user_payload(booking.user, institute_id)
-    for field in ("institute_id", "user_organisation", "user_salutation", "user_district", "user_type"):
+    for field in ("institute_id", "user_gender", "user_salutation", "user_contactno"):
         assert field in result.errors
     assert "institute_id" not in result.payload
+
+
+def test_create_user_payload_for_an_external_user_comes_from_the_profile():
+    """[USER 2026-11-08] the portal creates the I-STEM user itself: every field has a local source."""
+    booking = make_booking()
+    user = booking.user
+    user.name, user.gender, user.phone_number = "Dr. Asha Verma", "female", "+91 98765 43210"
+    result = build_public_user_payload(user, "213")
+    assert result.ok, result.errors
+    p = result.payload
+    assert (p["user_salutation"], p["user_first_name"], p["user_last_name"]) == ("Dr.", "Asha", "Verma")
+    assert (p["user_contactno"], p["user_gender"], p["user_type"]) == ("9876543210", "Female", "Academic User")
+    assert p["user_organisation"] == "Asha Labs"  # no organisation on the account: the billing name
+    assert (p["user_address"], p["user_city"], p["user_district"]) == ("12 Station Road", "Roorkee", "Roorkee")
+    assert (p["user_state"], p["user_country"], p["user_pin"]) == ("Uttarakhand", "India", "247667")
+    assert p["billing_user_name"] == "Asha Labs" and p["institute_id"] == "213"
+    user.name = "Asha Verma"
+    assert build_public_user_payload(user, "213").payload["user_salutation"] == "Ms."
+
+
+def test_create_user_payload_for_an_internal_user_uses_the_institute():
+    from iic_booking.users.models.user_type import UserType
+    from iic_booking.users.tests.factories import UserFactory
+
+    user = UserFactory(user_type=UserType.STUDENT, name="Ravi Kumar", gender="male", phone_number="9876543210")
+    result = build_public_user_payload(user, "213")
+    assert result.ok, result.errors
+    p = result.payload
+    assert p["user_organisation"] == "Indian Institute of Technology Roorkee"
+    assert (p["user_city"], p["user_district"], p["user_state"], p["user_pin"]) == ("Roorkee", "Haridwar", "Uttarakhand", "247667")
+    assert (p["billing_user_name"], p["user_salutation"], p["user_type"]) == ("IIT Roorkee", "Mr.", "Academic User")
 
 
 def test_create_user_type_uses_its_own_code_list_and_the_token_institute():
@@ -305,3 +349,20 @@ def test_confirm_payload_refuses_a_window_different_from_the_one_requested(setti
     booking.daily_slots.update(start_datetime=F("start_datetime") + timedelta(hours=1), end_datetime=F("end_datetime") + timedelta(hours=1))
     result = build_confirm_payload(booking, link, approved_on=timezone.now())
     assert "allocated_timings_from" in result.errors and result.payload == {}
+
+
+def test_create_user_salutation_is_one_istem_accepts():
+    """I-STEM staging (8 Nov 2026): "Invalid salutation. Must be Mr., Ms., Dr., or Prof." """
+    from iic_booking.istem.mapping import ISTEM_SALUTATIONS
+    from iic_booking.users.models.user_type import UserType
+    from iic_booking.users.tests.factories import UserFactory
+
+    cases = [("Mrs. Meena Rao", "female", "", "Ms."), ("Prof. Anil Gupta", "male", "", "Prof."),
+             ("Anil Gupta", "male", "Professor", "Prof."), ("Ravi Kumar", "male", "", "Mr."),
+             ("Asha Verma", "female", "", "Ms."), ("Miss Lata Singh", "female", "", "Ms.")]
+    for name, gender, designation, expected in cases:
+        user = UserFactory(user_type=UserType.STUDENT, name=name, gender=gender, phone_number="9876543210", designation=designation)
+        salutation = build_public_user_payload(user, "213").payload["user_salutation"]
+        assert salutation == expected and salutation in ISTEM_SALUTATIONS, (name, salutation)
+    other = UserFactory(user_type=UserType.STUDENT, name="Sam Lee", gender="other", phone_number="9876543210")
+    assert "user_salutation" in build_public_user_payload(other, "213").errors  # never an invalid "Mx"

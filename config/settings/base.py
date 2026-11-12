@@ -150,7 +150,11 @@ LOCAL_APPS = [
     "iic_booking.courier_tracking.apps.CourierTrackingConfig",
     "iic_booking.external_services.apps.ExternalServicesConfig",
     "iic_booking.istem.apps.IstemConfig",
+    "iic_booking.integration_health.apps.IntegrationHealthConfig",
     "iic_booking.whatsapp.apps.WhatsAppConfig",
+    # GST invoicing of facility charges (Dean SRIC proposal). SANDBOX ONLY; off unless GST_EINVOICE_ENABLED=true.
+    # Configured from GST_EINVOICE_* environment variables only (see iic_booking/gst_einvoice/conf.py).
+    "iic_booking.gst_einvoice.apps.GstEinvoiceConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -606,7 +610,13 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         # DRF throttle format example: "5/min", "1/hour"
         "sync_enroll": env("DSA_SYNC_ENROLL_THROTTLE_RATE", default="10/hour"),
+        "payments_user": env("PAYMENTS_USER_THROTTLE_RATE", default="30/min"),
+        "payments_webhook": env("PAYMENTS_WEBHOOK_THROTTLE_RATE", default="600/min"),
         "provisioning_session": env("PROVISIONING_SESSION_THROTTLE_RATE", default="30/hour"),
+        # Public receipt check (payments.views.verify_receipt), per IP.
+        "receipt_verify": env("RECEIPT_VERIFY_THROTTLE_RATE", default="60/hour"),
+        # Public view of a parcel's label QR code (external_services.views.sample_label_public), per IP.
+        "sample_label_public": env("SAMPLE_LABEL_PUBLIC_THROTTLE_RATE", default="120/hour"),
         # Research Copilot only (portal-wide traffic is not throttled by these)
         "research_copilot_user": env("RESEARCH_COPILOT_USER_THROTTLE", default="300/hour"),
         "research_copilot_read": env("RESEARCH_COPILOT_READ_THROTTLE", default="300/hour"),
@@ -675,6 +685,7 @@ CORS_EXPOSE_HEADERS = [
     "Content-Disposition",
     "X-Export-Row-Count",
     "X-Results-Total-Bytes",
+    "X-Proforma-Numbers",
 ]
 
 # By Default swagger ui is available only to admin user(s). You can change permission classes to change that
@@ -772,7 +783,7 @@ RESEARCH_COPILOT_INTELLIGENCE_ENABLED = env.bool("RESEARCH_COPILOT_INTELLIGENCE_
 RESEARCH_COPILOT_KNOWLEDGE_ENABLED = env.bool("RESEARCH_COPILOT_KNOWLEDGE_ENABLED", default=False)
 # Guided booking / cancellation / reschedule flows in chat. Execution stays gated by COPILOT_BOOKING_*.
 RESEARCH_COPILOT_ACTIONS_ENABLED = env.bool("RESEARCH_COPILOT_ACTIONS_ENABLED", default=False)
-# IITR Assistant: live availability, equipment Q&A and confirm-gated booking cards (read paths ON).
+# IITR Equipment Booking Assistant: live availability, equipment Q&A and confirm-gated booking cards (read paths ON).
 # In-chat booking execution still needs COPILOT_BOOKING_CREATE; otherwise the summary links to the booking page.
 BOOKING_ASSISTANT_ENABLED = env.bool("BOOKING_ASSISTANT_ENABLED", default=True)
 # "auto" uses the LLM as an intent planner only when the provider is OpenAI with a key; "on"/"off" force it.
@@ -863,6 +874,9 @@ MY_RESEARCH_GROUP_MAX_ATTACHMENTS = env.int("MY_RESEARCH_GROUP_MAX_ATTACHMENTS",
 # --- External booking workflow pilot (external_services.pilot) ---
 # Off: the new external rules apply to external test accounts (User.is_test_account) only.
 EXTERNAL_WORKFLOW_ALL_EXTERNAL_USERS = env.bool("EXTERNAL_WORKFLOW_ALL_EXTERNAL_USERS", default=False)
+# Off: wallet recharge against an offline payment with a receipt (users.offline_recharge) is open to external
+# test accounts only. On: to every external user with a wallet of their own.
+EXTERNAL_OFFLINE_RECHARGE_ALL_EXTERNAL_USERS = env.bool("EXTERNAL_OFFLINE_RECHARGE_ALL_EXTERNAL_USERS", default=False)
 # Off: only internal test accounts are offered online payment when their wallet falls short.
 INTERNAL_GATEWAY_FALLBACK_ALL_USERS = env.bool("INTERNAL_GATEWAY_FALLBACK_ALL_USERS", default=False)
 # --- I-STEM integration (https://www.istem.gov.in/) ---
@@ -913,6 +927,9 @@ ISTEM_AUTO_CONFIRM = env.bool("ISTEM_AUTO_CONFIRM", default=True)
 # Automatic FBR: bookings whose charge profile requires an I-STEM FBR are registered, confirmed and executed on I-STEM
 # by the portal; the booking pages show that progress instead of asking the user to enter an FBR number (2 Nov 2026).
 ISTEM_AUTOMATIC_FBR = env.bool("ISTEM_AUTOMATIC_FBR", default=False)
+# Stop a booking on an I-STEM instrument before payment when the user's I-STEM link or billing details are missing
+# (8 Nov 2026): off | test_accounts | all.
+ISTEM_BOOKING_GATE = env("ISTEM_BOOKING_GATE", default="test_accounts")
 # FBR Execute after local completion; also needs a confirmation_id, so it does nothing while Confirm is off.
 ISTEM_EXECUTE_ENABLED = env.bool("ISTEM_EXECUTE_ENABLED", default=False)
 ISTEM_EXECUTE_UPDATED_BY = env("ISTEM_EXECUTE_UPDATED_BY", default="")
@@ -1014,7 +1031,24 @@ CALLS_APNS_BUNDLE_ID = env("CALLS_APNS_BUNDLE_ID", default="ac.in.iitr.iicbookin
 CALLS_APNS_USE_SANDBOX = env.bool("CALLS_APNS_USE_SANDBOX", default=True)
 
 
+# Razorpay: off unless switched on; the key must match the mode (rzp_test_ / rzp_live_); live needs a second switch.
+RAZORPAY_ENABLED = env.bool("RAZORPAY_ENABLED", default=False)
+RAZORPAY_MODE = env("RAZORPAY_MODE", default="test")
+RAZORPAY_LIVE_ALLOWED = env.bool("RAZORPAY_LIVE_ALLOWED", default=False)
+# In test mode only accounts marked as test accounts may pay online. Never turned off outside the unit-test settings.
+RAZORPAY_TEST_MODE_TEST_ACCOUNTS_ONLY = env.bool("RAZORPAY_TEST_MODE_TEST_ACCOUNTS_ONLY", default=True)
 RAZORPAY_KEY_ID = env("RAZORPAY_KEY_ID", default="")
+# Merchant name shown in Razorpay Checkout and on receipts. Must equal the business name on the Razorpay account
+# (Dashboard > Account & Settings > Business details); the institute's bank records give DEAN SRIC IIT ROORKEE.
+RAZORPAY_CHECKOUT_NAME = env("RAZORPAY_CHECKOUT_NAME", default="DEAN SRIC IIT ROORKEE")
+# GSTIN of the SRIC office, printed on payment receipts as on SRIC's own receipts (from the SRIC receipt the user shared,
+# 8 Nov 2026). Shown for reference only: the receipt is not a tax invoice.
+RECEIPT_INSTITUTE_GSTIN = env("RECEIPT_INSTITUTE_GSTIN", default="05AAALI0033R1Z5")
+# Secret for the verification code printed on receipts (payments/receipt_verification.py). Blank = SECRET_KEY.
+# Must stay fixed once receipts are issued: changing it changes every code.
+RECEIPT_VERIFY_SECRET = env("RECEIPT_VERIFY_SECRET", default="")
+# A captured payment not in any Razorpay settlement after this many days is raised for Finance.
+RAZORPAY_UNSETTLED_ALERT_DAYS = env.int("RAZORPAY_UNSETTLED_ALERT_DAYS", default=5)
 RAZORPAY_KEY_SECRET = env("RAZORPAY_KEY_SECRET", default="")
 RAZORPAY_WEBHOOK_SECRET = env("RAZORPAY_WEBHOOK_SECRET", default="")
 

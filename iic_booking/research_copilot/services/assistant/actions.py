@@ -1,5 +1,5 @@
 """
-Whitelisted IITR Assistant button actions (`ba_*`).
+Whitelisted IITR Equipment Booking Assistant button actions (`ba_*`).
 
 Card buttons post {type, payload} back to the conversation. Every type has a fixed payload schema;
 unknown types, unknown keys or badly typed values are rejected with a 400 before anything runs, and

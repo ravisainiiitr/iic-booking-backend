@@ -78,10 +78,10 @@ def test_account_is_created_signed_in_and_linked_without_a_password(on, mailoutb
     assert not user.has_usable_password()
     assert IstemUserLink.objects.get(user=user).public_user_id == "60018"
     assert res.data["token"] and res.data["user"]["email"] == "neha@lab.example.org"
-    assert res.data["onboarding"]["steps"] == ["programme", "password"]
+    assert res.data["onboarding"]["steps"] == ["password"]
     # Signed in: the token works.
     me = APIClient(HTTP_AUTHORIZATION=f"Token {res.data['token']}").get("/api/profiles/me/onboarding/")
-    assert me.status_code == 200 and me.data["steps"] == ["programme", "password"]
+    assert me.status_code == 200 and me.data["steps"] == ["password"]
 
 
 def test_unmatched_organisation_is_asked_with_the_istem_hints(on, mailoutbox):
@@ -100,9 +100,13 @@ def test_refusals(on, mailoutbox):
     link_token = _verified(mailoutbox)
     assert APIClient().post("/api/istem/register/complete/", {"link_token": link_token, "user_type": UserType.STUDENT},
                             format="json").data["code"] == "invalid_user_type"
-    User.objects.create_user(email="neha@lab.example.org", password="x-Strong-1!", user_type=UserType.EXTERNAL)
-    assert APIClient().post("/api/istem/register/complete/", {"link_token": link_token, "user_type": "external"},
-                            format="json").status_code == 409
+    # An account already using the email but still awaiting approval: linked, not signed in.
+    User.objects.create_user(email="neha@lab.example.org", password="x-Strong-1!", user_type=UserType.EXTERNAL,
+                             is_active=False, admin_approved=False)
+    res = APIClient().post("/api/istem/register/complete/", {"link_token": link_token, "user_type": "external"},
+                           format="json")
+    assert res.status_code == 409 and res.data["code"] == "existing_pending"
+    assert IstemUserLink.objects.get(user__email="neha@lab.example.org").public_user_id == "60018"
 
 
 def test_unavailable_when_istem_is_off(on, mailoutbox):
@@ -120,7 +124,7 @@ def test_onboarding_steps_one_by_one_then_password_sign_in(on, mailoutbox):
     url = "/api/profiles/me/onboarding/"
     assert api.post(url, {"step": "organisation", "department": 999999}, format="json").status_code == 400
     org = _org()
-    assert api.post(url, {"step": "organisation", "department": org.pk}, format="json").data["steps"] == ["programme", "password"]
+    assert api.post(url, {"step": "organisation", "department": org.pk}, format="json").data["steps"] == ["password"]
     past = (timezone.localdate() - timedelta(days=1)).isoformat()
     assert api.post(url, {"step": "programme", "program_end_date": past}, format="json").status_code == 400
     end = (timezone.localdate() + timedelta(days=200)).isoformat()
@@ -133,7 +137,16 @@ def test_onboarding_steps_one_by_one_then_password_sign_in(on, mailoutbox):
     assert login.status_code == 200, login.data
 
 
-def test_unlisted_organisation_is_requested_and_joined_on_approval(on, mailoutbox):
+def _admin_api():
+    admin = User.objects.create_user(email="admin@iitr.ac.in", password="x-Strong-1!", user_type=UserType.ADMIN,
+                                     is_active=True)
+    api = APIClient()
+    api.force_authenticate(admin)
+    return api
+
+
+def test_unlisted_organisation_is_added_at_once_and_marked_unverified(on, mailoutbox):
+    from iic_booking.users import onboarding
     from iic_booking.users.models import OrganizationRequest
 
     link_token = _verified(mailoutbox)
@@ -147,23 +160,72 @@ def test_unlisted_organisation_is_requested_and_joined_on_approval(on, mailoutbo
     res = api.post(url, {"step": "organisation", "request_organisation": True,
                          "organisation_name": "  Asha  Institute of Science ", "state": "uttarakhand"}, format="json")
     assert res.status_code == 200, res.data
-    assert "organisation" not in res.data["steps"] and res.data["organisation_requested"] == "Asha Institute of Science"
+    assert "organisation" not in res.data["steps"] and res.data["organisation_added"] == "Asha Institute of Science"
+    user = User.objects.get(email="neha@lab.example.org")
+    dept = user.department
+    assert (dept.name, dept.state, dept.external_subcategory, dept.department_type) == (
+        "Asha Institute of Science", "uttarakhand", "educational_institute", DepartmentType.EXTERNAL)
     req = OrganizationRequest.objects.get()
-    assert (req.name, req.state, req.external_subcategory, req.email) == (
-        "Asha Institute of Science", "uttarakhand", "educational_institute", "neha@lab.example.org")
-    # A second user from the same organisation joins the same pending request.
+    assert req.status == OrganizationRequest.Status.PENDING and req.created_department == dept
+    # Listed for others, marked unverified, and not twice.
+    listed = APIClient().get("/api/departments/", {"type": "external", "external_subcategory": "educational_institute",
+                                                   "state": "uttarakhand"}).data
+    assert [(d["name"], d["verified"]) for d in listed["departments"]] == [("Asha Institute of Science", False)]
+    # A second user typing the same name joins it rather than adding it again.
     other = User.objects.create_user(email="other@lab.example.org", password=None, user_type=UserType.EXTERNAL)
+    onboarding.save_step(other, "organisation", {"request_organisation": True,
+                                                 "organisation_name": "asha institute of science", "state": "uttarakhand"})
+    other.refresh_from_db()
+    assert other.department == dept and OrganizationRequest.objects.count() == 1
+
+
+def _added(name="Asha Instt of Sci", email="neha@lab.example.org"):
+    from iic_booking.users import provisional_organisations as provisional
+    from iic_booking.users.models import OrganizationRequest
+
+    user = User.objects.create_user(email=email, password=None, user_type=UserType.EXTERNAL)
+    dept = provisional.add_for_user(user, name, "uttarakhand", "educational_institute")
+    return user, dept, OrganizationRequest.objects.get(created_department=dept)
+
+
+def test_admin_approves_an_added_organisation_with_a_corrected_name():
+    user, dept, req = _added()
+    _org(name="Taken Name")
+    api = _admin_api()
+    url = f"/api/admin/organization-requests/{req.pk}/"
+    api.patch(url, {"approved_name": "Taken Name"}, format="json")
+    assert api.post(url + "approve/").status_code == 400  # would duplicate a listed organisation
+    api.patch(url, {"approved_name": "Asha Institute of Science"}, format="json")
+    assert api.post(url + "approve/").status_code == 200
+    dept.refresh_from_db()
+    req.refresh_from_db()
+    assert dept.name == "Asha Institute of Science" and req.status == "approved"
+    user.refresh_from_db()
+    assert user.department == dept
+
+
+def test_admin_merges_a_duplicate_into_the_listed_organisation():
+    from iic_booking.users.models import OrganizationRequest
+
+    listed = _org()
+    user, dept, req = _added()
+    res = _admin_api().post(f"/api/admin/organization-requests/{req.pk}/merge/", {"department_id": listed.pk},
+                            format="json")
+    assert res.status_code == 200, res.data
+    user.refresh_from_db()
+    req.refresh_from_db()
+    assert user.department == listed and not Department.objects.filter(pk=dept.pk).exists()
+    assert req.status == OrganizationRequest.Status.APPROVED and req.created_department == listed
+
+
+def test_admin_rejects_an_added_organisation_and_its_users_are_asked_again():
     from iic_booking.users import onboarding
 
-    onboarding.save_step(other, "organisation", {"request_organisation": True, "organisation_name": "asha institute of science",
-                                                 "state": "uttarakhand"})
-    assert OrganizationRequest.objects.count() == 1
-    # The IIC office approves it: both users move to the new organisation.
-    org = _org()
-    req.status, req.created_department = OrganizationRequest.Status.APPROVED, org
-    req.save()
-    assert set(User.objects.filter(department=org).values_list("email", flat=True)) == {
-        "neha@lab.example.org", "other@lab.example.org"}
+    user, dept, req = _added()
+    assert _admin_api().post(f"/api/admin/organization-requests/{req.pk}/reject/").status_code == 200
+    user.refresh_from_db()
+    assert user.department is None and not Department.objects.filter(pk=dept.pk).exists()
+    assert "organisation" in onboarding.missing_steps(user)
 
 
 def test_internal_users_are_never_asked(on):
@@ -171,3 +233,57 @@ def test_internal_users_are_never_asked(on):
     res = APIClient()
     res.force_authenticate(student)
     assert res.get("/api/profiles/me/onboarding/").data["required"] is False
+
+
+def test_existing_portal_account_with_the_same_email_is_linked_and_signed_in(on, mailoutbox):
+    org = _org()
+    existing = User.objects.create_user(email="neha@lab.example.org", password="x-Strong-1!", user_type=UserType.EXTERNAL,
+                                        department=org)
+    User.objects.filter(pk=existing.pk).update(is_active=True, admin_approved=True, email_verified=True)
+    link_token = _verified(mailoutbox)
+    res = APIClient().post("/api/istem/register/complete/", {"link_token": link_token, "user_type": UserType.EXTERNAL},
+                           format="json")
+    assert res.status_code == 200, res.data
+    assert res.data["outcome"] == "linked_existing" and res.data["token"]
+    assert User.objects.filter(email__iexact="neha@lab.example.org").count() == 1
+    existing.refresh_from_db()
+    assert IstemUserLink.objects.get(user=existing).public_user_id == "60018"
+    assert existing.is_test_account is False and existing.has_usable_password()
+
+
+def test_internal_account_with_the_same_email_is_linked_but_signs_in_with_channel_i(on, mailoutbox):
+    existing = User.objects.create_user(email="neha@lab.example.org", password=None, user_type=UserType.STUDENT)
+    User.objects.filter(pk=existing.pk).update(is_active=True, admin_approved=True)
+    res = APIClient().post("/api/istem/register/complete/", {"link_token": _verified(mailoutbox), "user_type": "external"},
+                           format="json")
+    assert res.status_code == 409 and res.data["code"] == "existing_internal"
+    assert IstemUserLink.objects.get(user=existing).public_user_id == "60018"
+
+
+def test_same_mobile_under_another_email_gets_no_second_account(on, mailoutbox):
+    User.objects.create_user(email="neha.old@college.example.org", password="x-Strong-1!", user_type=UserType.EXTERNAL,
+                             phone_number="9876543210")
+    res = APIClient().post("/api/istem/register/complete/", {"link_token": _verified(mailoutbox), "user_type": "external"},
+                           format="json")
+    assert res.status_code == 409 and res.data["code"] == "mobile_exists"
+    assert "neha@lab.example.org" not in res.data["error"]
+    assert not User.objects.filter(email__iexact="neha@lab.example.org").exists()
+
+
+def test_account_linked_to_another_istem_user_is_refused(on, mailoutbox):
+    existing = User.objects.create_user(email="neha@lab.example.org", password="x-Strong-1!", user_type=UserType.EXTERNAL)
+    User.objects.filter(pk=existing.pk).update(is_active=True, admin_approved=True)
+    IstemUserLink.objects.create(user=existing, public_user_id="59999")
+    res = APIClient().post("/api/istem/register/complete/", {"link_token": _verified(mailoutbox), "user_type": "external"},
+                           format="json")
+    assert res.status_code == 409 and res.data["code"] == "linked_other"
+
+
+def test_a_staff_account_with_the_same_mobile_does_not_block(on, mailoutbox):
+    # e.g. a department office account carrying a staff member's number
+    User.objects.create_user(email="office@iitr.ac.in", password="x-Strong-1!", user_type=UserType.FINANCE,
+                             phone_number="9876543210")
+    res = APIClient().post("/api/istem/register/complete/", {"link_token": _verified(mailoutbox), "user_type": "external"},
+                           format="json")
+    assert res.status_code == 201, res.data
+    assert User.objects.filter(email__iexact="neha@lab.example.org").exists()

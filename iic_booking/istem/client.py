@@ -563,6 +563,52 @@ class IstemClient:
                 out.append({"id": dept_id, "name": " ".join(str(name or "").split())[:255]})
         return out
 
+    def list_reference(self, path: str, op: str, *, params: dict | None = None) -> list[dict]:
+        """GET one of I-STEM's reference lists ({"id", "val"} rows): [{"id": "109" or "", "name": "..."}]. Rows with a
+        malformed id are dropped; rows with no id at all (funding agency types) keep id "" and are used by value."""
+        body = self._call(op, "GET", path, params=params)
+        result = body.get("result")
+        if _is_not_found(body) or (_is_success(body) is False and not result and "found" in _safe_message(body).lower()):
+            return []  # "No facilities found"
+        if _is_success(body) is not True or not isinstance(result, list):
+            raise IstemError(ErrorCategory.INVALID_RESPONSE, f"{op}: {_safe_message(body) or 'unexpected structure'}.")
+        out = []
+        for row in result:
+            if not isinstance(row, dict):
+                continue
+            name = " ".join(str(row.get("val") or row.get("name") or "").split())[:255]
+            raw_id = row.get("id")
+            ref_id = _as_remote_id(raw_id)
+            if not name or (raw_id not in (None, "") and not ref_id):
+                continue
+            out.append({"id": ref_id or "", "name": name})
+        return out
+
+    def create_equipment(self, payload: dict) -> str:
+        """POST api/equipment. Returns I-STEM's id for the new instrument. The response format was not documented with
+        the Swagger page, so the id is read from the usual keys (top level, then ``result``/``data``); a success without
+        a recognisable id raises INVALID_RESPONSE ("may exist") so the caller looks it up instead of creating twice."""
+        body = self._call("create_equipment", "POST", contract.CREATE_EQUIPMENT_PATH, data=payload)
+        success = _is_success(body)
+        if success is False:
+            raise IstemError(ErrorCategory.BUSINESS_ERROR, f"I-STEM refused Equipment Create: {_safe_message(body) or 'no message'}")
+        keys = ("equipment_id", "new_equipment_id", "id", "insert_id")
+        candidates = [body]
+        for nested in ("result", "data"):
+            value = body.get(nested)
+            if isinstance(value, dict):
+                candidates.append(value)
+            elif isinstance(value, list) and len(value) == 1 and isinstance(value[0], dict):
+                candidates.append(value[0])
+        for candidate in candidates:
+            for key in keys:
+                found = _as_remote_id(candidate.get(key))
+                if found:
+                    if success is not True:
+                        logger.info("istem op=create_equipment id without a recognised status")
+                    return found
+        raise IstemError(ErrorCategory.INVALID_RESPONSE, "Equipment Create gave no recognisable equipment id; the instrument may exist.")
+
     def list_all_equipment(self, *, institute_id: str | None = None) -> list[dict]:
         """Every page of the Equipment List (bounded). Raises if the listing cannot be read completely."""
         rows: list[dict] = []

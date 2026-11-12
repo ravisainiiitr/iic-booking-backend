@@ -24,8 +24,10 @@ def whatsapp_me(request):
     if request.method == "GET":
         return Response(opt_in_status(request.user))
     try:
+        # "prompt" = the one-tap question on the dashboard; anything else is the profile card.
+        source = "prompt" if request.data.get("source") == "prompt" else "profile"
         return Response(set_opt_in(request.user, opted_in=bool(request.data.get("opted_in")),
-                                   phone=str(request.data.get("phone") or "")))
+                                   phone=str(request.data.get("phone") or ""), source=source))
     except OptInError as exc:
         return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 

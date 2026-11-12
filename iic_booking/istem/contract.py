@@ -22,6 +22,24 @@ EQUIPMENT_LIST_PATH = "api/equipment-list"  # GET, query: institute_id, page, li
 # GET, query: institute_id (ignored for an institute token). {"result": [{"id": "164", "val": "Institute ..."}]}; the id
 # is the equipment_department_id of the Equipment List.
 DEPARTMENTS_PATH = "api/departments"
+# Equipment Create and its reference lists (Swagger, shared by the user 2026-11-08). Lists answer
+# {"status": "SUCCESS", "result": [{"id": 109, "val": "..."}]}; funding agency types carry only "val".
+CREATE_EQUIPMENT_PATH = "api/equipment"  # POST, form; institute_id must equal the token's institute
+FUNDING_AGENCIES_PATH = "api/funding-agencies"  # GET -> equipment_agency_id
+FUNDING_AGENCY_TYPES_PATH = "api/funding-agency-types"  # GET -> funding_agency_type (by value)
+EQUIPMENT_CATEGORIES_PATH = "api/equipment-categories"  # GET -> category
+FACILITIES_PATH = "api/facilities"  # GET -> equipment_facility_id
+# Required by Equipment Create; every other documented field is optional.
+CREATE_EQUIPMENT_REQUIRED_FIELDS = (
+    "equipment_name", "equipment_make", "equipment_srno", "equipment_department_id", "equipment_agency_id",
+    "funding_agency_type",
+)
+CREATE_EQUIPMENT_OPTIONAL_FIELDS = (
+    "institute_id", "equipment_model", "equipment_abbr", "equipment_location", "equipment_website",
+    "equipment_description", "equipment_project_id", "equipment_rate", "equipment_fov_rate", "equipment_cif_rate",
+    "equipment_other_rate", "category", "equipment_facility_id", "supplier_name", "supplier_email_id",
+    "service_provider_name", "service_provider_email_id", "last_amc_done", "pooling_status",
+)
 CREATE_BOOKING_PATH = "api/create-booking"  # POST, form
 CONFIRM_BOOKING_PATH = "api/confirm-booking"  # POST, form
 GET_BOOKINGS_PATH = "api/get-bookings"  # GET, query: fbr_no + status_code (both required)

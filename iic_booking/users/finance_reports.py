@@ -340,7 +340,9 @@ def build_finance_report(*, user: Any, date_from: date, date_to: date) -> dict[s
         ]
     )
     direct_cash_deposit = _dec(
-        approved_recharges.filter(recharge_mode=WalletRechargeMode.DIRECT_CASH_DEPOSIT).aggregate(
+        approved_recharges.filter(
+            recharge_mode__in=(WalletRechargeMode.DIRECT_CASH_DEPOSIT, WalletRechargeMode.OFFLINE_PAYMENT)
+        ).aggregate(
             total=Sum("amount")
         )["total"]
     )

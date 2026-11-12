@@ -1,4 +1,4 @@
-"""IITR Assistant trial scenarios: the same words mean different things for each role, nothing changes without a
+"""IITR Equipment Booking Assistant trial scenarios: the same words mean different things for each role, nothing changes without a
 button press, and the server refuses what a role may not do."""
 
 from __future__ import annotations

@@ -85,6 +85,12 @@ class _Scope:
             qs = qs.filter(equipment__internal_department_id=self.department_id)
         return qs
 
+    def all_bookings(self) -> QuerySet:
+        """Every booking on the scope's equipment, test data kept (only to count what the figures leave out)."""
+        from .models import Booking
+
+        return self.by_department(Booking.objects.all(), "equipment__internal_department_id")
+
 
 def scope_from_params(user, params) -> _Scope:
     return _Scope(user, (params or {}).get("dept"))
@@ -173,6 +179,18 @@ def _booking_figures(bookings: QuerySet, now: datetime) -> dict[str, Any]:
             "charged_last_month": _money(row["charged_last_month"]),
         },
     }
+
+
+def _test_bookings_made_today(scope, now: datetime) -> int:
+    from .testdata import q_test_equipment, q_test_users
+
+    today_start = _local_midnight(timezone.localdate(now))
+    return (
+        scope.all_bookings().order_by()
+        .filter(created_at__gte=today_start)
+        .filter(q_test_users("user__") | q_test_equipment("equipment__"))
+        .count()
+    )
 
 
 def _sessions(bookings: QuerySet, now: datetime) -> dict[str, int]:
@@ -437,8 +455,12 @@ def build_admin_dashboard_summary(user, department=None) -> dict[str, Any]:
     booking_figures = figures["figures"] or {}
     sessions: dict[str, Any] = {}
     _safely(sessions, "sessions", {}, lambda: _sessions(bookings, now))
+    test_today: dict[str, Any] = {}
+    _safely(test_today, "n", 0, lambda: _test_bookings_made_today(scope, now))
     payload["bookings"] = {
         "created_today": booking_figures.get("created_today", 0),
+        # Bookings made today by test accounts or on test equipment: left out of every figure above.
+        "test_created_today": test_today["n"],
         "created_this_week": booking_figures.get("created_this_week", 0),
         "created_last_7_days": booking_figures.get("created_last_7_days", 0),
         "sessions_today": (sessions["sessions"] or {}).get("sessions_today", 0),

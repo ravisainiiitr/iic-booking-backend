@@ -411,7 +411,7 @@ def _istem_automatic_status(booking):
     """The portal's own I-STEM record for this booking when automatic FBR is on (see iic_booking.istem.booking_status)."""
     from iic_booking.istem.booking_status import automatic_status
 
-    return automatic_status(booking)
+    return automatic_status(booking, include_reason=True)
 
 
 def _booking_requires_istem_fbr_results_block(booking) -> bool:
@@ -4856,6 +4856,20 @@ def _book_equipment_impl(request, pk):
             )
         perf.mark("charge_profile_loaded")
 
+        from iic_booking.istem.booking_gate import refusal as istem_profile_refusal
+
+        istem_refusal = istem_profile_refusal(booking_user, equipment, charge_profile)
+        if istem_refusal:
+            _create_booking_attempt_log(
+                request, equipment, BookingAttemptOutcome.FAILED,
+                failure_reason=istem_refusal["error"],
+                slots_requested=len(slot_ids),
+                number_of_samples=request.data.get("number_of_samples") or 1,
+                duration_minutes=total_time_minutes,
+                additional_info=_get_additional_info_from_request(request, equipment),
+            )
+            return Response(istem_refusal, status=status.HTTP_400_BAD_REQUEST)
+
         from .calculators import build_safe_input_values_for_charge_calculation
         safe_input_values = build_safe_input_values_for_charge_calculation(input_values, equipment=equipment)
         try:
@@ -6328,6 +6342,7 @@ def list_bookings(request):
         booking_id: Optional. Filter by booking ID (admin/OIC only; use with limit=1 to fetch one booking).
         status: Optional. Filter by booking status (PENDING, BOOKED, COMPLETED, CANCELLED, ABSENT, REFUNDED)
         start_date: Optional. Filter bookings from this date (YYYY-MM-DD)
+        created_from / created_to: Optional. Filter by the local date the booking was made (YYYY-MM-DD, inclusive)
         end_date: Optional. Filter bookings until this date (YYYY-MM-DD)
         ordering: Optional. Order by field (default: -created_at). Use '-' prefix for descending.
         limit: Optional. Max number of results per page (default: 50; at most 500 with list_view, else 100).
@@ -6779,6 +6794,27 @@ def _booking_list_queryset(request, *, min_search_chars: int = 0):
                 status=status.HTTP_400_BAD_REQUEST,
             )
     
+    # Filter by the day the booking was made (local dates, inclusive): the dashboard's "Bookings made today".
+    for param, lookup in (("created_from", "created_at__date__gte"), ("created_to", "created_at__date__lte")):
+        raw = (request.query_params.get(param) or "").strip()
+        if not raw:
+            continue
+        try:
+            day = parse_date(raw)
+        except (ValueError, TypeError):
+            day = None
+        if day is None:
+            return None, Response(
+                {"error": f"Invalid {param} format. Use YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        queryset = queryset.filter(**{lookup: day})
+    # exclude_test=1: leave out test accounts' bookings and test equipment, as the dashboard figures do.
+    if (request.query_params.get("exclude_test") or "").strip().lower() in ("1", "true", "yes"):
+        from .testdata import exclude_test_bookings
+
+        queryset = exclude_test_bookings(queryset)
+
     # View Booking / My Bookings status (incl. derived Pending / Result Overdue) and default group order.
     from . import booking_list_status as bls
 
@@ -12836,6 +12872,11 @@ def refund_booking_internal(booking, refund_notes, performed_by):
         raise ValueError("Booking has already been refunded.")
     if booking.status == BookingStatus.BOOKING_NOT_UTILIZED:
         raise ValueError("Booking is marked as Not Utilized and cannot be refunded.")
+    from .maintenance_settlement import refund_lock_reason
+
+    locked = refund_lock_reason(booking)
+    if locked:
+        raise ValueError(locked)
     from iic_booking.external_services.refunds import invoice_requested
 
     if invoice_requested(booking):
@@ -16144,6 +16185,16 @@ def _input_edit_changes_charge(booking, old_input_values, new_input_values) -> b
         return False
 
 
+def charge_recalculation_refund_refusal(booking) -> str:
+    """Why the refund of a charge-recalculation difference is not allowed ("" when it is): never on a Completed
+    booking, nor on one settled by the OIC / Main Administrator during a maintenance hold."""
+    if booking.status == BookingStatus.COMPLETED:
+        return "This booking is Completed, so the refund after the input change can no longer be made."
+    from .maintenance_settlement import refund_lock_reason
+
+    return refund_lock_reason(booking)
+
+
 def _credit_charge_recalculation_refund(booking_pk, *, expected_amount=None):
     """Credit the pending refund of a booking (negative ``charge_recalculation_pending_amount``) to the
     booking wallet and clear it. Locks the booking row so a refund is paid at most once.
@@ -16157,6 +16208,9 @@ def _credit_charge_recalculation_refund(booking_pk, *, expected_amount=None):
     pending = booking.charge_recalculation_pending_amount
     if pending is None or pending >= 0:
         raise ValueError("No pending refund for this booking.")
+    refusal = charge_recalculation_refund_refusal(booking)
+    if refusal:
+        raise ValueError(refusal)
     amount = abs(pending)
     if expected_amount is not None and amount != expected_amount:
         raise ValueError("The refund amount has changed. Please refresh the booking.")
@@ -16173,6 +16227,41 @@ def _credit_charge_recalculation_refund(booking_pk, *, expected_amount=None):
     booking.charge_recalculation_pending_amount = None
     booking.save(update_fields=["charge_recalculation_pending_amount"])
     return booking, txn
+
+
+def _compute_recalculated_charge(booking):
+    """(time minutes, charge, breakdown) for the booking's current ``input_values`` (GST and own-material charges
+    included). Reads only; works on unsaved input values."""
+    equipment = booking.equipment
+    charge_profile = booking.charge_profile
+    safe_input_values = build_safe_input_values_for_charge_calculation(booking.input_values, equipment=equipment)
+    from .print_3d_views import apply_print_analysis_to_input_values
+    safe_input_values = apply_print_analysis_to_input_values(booking, safe_input_values)
+
+    calculated_time_minutes = TimeCalculationEngine.calculate_time(
+        charge_profile,
+        safe_input_values,
+        slot_duration_minutes=equipment.slot_duration_minutes,
+    )
+    new_charge, charge_breakdown = ChargeCalculationEngine.calculate_charge(
+        charge_profile,
+        safe_input_values,
+        calculated_time_minutes,
+        selected_parameters=booking.selected_parameters,
+    )
+    new_charge = quantize_money(new_charge)
+    if UserType.is_external_user(getattr(booking.user, "user_type", None)):
+        gst_percent = get_external_gst_percent()
+        if gst_percent > 0:
+            gst_amount = quantize_money(new_charge * gst_percent / Decimal("100"))
+            new_charge = quantize_money(new_charge + gst_amount)
+            charge_breakdown = list(charge_breakdown) + [
+                {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
+            ]
+    from .own_material_charges import add_material_charges
+
+    new_charge, charge_breakdown = add_material_charges(booking, new_charge, charge_breakdown)
+    return calculated_time_minutes, new_charge, charge_breakdown
 
 
 def _recalculate_booking_charge_and_adjust_wallet(
@@ -16201,33 +16290,7 @@ def _recalculate_booking_charge_and_adjust_wallet(
     if not charge_profile or not equipment:
         return {}
 
-    safe_input_values = build_safe_input_values_for_charge_calculation(booking.input_values, equipment=equipment)
-    from .print_3d_views import apply_print_analysis_to_input_values
-    safe_input_values = apply_print_analysis_to_input_values(booking, safe_input_values)
-
-    calculated_time_minutes = TimeCalculationEngine.calculate_time(
-        charge_profile,
-        safe_input_values,
-        slot_duration_minutes=equipment.slot_duration_minutes,
-    )
-    new_charge, charge_breakdown = ChargeCalculationEngine.calculate_charge(
-        charge_profile,
-        safe_input_values,
-        calculated_time_minutes,
-        selected_parameters=booking.selected_parameters,
-    )
-    new_charge = quantize_money(new_charge)
-    if UserType.is_external_user(getattr(booking.user, "user_type", None)):
-        gst_percent = get_external_gst_percent()
-        if gst_percent > 0:
-            gst_amount = quantize_money(new_charge * gst_percent / Decimal("100"))
-            new_charge = quantize_money(new_charge + gst_amount)
-            charge_breakdown = list(charge_breakdown) + [
-                {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
-            ]
-    from .own_material_charges import add_material_charges
-
-    new_charge, charge_breakdown = add_material_charges(booking, new_charge, charge_breakdown)
+    calculated_time_minutes, new_charge, charge_breakdown = _compute_recalculated_charge(booking)
     refund_txn = None
     with transaction.atomic():
         # Read the charge state under a row lock so concurrent edits net against the same baseline.
@@ -16669,6 +16732,29 @@ def update_booking_input_values(request, booking_id):
         instant_refund_allowed = booking.status == BookingStatus.BOOKED and instant_refund_window(booking)[0]
 
     booking.input_values = current
+    if enable_recalc and booking.status == BookingStatus.COMPLETED and booking.charge_profile_id:
+        # A Completed booking's charge may go up, never down: the difference could not be refunded
+        # (charge_recalculation_refund_refusal), so the money would be stranded.
+        _t, would_charge, _b = _compute_recalculated_charge(booking)
+        cents = Decimal("0.01")
+        baseline = (
+            (booking.total_charge or Decimal("0")) - (booking.charge_recalculation_pending_amount or Decimal("0"))
+        ).quantize(cents)
+        would_charge = Decimal(would_charge).quantize(cents)
+        if would_charge < baseline:
+            return Response(
+                {
+                    "error": (
+                        f"This booking is Completed: these inputs would lower the charge from ₹{baseline} to "
+                        f"₹{would_charge}, and a Completed booking cannot be refunded. Keep inputs that do not "
+                        "lower the charge."
+                    ),
+                    "code": "completed_charge_cannot_decrease",
+                    "current_charge": str(baseline),
+                    "new_charge": str(would_charge),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
     update_fields = ["input_values"]
     if (
         not enable_recalc

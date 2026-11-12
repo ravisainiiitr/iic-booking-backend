@@ -581,3 +581,36 @@ def test_booking_events_queue_the_matching_template(on):
         booking_event(Event())
     (msg,) = WhatsAppMessage.objects.all()
     assert msg.event == "booking_confirmed" and msg.params[1:3] == ["IICXRF202600009", "X-Ray Fluorescence (XRF)"] and len(msg.params) == 5
+
+
+def test_one_tap_prompt_is_asked_once_and_recorded_as_consent(on):
+    from iic_booking.whatsapp.models import WhatsAppConsentEvent
+
+    user = UserFactory(user_type=UserType.EXTERNAL, phone_number="9876543210")
+    assert _api(user).get("/api/whatsapp/me/").json()["ask"] is True
+    resp = _api(user).put("/api/whatsapp/me/", {"opted_in": True, "source": "prompt"}, format="json").json()
+    assert resp["opted_in"] is True and resp["ask"] is False
+    event = WhatsAppConsentEvent.objects.get(user=user)
+    assert (event.action, event.source, event.phone_e164) == ("opt_in", "prompt", "+919876543210")
+
+
+def test_one_tap_prompt_not_asked_after_no_or_without_a_number_or_outside_the_pilot(on, settings):
+    declined = UserFactory(user_type=UserType.EXTERNAL, phone_number="9876543211")
+    _api(declined).put("/api/whatsapp/me/", {"opted_in": False, "source": "prompt"}, format="json")
+    assert _api(declined).get("/api/whatsapp/me/").json()["ask"] is False
+    assert _api(UserFactory(user_type=UserType.EXTERNAL, phone_number="")).get("/api/whatsapp/me/").json()["ask"] is False
+    settings.WHATSAPP_PILOT_NUMBERS = ["+919800000000"]
+    outside = UserFactory(user_type=UserType.EXTERNAL, phone_number="9876543212")
+    assert _api(outside).get("/api/whatsapp/me/").json()["ask"] is False
+    settings.WHATSAPP_ENABLED = False
+    assert _api(UserFactory(user_type=UserType.EXTERNAL, phone_number="9800000000")).get("/api/whatsapp/me/").json()["ask"] is False
+
+
+def test_pilot_numbers_match_whatever_way_they_are_written(on, settings):
+    from iic_booking.whatsapp import conf
+
+    for written in ("9876543210", "+91 98765 43210", "91-98765-43210", " +919876543210 ", "09876543210"):
+        settings.WHATSAPP_PILOT_NUMBERS = written
+        assert conf.may_send_to("+919876543210"), written
+    settings.WHATSAPP_PILOT_NUMBERS = "9876543210; 9800000000"
+    assert conf.may_send_to("+919800000000") and not conf.may_send_to("+919811111111")

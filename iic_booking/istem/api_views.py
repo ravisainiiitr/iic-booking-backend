@@ -142,10 +142,11 @@ def istem_register_complete(request):
         return Response({"error": "Too many sign-up attempts from your network. Please wait an hour and try again.",
                          "code": "rate_limited"}, status=status.HTTP_429_TOO_MANY_REQUESTS)
     try:
-        user = create_account(str(request.data.get("link_token") or ""), str(request.data.get("user_type") or ""))
+        user, outcome = create_account(str(request.data.get("link_token") or ""), str(request.data.get("user_type") or ""))
     except DirectSignupError as exc:
         return Response({"error": exc.message, "code": exc.code}, status=exc.http_status)
-    registration_approvals.on_registration_verified(user, request=request)
+    if outcome == "created":
+        registration_approvals.on_registration_verified(user, request=request)
     token = _regenerate_auth_token(user)
     set_token_activity(token.key)
     if _mark_login_and_check_first(user) and _should_send_welcome_email(user):
@@ -156,7 +157,8 @@ def istem_register_complete(request):
         except Exception:  # noqa: BLE001 - the account exists; a welcome email is not worth failing for
             pass
     return Response({"token": token.key, "user": UserSerializer(user, context={"request": request}).data,
-                     "onboarding": onboarding.status(user)}, status=status.HTTP_201_CREATED)
+                     "onboarding": onboarding.status(user), "outcome": outcome},
+                    status=status.HTTP_201_CREATED if outcome == "created" else status.HTTP_200_OK)
 
 
 # --- I-STEM equipment mapping page (Main Admin: every instrument; department administrators: their own) --------------
@@ -283,5 +285,73 @@ def istem_equipment_mappings_verify(request):
 
     try:
         return Response(verify(request.user))
+    except MappingRefused as exc:
+        return _mapping_refusal(exc)
+
+
+# --- Profile readiness for I-STEM bookings (8 Nov 2026) --------------------------------------------------------------
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def istem_profile_readiness(request):
+    """What the signed-in user must complete for I-STEM bookings. ``?equipment_id=`` also says whether booking that
+    instrument would be refused now (``blocks_booking``)."""
+    from .booking_gate import readiness
+
+    equipment = charge_profile = None
+    raw = request.query_params.get("equipment_id")
+    if raw:
+        if not str(raw).isdigit():
+            return Response({"error": "equipment_id is a number."}, status=400)
+        from iic_booking.equipment.models import ChargeProfile, Equipment
+
+        equipment = Equipment.objects.filter(pk=int(raw)).first()
+        if equipment is not None:
+            # Whether any active profile of the instrument needs an FBR is enough for a warning before the form.
+            charge_profile = ChargeProfile.objects.filter(equipment=equipment, is_active=True, require_istem_fbr=True).first()
+    return Response(readiness(request.user, equipment, charge_profile))
+
+
+# --- Equipment Create on I-STEM (Main Admin, 8 Nov 2026) -------------------------------------------------------------
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def istem_reference_sync(request):
+    """Read I-STEM's funding agencies, funding agency types, equipment categories and facilities into the portal."""
+    from .equipment_create import sync_reference_lists
+    from .equipment_mapping import MappingRefused
+
+    try:
+        return Response(sync_reference_lists(request.user))
+    except MappingRefused as exc:
+        return _mapping_refusal(exc)
+
+
+@api_view(["GET", "PUT"])
+@permission_classes([IsAuthenticated])
+def istem_equipment_details(request, equipment_id: int):
+    """GET: the instrument's I-STEM details (pre-filled when never saved), what is missing, and the choices.
+    PUT: save the details."""
+    from .equipment_create import get_details, save_details
+    from .equipment_mapping import MappingRefused
+
+    try:
+        if request.method == "PUT":
+            return Response(save_details(request.user, equipment_id, request.data))
+        return Response(get_details(request.user, equipment_id))
+    except MappingRefused as exc:
+        return _mapping_refusal(exc)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def istem_equipment_create(request, equipment_id: int):
+    """Send Equipment Create for the instrument (body ``dry_run: true`` returns the form without sending)."""
+    from .equipment_create import create_on_istem
+    from .equipment_mapping import MappingRefused
+
+    dry_run = request.data.get("dry_run") in (True, "true", "1", 1)
+    try:
+        return Response(create_on_istem(request.user, equipment_id, dry_run=dry_run))
     except MappingRefused as exc:
         return _mapping_refusal(exc)

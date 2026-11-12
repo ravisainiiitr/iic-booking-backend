@@ -197,14 +197,26 @@ def finance_payment_receipts_list(request):
 def finance_payment_receipt_process(request, receipt_id: int):
     if not _is_finance_or_admin(request.user):
         return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
-    receipt = get_object_or_404(
-        DepartmentPaymentReceipt.objects.select_related("booking", "wallet_recharge_request", "department", "user"),
-        pk=receipt_id,
-    )
-    if receipt.status != DepartmentPaymentReceiptStatus.PENDING:
-        return Response({"error": "Already processed."}, status=status.HTTP_400_BAD_REQUEST)
+    get_object_or_404(DepartmentPaymentReceipt, pk=receipt_id)
 
     with transaction.atomic():
+        # Locked and re-checked inside the transaction so two clicks never process (and credit) twice.
+        receipt = (
+            DepartmentPaymentReceipt.objects.select_for_update(of=("self",))
+            .select_related("booking", "wallet_recharge_request", "department", "user")
+            .get(pk=receipt_id)
+        )
+        if receipt.status != DepartmentPaymentReceiptStatus.PENDING:
+            return Response({"error": "Already processed."}, status=status.HTTP_400_BAD_REQUEST)
+        if receipt.wallet_recharge_request_id:
+            # The proof of a recharge request: the request's own approval credits the wallet, never this receipt.
+            return Response(
+                {
+                    "error": "This receipt belongs to a wallet recharge request; approve or reject the request instead.",
+                    "code": "receipt_of_recharge_request",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         receipt.status = DepartmentPaymentReceiptStatus.PROCESSED
         receipt.finance_processed_at = timezone.now()
         receipt.finance_processed_by = request.user

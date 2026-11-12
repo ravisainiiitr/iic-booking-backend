@@ -114,6 +114,7 @@ from .payment import (
     DepartmentPaymentReceipt,
     SricTransferRequest,
 )
+from .offline_recharge import OfflinePaymentMode, OfflineRechargePayment, OfflineReconciliationStatus
 from .equipment_supply_chain_role import (
     EquipmentSupplyChainRole,
     UserEquipmentSupplyChainRole,
@@ -191,6 +192,9 @@ __all__ = [
     "WalletRechargeCreditFacilityStatus",
     "WalletRechargeMode",
     "WalletRechargeRequestAuditLog",
+    "OfflinePaymentMode",
+    "OfflineRechargePayment",
+    "OfflineReconciliationStatus",
     "WalletCreditFacilitySettings",
     "WalletCreditPolicy",
     "WalletCreditFacility",

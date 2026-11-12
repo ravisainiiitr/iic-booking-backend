@@ -1,4 +1,4 @@
-"""IITR Assistant as a portal navigator: everyday phrasings reach the right page instead of an equipment search."""
+"""IITR Equipment Booking Assistant as a portal navigator: everyday phrasings reach the right page instead of an equipment search."""
 
 from __future__ import annotations
 

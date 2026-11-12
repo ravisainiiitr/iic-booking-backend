@@ -48,8 +48,10 @@ def _patch(egs_factory, user, booking, values):
 
 
 @pytest.mark.django_db
-def test_user_cannot_edit_completed_booking_but_oic_can_and_charge_is_recalculated(egs_factory):
+def test_user_cannot_edit_completed_booking_but_oic_can_raise_the_charge(egs_factory):
     _eq, owner, oic, booking = _setup(egs_factory, status=BookingStatus.COMPLETED)
+    booking.total_charge = Decimal("5.00")
+    booking.save(update_fields=["total_charge"])
 
     assert _patch(egs_factory, owner, booking, {"A": 3}).status_code == 400
 
@@ -58,7 +60,35 @@ def test_user_cannot_edit_completed_booking_but_oic_can_and_charge_is_recalculat
     booking.refresh_from_db()
     assert booking.input_values["A"] == 3
     assert booking.total_charge == Decimal("10.00")
-    assert booking.charge_recalculation_pending_amount == Decimal("-40.00")
+    assert booking.charge_recalculation_pending_amount == Decimal("5.00")
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("editor", ["oic", "admin"])
+def test_completed_booking_charge_cannot_be_lowered(egs_factory, editor):
+    _eq, _owner, oic, booking = _setup(egs_factory, status=BookingStatus.COMPLETED)
+    user = oic if editor == "oic" else UserFactory(user_type=UserType.ADMIN, admin_approved=True)
+
+    resp = _patch(egs_factory, user, booking, {"A": 3})
+    assert resp.status_code == 400, resp.data
+    assert resp.data["code"] == "completed_charge_cannot_decrease"
+    assert resp.data["current_charge"] == "50.00" and resp.data["new_charge"] == "10.00"
+    booking.refresh_from_db()
+    assert booking.input_values["A"] == 2
+    assert booking.total_charge == Decimal("50.00")
+    assert booking.charge_recalculation_pending_amount is None
+
+
+@pytest.mark.django_db
+def test_completed_booking_same_charge_edit_still_saved(egs_factory):
+    _eq, _owner, oic, booking = _setup(egs_factory, status=BookingStatus.COMPLETED)
+    booking.total_charge = Decimal("10.00")
+    booking.save(update_fields=["total_charge"])
+    resp = _patch(egs_factory, oic, booking, {"A": 3})
+    assert resp.status_code == 200, resp.data
+    booking.refresh_from_db()
+    assert booking.input_values["A"] == 3
+    assert booking.charge_recalculation_pending_amount is None
 
 
 @pytest.mark.django_db

@@ -206,7 +206,7 @@ def verify(token: str, code: str) -> dict:
     return {"profile": profile, "link_token": link_token}
 
 
-def link_new_user(user, link_token: str) -> bool:
+def link_new_user(user, link_token: str, *, mark_test_account: bool = True) -> bool:
     """After registration: link ``user`` to the verified I-STEM account and fill blank billing details.
     The token must be recent and issued for the email the account registered with; otherwise nothing happens."""
     from .choices import EvidenceType
@@ -235,7 +235,7 @@ def link_new_user(user, link_token: str) -> bool:
         _link_user(link, str(data["public_user_id"]), reason="existing I-STEM user registered with email OTP",
                    evidence_type=EvidenceType.EMAIL_OTP, evidence_reference=f"registration OTP to {mask(user.email)}")
     apply_istem_profile(user, link.istem_profile)
-    if data.get("test_account") and not user.is_test_account:
+    if mark_test_account and data.get("test_account") and not user.is_test_account:
         user.is_test_account = True  # registered through the I-STEM test link
         user.save(update_fields=["is_test_account"])
     return True

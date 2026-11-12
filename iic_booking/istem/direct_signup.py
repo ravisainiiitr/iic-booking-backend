@@ -77,8 +77,68 @@ def _mobile(profile: dict) -> str | None:
     return digits if len(digits) == 10 else None
 
 
+def _existing_account(user, data: dict, link_token: str):
+    """The verified I-STEM email already has a portal account (9 Nov 2026).
+
+    The OTP went to that email, so the person controls it: the I-STEM account is linked to the existing portal account
+    instead of a second account being made. An external account that can sign in is signed in (as an email OTP sign-in
+    would); an IIT Roorkee account keeps signing in with Channel i, and an account still awaiting verification or
+    approval waits for it. Never marks an existing account as a test account.
+    """
+    from iic_booking.users.models.user_type import UserType
+
+    from .models import IstemUserLink
+    from .registration_lookup import link_new_user
+
+    current = IstemUserLink.objects.filter(user=user).exclude(public_user_id="").values_list("public_user_id", flat=True).first()
+    if current and str(current) != str(data.get("public_user_id")):
+        raise DirectSignupError(
+            "linked_other",
+            "Your portal account is already linked to a different I-STEM account. Please contact the IIC office.",
+            409,
+        )
+    if not current and not link_new_user(user, link_token, mark_test_account=False):
+        raise DirectSignupError("expired", "This I-STEM verification has expired. Please look up your account again.")
+    external = str(user.user_type or "") in UserType.get_external_user_codes()
+    if not external:
+        raise DirectSignupError(
+            "existing_internal",
+            "You already have a portal account with this email. Your I-STEM account is now linked to it. "
+            "Sign in with Channel i.",
+            409,
+        )
+    if not user.can_login():
+        raise DirectSignupError(
+            "existing_pending",
+            "You already have a portal account with this email, and it is still awaiting verification or approval. "
+            "Your I-STEM account is now linked to it; you can sign in once it is approved.",
+            409,
+        )
+    logger.info("I-STEM sign-up matched existing portal account %s; linked instead of creating one", mask(user.email))
+    return user
+
+
+def _same_mobile(profile: dict):
+    """Another EXTERNAL portal account with the mobile number registered on I-STEM (different email), if any.
+
+    Only external accounts count: a staff or IIT Roorkee account that happens to carry the same number (an office
+    phone, or a staff member's own number) is not the same external person."""
+    from iic_booking.users.models import User
+    from iic_booking.users.models.user_type import UserType
+
+    mobile = _mobile(profile)
+    if not mobile:
+        return None
+    return (
+        User.objects.filter(phone_number__endswith=mobile, user_type__in=list(UserType.get_external_user_codes()))
+        .order_by("pk")
+        .first()
+    )
+
+
 def create_account(link_token: str, user_type: str):
-    """Create, approve and link the portal account for a verified I-STEM user. Returns the user."""
+    """Create, approve and link the portal account for a verified I-STEM user. Returns ``(user, outcome)``:
+    ``"created"``, or ``"linked_existing"`` when the I-STEM email already had a portal account (signed in to it)."""
     from iic_booking.users.models import User
     from iic_booking.users.models.user_type import UserType
 
@@ -94,8 +154,18 @@ def create_account(link_token: str, user_type: str):
     profile = data.get("profile") or {}
     if not email:
         raise DirectSignupError("invalid", "I-STEM did not return an email address for this account.")
-    if User.objects.filter(email__iexact=email).exists():
-        raise DirectSignupError("exists", "An account with this email already exists. Sign in instead.", 409)
+    existing = User.objects.filter(email__iexact=email).first()
+    if existing is not None:
+        return _existing_account(existing, data, link_token), "linked_existing"
+    twin = _same_mobile(profile)
+    if twin is not None:
+        # Same person, perhaps, under another email: no second account. They sign in with the one they have.
+        raise DirectSignupError(
+            "mobile_exists",
+            f"A portal account already uses the mobile number registered on I-STEM, with the email {mask(twin.email)}. "
+            "Sign in with that account and link I-STEM from My Profile, or contact the IIC office if it is not yours.",
+            409,
+        )
     name = " ".join(p for p in (str(profile.get("first_name") or "").strip(), str(profile.get("last_name") or "").strip()) if p)
     state = match_state(str(profile.get("state") or ""))
     department = match_department(str(profile.get("organisation") or ""), state, user_type)
@@ -115,4 +185,4 @@ def create_account(link_token: str, user_type: str):
         if not link_new_user(user, link_token):
             raise DirectSignupError("expired", "This I-STEM verification has expired. Please look up your account again.")
     logger.info("Account created directly from I-STEM for %s (organisation matched: %s)", mask(email), bool(department))
-    return user
+    return user, "created"

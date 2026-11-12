@@ -174,9 +174,33 @@ def test_label_shows_the_lab_and_the_addressed_people(on, booking):
     from pypdf import PdfReader
 
     text = PdfReader(io.BytesIO(r.content)).pages[0].extract_text()
-    assert booking.equipment.internal_department.name in text
-    assert f"Attn: {get_user_display_name(oic)} (Officer In Charge)" in text
-    assert f"Lab in-charge: {get_user_display_name(lab)}" in text
+    # 9 Nov 2026: the equipment is named in the header; TO holds only the IIC address (no officer, lab or equipment lines).
+    assert f"Samples for {booking.equipment.name}" in text
+    assert "Officer In Charge" not in text and "Lab in-charge" not in text
+    assert "Dr Asha Verma" in text and "12 Station Road" in text
     assert booking.virtual_booking_id in text
     assert IIC_ADDRESS.splitlines()[1] in text
     assert timezone.now() - SampleShipmentLabel.objects.get(booking=booking).created_at < timedelta(minutes=1)
+
+
+PUBLIC = "/api/v1/external-booking/sample-label/status/"
+
+
+def test_anyone_who_scans_the_label_sees_the_booking_and_latest_status(on, booking):
+    from rest_framework.test import APIClient
+
+    token = _label(booking)
+    office, _oic, _lab = _people(booking)
+    r = APIClient().get(PUBLIC, {"code": token})  # not signed in
+    assert r.status_code == 200, r.content
+    data = r.json()
+    assert data["equipment"] == booking.equipment.name and data["payment"] == "Paid"
+    assert data["current_status"] == "Not received at the office yet" and data["timeline"] == []
+    assert data["department"] == booking.equipment.internal_department.name
+    assert "email" not in str(data).lower() and "amount" not in data
+    _scan(office, token)
+    data = APIClient().get(PUBLIC, {"code": token}).json()
+    assert data["current_status"] == "Received at Office" and data["updated_at"]
+    # The 8-letter code printed under the QR works too; anything else is not found.
+    assert APIClient().get(PUBLIC, {"code": "SCAN2345"}).status_code == 200
+    assert APIClient().get(PUBLIC, {"code": "nope"}).status_code == 404

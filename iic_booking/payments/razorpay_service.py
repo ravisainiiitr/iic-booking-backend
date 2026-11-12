@@ -51,12 +51,29 @@ class RazorpayServiceError(Exception):
     pass
 
 
+def _purpose(order) -> str:
+    from iic_booking.payments.purpose import order_purpose
+
+    try:
+        return order_purpose(order)
+    except Exception:  # wording must never stop a payment
+        return ""
+
+
+def _checkout_name() -> str:
+    from iic_booking.payments.receipts import checkout_name
+
+    return checkout_name()
+
+
 def get_razorpay_client() -> razorpay.Client:
-    key_id = getattr(settings, "RAZORPAY_KEY_ID", "") or ""
-    key_secret = getattr(settings, "RAZORPAY_KEY_SECRET", "") or ""
-    if not key_id or not key_secret:
-        raise RazorpayNotConfigured("Razorpay credentials are not configured.")
-    return razorpay.Client(auth=(key_id, key_secret))
+    """Client for the configured mode. Refused when payments are off, keys are missing, or the key's mode differs."""
+    from iic_booking.payments import gateway_mode
+
+    problem = gateway_mode.configuration_problem()
+    if problem:
+        raise RazorpayNotConfigured(problem)
+    return razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
 
 
 def verify_checkout_signature(order_id: str, payment_id: str, signature: str) -> bool:
@@ -118,6 +135,13 @@ def create_order(
     purpose = (purpose or "").strip().upper()
     if purpose not in PaymentPurpose.values:
         raise RazorpayServiceError("Invalid purpose.")
+    from iic_booking.payments import gateway_mode
+
+    if gateway_mode.configuration_problem():
+        raise RazorpayNotConfigured(gateway_mode.configuration_problem())
+    refused = gateway_mode.user_may_pay(user)
+    if refused:
+        raise RazorpayServiceError(refused)
 
     if purpose == PaymentPurpose.BOOKING_SHORTFALL and checkout is not None:
         from iic_booking.external_services.models import CheckoutState
@@ -152,7 +176,7 @@ def create_order(
         if department is None:
             department = booking.settlement_department
         existing = _open_order_for_booking(booking)
-        if existing and existing.base_amount == base:
+        if existing and existing.base_amount == base and existing.mode == gateway_mode.mode():
             # Reuse open order if still CREATED and amount unchanged
             key_id = getattr(settings, "RAZORPAY_KEY_ID", "") or ""
             return existing, {
@@ -173,6 +197,9 @@ def create_order(
                 },
                 "purpose": existing.purpose,
                 "booking_id": booking.booking_id,
+                "mode": existing.mode,
+                "checkout_name": _checkout_name(),
+                "payment_purpose": _purpose(existing),
             }
         if existing:
             existing.status = PaymentOrderStatus.CANCELLED
@@ -231,6 +258,7 @@ def create_order(
         currency="INR",
         status=PaymentOrderStatus.CREATED,
         idempotency_key=idempotency_key[:128],
+        mode=gateway_mode.mode(),
         fee_percent_snapshot=breakup.fee_percent,
         fee_gst_percent_snapshot=breakup.fee_gst_percent,
         raw_create_response=rp_order if isinstance(rp_order, dict) else {"raw": str(rp_order)},
@@ -250,11 +278,14 @@ def create_order(
         "booking_id": booking.booking_id if booking else None,
         "wallet_id": wallet.id if wallet else None,
         "department_id": department.id if department else None,
+        "mode": payment_order.mode,
+        "checkout_name": _checkout_name(),
+        "payment_purpose": _purpose(payment_order),
     }
     return payment_order, response
 
 
-def _settle_booking_shortfall(order: PaymentOrder) -> None:
+def _settle_booking_shortfall(order: PaymentOrder, payment: Payment | None = None) -> None:
     if not order.booking_id:
         from iic_booking.external_services.checkout import settle_checkout_order
 
@@ -283,6 +314,19 @@ def _settle_booking_shortfall(order: PaymentOrder) -> None:
         booking.payment_settled_at = timezone.now()
         booking.amount_due = Decimal("0.00")
         booking.save(update_fields=["payment_settled_at", "amount_due", "updated_at"])
+        return
+    if booking.status in (BookingStatus.CANCELLED, BookingStatus.REFUNDED):
+        from iic_booking.payments.issues import raise_issue
+        from iic_booking.payments.models import PaymentIssueKind
+
+        raise_issue(
+            PaymentIssueKind.CANCELLED_BOOKING,
+            key=getattr(payment, "razorpay_payment_id", "") or order.razorpay_order_id,
+            order=order,
+            razorpay_payment_id=getattr(payment, "razorpay_payment_id", ""),
+            amount=order.total_amount,
+            detail=f"Booking {booking.booking_id} was {booking.status.lower()} when the payment arrived; the money needs a refund.",
+        )
         return
     booking.payment_settled_at = timezone.now()
     booking.amount_due = Decimal("0.00")
@@ -369,10 +413,42 @@ def settle_order_success(
     if existing_payment and existing_payment.payment_order_id != order.id:
         raise RazorpayServiceError("Payment already linked to another order.")
 
+    if order.mode == "test" and not getattr(order.user, "is_test_account", False) and getattr(
+        settings, "RAZORPAY_TEST_MODE_TEST_ACCOUNTS_ONLY", True
+    ):
+        # A test-mode payment must never become real money for a real account.
+        raise RazorpayServiceError("A test-mode payment cannot settle for an account that is not a test account.")
+
     if order.status == PaymentOrderStatus.PAID:
-        payment = existing_payment or order.payments.filter(status=PaymentStatus.CAPTURED).first()
-        if payment:
-            return order, payment
+        if existing_payment:
+            return order, existing_payment
+        first = order.payments.filter(status=PaymentStatus.CAPTURED).first()
+        if first and razorpay_payment_id:
+            from iic_booking.payments.issues import raise_issue
+            from iic_booking.payments.models import PaymentIssueKind
+
+            second = Payment.objects.create(
+                payment_order=order,
+                razorpay_payment_id=razorpay_payment_id,
+                razorpay_signature=razorpay_signature or "",
+                method=method or "",
+                gateway_reference=gateway_reference or "",
+                amount=order.total_amount,
+                status=PaymentStatus.CAPTURED,
+                verified_via=verified_via,
+                raw_payload=raw_payload or {},
+            )
+            raise_issue(
+                PaymentIssueKind.DUPLICATE_CAPTURE,
+                key=razorpay_payment_id,
+                order=order,
+                razorpay_payment_id=razorpay_payment_id,
+                amount=order.total_amount,
+                detail=f"Order already paid by {first.razorpay_payment_id}; this second payment was recorded, not applied, and needs a refund.",
+            )
+            return order, second
+        if first:
+            return order, first
 
     if not existing_payment:
         payment = Payment.objects.create(
@@ -389,16 +465,40 @@ def settle_order_success(
     else:
         payment = existing_payment
 
+    _close_capture_issue(razorpay_payment_id)
+
     # Apply side effects once when transitioning to PAID
     if order.status != PaymentOrderStatus.PAID:
         if order.purpose == PaymentPurpose.BOOKING_SHORTFALL:
-            _settle_booking_shortfall(order)
+            _settle_booking_shortfall(order, payment)
         elif order.purpose == PaymentPurpose.WALLET_RECHARGE:
             _settle_wallet_recharge(order, payment)
         order.status = PaymentOrderStatus.PAID
         order.save(update_fields=["status", "updated_at"])
 
+    # The printed receipt number (IITR/<dept>/<year>/<serial>), given now so the series follows payment order. A
+    # failure here must never undo the payment: the receipt then numbers it when first opened.
+    try:
+        from iic_booking.payments.receipt_numbers import ensure as ensure_receipt_number
+
+        ensure_receipt_number(payment)
+    except Exception:
+        logger.warning("Receipt number not given for %s", payment.razorpay_payment_id, exc_info=True)
+
     return order, payment
+
+
+def _close_capture_issue(razorpay_payment_id: str) -> None:
+    """A captured, recorded payment closes any open "authorised payment could not be captured" issue for it."""
+    from iic_booking.payments.models import PaymentIssue, PaymentIssueKind, PaymentIssueStatus
+
+    PaymentIssue.objects.filter(
+        kind=PaymentIssueKind.NOT_CAPTURED, razorpay_payment_id=razorpay_payment_id, status=PaymentIssueStatus.OPEN
+    ).update(
+        status=PaymentIssueStatus.RESOLVED,
+        resolved_at=timezone.now(),
+        resolution_note="Closed automatically: Razorpay captured the payment and it was recorded.",
+    )
 
 
 def mark_order_failed(razorpay_order_id: str, raw_payload: dict | None = None) -> PaymentOrder | None:
@@ -437,8 +537,15 @@ def confirm_gateway_payment(order: PaymentOrder, razorpay_payment_id: str) -> di
             entity = client.payment.capture(razorpay_payment_id, _amount_to_paise(order.total_amount),
                                             {"currency": order.currency or "INR"})
         except Exception as exc:
-            logger.warning("Razorpay capture failed for %s", razorpay_payment_id, exc_info=True)
-            raise RazorpayServiceError("The payment could not be captured yet.") from exc
+            # Razorpay may have captured it at the same moment (automatic capture): ask again before calling it a failure.
+            try:
+                entity = client.payment.fetch(razorpay_payment_id)
+            except Exception:
+                entity = None
+            if not (isinstance(entity, dict) and entity.get("status") == "captured"
+                    and entity.get("order_id") == order.razorpay_order_id and not _amount_or_currency_problem(order, entity)):
+                logger.warning("Razorpay capture failed for %s", razorpay_payment_id, exc_info=True)
+                raise RazorpayServiceError("The payment could not be captured yet.") from exc
     if not isinstance(entity, dict) or entity.get("status") != "captured":
         status = entity.get("status") if isinstance(entity, dict) else "unknown"
         raise RazorpayServiceError(f"The payment is {status}, not captured.")
@@ -492,13 +599,26 @@ def handle_webhook(payload: dict, body: bytes | str, signature: str) -> dict:
         payment_id = payment_entity.get("id")
         if order_id and payment_id:
             order = PaymentOrder.objects.filter(razorpay_order_id=order_id).first()
+            from iic_booking.payments.issues import minimal_webhook_payload, raise_issue
+            from iic_booking.payments.models import PaymentIssueKind
+
+            try:
+                amount = (Decimal(str(int(payment_entity.get("amount")))) / 100).quantize(Decimal("0.01"))
+            except (TypeError, ValueError, ArithmeticError):
+                amount = None
             if order is None:
                 logger.error("Razorpay webhook %s for unknown order %s (payment %s) not applied", event, order_id,
                              payment_id)
+                if event == "payment.captured":
+                    raise_issue(PaymentIssueKind.UNKNOWN_ORDER, key=payment_id, razorpay_order_id=order_id,
+                                razorpay_payment_id=payment_id, amount=amount,
+                                detail="Captured payment for an order this portal did not create.")
                 return {"ok": True, "event": event, "ignored": "unknown order"}
             problem = _webhook_amount_problem(order_id, payment_entity)
             if problem:
                 logger.error("Razorpay webhook for order %s not applied: %s", order_id, problem)
+                raise_issue(PaymentIssueKind.MISMATCH, key=payment_id, order=order, razorpay_payment_id=payment_id,
+                            amount=amount, detail=f"Not applied: {problem}.")
                 return {"ok": True, "event": event, "ignored": f"does not match the order: {problem}"}
             if event == "payment.authorized" and order.status != PaymentOrderStatus.PAID:
                 # Authorised is not paid: capture it (checked against the order) before delivering anything.
@@ -507,19 +627,32 @@ def handle_webhook(payload: dict, body: bytes | str, signature: str) -> dict:
                 except RazorpayServiceError as exc:
                     logger.error("Razorpay authorised payment %s for order %s not captured: %s", payment_id,
                                  order_id, exc)
+                    raise_issue(PaymentIssueKind.NOT_CAPTURED, key=payment_id, order=order, razorpay_payment_id=payment_id,
+                                amount=amount, detail=f"Authorised payment not captured: {exc}")
                     return {"ok": True, "event": event, "ignored": str(exc)}
-            settle_order_success(
-                razorpay_order_id=order_id,
-                razorpay_payment_id=payment_id,
-                verified_via=PaymentVerifiedVia.WEBHOOK,
-                raw_payload=payload,
-                method=str(payment_entity.get("method") or ""),
-                gateway_reference=str(
-                    payment_entity.get("acquirer_data", {}).get("rrn")
-                    or payment_entity.get("bank_transaction_id")
-                    or ""
-                ),
-            )
+            from iic_booking.payments.reconciliation import record_gateway_charges
+
+            try:
+                settle_order_success(
+                    razorpay_order_id=order_id,
+                    razorpay_payment_id=payment_id,
+                    verified_via=PaymentVerifiedVia.WEBHOOK,
+                    raw_payload=minimal_webhook_payload(payload),
+                    method=str(payment_entity.get("method") or ""),
+                    gateway_reference=str(
+                        (payment_entity.get("acquirer_data") or {}).get("rrn")
+                        or payment_entity.get("bank_transaction_id")
+                        or ""
+                    ),
+                )
+            except RazorpayServiceError as exc:
+                # The money is captured but could not be applied. A 4xx answer would make Razorpay retry for 24 hours
+                # and then disable the webhook for every payment, so answer 200 and hand it to Finance.
+                logger.error("Razorpay payment %s for order %s captured but not applied: %s", payment_id, order_id, exc)
+                raise_issue(PaymentIssueKind.NOT_APPLIED, key=payment_id, order=order, razorpay_payment_id=payment_id,
+                            amount=amount, detail=f"Captured but not applied: {exc}")
+                return {"ok": True, "event": event, "ignored": "captured but not applied; raised for Finance"}
+            record_gateway_charges(payment_id, payment_entity)
         return {"ok": True, "event": event}
 
     if event == "payment.failed":
@@ -543,7 +676,7 @@ def handle_webhook(payload: dict, body: bytes | str, signature: str) -> dict:
                     # A refund that already processed is final; a late or replayed "failed" event can't undo it.
                     if not (refund.status == RefundStatus.PROCESSED and new_status == RefundStatus.FAILED):
                         refund.status = new_status
-                        refund.raw_payload = payload
+                        refund.raw_payload = {"event": event, "refund": {k: refund_entity.get(k) for k in ("id", "payment_id", "amount", "status", "created_at")}}
                         refund.save(update_fields=["status", "raw_payload", "updated_at"])
                     payment = Payment.objects.select_for_update().get(pk=refund.payment_id)
                     recompute_payment_refund_status(payment)
