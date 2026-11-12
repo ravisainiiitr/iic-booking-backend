@@ -6,3 +6,8 @@ class IstemConfig(AppConfig):
     name = "iic_booking.istem"
     label = "istem"
     verbose_name = "I-STEM integration"
+
+    def ready(self):
+        from . import realtime
+
+        realtime.connect()
