@@ -1,0 +1,226 @@
+# IITR Connect switch (keys live in .envs/.production/.django on the EC2 host).
+#   status       : read-only. Env switch, pilot email count, connect migrations, community/member counts and an
+#                  /api/v1/connect/bootstrap/ probe.
+#   sync-dry-run : read-only. connect_sync_communities without --apply (counts only, nothing written).
+#   enable       : connect_sync_communities --apply, then IITR_CONNECT_ENABLED=True and
+#                  IITR_CONNECT_PILOT_EMAILS=<pilot_emails> (empty = every eligible portal user).
+#   disable      : IITR_CONNECT_ENABLED=False. Communities, posts and the pilot list are kept.
+# enable / disable back up the env file, recreate django, celeryworker and celerybeat, then show status.
+# The env file is gitignored on the host and Deploy Backend never rewrites it, so the setting survives deploys.
+name: Apply IITR Connect Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "status | sync-dry-run | enable | disable"
+        required: true
+        default: status
+        type: choice
+        options: [status, sync-dry-run, enable, disable]
+      pilot_emails:
+        description: "Optional pilot emails, comma-separated (enable only; empty = open to every eligible user)"
+        required: false
+        default: ""
+      confirm:
+        description: "Type CONNECT to enable or disable (not needed for status / sync-dry-run)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 30
+    env:
+      MODE: ${{ github.event.inputs.mode }}
+      DJANGO_ENV: /home/ubuntu/iic-booking-backend/.envs/.production/.django
+      COMPOSE_DIR: /home/ubuntu/iic-booking-backend
+    steps:
+      # Inputs are read from the event file (not step env) so pilot emails never appear in the log header.
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          inputs = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8")).get("inputs") or {}
+          mode = os.environ["MODE"]
+          emails = []
+          for part in (inputs.get("pilot_emails") or "").split(","):
+              part = part.strip().lower()
+              if part and part not in emails:
+                  emails.append(part)
+          for email in emails:
+              print(f"::add-mask::{email}")
+
+          def fail(msg):
+              print(f"::error::{msg}")
+              sys.exit(1)
+
+          if mode in {"enable", "disable"} and (inputs.get("confirm") or "").strip() != "CONNECT":
+              fail(f"Type CONNECT in the confirm box to run mode={mode}.")
+          if mode == "enable":
+              bad = [e for e in emails if not re.fullmatch(r"[^@\s,]+@[^@\s,]+\.[^@\s,]+", e)]
+              if bad:
+                  fail(f"{len(bad)} pilot email(s) are not valid email addresses.")
+          elif emails:
+              print(f"::notice::pilot_emails is ignored for mode={mode}.")
+              emails = []
+
+          open(os.path.join(os.environ["RUNNER_TEMP"], "connect-pilot-emails"), "w").write(",".join(emails))
+          print(f"mode={mode} pilot_email_count={len(emails)}")
+          PY
+
+      - name: Sync communities
+        if: env.MODE == 'sync-dry-run' || env.MODE == 'enable'
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID" || { echo "::error::django container not found"; exit 1; }
+          ARGS=""
+          [ "$MODE" = "enable" ] && ARGS="--apply"
+          docker exec -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python manage.py connect_sync_communities $ARGS | tee "$RUNNER_TEMP/connect-sync.txt"
+          { echo "## Community sync ($MODE)"; echo '```'; cat "$RUNNER_TEMP/connect-sync.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if grep -Eq '^Errors: [1-9]' "$RUNNER_TEMP/connect-sync.txt"; then
+            echo "::error::The community sync reported errors; the env file was not changed."
+            exit 1
+          fi
+
+      - name: Update env file
+        if: env.MODE == 'enable' || env.MODE == 'disable'
+        run: |
+          set -euo pipefail
+          test -f "$DJANGO_ENV"
+          export BACKUP="$DJANGO_ENV.bak-connect-$(date -u +%Y%m%dT%H%M%SZ)"
+          python3 <<'PY'
+          import os
+          import shutil
+          from pathlib import Path
+
+          mode = os.environ["MODE"]
+          path = Path(os.environ["DJANGO_ENV"])
+          if mode == "enable":
+              upsert = {
+                  "IITR_CONNECT_ENABLED": "True",
+                  "IITR_CONNECT_PILOT_EMAILS": Path(os.environ["RUNNER_TEMP"], "connect-pilot-emails").read_text().strip(),
+              }
+          else:
+              upsert = {"IITR_CONNECT_ENABLED": "False"}
+
+          old = path.read_text(encoding="utf-8", errors="replace")
+          out, seen = [], set()
+          for line in old.splitlines():
+              key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+              if key in upsert:
+                  if key not in seen:
+                      out.append(f"{key}={upsert[key]}")
+                      seen.add(key)
+                  continue
+              out.append(line)
+          out += [f"{k}={v}" for k, v in upsert.items() if k not in seen]
+          new = "\n".join(out).rstrip() + "\n"
+
+          summary = open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8")
+          if new == old:
+              summary.write("The env file already had these values, so it was not edited.\n\n")
+          else:
+              backup = os.environ["BACKUP"]
+              shutil.copy2(path, backup)
+              path.write_text(new, encoding="utf-8")
+              print(f"set {sorted(upsert)}; backup {os.path.basename(backup)}")
+              summary.write(f"Updated the production env file (backup: `{os.path.basename(backup)}`).\n\n")
+          PY
+
+      - name: Recreate django, celeryworker and celerybeat
+        if: env.MODE == 'enable' || env.MODE == 'disable'
+        run: |
+          set -euo pipefail
+          cd "$COMPOSE_DIR"
+          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps django celeryworker celerybeat
+          code=""
+          for i in $(seq 1 60); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)"
+            [ "$code" = "200" ] && { echo "health=200"; break; }
+            sleep 3
+          done
+          test "$code" = "200"
+          for svc in celeryworker celerybeat; do
+            docker ps --format '{{.Names}} {{.Status}}' | grep -E "${svc}[^ ]* Up" > /dev/null \
+              || { echo "::error::$svc is not running"; exit 1; }
+          done
+          echo "Restarted django, celeryworker and celerybeat; the site health check passed." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Status
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID" || { echo "::error::django container not found"; exit 1; }
+          docker exec -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python manage.py shell -c "
+          import json
+          from django.conf import settings
+          from django.db.migrations.recorder import MigrationRecorder
+          from iic_booking.connect.models import Community, CommunityMembership
+          applied = sorted(MigrationRecorder.Migration.objects.filter(app='connect').values_list('name', flat=True))
+          pilot = [e for e in (getattr(settings, 'IITR_CONNECT_PILOT_EMAILS', '') or '').split(',') if e.strip()]
+          print(json.dumps({
+              'enabled': bool(getattr(settings, 'IITR_CONNECT_ENABLED', False)),
+              'pilot_email_count': len(pilot),
+              'migrations': applied,
+              'communities': Community.objects.count(),
+              'active_memberships': CommunityMembership.objects.filter(status='active').count(),
+          }))
+          " | tail -n 1 > "$RUNNER_TEMP/connect-status.json"
+          export LOCAL_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8080/api/v1/connect/bootstrap/ || true)"
+          python3 <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          mode = os.environ["MODE"]
+          report = json.load(open(Path(os.environ["RUNNER_TEMP"], "connect-status.json"), encoding="utf-8"))
+          local = os.environ.get("LOCAL_CODE", "")
+          problems = []
+          if len(report["migrations"]) < 6:
+              problems.append("connect migrations 0001-0006 are not all applied. Run Migrate Production.")
+          if mode == "enable" and not report["enabled"]:
+              problems.append("The running app still reports IITR Connect as OFF.")
+          if mode == "disable" and report["enabled"]:
+              problems.append("The running app still reports IITR Connect as ON.")
+          # Signed out the API answers 401/403 (or 404 while off); anything else means it is not serving.
+          if local not in {"401", "403", "404"}:
+              problems.append(f"/api/v1/connect/bootstrap/ answered {local or 'nothing'} signed out.")
+
+          lines = [f"## IITR Connect: {mode}", ""]
+          lines.append(f"- **Module: {'ON' if report['enabled'] else 'OFF'}**")
+          if not report["enabled"]:
+              audience = "nobody"
+          elif report["pilot_email_count"]:
+              audience = f"{report['pilot_email_count']} pilot email(s)"
+          else:
+              audience = "every eligible portal user"
+          lines.append(f"- Audience: {audience}")
+          lines.append(f"- Migrations applied: {len(report['migrations'])} ({report['migrations'][-1] if report['migrations'] else 'none'})")
+          lines.append(f"- Communities: {report['communities']}; active memberships: {report['active_memberships']}")
+          lines.append(f"- Bootstrap API signed out: {local or 'none'}")
+          lines.append("")
+          lines.append("**Problems:**\n" + "\n".join(f"- {p}" for p in problems) if problems else "**All checks passed.**")
+          text = "\n".join(lines) + "\n"
+          print(text)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write(text)
+          for p in problems:
+              print(f"::error::{p}")
+          sys.exit(1 if problems else 0)
+          PY
