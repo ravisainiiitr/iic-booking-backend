@@ -329,14 +329,21 @@ def _notify(key: str, recipients, *, title: str, message: str, link: str) -> Non
 
 
 def _approvers_for(req: WalletRechargeRequest) -> list:
-    """Main Administrators, and the Department Administrators and Accounts In Charge of the request's department."""
+    """Main Administrators, and the Department Administrators and Accounts In Charge of the request's department.
+
+    A test account's request is announced only to test-account approvers, and a real request only to real
+    approvers, so trials on production never reach real staff (as with Direct Cash test requests)."""
     from django.contrib.auth import get_user_model
     from django.db.models import Q
+
+    from iic_booking.users.test_accounts import is_test_user
 
     scope = Q(user_type=UserType.ADMIN)
     if req.department_id:
         scope |= Q(user_type__in=[UserType.DEPT_ADMIN, UserType.FINANCE], department_id=req.department_id)
-    return list(get_user_model().objects.filter(scope, is_active=True))
+    approvers = get_user_model().objects.filter(scope, is_active=True)
+    test_request = is_test_user(req.user)
+    return [u for u in approvers if is_test_user(u) == test_request]
 
 
 def _money(value) -> str:

@@ -167,6 +167,24 @@ class SubmissionTests(OfflineRechargeTestBase):
         self.external.refresh_from_db()
         self.assertEqual(self.submit().status_code, 201)
 
+    def approver_notice_recipients(self, req):
+        return set(
+            ExternalNotification.objects.filter(key=f"offline-recharge:{req.pk}:to-approvers").values_list(
+                "recipient_id", flat=True
+            )
+        )
+
+    def test_test_account_request_is_announced_only_to_test_approvers(self):
+        User.objects.filter(pk__in=[self.external.pk, self.accounts.pk]).update(is_test_account=True)
+        self.external.refresh_from_db()
+        req = self.submitted()
+        self.assertEqual(self.approver_notice_recipients(req), {self.accounts.pk})
+
+    def test_real_request_is_not_announced_to_test_approvers(self):
+        User.objects.filter(pk=self.accounts.pk).update(is_test_account=True)
+        req = self.submitted()
+        self.assertEqual(self.approver_notice_recipients(req), {self.admin.pk, self.dept_admin.pk})
+
     def test_user_list_shows_state(self):
         self.submitted()
         res = self.client_for(self.external).get(BASE)
