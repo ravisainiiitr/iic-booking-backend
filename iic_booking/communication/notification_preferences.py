@@ -72,6 +72,12 @@ CATEGORIES: tuple[Category, ...] = (
     ),
     Category("announcements", "Announcements", "New equipment, notices and portal news."),
     Category(
+        "discussions",
+        "IITR Connect discussions",
+        "Replies, mentions, accepted answers, announcements and articles in IITR Connect. "
+        "How often Connect emails you is set in IITR Connect.",
+    ),
+    Category(
         MONTHLY_REPORTS,
         "Monthly reports",
         "A summary email on the 1st of each month: last month's bookings, hours and spend for you and your "

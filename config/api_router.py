@@ -741,6 +741,8 @@ urlpatterns = router.urls + [
     # IIC Research Copilot (feature-flagged in views; default OFF)
     path("v1/research-copilot/", include("iic_booking.research_copilot.urls")),
     path("v1/my-research/", include("iic_booking.my_research.urls")),
+    # IITR Connect (behind IITR_CONNECT_ENABLED; 404 while off)
+    path("v1/connect/", include("iic_booking.connect.urls")),
     path("v1/training/", include("iic_booking.training.urls")),
     # Online learning before training (modules, SOP sign-off, quizzes) and the booking logbook
     path("v1/learning/", include("iic_booking.learning.urls")),
