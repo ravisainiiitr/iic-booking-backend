@@ -123,16 +123,21 @@ def _actions_for(state: AgentDiagnosticState | None) -> list[dict]:
 
 
 def _pc_counts(pcs: list, now) -> dict:
-    limit = timedelta(minutes=headless._setting("DSA_EQPC_OFFLINE_MINUTES"))
     total = online = 0
     for pc in pcs or []:
         if not isinstance(pc, dict) or str(pc.get("registration_status") or "").lower() in ("unassigned", "retired"):
             continue
         total += 1
-        seen = headless._dt(pc.get("last_seen"))
-        if seen is not None and now - seen <= limit:
+        if headless.equipment_pc_online(pc, now)[0]:
             online += 1
     return {"total": total, "online": online}
+
+
+def _with_verdict(pc, now) -> dict:
+    if not isinstance(pc, dict):
+        return {}
+    online, last = headless.equipment_pc_online(pc, now)
+    return {**pc, "online": online, "last_heartbeat_at": _iso(last)}
 
 
 def serialize_summary(agent: DepartmentSyncAgent, state: AgentDiagnosticState | None, open_incidents: int, now) -> dict:
@@ -271,7 +276,7 @@ def fleet_detail(request, agent_id):
             "agent": serialize_summary(agent, state, open_count, now),
             "reasons": (state.reasons if state else []) or [],
             "diagnostics": (state.diagnostics if state else {}) or {},
-            "equipment_pcs": (state.equipment_pcs if state else []) or [],
+            "equipment_pcs": [_with_verdict(pc, now) for pc in ((state.equipment_pcs if state else []) or [])],
             "received_at": _iso(state.received_at) if state else None,
             "agent_sent_at": _iso(state.agent_sent_at) if state else None,
             "evaluated_at": _iso(state.evaluated_at) if state else None,

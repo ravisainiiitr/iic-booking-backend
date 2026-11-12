@@ -339,3 +339,39 @@ def test_retention_trims_old_heartbeats_only():
     out = headless.apply_retention()
     assert out["heartbeats"] == 1
     assert AgentHeartbeat.objects.filter(sync_agent=agent).count() == 1
+
+
+@pytest.mark.django_db
+def test_equipment_pc_status_comes_from_heartbeat_freshness_not_registration_status():
+    """Live test 13 Nov 2026: cable unplugged, DSA still said "Online" with last_seen null."""
+    agent = _agent()
+    now = timezone.now()
+    stale = (now - timedelta(minutes=3)).isoformat()
+    pcs = [
+        # DSA 1.0.7+: its own freshness verdict wins over the stored "Online".
+        {"id": "a", "hostname": "DSATEST-LAPTOP", "registration_status": "Online", "online": False,
+         "last_heartbeat_at": stale, "last_seen": None, "last_status_at": stale},
+        # Older agent: no verdict, last_seen null but last_status_at fresh -> online.
+        {"id": "b", "hostname": "LAB-PC-OK", "registration_status": "Online", "last_seen": None,
+         "last_status_at": now.isoformat()},
+        # Older agent, nothing ever received -> offline even though status says Online.
+        {"id": "c", "hostname": "LAB-PC-NEVER", "registration_status": "Online"},
+    ]
+    _beat(agent, _diagnostics(), pcs=pcs)
+    subjects = sorted(
+        a.details["subject"] for a in AlertEvent.objects.filter(sync_agent=agent, rule_code="EQPC_OFFLINE", status="NEW")
+    )
+    assert subjects == ["DSATEST-LAPTOP", "LAB-PC-NEVER"]
+
+    client = APIClient()
+    client.force_authenticate(_admin())
+    detail = client.get(f"/api/v1/sync/admin/fleet/{agent.id}/").json()
+    verdicts = {pc["hostname"]: pc["online"] for pc in detail["equipment_pcs"]}
+    assert verdicts == {"DSATEST-LAPTOP": False, "LAB-PC-OK": True, "LAB-PC-NEVER": False}
+    assert detail["agent"]["equipment_pcs"] == {"total": 3, "online": 1}
+
+    # Cable back: the next heartbeat reports it online and the incident resolves.
+    pcs[0] = {**pcs[0], "online": True, "last_heartbeat_at": timezone.now().isoformat()}
+    _beat(agent, _diagnostics(), pcs=pcs)
+    laptop = AlertEvent.objects.get(sync_agent=agent, rule_code="EQPC_OFFLINE", details__subject="DSATEST-LAPTOP")
+    assert laptop.status == "RESOLVED"

@@ -281,6 +281,22 @@ def _diagnostic_reasons(diag: dict, state: AgentDiagnosticState | None, now) -> 
     return out
 
 
+def equipment_pc_online(pc: dict, now) -> tuple[bool, object]:
+    """(online, last heartbeat) of an Equipment PC from heartbeat freshness only.
+
+    The DSA's stored registration status can say "Online" while the PC is unplugged (live test 13 Nov 2026), so it is
+    never used. DSA 1.0.7+ sends its own verdict (online, two missed 30 s heartbeats); older agents are judged
+    here from the newest of last_seen / last_status_at against DSA_EQPC_OFFLINE_MINUTES.
+    """
+    stamps = [_dt(pc.get(k)) for k in ("last_heartbeat_at", "last_seen", "last_status_at")]
+    stamps = [t for t in stamps if t is not None]
+    last = max(stamps) if stamps else None
+    if isinstance(pc.get("online"), bool):
+        return pc["online"], last
+    limit = timedelta(minutes=_setting("DSA_EQPC_OFFLINE_MINUTES"))
+    return bool(last is not None and now - last <= limit), last
+
+
 def _equipment_pc_reasons(pc: dict, now) -> list[dict]:
     if not isinstance(pc, dict):
         return []
@@ -289,10 +305,9 @@ def _equipment_pc_reasons(pc: dict, now) -> list[dict]:
         return []
     name = str(pc.get("hostname") or pc.get("equipment_id") or pc.get("id") or "Equipment PC")[:80]
     out = []
-    last_seen = _dt(pc.get("last_seen"))
-    limit = timedelta(minutes=_setting("DSA_EQPC_OFFLINE_MINUTES"))
-    if last_seen is None or now - last_seen > limit:
-        when = f"last seen {timezone.localtime(last_seen):%d %b %H:%M}" if last_seen else "never seen"
+    online, last = equipment_pc_online(pc, now)
+    if not online:
+        when = f"last heartbeat {timezone.localtime(last):%d %b %H:%M}" if last else "no heartbeat yet"
         out.append(_reason("EQPC_OFFLINE", "warning", f"Equipment PC {name} is offline ({when}).", subject=name))
     elif pc.get("share_ok") is False:
         out.append(
