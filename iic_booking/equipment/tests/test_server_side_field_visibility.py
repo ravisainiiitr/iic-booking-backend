@@ -147,8 +147,8 @@ def test_external_signed_in_user_gets_status_only(lab):
 
 
 def test_other_internal_user_sees_internal_booker_but_not_lab_fields(lab):
-    student = UserFactory(admin_approved=True, user_type=UserType.STUDENT)
-    row = _slot_rows(student, lab.eq, lab.day)[lab.booked.pk]
+    faculty = UserFactory(admin_approved=True, user_type=UserType.FACULTY)
+    row = _slot_rows(faculty, lab.eq, lab.day)[lab.booked.pk]
     _assert_identity(row, lab.booking)
     assert row["booking_user_email"] == lab.owner.email
     assert row["booking_sample_status_display"] is None and row["booking_sample_accepted"] is None
@@ -253,3 +253,23 @@ def test_operator_keeps_amounts_on_own_booking(lab):
     own = _book(lab.operator, lab.eq, [_slot(lab.eq, lab.day, 14, number=3)])
     data = BookingSerializer(own, context={"viewer": lab.operator}).data
     assert Decimal(data["total_charge"]) == Decimal("1234.00")
+
+
+def test_faculty_sees_internal_booker_contact(lab):
+    lab.owner.phone_number = "9876543210"
+    lab.owner.save(update_fields=["phone_number"])
+    faculty = UserFactory(admin_approved=True, user_type=UserType.FACULTY)
+    row = _slot_rows(faculty, lab.eq, lab.day)[lab.booked.pk]
+    assert row["booking_user_email"] == lab.owner.email
+    assert row["booking_user_phone"] == "9876543210"
+
+
+@pytest.mark.parametrize("user_type", [UserType.STUDENT, UserType.INDIVIDUAL_STUDENT])
+def test_student_sees_booker_name_but_not_contact(lab, user_type):
+    lab.owner.phone_number = "9876543210"
+    lab.owner.save(update_fields=["phone_number"])
+    student = UserFactory(admin_approved=True, user_type=user_type)
+    row = _slot_rows(student, lab.eq, lab.day)[lab.booked.pk]
+    _assert_identity(row, lab.booking)
+    assert row["booking_user_email"] is None
+    assert row["booking_user_phone"] is None

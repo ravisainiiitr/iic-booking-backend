@@ -426,13 +426,13 @@ def _name(user) -> str:
     return user_display_name(user, fallback=getattr(user, "email", "") or "a user")
 
 
-def booker_details(user) -> dict:
-    """What another internal user may see about an internal booker."""
+def booker_details(user, *, include_contact: bool = True) -> dict:
+    """What another internal user may see about an internal booker (students get no email or mobile)."""
     dept = getattr(user, "department", None)
     return {
         "name": _name(user),
-        "email": (getattr(user, "email", "") or "").strip() or None,
-        "phone": (getattr(user, "phone_number", "") or "").strip() or None,
+        "email": ((getattr(user, "email", "") or "").strip() or None) if include_contact else None,
+        "phone": ((getattr(user, "phone_number", "") or "").strip() or None) if include_contact else None,
         "user_type": str(getattr(user, "user_type", "") or "") or None,
         "user_type_display": dict(UserType.get_choices()).get(getattr(user, "user_type", None)),
         "department": (getattr(dept, "name", "") or "").strip() or None,
