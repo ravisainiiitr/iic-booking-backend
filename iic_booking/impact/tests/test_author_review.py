@@ -137,3 +137,54 @@ def test_follow_up_discovers_then_checks_only_when_mapping_is_on(lookalikes, set
         out = author_review.follow_up(w.faculty.pk)
     assert out == {"discovery": {"found": 3, "added": 2}, "queued": 1, "reviewers_notified": 2}
     notify.assert_called_once_with([7])
+
+
+def test_researcher_confirms_or_rejects_their_automatic_link_but_admins_cannot(lookalikes, django_capture_on_commit_callbacks):
+    w = lookalikes
+    main_admin = make_user(user_type=UserType.ADMIN, name="Main Admin One")
+    # An administrator leaves an automatic link alone.
+    client_for(main_admin).post(f"{API}{w.faculty2.pk}/", {"reject": [w.b_auto.pk]}, format="json")
+    w.b_auto.refresh_from_db()
+    assert w.b_auto.status == AuthorLinkStatus.AUTO_LINKED
+    # The researcher confirms it: no new follow-up (it was already being scanned).
+    with mock.patch.object(author_review, "_start_follow_up") as follow:
+        with django_capture_on_commit_callbacks(execute=True):
+            r = client_for(w.faculty2).post(f"{API}{w.faculty2.pk}/", {"confirm": [w.b_auto.pk]}, format="json")
+    assert r.status_code == 200 and r.json()["scan_started"] is False
+    follow.assert_not_called()
+    w.b_auto.refresh_from_db()
+    assert w.b_auto.status == AuthorLinkStatus.CONFIRMED
+    # ...or says it is not them.
+    w.b_auto.status = AuthorLinkStatus.AUTO_LINKED
+    w.b_auto.save()
+    client_for(w.faculty2).post(f"{API}{w.faculty2.pk}/", {"reject": [w.b_auto.pk]}, format="json")
+    w.b_auto.refresh_from_db()
+    assert w.b_auto.status == AuthorLinkStatus.REJECTED
+
+
+def test_faculty_with_no_records_gets_one_background_name_search(world, settings):
+    from django.core.cache import cache
+
+    w = world
+    settings.INSTITUTE_ROR_ID = "https://ror.org/00582g326"
+    cache.delete(author_review.SELF_SEARCH_CACHE.format(w.faculty.pk))
+    with mock.patch("iic_booking.impact.tasks.impact_author_self_search_task.delay") as delay:
+        first = client_for(w.faculty).get(API + "mine/").json()
+        second = client_for(w.faculty).get(API + "mine/").json()
+    assert first["searching"] is True and second["searching"] is False  # at most once a week
+    delay.assert_called_once_with(w.faculty.pk)
+    student = make_user(user_type=UserType.STUDENT, name="Student One")
+    with mock.patch("iic_booking.impact.tasks.impact_author_self_search_task.delay") as delay:
+        assert client_for(student).get(API + "mine/").json()["searching"] is False
+    delay.assert_not_called()
+
+
+def test_self_search_stores_the_name_matches(world):
+    w = world
+    found = [{"openalex_author_id": "Z1", "display_name": w.faculty.name, "orcid": "", "works_count": 5,
+              "institutions": ["Indian Institute of Technology Roorkee"], "rationale": "name", "confidence": 0.7,
+              "status": AuthorLinkStatus.NEEDS_CONFIRMATION}]
+    with mock.patch("iic_booking.impact.author_linking.link_user", return_value=found) as link:
+        out = author_review.self_search(w.faculty.pk)
+    link.assert_called_once()
+    assert out == {"candidates": 1, "auto_linked": 0}

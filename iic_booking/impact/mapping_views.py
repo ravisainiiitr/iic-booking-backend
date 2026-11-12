@@ -293,10 +293,13 @@ def author_confirmations_count(request):
 
 @impact_api(["GET"])
 def author_confirmations_mine(request):
-    """The signed-in researcher's own lookalike records (the "Is this you?" prompt)."""
+    """The signed-in researcher's own author records (the sign-in "Confirm your author records" prompt). A faculty
+    member with none yet gets a background name search (``searching``)."""
     from . import author_review
 
-    return Response(author_review.researcher_out(request.user, request.user))
+    out = author_review.researcher_out(request.user, request.user)
+    out["searching"] = author_review.start_self_search(request.user)
+    return Response(out)
 
 
 @impact_api(["POST"])
