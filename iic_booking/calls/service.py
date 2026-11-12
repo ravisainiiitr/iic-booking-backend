@@ -306,6 +306,24 @@ def fail(user, call_id, code: str):
                        check=_participant(user))
 
 
+def status_with_token(call_id, token: str) -> str:
+    """Native incoming-call screen: the call's status with the action token from the push (no portal session).
+
+    The iPhone keeps CallKit ringing only while this answers ``ringing``: Apple does not allow a VoIP push to cancel a
+    call, so the phone asks instead. Answers only for the call and callee the token was issued for.
+    """
+    from .models import CallSession
+
+    try:
+        data = signing.loads(token or "", salt=ACTION_SALT, max_age=conf.ring_seconds() + 60)
+    except signing.BadSignature:
+        raise CallNotAllowed("expired", "This call has ended.", 400)
+    if data.get("c") != str(call_id):
+        raise CallNotAllowed("expired", "This call has ended.", 400)
+    status = CallSession.objects.filter(pk=call_id, callee_id=data["u"]).values_list("status", flat=True).first()
+    return str(status or "unknown")
+
+
 def decline_with_token(call_id, token: str):
     """Native incoming-call screen: decline with the action token from the push (no portal session)."""
     from django.contrib.auth import get_user_model
