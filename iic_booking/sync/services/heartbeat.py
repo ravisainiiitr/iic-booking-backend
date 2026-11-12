@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
@@ -27,6 +28,8 @@ from iic_booking.sync.services.logging import (
     write_sync_log,
 )
 from iic_booking.sync.services.tokens import agent_expected_versions
+
+logger = logging.getLogger(__name__)
 
 
 class HeartbeatCommand:
@@ -78,6 +81,8 @@ class HeartbeatService:
 
         now = timezone.now()
         details = dict(payload.get("details") or {})
+        # Bulky headless diagnostics are kept once per agent (AgentDiagnosticState), not on every heartbeat row.
+        diagnostics = details.pop("diagnostics", None)
         equipment_pcs = payload.get("equipment_pcs")
         if equipment_pcs is not None:
             details["equipment_pcs"] = equipment_pcs
@@ -120,6 +125,14 @@ class HeartbeatService:
                 "updated_at",
             ]
         )
+
+        try:
+            with transaction.atomic():
+                from iic_booking.sync.services.headless import ingest_heartbeat
+
+                ingest_heartbeat(agent, payload, {**details, "diagnostics": diagnostics}, now=now)
+        except Exception:  # noqa: BLE001 - diagnostics must never break the heartbeat
+            logger.exception("dsa.headless ingest failed agent=%s", agent.id)
 
         write_sync_log(
             event_code=EVENT_HEARTBEAT_RECEIVED,
