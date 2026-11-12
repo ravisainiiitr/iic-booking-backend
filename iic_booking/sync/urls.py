@@ -11,6 +11,7 @@ from iic_booking.power import views as power_views
 from iic_booking.sync import views
 from iic_booking.sync.installer import views as installer_views
 from iic_booking.sync.installer import one_click as installer_one_click
+from iic_booking.sync.services import fleet as fleet_views
 from iic_booking.lab_infrastructure.views import configuration_ack as lab_configuration_ack
 
 app_name = "sync"
@@ -58,6 +59,20 @@ urlpatterns = [
     path("admin/workspaces/", views.portal_workspaces_list, name="portal-workspaces-list"),
     path("admin/logs/", views.portal_logs_list, name="portal-logs-list"),
     path("admin/django-links/", views.portal_admin_base, name="portal-django-links"),
+    # Headless DSA fleet (Main Administrator only)
+    path("admin/fleet/", fleet_views.fleet_list, name="fleet-list"),
+    path("admin/fleet/<uuid:agent_id>/", fleet_views.fleet_detail, name="fleet-detail"),
+    path("admin/fleet/<uuid:agent_id>/actions/", fleet_views.fleet_action, name="fleet-action"),
+    path(
+        "admin/fleet/<uuid:agent_id>/incidents/<uuid:incident_id>/acknowledge/",
+        fleet_views.fleet_incident_acknowledge,
+        name="fleet-incident-acknowledge",
+    ),
+    path(
+        "admin/fleet/bundles/<uuid:bundle_id>/download/",
+        fleet_views.fleet_bundle_download,
+        name="fleet-bundle-download",
+    ),
     # Security (Milestone 12)
     path("security/device/register/", views.security_device_register, name="security-device-register"),
     path("security/device/", views.security_device_identity, name="security-device-identity"),

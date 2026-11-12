@@ -179,6 +179,14 @@ class UploadTransportService:
         # all booking-linked DSA uploads (IT uploads without booking_id still worked).
         resolved_equipment_id = self._resolve_equipment_fk(equipment_id)
         resolved_booking_id = self._resolve_booking_fk(booking_id)
+        if resolved_booking_id is not None:
+            # Refunded/cancelled bookings never take results; suspended ones not until they resume.
+            from iic_booking.equipment.models import Booking
+            from iic_booking.sync.services.booking_result_gate import ensure_booking_accepts_results
+
+            ensure_booking_accepts_results(
+                Booking.objects.filter(pk=resolved_booking_id).only("status").first()
+            )
 
         expires_at = timezone.now() + timedelta(hours=upload_session_ttl_hours())
         try:

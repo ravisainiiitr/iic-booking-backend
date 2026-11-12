@@ -2218,6 +2218,10 @@ class AgentCommandType:
     CLEANUP_WORKSPACE = "CLEANUP_WORKSPACE"
     DELETE_TEMPORARY_FILES = "DELETE_TEMPORARY_FILES"
     SYNCHRONIZE_BOOKINGS = "SYNCHRONIZE_BOOKINGS"
+    # Headless troubleshooting (DSA 1.0.7+; older agents fail these with "Unsupported remote command type").
+    RETRY_FAILED_UPLOADS = "RETRY_FAILED_UPLOADS"
+    COLLECT_SUPPORT_BUNDLE = "COLLECT_SUPPORT_BUNDLE"
+    REFRESH_EQUIPMENT_PCS = "REFRESH_EQUIPMENT_PCS"
 
 
 class AgentCommand(models.Model):
@@ -2964,3 +2968,94 @@ class EquipmentPcIpReservation(models.Model):
     def __str__(self) -> str:
         return f"{self.mac_address} → {self.preferred_ip or 'dhcp'}"
 
+
+
+class AgentHealthState(models.TextChoices):
+    HEALTHY = "healthy", _("Healthy")
+    WARNING = "warning", _("Warning")
+    CRITICAL = "critical", _("Critical")
+    OFFLINE = "offline", _("Offline")
+    UNKNOWN = "unknown", _("Unknown")
+
+
+class AgentDiagnosticState(models.Model):
+    """
+    Latest headless-troubleshooting snapshot of one Department Sync Agent (one row per agent, overwritten).
+
+    The heartbeat's ``details.diagnostics`` block is kept here — not on every AgentHeartbeat row — so storage stays
+    bounded however often agents beat. History lives in AlertEvent (incidents) and the trimmed AgentHeartbeat rows.
+    """
+
+    sync_agent = models.OneToOneField(
+        DepartmentSyncAgent,
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name="diagnostic_state",
+        verbose_name=_("Sync agent"),
+    )
+    agent_sent_at = models.DateTimeField(_("Agent clock at send"), null=True, blank=True)
+    received_at = models.DateTimeField(_("Received at"), null=True, blank=True)
+    clock_skew_seconds = models.FloatField(
+        _("Clock skew (seconds)"),
+        null=True,
+        blank=True,
+        help_text=_("Agent clock minus portal clock when the last heartbeat arrived."),
+    )
+    diagnostics = models.JSONField(_("Diagnostics"), default=dict, blank=True)
+    equipment_pcs = models.JSONField(_("Equipment PCs"), default=list, blank=True)
+    capabilities = models.JSONField(_("Capabilities"), default=dict, blank=True)
+    health = models.CharField(
+        _("Health"),
+        max_length=16,
+        choices=AgentHealthState.choices,
+        default=AgentHealthState.UNKNOWN,
+        db_index=True,
+    )
+    reasons = models.JSONField(
+        _("Reasons"),
+        default=list,
+        blank=True,
+        help_text=_("Findings behind the health state: [{code, severity, message, subject}]."),
+    )
+    evaluated_at = models.DateTimeField(_("Evaluated at"), null=True, blank=True)
+    updated_at = models.DateTimeField(_("Updated at"), auto_now=True)
+
+    class Meta:
+        verbose_name = _("Agent diagnostic state")
+        verbose_name_plural = _("Agent diagnostic states")
+
+    def __str__(self) -> str:
+        return f"{self.sync_agent_id}: {self.health}"
+
+
+class AgentSupportBundle(models.Model):
+    """Redacted support bundle (zip) uploaded by an agent for a COLLECT_SUPPORT_BUNDLE command."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    sync_agent = models.ForeignKey(
+        DepartmentSyncAgent,
+        on_delete=models.CASCADE,
+        related_name="support_bundles",
+        verbose_name=_("Sync agent"),
+    )
+    command = models.OneToOneField(
+        "sync.AgentCommand",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="support_bundle",
+        verbose_name=_("Command"),
+    )
+    file_name = models.CharField(_("File name"), max_length=200)
+    size_bytes = models.PositiveIntegerField(_("Size (bytes)"), default=0)
+    truncated = models.BooleanField(_("Truncated"), default=False)
+    content = models.BinaryField(_("Content"))
+    created_at = models.DateTimeField(_("Created at"), auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = _("Agent support bundle")
+        verbose_name_plural = _("Agent support bundles")
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return self.file_name

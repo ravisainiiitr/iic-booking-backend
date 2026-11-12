@@ -21,6 +21,7 @@ from iic_booking.sync.exceptions import (
 from iic_booking.sync.models import (
     AgentCommand,
     AgentCommandStatus,
+    AgentCommandType,
     BookingWorkspace,
     BookingWorkspaceStatus,
     DepartmentSyncAgent,
@@ -503,6 +504,10 @@ class CommandService:
         command.started_at = command.started_at or now
         command.result_payload = result_payload or {}
         command.last_error = ""
+        if command.command_type == AgentCommandType.COLLECT_SUPPORT_BUNDLE:
+            from iic_booking.sync.services.fleet import store_support_bundle
+
+            command.result_payload = store_support_bundle(command, command.result_payload)
         command.bump_version()
         command.save(
             update_fields=[
