@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('equipment', '0262_oic_requests_only_and_audit'),
+        ('equipment', '0263_saved_proforma_invoices'),
     ]
 
     operations = [
