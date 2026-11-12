@@ -243,26 +243,38 @@ def merge_booking_result_files(
     return merged
 
 
-def has_material_result_files(booking: Booking) -> bool:
-    """
-    True when booking has at least one usable user/equipment data file.
-
-    Ignores known control/marker files (e.g. workspace-ready) and missing/empty entries.
-    Uses the existing unified result-source merge (S3 + DSA + operator uploads).
-    """
-    merged = merge_booking_result_files(booking=booking, s3_files=[], request=None)
-    for entry in merged:
+def _material_result_entries(booking: Booking) -> list[dict]:
+    """Usable user/equipment data files: control/marker files (e.g. workspace-ready) and empty entries left out.
+    Uses the unified result-source merge (S3 + DSA + operator uploads)."""
+    out = []
+    for entry in merge_booking_result_files(booking=booking, s3_files=[], request=None):
         name = str(entry.get("name") or "").strip()
         if not name:
             continue
-        leaf = Path(name).name.strip().lower()
-        if leaf in CONTROL_RESULT_FILE_NAMES:
+        if Path(name).name.strip().lower() in CONTROL_RESULT_FILE_NAMES:
             continue
-        size = int(entry.get("size_bytes") or 0)
-        if size <= 0:
+        if int(entry.get("size_bytes") or 0) <= 0:
             continue
-        return True
-    return False
+        out.append(entry)
+    return out
+
+
+def has_material_result_files(booking: Booking) -> bool:
+    """True when booking has at least one usable user/equipment data file."""
+    return bool(_material_result_entries(booking))
+
+
+def latest_material_result_at(booking: Booking):
+    """When the newest usable data file arrived (None when there is none, or no arrival time is known)."""
+    from django.utils.dateparse import parse_datetime
+
+    latest = None
+    for entry in _material_result_entries(booking):
+        raw = entry.get("uploaded_at") or entry.get("last_modified")
+        when = parse_datetime(str(raw)) if raw else None
+        if when is not None and (latest is None or when > latest):
+            latest = when
+    return latest
 
 
 def iter_dsa_zip_members(booking: Booking):

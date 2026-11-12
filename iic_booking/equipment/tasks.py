@@ -825,19 +825,26 @@ def auto_complete_bookings_with_data_after_end() -> int:
     - Booking must still be in a non-terminal active state.
     - Booking must have a sync workspace record (source folder expected on equipment side).
     - Booking must contain at least one non-control result file (workspace-ready alone is ignored).
+    - Quiet period: no new result file for ``AUTO_COMPLETE_QUIET_MINUTES`` (default 30). A run that writes its
+      files over a long time (bulk TGA/DTA, XRD batches, an experiment run after the slot) is completed, and the
+      user told, only once the files have stopped arriving, not on the first file. 0 switches the wait off.
     - Transition is idempotent and row-locked to avoid races with manual completion.
     """
+    from django.conf import settings as django_settings
+
     from .api_views import _send_completion_email_with_attachments
-    from .booking_results_service import has_material_result_files
+    from .booking_results_service import has_material_result_files, latest_material_result_at
     from .booking_events import create_booking_event
     from .models import BookingEventType
     from iic_booking.sync.models import BookingWorkspace
 
     now = timezone.now()
+    quiet = timedelta(minutes=max(0, int(getattr(django_settings, "AUTO_COMPLETE_QUIET_MINUTES", 30) or 0)))
     completed = 0
     scanned = 0
     skipped_workspace_missing = 0
     skipped_no_data = 0
+    skipped_still_arriving = 0
 
     candidates = (
         Booking.objects.filter(
@@ -865,6 +872,16 @@ def auto_complete_bookings_with_data_after_end() -> int:
                 booking.booking_id,
             )
             continue
+        if quiet:
+            latest = latest_material_result_at(booking)
+            if latest is not None and now - latest < quiet:
+                skipped_still_arriving += 1
+                logger.info(
+                    "auto_complete_bookings_with_data_after_end: skip booking_id=%s reason=FILES_STILL_ARRIVING "
+                    "latest=%s quiet_minutes=%d",
+                    booking.booking_id, latest.isoformat(), quiet.seconds // 60 + quiet.days * 1440,
+                )
+                continue
 
         try:
             with transaction.atomic():
@@ -884,7 +901,10 @@ def auto_complete_bookings_with_data_after_end() -> int:
                     event_type=BookingEventType.COMPLETED,
                     previous_status=previous_status,
                     new_status=BookingStatus.COMPLETED,
-                    comment="Booking automatically completed after slot end because synchronized result data was detected.",
+                    comment=(
+                        "Booking automatically completed after slot end because synchronized result data was detected"
+                        + (f" and no new file arrived for {quiet.seconds // 60 + quiet.days * 1440} minutes." if quiet else ".")
+                    ),
                     metadata={"completion_method": "AUTO_COMPLETION_DATA_DETECTED"},
                     created_by=locked.user,
                     send_notification=False,
@@ -908,11 +928,13 @@ def auto_complete_bookings_with_data_after_end() -> int:
             )
 
     logger.info(
-        "auto_complete_bookings_with_data_after_end: scanned=%d completed=%d skipped_workspace=%d skipped_no_data=%d",
+        "auto_complete_bookings_with_data_after_end: scanned=%d completed=%d skipped_workspace=%d skipped_no_data=%d "
+        "skipped_still_arriving=%d",
         scanned,
         completed,
         skipped_workspace_missing,
         skipped_no_data,
+        skipped_still_arriving,
     )
     return completed
 

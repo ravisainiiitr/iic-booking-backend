@@ -1040,6 +1040,9 @@ CALLS_FCM_SERVICE_ACCOUNT_FILE = env("CALLS_FCM_SERVICE_ACCOUNT_FILE", default="
 # The same key as one base64 line, for the production env file (takes priority over the file). Never logged.
 CALLS_FCM_SERVICE_ACCOUNT_B64 = env("CALLS_FCM_SERVICE_ACCOUNT_B64", default="")
 # iOS: APNs VoIP pushes with a token-based (.p8) key (path kept outside the repository).
+# Auto-completion after slot end (equipment.auto_complete_bookings_with_data_after_end): wait until no new result
+# file has arrived for this many minutes, so a run that writes files over a long time is completed once, at the end.
+AUTO_COMPLETE_QUIET_MINUTES = env.int("AUTO_COMPLETE_QUIET_MINUTES", default=30)
 CALLS_APNS_KEY_FILE = env("CALLS_APNS_KEY_FILE", default="")
 CALLS_APNS_KEY_ID = env("CALLS_APNS_KEY_ID", default="")
 CALLS_APNS_TEAM_ID = env("CALLS_APNS_TEAM_ID", default="")
