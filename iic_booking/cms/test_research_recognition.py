@@ -255,3 +255,43 @@ def test_publications_shown_per_researcher_are_capped():
     (row,) = _client().get("/api/cms/researcher-of-the-month/").json()["results"]
     assert len(row["publications"]) == recognition.PUBLICATIONS_SHOWN
     assert row["publications"][0]["title"] == "Paper 0"
+
+
+def test_this_months_choice_moves_to_whoever_now_has_the_most_publications():
+    from django.core.cache import cache
+
+    d = _dept("Biosciences")
+    first, later = _researcher("Early Leader", d), _researcher("Later Leader", d)
+    for _ in range(2):
+        _approved(first, days_ago=5)
+    cache.clear()
+    _client().get("/api/cms/researcher-of-the-month/")
+    assert ResearcherOfTheMonth.objects.get(month=THIS_MONTH, department=d).user_id == first.pk
+    # Approved during the month (after the first choice): three publications, so they now lead.
+    for _ in range(3):
+        _approved(later, days_ago=0)
+    cache.clear()  # the refresh runs at most every REFRESH_SECONDS
+    data = _client().get("/api/cms/researcher-of-the-month/").json()
+    row = ResearcherOfTheMonth.objects.get(month=THIS_MONTH, department=d)
+    assert (row.user_id, row.publication_count) == (later.pk, 3)
+    assert data["results"][0]["researcher_name"] == "Later Leader"
+    # Within the refresh interval nothing is recomputed.
+    for _ in range(5):
+        _approved(first, days_ago=0)
+    _client().get("/api/cms/researcher-of-the-month/")
+    assert ResearcherOfTheMonth.objects.get(month=THIS_MONTH, department=d).user_id == later.pk
+
+
+def test_a_hand_set_researcher_of_the_month_is_never_replaced():
+    from django.core.cache import cache
+
+    d = _dept("Chemistry")
+    chosen, prolific = _researcher("Chosen By Admin", d), _researcher("Prolific", d)
+    _approved(chosen)
+    for _ in range(4):
+        _approved(prolific)
+    ResearcherOfTheMonth.objects.create(month=THIS_MONTH, department=d, user=chosen, auto=False, is_approved=True,
+                                        researcher_name="Chosen By Admin", publication_count=1)
+    cache.clear()
+    _client().get("/api/cms/researcher-of-the-month/")
+    assert ResearcherOfTheMonth.objects.get(month=THIS_MONTH, department=d).user_id == chosen.pk

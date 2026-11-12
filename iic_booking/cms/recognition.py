@@ -5,9 +5,11 @@ the user who submitted it, the date is when it was approved, and the acknowledge
 
 * Hall of Frames: every active researcher with an approved publication, most publications first, then the most
   recent approval. Updated as soon as a publication is approved.
-* Researcher of the Month, for the institute and for each internal department: on the first request of a month,
-  the researcher with the most publications approved in the previous 12 months (then the most recent approval) is
-  chosen and stored, so earlier months stay as history. Someone featured in either of the two previous months is
+* Researcher of the Month, for the institute and for each internal department: the researcher with the most
+  publications approved in the last 12 months (then the most recent approval). The current month's choice is
+  stored on the first request and checked again at most every ``REFRESH_SECONDS`` while the month runs, so a
+  researcher whose publications are approved during the month takes over as soon as they lead. Earlier months stay
+  as history. Rows the Main Administrator set by hand (``auto`` off) are never changed. Someone featured in either of the two previous months is
   passed over while anyone else qualifies, so the recognition moves around.
 * The Main Administrator may take anyone off the home page (``RecognitionHide``): from the Hall of Frames until shown
   again, or as a month's Researcher of the Month, in which case the next eligible researcher is chosen at once.
@@ -26,6 +28,7 @@ from django.utils import timezone
 HALL_LIMIT = 24
 WINDOW_DAYS = 365
 ROTATION_MONTHS = 2
+REFRESH_SECONDS = 600
 
 
 @dataclass
@@ -160,12 +163,14 @@ def _scopes() -> list[Optional[int]]:
     return [None, *sorted(d for d in depts if d is not None)]
 
 
-def choose(month: date, department_id: Optional[int], *, exclude: set[int] = frozenset()) -> Optional[Candidate]:
-    """The researcher for ``month`` and department (None: institute-wide): see the module docstring."""
+def choose(month: date, department_id: Optional[int], *, exclude: set[int] = frozenset(),
+           until: Optional[datetime] = None) -> Optional[Candidate]:
+    """The researcher for ``month`` and department (None: institute-wide): see the module docstring. Approvals count
+    up to ``until`` (the current month: now), else up to the start of ``month``."""
     from .models import RecognitionHide, ResearcherOfTheMonth
 
     tz = timezone.get_current_timezone()
-    end = timezone.make_aware(datetime.combine(month, time.min), tz)
+    end = until or timezone.make_aware(datetime.combine(month, time.min), tz)
     claims = _approved_claims().filter(reviewed_at__gte=end - timedelta(days=WINDOW_DAYS), reviewed_at__lt=end)
     if department_id is not None:
         claims = claims.filter(submitted_by__department_id=department_id)
@@ -209,16 +214,26 @@ def _store(month: date, department_id: Optional[int], cand: Optional[Candidate])
 
 
 def ensure_month(month: Optional[date] = None) -> None:
-    """Choose and store this month's researchers where not done yet (idempotent; safe under concurrent requests)."""
+    """Choose and store this month's researchers where not done yet, and (the current month, at most every
+    ``REFRESH_SECONDS``) move an automatic choice to whoever now has the most publications. Idempotent; safe under
+    concurrent requests."""
+    from django.core.cache import cache
+
     from .models import ResearcherOfTheMonth
 
-    month = _month_start(month or timezone.localdate())
-    done = set(ResearcherOfTheMonth.objects.filter(month=month).values_list("department_id", flat=True))
+    current = _month_start(timezone.localdate())
+    month = _month_start(month or current)
+    rows = {r.department_id: r for r in ResearcherOfTheMonth.objects.filter(month=month)}
+    live = month == current
+    refresh = live and bool(rows) and cache.add(f"cms:rotm-refresh:{month.isoformat()}", 1, REFRESH_SECONDS)
     for dept in _scopes():
-        if dept in done:
+        row = rows.get(dept)
+        if row is not None and not (refresh and row.auto):
             continue
-        cand = choose(month, dept)
+        cand = choose(month, dept, until=timezone.now() if live else None)
         if cand is None:
+            continue
+        if row is not None and row.is_approved and row.user_id == cand.user_id and row.publication_count == cand.count:
             continue
         try:
             with transaction.atomic():
