@@ -98,7 +98,7 @@ def _agent():
     )
 
 
-def _seed_dsa_attachment(*, booking, agent, storage_root: Path, filename: str, content: bytes):
+def _seed_dsa_attachment(*, booking, agent, storage_root: Path, filename: str, content: bytes, arrived_minutes_ago=60):
     relative = Path(str(agent.agent_uuid)) / str(uuid.uuid4()) / filename
     absolute = storage_root / relative
     absolute.parent.mkdir(parents=True, exist_ok=True)
@@ -111,13 +111,22 @@ def _seed_dsa_attachment(*, booking, agent, storage_root: Path, filename: str, c
         source_file_name=filename,
         processed_by="Department Sync Agent",
     )
-    ResultAttachment.objects.create(
+    attachment = ResultAttachment.objects.create(
         result=result,
         file_name=filename,
         size_bytes=len(content),
         storage_path=str(relative).replace("\\", "/"),
         attachment_kind="primary",
     )
+    # When the file arrived (the auto-completion waits for a quiet period after the newest file).
+    from datetime import timedelta as _td
+
+    from django.utils import timezone as _tz
+
+    ResultAttachment.objects.filter(pk=attachment.pk).update(created_at=_tz.now() - _td(minutes=arrived_minutes_ago))
+    # Result lookups count files made after the booking: keep the booking older than its files.
+    Booking.objects.filter(pk=booking.pk, created_at__gt=_tz.now() - _td(minutes=arrived_minutes_ago + 5)).update(
+        created_at=_tz.now() - _td(minutes=arrived_minutes_ago + 5))
 
 
 def _seed_workspace(booking: Booking, agent: DepartmentSyncAgent):
@@ -382,3 +391,54 @@ def test_completion_email_never_attaches_result_files(monkeypatch):
     api_views._send_completion_email_with_attachments(booking, [_FakeResult()])
     assert captured["attached"] == []
 
+
+
+def _ended_booking_with_workspace(tmp_path, settings):
+    settings.DSA_UPLOAD_STORAGE_ROOT = str(tmp_path)
+    booking = _booking(UserFactory(), _equipment(), status=BookingStatus.BOOKED)
+    _attach_slot(booking, ended_hours_ago=1)
+    agent = _agent()
+    _seed_workspace(booking, agent)
+    return booking, agent
+
+
+@pytest.mark.django_db
+@override_settings(AWS_STORAGE_BUCKET_NAME="")
+def test_auto_completion_waits_while_files_are_still_arriving(tmp_path, settings, monkeypatch):
+    """Bulk runs (TGA/DTA, XRD batches) and runs after the slot write files over time: no completion (and no email)
+    until no new file has arrived for AUTO_COMPLETE_QUIET_MINUTES."""
+    import iic_booking.equipment.api_views as api_views
+
+    monkeypatch.setattr(api_views, "_send_completion_email_with_attachments", lambda *_a: None)
+    settings.AUTO_COMPLETE_QUIET_MINUTES = 30
+    booking, agent = _ended_booking_with_workspace(tmp_path, settings)
+    _seed_dsa_attachment(booking=booking, agent=agent, storage_root=tmp_path, filename="run-sample-1.txt",
+                         content=b"tga", arrived_minutes_ago=50)
+    _seed_dsa_attachment(booking=booking, agent=agent, storage_root=tmp_path, filename="run-sample-2.txt",
+                         content=b"tga", arrived_minutes_ago=10)  # the run is still writing
+
+    assert auto_complete_bookings_with_data_after_end() == 0
+    booking.refresh_from_db()
+    assert booking.status == BookingStatus.BOOKED
+
+    # The newest file is now older than the quiet period: completed once, at the end of the run.
+    ResultAttachment.objects.filter(result__booking=booking, file_name="run-sample-2.txt").update(
+        created_at=timezone.now() - timedelta(minutes=31))
+    assert auto_complete_bookings_with_data_after_end() == 1
+    booking.refresh_from_db()
+    assert booking.status == BookingStatus.COMPLETED
+    event = booking.events.filter(new_status=BookingStatus.COMPLETED).order_by("-pk").first()
+    assert "no new file arrived for 30 minutes" in (event.comment or "")
+
+
+@pytest.mark.django_db
+@override_settings(AWS_STORAGE_BUCKET_NAME="")
+def test_quiet_period_zero_completes_on_the_first_file(tmp_path, settings, monkeypatch):
+    import iic_booking.equipment.api_views as api_views
+
+    monkeypatch.setattr(api_views, "_send_completion_email_with_attachments", lambda *_a: None)
+    settings.AUTO_COMPLETE_QUIET_MINUTES = 0
+    booking, agent = _ended_booking_with_workspace(tmp_path, settings)
+    _seed_dsa_attachment(booking=booking, agent=agent, storage_root=tmp_path, filename="result.txt",
+                         content=b"x", arrived_minutes_ago=1)
+    assert auto_complete_bookings_with_data_after_end() == 1
