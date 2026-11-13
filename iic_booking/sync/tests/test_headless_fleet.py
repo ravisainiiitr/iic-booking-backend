@@ -451,3 +451,34 @@ def test_sent_at_survives_the_heartbeat_serializer_and_sets_clock_skew():
     state.refresh_from_db()
     assert 35 <= state.clock_skew_seconds <= 45
     assert "stale" not in state.diagnostics
+
+
+@pytest.mark.django_db
+def test_power_rules_flag_sleep_settings_and_a_recent_sleep():
+    """13 Nov 2026: the test DSA was put to sleep at 02:57 and missed six hours of heartbeats."""
+    agent = _agent()
+    slept = (timezone.now() - timedelta(hours=6)).isoformat()
+    _beat(agent, _diagnostics(power={"supported": True, "standby_ac_minutes": 30, "hibernate_ac_minutes": 0,
+                                     "lid_action_ac": 1, "last_sleep_at": slept}))
+    reasons = {r["code"]: r for r in AgentDiagnosticState.objects.get(sync_agent=agent).reasons}
+    assert reasons["SLEEP_ENABLED"]["severity"] == "warning"
+    assert "sleeps after 30 min idle" in reasons["SLEEP_ENABLED"]["message"]
+    assert "lid" in reasons["SLEEP_ENABLED"]["message"]
+    assert "RECENT_SLEEP" in reasons
+
+    # Never-sleep settings (DSA 1.0.9 installer) and no sleep in the last 24 h: no power findings.
+    old = (timezone.now() - timedelta(days=3)).isoformat()
+    _beat(agent, _diagnostics(power={"supported": True, "standby_ac_minutes": 0, "hibernate_ac_minutes": 0,
+                                     "lid_action_ac": 0, "last_sleep_at": old}))
+    codes = {r["code"] for r in AgentDiagnosticState.objects.get(sync_agent=agent).reasons}
+    assert not codes & {"SLEEP_ENABLED", "RECENT_SLEEP"}
+    assert AlertEvent.objects.get(sync_agent=agent, rule_code="SLEEP_ENABLED").status == "RESOLVED"
+
+
+@pytest.mark.django_db
+def test_power_rules_ignore_missing_lid_and_older_agents():
+    agent = _agent()
+    _beat(agent, _diagnostics(power={"supported": True, "standby_ac_minutes": 0, "lid_action_ac": None}))
+    _beat(agent, _diagnostics())  # 1.0.7/1.0.8 send no power section
+    codes = {r["code"] for r in AgentDiagnosticState.objects.get(sync_agent=agent).reasons}
+    assert not codes & {"SLEEP_ENABLED", "RECENT_SLEEP"}
