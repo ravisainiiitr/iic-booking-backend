@@ -11,7 +11,6 @@ from django.utils import timezone
 
 from iic_booking.remote_analysis.constants import (
     DEFAULT_RESERVATION_GRACE_MINUTES,
-    DEFAULT_UNUSED_RESERVATION_MINUTES,
     AuditCategory,
     ReservationStatus,
     WorkstationStatus,
@@ -201,7 +200,9 @@ class SchedulerService:
             return reservation
 
         reservation.workstation = candidate.workstation
-        reservation.reserved_start = reservation.requested_start
+        # The hold starts now, not when the request was made: a request that waited in the queue
+        # must not look like a "missed start" the moment the user checks in.
+        reservation.reserved_start = max(reservation.requested_start, timezone.now())
         reservation.reserved_end = reservation.requested_end
         reservation.allocated_at = timezone.now()
         reservation.allocation_score = candidate.score
@@ -348,7 +349,6 @@ class SchedulerService:
     def expire_stale(self) -> dict:
         now = timezone.now()
         grace = timedelta(minutes=DEFAULT_RESERVATION_GRACE_MINUTES)
-        unused = timedelta(minutes=DEFAULT_UNUSED_RESERVATION_MINUTES)
         expired = 0
         cancelled_ineligible = 0
 
@@ -364,7 +364,10 @@ class SchedulerService:
             except Exception:
                 logger.exception("Ineligible-booking sweep failed for reservation %s", reservation.pk)
 
-        # Missed start time
+        # Missed start time (a hold whose desktop is still being prepared is not "missed")
+        from iic_booking.remote_analysis.guacamole.authorization import OPEN_SESSION_STATUSES
+        from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+
         for reservation in AnalysisReservation.objects.filter(
             status__in=[
                 ReservationStatus.RESERVED,
@@ -373,6 +376,10 @@ class SchedulerService:
             ],
             reserved_start__lt=now - grace,
         ):
+            if RemoteDesktopSession.objects.filter(
+                reservation=reservation, status__in=OPEN_SESSION_STATUSES
+            ).exists():
+                continue
             self.reservations.release(
                 reservation,
                 reason="Missed start time / unused reservation",
@@ -382,15 +389,23 @@ class SchedulerService:
             self._free_workstation(reservation)
             expired += 1
 
-        # Queued too long past requested start
+        # A queued request keeps its place until its own access window ends. It used to expire
+        # 30 minutes after it was made, so anyone who waited longer than that silently lost
+        # their place.
         for reservation in AnalysisReservation.objects.filter(
             status=ReservationStatus.QUEUED,
-            requested_start__lt=now - unused,
+            requested_end__lt=now,
         ):
             self.reservations.transition(reservation, ReservationStatus.EXPIRED, reason="Queue expired")
             self.queue.expire(reservation)
             expired += 1
             self._record_metric("reservation_failures", 1, tags={"reason": "queue_expired"})
+            try:
+                from iic_booking.remote_analysis.services.ready_notice import notify_queue_expired
+
+                notify_queue_expired(reservation)
+            except Exception:  # noqa: BLE001
+                logger.exception("Queue-expired notice failed for reservation %s", reservation.pk)
 
         # Offline workstation while reserved (use AvailabilityEngine soft online rules
         # so AVAILABLE + valid token is not expired solely for a stale heartbeat).

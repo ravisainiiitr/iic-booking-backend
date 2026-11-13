@@ -296,6 +296,35 @@ Slots are not held. To book it, please visit the IIT Roorkee Equipment Booking P
 IIT Roorkee
 ```
 
+## iitr_remote_analysis_ready
+
+- **Django event:** `remote_analysis_ready`
+- **Trigger:** Remote Analysis queue gives the booking an Analysis PC and opens its check-in hold
+- **Recipient:** The user who made the booking
+- **Language / category:** en / UTILITY
+- **Header:** Analysis PC Ready
+- **Footer:** Reply STOP to stop WhatsApp messages.
+- **Placeholders:**
+  - `{{1}}` user name, for example: Asha Verma
+  - `{{2}}` booking ID, for example: XRD202600123
+  - `{{3}}` equipment, for example: X-Ray Diffractometer
+  - `{{4}}` minutes held, for example: 10
+- **Body:**
+
+```
+Dear {{1}},
+
+The Analysis PC for your remote analysis is ready and is being held for you.
+
+Booking ID: {{2}}
+Equipment: {{3}}
+Held for: {{4}} minutes
+
+Please start your session on the IIT Roorkee Equipment Booking Portal before the hold ends. After that the PC goes to the next person in the queue.
+
+IIT Roorkee
+```
+
 ## iitr_verification_code
 
 - **Django event:** `otp_code`

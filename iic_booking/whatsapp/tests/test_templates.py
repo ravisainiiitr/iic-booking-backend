@@ -27,7 +27,7 @@ NAME = "Indian Institute of Technology Roorkee"
 EXISTING = ("iic_booking_confirmed", "iic_booking_cancelled", "iic_booking_completed")
 EXPECTED_EVENTS = {
     "booking_confirmed", "booking_rejected", "booking_rescheduled", "booking_cancelled", "booking_reminder", "booking_completed",
-    "payment_successful", "payment_failed", "refund_completed", "waitlist_slot_available", "otp_code",
+    "payment_successful", "payment_failed", "refund_completed", "waitlist_slot_available", "otp_code", "remote_analysis_ready",
 }
 
 
@@ -143,7 +143,7 @@ def test_the_payload_has_the_body_example_meta_requires():
 
 
 def test_every_template_has_a_portal_step_and_the_unused_two_are_gone():
-    assert len(CATALOGUE) == 11 and all(t.trigger for t in CATALOGUE)
+    assert len(CATALOGUE) == 12 and all(t.trigger for t in CATALOGUE)
     dropped = {"iitr_reschedule_requested", "iitr_reschedule_rejected", "iitr_reschedule_approved", "iitr_booking_request_received",
                "iitr_payment_initiated", "iitr_payment_pending", "iitr_refund_initiated", "iitr_sample_received"}
     assert not dropped & {t.name for t in CATALOGUE}
@@ -162,7 +162,7 @@ def test_wording_promises_nothing_the_backend_has_not_confirmed():
 def test_dry_run_lists_exactly_what_would_go_and_changes_nothing(conf_on):
     meta = FakeMeta(rows=[meta_row(BY_EVENT["booking_confirmed"])])
     out = run_command(meta, "--dry-run")
-    assert "Would submit: 10" in out and "SUBMIT iitr_payment_failed" in out and "SKIP iic_booking_confirmed [PENDING]" in out
+    assert "Would submit: 11" in out and "SUBMIT iitr_payment_failed" in out and "SKIP iic_booking_confirmed [PENDING]" in out
     assert "SUBMIT iic_booking_confirmed" not in out
     assert meta.posts == [] and not WhatsAppTemplate.objects.exists() and not WhatsAppTemplateAudit.objects.exists()
 
@@ -177,7 +177,7 @@ def test_dry_run_is_the_default_and_can_show_wording(conf_on):
 def test_submit_sends_only_missing_templates_in_a_batch_and_saves_the_id(conf_on):
     meta = FakeMeta(rows=[meta_row(BY_EVENT[e]) for e in ("booking_confirmed", "booking_cancelled", "booking_completed")])
     out = run_command(meta, "--submit", "--batch-size", "2", "--delay", "0")
-    assert len(meta.posts) == 2 and "Submitted: 2" in out and "Still to submit: 6" in out
+    assert len(meta.posts) == 2 and "Submitted: 2" in out and "Still to submit: 7" in out
     assert all(url.endswith(f"/{WABA}/message_templates") for url, _ in meta.posts)
     assert not {body["name"] for _, body in meta.posts} & set(EXISTING)
     record = WhatsAppTemplate.objects.get(name=meta.posts[0][1]["name"])
@@ -189,7 +189,7 @@ def test_pending_or_rejected_templates_at_meta_are_never_resubmitted(conf_on):
     rows = [meta_row(t, status="REJECTED" if i % 2 else "PENDING") for i, t in enumerate(CATALOGUE)]
     meta = FakeMeta(rows=rows)
     out = run_command(meta, "--submit", "--delay", "0")
-    assert meta.posts == [] and "Submitted: 0" in out and "Skipped, already at Meta: 11" in out
+    assert meta.posts == [] and "Submitted: 0" in out and "Skipped, already at Meta: 12" in out
 
 
 def test_a_second_run_does_not_duplicate(conf_on):
@@ -369,7 +369,7 @@ def test_the_report_groups_every_template(conf_on):
     assert [i["name"] for i in report["pending"]] == ["iic_booking_cancelled"]
     assert report["rejected"][0]["name"] == "iic_booking_completed" and "offer" in report["rejected"][0]["suggestion"]
     assert {i["name"] for i in report["paused_or_disabled"]} == {"iitr_booking_reminder", "iitr_waitlist_slot_available"}
-    assert len(report["missing"]) == 6
+    assert len(report["missing"]) == 7
     assert {i["name"] for i in report["requires_correction"]} == {"iic_booking_completed", "iitr_booking_reminder", "iitr_waitlist_slot_available"}
     assert report["not_wired"] == []
     assert report["last_synced_at"]
@@ -388,7 +388,7 @@ def test_wording_or_category_drift_is_reported_not_changed(conf_on):
 def test_the_report_command_works_without_meta(conf_on):
     out = StringIO()
     call_command("whatsapp_template_report", stdout=out)
-    assert "Missing: 11" in out.getvalue() and "Last synchronised: never" in out.getvalue()
+    assert "Missing: 12" in out.getvalue() and "Last synchronised: never" in out.getvalue()
 
 
 # --- controlled corrections ------------------------------------------------------------------------------------------

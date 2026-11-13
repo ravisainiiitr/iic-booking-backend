@@ -197,3 +197,14 @@ def external_refund_saved(refund, created: bool) -> None:
     _notify(refund.user, "refund_completed", [_person(refund.user), _ref(refund.booking), _money(refund.refund_amount)],
             f"refund:{refund.pk}:refund_completed")
 
+
+
+@_guarded
+def remote_analysis_ready(reservation, minutes: int) -> None:
+    """The queue gave a Remote Analysis booking an Analysis PC and opened its check-in hold. One message per hold."""
+    booking = getattr(reservation, "booking", None)
+    if booking is None:
+        return
+    opened = reservation.checkin_notified_at or timezone.now()
+    _notify(reservation.user, "remote_analysis_ready", [_person(reservation.user), _ref(booking), _equipment(booking), str(int(minutes))],
+            f"ra:{reservation.pk}:ready:{opened.isoformat()}")

@@ -168,7 +168,11 @@ class BookingRemoteAnalysisService:
             f"Analyze Data is available for booking {booking.booking_id}.",
             metadata={"booking_id": booking.booking_id},
         )
-        reservation = self.ensure_reservation(booking, actor=actor)
+        # No Analysis PC is reserved here. Holding one the moment a booking completes put the user
+        # on a 10-minute check-in clock they never asked for; missing it re-queued and re-held the
+        # PC again and again for the whole access window. A PC is reserved when the user asks for
+        # analysis (analyze_data / launch_session call ensure_reservation).
+        reservation = booking.analysis_reservation if booking.analysis_reservation_id else None
         return {"eligible": True, "reservation_id": str(reservation.id) if reservation else None}
 
     @transaction.atomic
@@ -270,13 +274,23 @@ class BookingRemoteAnalysisService:
             pass
 
         self.audit.log(booking, "ReservationCreated", details=str(reservation.id), actor=actor)
-        self.notifications.notify(
-            booking.user,
-            NotificationType.SESSION_STARTING,
-            "Analysis Ready",
-            f"Analysis is ready for booking {booking.booking_id}.",
-            metadata={"booking_id": booking.booking_id, "reservation_id": str(reservation.id)},
-        )
+        # A PC that is held already announced itself (check-in notice). Only a queued request needs a
+        # notice here, and it must not say "ready".
+        if reservation.status in {ReservationStatus.QUEUED, ReservationStatus.REQUESTED, ReservationStatus.VALIDATING}:
+            from iic_booking.remote_analysis.services import ready_notice
+
+            try:
+                from iic_booking.equipment.remote_analysis_integration.experience import AnalysisExperienceBuilder
+
+                estimate = AnalysisExperienceBuilder().queue_estimate(booking, reservation)
+            except Exception:  # noqa: BLE001
+                logger.exception("Queue estimate failed for booking %s", booking.pk)
+                estimate = {}
+            ready_notice.queued(
+                reservation,
+                position=estimate.get("position"),
+                wait_minutes=estimate.get("estimated_wait_minutes"),
+            )
         return reservation
 
     def get_analyze_context(self, booking, *, user=None, request=None) -> dict:
@@ -692,6 +706,8 @@ class BookingRemoteAnalysisService:
                 actor=user,
             )
             checked_in_this_call = True
+            reservation.reserved_start = timezone.now()
+            reservation.save(update_fields=["reserved_start", "updated_at"])
             self.audit.log(booking, "CheckinAccepted", details=str(reservation.id), actor=user)
 
         orch = SessionOrchestrator()
@@ -1202,10 +1218,8 @@ class BookingRemoteAnalysisService:
 
         from django.utils import timezone
 
-        from iic_booking.remote_analysis.constants import QueueEntryStatus
         from iic_booking.remote_analysis.guacamole.authorization import OPEN_SESSION_STATUSES
         from iic_booking.remote_analysis.guacamole.session import SessionError
-        from iic_booking.remote_analysis.scheduler_models import ReservationQueue
         from iic_booking.remote_analysis.session_models import RemoteDesktopSession
 
         if booking.user_id != getattr(user, "pk", None) and not getattr(user, "is_superuser", False):
@@ -1228,13 +1242,12 @@ class BookingRemoteAnalysisService:
         if session is None:
             raise SessionError("No active analysis session to extend.", code="no_session")
 
-        others = ReservationQueue.objects.filter(status=QueueEntryStatus.WAITING).exclude(
-            reservation_id=session.reservation_id
-        )
-        if others.exists():
+        from iic_booking.remote_analysis.services.queue_insight import someone_waiting_for
+
+        if someone_waiting_for(session.workstation_id, exclude_reservation_id=session.reservation_id):
             raise SessionError(
-                "Another analysis request is currently waiting. "
-                "Session extension is unavailable to ensure fair access.",
+                "Someone is waiting for this Analysis PC, so the session cannot be extended. "
+                "Save your work before the time runs out.",
                 code="queue_blocked",
             )
 

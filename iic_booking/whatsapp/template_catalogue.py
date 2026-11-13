@@ -129,6 +129,12 @@ CATALOGUE: tuple[Template, ...] = (
          "A slot has become available for equipment you are waitlisted for.",
          f"Slots are not held. To book it, please visit {_PORTAL}.", trigger="Freed slot within 48 hours, same step as the email",
          recipient="Each active waitlist user for that equipment", **_SLOT),
+    _new("remote_analysis_ready", "iitr_remote_analysis_ready", "Analysis PC Ready",
+         "The Analysis PC for your remote analysis is ready and is being held for you.",
+         f"Please start your session on {_PORTAL} before the hold ends. After that the PC goes to the next person in the queue.",
+         params=("user name", "booking ID", "equipment", "minutes held"), examples=(_NAME, _REF, _EQ, "10"),
+         details="Booking ID: {{2}}\nEquipment: {{3}}\nHeld for: {{4}} minutes",
+         trigger="Remote Analysis queue gives the booking an Analysis PC and opens its check-in hold"),
     Template(
         event="otp_code", name="iitr_verification_code", category="AUTHENTICATION", header="",
         body="{{1}} is your verification code. For your security, do not share this code.",
