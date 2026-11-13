@@ -1,0 +1,83 @@
+# Ends a booking's Remote Analysis session from the server, as the booking's End Analysis button does, for when the
+# button fails. Results are collected and the Analysis PC is cleaned up and freed as usual.
+#   status : the booking's sessions, reservation and Analysis PC state (no names or contacts)
+#   end    : end it (confirm=END), acting as the booking owner
+name: End Remote Analysis Session
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "status | end"
+        required: true
+        default: status
+        type: choice
+        options: [status, end]
+      booking:
+        description: "Virtual booking id (e.g. IICDSATEST202600033) or numeric booking id"
+        required: true
+      confirm:
+        description: "Type END for end"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        if: github.event.inputs.mode == 'end'
+        run: test "${{ github.event.inputs.confirm }}" = "END"
+
+      - name: Status / end
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          BOOKING: ${{ github.event.inputs.booking }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production -e MODE -e BOOKING "$CID" python - <<'PY'
+          import os
+
+          import django
+
+          django.setup()
+          from django.db.models import Q
+
+          from iic_booking.equipment.models import Booking
+          from iic_booking.equipment.remote_analysis_integration.service import BookingRemoteAnalysisService
+          from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+
+          key = os.environ["BOOKING"].strip()
+          q = Q(virtual_booking_id=key) | (Q(booking_id=int(key)) if key.isdigit() else Q())
+          b = Booking.objects.select_related("equipment", "user", "analysis_reservation__workstation").filter(q).first()
+          if b is None:
+              raise SystemExit("Unknown booking")
+
+          def show(label):
+              b.refresh_from_db()
+              r = b.analysis_reservation
+              ws = r.workstation if r and r.workstation_id else None
+              print(f"{label}: booking {b.booking_id} {b.virtual_booking_id} status={b.status} closed={b.analysis_closed_at}")
+              print(f"  reservation: {r.status if r else None}  pc: {ws.hostname if ws else None} {ws.status if ws else ''}")
+              for s in RemoteDesktopSession.objects.filter(booking_id=b.pk).order_by("-created_at")[:3]:
+                  print(f"  session {s.id} {s.status} created={s.created_at:%H:%M:%S} expires={s.expires_at and s.expires_at.strftime('%H:%M:%S')}")
+
+          show("BEFORE")
+          if os.environ["MODE"] == "end":
+              try:
+                  result = BookingRemoteAnalysisService().end_analysis(
+                      b, user=b.user, reason="Ended from the server: the End Analysis button failed (RA test)"
+                  )
+                  print("END RESULT:", {k: v for k, v in result.items() if k != "queue"})
+              except Exception as exc:  # noqa: BLE001
+                  print("END FAILED:", type(exc).__name__, str(exc)[:300], getattr(exc, "code", ""))
+              show("AFTER")
+          PY
