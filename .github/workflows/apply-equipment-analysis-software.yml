@@ -1,0 +1,93 @@
+# Sets the Remote Analysis software mapped to one instrument to exactly the catalog entries named (every mapped
+# program is required on the Analysis PC, so this decides which PCs can serve the instrument).
+#   plan  : show the current mapping and what would change; change nothing
+#   apply : replace the mapping (confirm=SET). The previous mapping is printed so it can be restored with apply.
+# Catalog entries are matched by slug or exact name and must be active. No personal data or secrets are printed.
+name: Apply Equipment Analysis Software
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "plan | apply"
+        required: true
+        default: plan
+        type: choice
+        options: [plan, apply]
+      equipment_id:
+        description: "Equipment id"
+        required: true
+      software:
+        description: "Comma-separated catalog slugs or exact names (the new, complete list)"
+        required: true
+      confirm:
+        description: "Type SET for apply"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        if: github.event.inputs.mode == 'apply'
+        run: test "${{ github.event.inputs.confirm }}" = "SET"
+
+      - name: Plan / apply
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          EQUIPMENT_ID: ${{ github.event.inputs.equipment_id }}
+          SOFTWARE: ${{ github.event.inputs.software }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production -e MODE -e EQUIPMENT_ID -e SOFTWARE "$CID" python - <<'PY'
+          import os
+          import sys
+
+          import django
+
+          django.setup()
+          from django.db import transaction
+          from django.db.models import Q
+
+          from iic_booking.equipment.models import Equipment
+          from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog, EquipmentAnalysisSoftware
+
+          mode = os.environ["MODE"]
+          equipment = Equipment.objects.filter(pk=int(os.environ["EQUIPMENT_ID"])).first()
+          if equipment is None:
+              sys.exit("Unknown equipment id")
+          wanted = [w.strip() for w in os.environ["SOFTWARE"].split(",") if w.strip()]
+          catalog = []
+          for w in wanted:
+              entry = AnalysisSoftwareCatalog.objects.filter(Q(slug=w) | Q(name=w), is_active=True).first()
+              if entry is None:
+                  sys.exit(f"No active catalog entry with slug or name {w!r}")
+              catalog.append(entry)
+
+          def show(label):
+              rows = EquipmentAnalysisSoftware.objects.filter(equipment=equipment).select_related("catalog").order_by("sort_order")
+              names = [f"{r.catalog.name} (slug={r.catalog.slug}{', default' if r.is_default else ''})" for r in rows]
+              print(f"{label}: {equipment.pk} {equipment.code} RA={'on' if equipment.enable_remote_analysis else 'off'} -> {names or ['none']}")
+
+          show("BEFORE")
+          print("NEW LIST:", [f"{c.name} (slug={c.slug})" for c in catalog])
+          if mode != "apply":
+              print("PLAN ONLY: nothing changed.")
+              sys.exit(0)
+          with transaction.atomic():
+              EquipmentAnalysisSoftware.objects.filter(equipment=equipment).exclude(catalog__in=catalog).delete()
+              for i, c in enumerate(catalog):
+                  EquipmentAnalysisSoftware.objects.update_or_create(
+                      equipment=equipment, catalog=c, defaults={"sort_order": i, "is_default": i == 0}
+                  )
+          show("AFTER")
+          PY
