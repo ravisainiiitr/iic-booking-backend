@@ -206,3 +206,13 @@ def test_equipment_found_by_model_and_by_manufacturer(lab):
     card, body = _card(_post(lab, conv, "Find instruments from Thermo Fisher"), "ba_equipment_options")
     assert [i["equipment_id"] for i in card["items"]] == [lab.tem.pk]
     assert "Thermo Fisher Scientific" in body["message"]["content"]
+
+
+def test_main_admin_finds_the_dsa_monitor_and_others_do_not(lab):
+    for text in ("dsa monitor", "dsa status", "department sync", "is the dsa offline"):
+        keys = [a.key for a in P.match(lab.admin, text)]
+        assert keys and keys[0] == "dsa_monitor", (text, keys)
+    assert P.BY_KEY["dsa_monitor"].path == "/department-sync?tab=fleet"
+    assert "dsa_installer" in [a.key for a in P.match(lab.admin, "dsa installer")]
+    assert not {"dsa_monitor", "department_sync", "dsa_installer"} & {a.key for a in P.available(lab.oic)}
+    assert [a.key for a in P.match(lab.admin, "remote desktop")][0] == "remote_analysis"

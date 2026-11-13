@@ -581,6 +581,27 @@ Troubleshooting: check Lab LAN, DSA service, and portal Trusted policy.
 """,
     },
     {
+        "title": "DSA Monitor — Department Sync Agent Health (Main Administrator)",
+        "category": DocumentCategory.DEPLOYMENT,
+        "security_level": SecurityLevel.ADMIN,
+        "tags": ["dsa", "dsa monitor", "department sync", "fleet health", "heartbeat", "incidents", "sync agent"],
+        "content_text": """
+Where: Main Administrator only. Dashboard menu > Integrations > DSA monitor, the DSA monitor card on the dashboard,
+or search "DSA monitor". Page: /department-sync?tab=fleet (Department Sync > Fleet health).
+What it shows for every department's Department Sync Agent (DSA), including DSAs running without a monitor:
+- Health: Healthy, Warning, Critical or Offline, from the heartbeat the DSA sends every minute (no heartbeat for
+  several minutes = Offline), with its running version and clock skew.
+- Problems and incidents (for example no heartbeat, failed or held uploads, a PC that can sleep), sent as alerts;
+  acknowledging an incident pauses its reminders.
+- Drill-down per DSA: its Equipment PCs, upload queue, recent errors and the Power box (sleep, hibernate, lid,
+  last sleep).
+- Remote actions, audited, from the drill-down: Restart service, Re-sync bookings, Retry failed uploads, Collect
+  support bundle, Refresh Equipment PCs, Run diagnostics.
+Retired DSAs (replaced PCs) leave the fleet list and raise no alerts. Installers: Department Sync > DSA installer
+(/department-sync/agent-installer) gives the one-click DSA installer and per-instrument Equipment PC wizard.
+"""
+    },
+    {
         "title": "Operator Sample Handling SOP (Summary)",
         "category": DocumentCategory.SOP,
         "security_level": SecurityLevel.OPERATOR,
