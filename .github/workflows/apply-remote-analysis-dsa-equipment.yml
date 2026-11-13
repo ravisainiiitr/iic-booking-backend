@@ -2,7 +2,8 @@
 #   plan  : list them with their Remote Analysis state, department switch and mapped analysis software; change nothing
 #   apply : set Equipment.enable_remote_analysis=True for exactly the instruments the plan lists (or the ids given)
 #   revert: set it back to False for the ids given
-# "Connected to the DSA" = DSA enabled and a DSA hostname, IP address or UNC path set on the instrument.
+# "Connected to the DSA" = DSA enabled, and a DSA sync profile with an assigned agent, or results delivered by the
+# DSA, or a DSA hostname / IP address / UNC path on the instrument.
 # Department module switches are only reported: change those under Department modules so the audit names the admin.
 # No personal data and no secrets are printed.
 name: Apply Remote Analysis for DSA Equipment
@@ -70,12 +71,21 @@ jobs:
           mode = os.environ["MODE"]
           ids = {int(x) for x in os.environ.get("IDS", "").replace(" ", "").split(",") if x.strip().isdigit()}
 
+          by_profile = Q(sync_profile__primary_agent__isnull=False)
+          by_results = Q(equipment_results__isnull=False)
+          by_fields = ~Q(dsa_hostname="") | ~Q(dsa_ip_address="") | ~Q(dsa_unc_path="")
           connected = (
               Equipment.objects.filter(dsa_enabled=True)
-              .filter(~Q(dsa_hostname="") | ~Q(dsa_ip_address="") | ~Q(dsa_unc_path=""))
+              .filter(by_profile | by_results | by_fields)
+              .distinct()
               .select_related("internal_department")
               .order_by("internal_department__name", "name")
           )
+          signal_ids = {
+              "profile": set(Equipment.objects.filter(by_profile).values_list("pk", flat=True)),
+              "results": set(Equipment.objects.filter(by_results).values_list("pk", flat=True).distinct()),
+              "fields": set(Equipment.objects.filter(by_fields).values_list("pk", flat=True)),
+          }
           if mode == "revert":
               target = list(Equipment.objects.filter(pk__in=ids).select_related("internal_department"))
           else:
@@ -94,7 +104,8 @@ jobs:
               return (
                   f"{e.pk:>5}  {(e.code or '')[:18]:<18}  {(e.name or '')[:40]:<40}  "
                   f"dept={(dept.name if dept else '-')[:24]:<24}  RA={'on ' if e.enable_remote_analysis else 'off'}  "
-                  f"dept_switch={switch:<9}  software={', '.join(software) or 'NONE MAPPED'}"
+                  f"dept_switch={switch:<9}  via={'+'.join(k for k, v in signal_ids.items() if e.pk in v) or '-'}  "
+                  f"software={', '.join(software) or 'NONE MAPPED'}"
               )
 
           print(f"DSA-connected instruments: {connected.count()}  |  in scope for {mode}: {len(target)}")
