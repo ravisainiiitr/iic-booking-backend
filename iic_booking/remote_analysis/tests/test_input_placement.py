@@ -147,3 +147,41 @@ def test_clean_folder_name():
     assert input_placement.clean_folder_name("x" * 200) == "x" * 80
     assert input_placement.clean_folder_name("..") is None
     assert input_placement.clean_folder_name(5) is None
+
+
+@pytest.mark.django_db
+def test_a_finished_copy_is_reported_even_after_the_desktop_dropped(
+    ra_user, eligible_workstation, reservation_window, ra_settings, tmp_path
+):
+    from iic_booking.remote_analysis.guacamole.authorization import OPEN_SESSION_STATUSES
+    from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+
+    booking = _setup(ra_user, eligible_workstation, reservation_window, ra_settings, tmp_path)
+    api = _client(ra_user)
+    started = api.post(_url(booking, "input-placement"), {}, format="json")
+    cmd = RemoteCommand.objects.get(pk=started.data["request_id"])
+    _complete(eligible_workstation, cmd, result={"path": "C:\\x", "display_path": "Desktop › X", "files": 1})
+    RemoteDesktopSession.objects.filter(booking_id=booking.pk, status__in=OPEN_SESSION_STATUSES).update(status="TERMINATED")
+    placement = api.get(_url(booking, "input-placement")).data["placement"]
+    assert placement["status"] == "done" and placement["display_path"] == "Desktop › X"
+
+
+@pytest.mark.django_db
+def test_a_pending_placement_is_reconciled_with_its_command(
+    ra_user, eligible_workstation, reservation_window, ra_settings, tmp_path
+):
+    from iic_booking.remote_analysis.constants import CommandStatus
+
+    booking = _setup(ra_user, eligible_workstation, reservation_window, ra_settings, tmp_path)
+    api = _client(ra_user)
+    url = _url(booking, "input-placement")
+    started = api.post(url, {"place": "Documents", "folder_name": "Run"}, format="json")
+    # The agent finished but its result was never recorded on the workspace.
+    RemoteCommand.objects.filter(pk=started.data["request_id"]).update(status=CommandStatus.COMPLETED)
+    placement = api.get(url).data["placement"]
+    assert placement["status"] == "done" and placement["display_path"] == "Documents › Run"
+
+    again = api.post(url, {}, format="json")
+    RemoteCommand.objects.filter(pk=again.data["request_id"]).update(status=CommandStatus.FAILED, error_message="COPY_FAILED: Disk full")
+    failed = api.get(url).data["placement"]
+    assert failed["status"] == "failed" and failed["detail"] == "Disk full"
