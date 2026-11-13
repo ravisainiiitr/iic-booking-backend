@@ -295,3 +295,23 @@ def test_only_a_compatible_waiting_request_blocks_extension():
     waiting_same = _reservation(software=["Origin"])
     _enqueue(waiting_same, ago=timedelta(minutes=1))
     assert queue_insight.someone_waiting_for(ws.id, exclude_reservation_id=running.id) is True
+
+
+def test_launch_uses_the_reservation_holding_the_open_desktop_not_a_newer_queued_one():
+    from iic_booking.equipment.remote_analysis_integration.eligibility import EligibilityResult
+    from iic_booking.equipment.remote_analysis_integration.service import BookingRemoteAnalysisService
+
+    ws = _ws(["Origin"], status=WorkstationStatus.BUSY)
+    booking = _booking()
+    live = _reservation(software=["Origin"], status=ReservationStatus.READY, workstation=ws, booking=booking)
+    _open_session(live, ws, ends_in=timedelta(minutes=20))
+    newer = _reservation(software=["Origin"], status=ReservationStatus.QUEUED, booking=booking)
+    booking.analysis_reservation = newer
+    booking.save(update_fields=["analysis_reservation"])
+
+    svc = BookingRemoteAnalysisService()
+    with mock.patch.object(svc.eligibility, "evaluate", return_value=EligibilityResult(True, "ok")):
+        chosen = svc.ensure_reservation(booking)
+    booking.refresh_from_db()
+    assert chosen.pk == live.pk
+    assert booking.analysis_reservation_id == live.pk
