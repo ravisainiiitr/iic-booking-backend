@@ -1,0 +1,106 @@
+# Marks a DSA Test Equipment (TEST, equipment 339) booking Completed so Remote Analysis can be tested.
+#   list     : the latest TEST bookings (booking id, virtual id, status, created, slot) - no names or contacts
+#   complete : complete one Booked/Pending TEST booking (confirm=COMPLETE), as the portal's Complete button does:
+#              status COMPLETED, completed_at now, and a COMPLETED sample-trace milestone when missing.
+# Refuses any booking that is not on equipment 339.
+name: Complete Test Equipment Booking
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "list | complete"
+        required: true
+        default: list
+        type: choice
+        options: [list, complete]
+      booking_id:
+        description: "Booking id (number) for complete"
+        required: false
+        default: ""
+      confirm:
+        description: "Type COMPLETE for complete"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        if: github.event.inputs.mode == 'complete'
+        run: |
+          test "${{ github.event.inputs.confirm }}" = "COMPLETE"
+          test -n "${{ github.event.inputs.booking_id }}"
+
+      - name: List / complete
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          BOOKING_ID: ${{ github.event.inputs.booking_id }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production -e MODE -e BOOKING_ID "$CID" python - <<'PY'
+          import os
+          import sys
+
+          import django
+
+          django.setup()
+          from django.db import transaction
+          from django.utils import timezone
+
+          from iic_booking.equipment.models import Booking, BookingStatus
+
+          TEST_EQUIPMENT_ID = 339
+          mode = os.environ["MODE"]
+
+          def line(b):
+              return (
+                  f"{b.booking_id:>7}  {b.virtual_booking_id or '-':<22}  {b.status:<20}  "
+                  f"created {timezone.localtime(b.created_at).strftime('%d %b %H:%M')}  "
+                  f"RA_available={b.analysis_available}"
+              )
+
+          if mode == "list":
+              for b in Booking.objects.filter(equipment_id=TEST_EQUIPMENT_ID).order_by("-created_at")[:10]:
+                  print(line(b))
+              sys.exit(0)
+
+          booking_id = int(os.environ["BOOKING_ID"])
+          with transaction.atomic():
+              b = Booking.objects.select_for_update().filter(booking_id=booking_id).first()
+              if b is None or b.equipment_id != TEST_EQUIPMENT_ID:
+                  sys.exit("Refused: not a DSA Test Equipment booking")
+              if b.status not in (BookingStatus.PENDING, BookingStatus.BOOKED):
+                  sys.exit(f"Refused: status is {b.status}; only PENDING or BOOKED can be completed")
+              print("before:", line(b))
+              b.status = BookingStatus.COMPLETED
+              b.completed_at = timezone.now()
+              b.save(update_fields=["status", "completed_at", "updated_at"])
+          try:
+              from iic_booking.equipment.models import BookingSampleTrace, SampleTraceStatus
+
+              if not b.sample_trace_events.filter(status=SampleTraceStatus.COMPLETED).exists():
+                  BookingSampleTrace.objects.create(
+                      booking=b,
+                      status=SampleTraceStatus.COMPLETED,
+                      reason="Recorded automatically when booking was marked Complete (Remote Analysis test).",
+                  )
+          except Exception as exc:  # noqa: BLE001
+              print("sample trace skipped:", type(exc).__name__)
+          b.refresh_from_db()
+          print("after: ", line(b))
+
+          from iic_booking.equipment.remote_analysis_integration.eligibility import BookingAnalysisEligibilityService
+
+          result = BookingAnalysisEligibilityService().evaluate(b, close_from_history=False)
+          print("remote analysis eligible:", result.eligible, "-", result.reason)
+          PY
