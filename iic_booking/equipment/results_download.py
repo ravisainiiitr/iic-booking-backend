@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import re
 import zipfile
 from contextlib import closing
 from dataclasses import dataclass
@@ -211,12 +212,16 @@ def booking_result_sources(booking, s3_client=None, s3_bucket=None, s3_objects=(
     def results_link(key):
         return lambda filename: presign_results_s3_get(key, expires_in=LINK_EXPIRES_SECONDS, filename=filename)
 
-    virtual = (booking.virtual_booking_id or f"booking-{booking.pk}").strip()
     sources: list[ResultSource] = []
+    attachments = list(booking_result_attachments_qs(booking).select_related("upload_session").order_by("created_at"))
+    # A DSA upload is stored once in object storage and also recorded as an attachment; list it once.
+    attachment_keys = {(att.s3_key or "").strip() for att in attachments} - {""}
 
     for key, relative_name, size in s3_objects:
+        if key in attachment_keys:
+            continue
         sources.append(ResultSource(
-            arcname=f"{virtual}/{relative_name}",
+            arcname=_without_storage_folder(relative_name),
             size=int(size or 0),
             ident=f"s3:{key}",
             open=lambda key=key: s3_client.get_object(Bucket=s3_bucket, Key=key)["Body"],
@@ -224,7 +229,7 @@ def booking_result_sources(booking, s3_client=None, s3_bucket=None, s3_objects=(
             in_object_storage=True,
         ))
 
-    for att in booking_result_attachments_qs(booking).select_related("upload_session").order_by("created_at"):
+    for att in attachments:
         s3_key = (att.s3_key or "").strip()
 
         def open_attachment(att=att, s3_key=s3_key):
@@ -235,7 +240,7 @@ def booking_result_sources(booking, s3_client=None, s3_bucket=None, s3_objects=(
             return path.open("rb") if path is not None else None
 
         sources.append(ResultSource(
-            arcname=f"{virtual}/dsa/{att.file_name or 'result.bin'}",
+            arcname=_plain_name(att.file_name),
             size=int(att.size_bytes or 0),
             ident=f"s3:{s3_key}" if s3_key else f"dsa:{att.pk}",
             open=open_attachment,
@@ -253,7 +258,7 @@ def booking_result_sources(booking, s3_client=None, s3_bucket=None, s3_objects=(
             size = 0
         in_bucket = hasattr(brf.file.storage, "bucket_name")
         sources.append(ResultSource(
-            arcname=f"{virtual}/uploaded/{name}",
+            arcname=_plain_name(name),
             size=size,
             ident=f"file:{brf.file.name}",
             open=lambda field=brf.file: open_storage_file_stream(field),
@@ -261,7 +266,48 @@ def booking_result_sources(booking, s3_client=None, s3_bucket=None, s3_objects=(
             in_object_storage=in_bucket,
         ))
 
+    _make_names_unique(sources)
     return sources
+
+
+# Results/{vid}/b{pk}-{yyyymmddHHMMSS}/... : the per-booking storage folder means nothing to the user.
+_STORAGE_FOLDER = re.compile(r"^b\d+-\d+$")
+
+
+def _plain_name(name: str | None) -> str:
+    """A file name with no folder part, safe as a ZIP member."""
+    plain = (name or "").replace("\\", "/").split("/")[-1].strip()
+    return plain or "result.bin"
+
+
+def _without_storage_folder(relative_name: str) -> str:
+    """Drop the internal ``b{pk}-{stamp}/`` folder; keep any sub-folders the instrument PC made."""
+    parts = [p for p in (relative_name or "").replace("\\", "/").split("/") if p and p not in (".", "..")]
+    if len(parts) > 1 and _STORAGE_FOLDER.match(parts[0]):
+        parts = parts[1:]
+    return "/".join(parts) or "result.bin"
+
+
+def _make_names_unique(sources: list[ResultSource]) -> None:
+    """Files now share the ZIP root, so a second ``data.csv`` becomes ``data (2).csv``."""
+    seen: set[str] = set()
+    for source in sources:
+        name = source.arcname
+        if name.lower() in seen:
+            folder, _, base = name.rpartition("/")
+            stem, dot, suffix = base.rpartition(".")
+            if not dot or not stem:
+                stem, suffix, dot = base, "", ""
+            n = 2
+            while True:
+                candidate = f"{stem} ({n}){dot}{suffix}"
+                candidate = f"{folder}/{candidate}" if folder else candidate
+                if candidate.lower() not in seen:
+                    break
+                n += 1
+            name = candidate
+            source.arcname = name
+        seen.add(name.lower())
 
 
 def booking_zip_members(booking, s3_client=None, s3_bucket=None, s3_objects=()) -> tuple[list[ZipMember], int]:
