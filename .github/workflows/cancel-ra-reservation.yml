@@ -1,0 +1,86 @@
+# Cancels one Remote Analysis reservation through ReservationService.cancel (logged in its history), then points
+# its booking at the booking's remaining live reservation (the one holding an open desktop session, if any).
+# Prints statuses and times only (no names or contacts).
+name: Cancel RA Reservation
+
+on:
+  workflow_dispatch:
+    inputs:
+      reservation_id:
+        description: "Reservation id (UUID)"
+        required: true
+      confirm:
+        description: "Type CANCEL"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        run: test "${{ github.event.inputs.confirm }}" = "CANCEL"
+
+      - name: Cancel
+        env:
+          RID: ${{ github.event.inputs.reservation_id }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production -e RID "$CID" python - <<'PY'
+          import os
+
+          import django
+
+          django.setup()
+          from django.utils import timezone
+
+          from iic_booking.equipment.remote_analysis_integration.service import TERMINAL_RESERVATION, BookingRemoteAnalysisService
+          from iic_booking.remote_analysis.guacamole.authorization import OPEN_SESSION_STATUSES
+          from iic_booking.remote_analysis.scheduler_models import AnalysisReservation
+          from iic_booking.remote_analysis.services.reservation import ReservationService
+          from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+
+          def t(dt):
+              return timezone.localtime(dt).strftime("%d %b %H:%M") if dt else "-"
+
+          r = AnalysisReservation.objects.select_related("booking").filter(pk=os.environ["RID"]).first()
+          if r is None:
+              raise SystemExit("Unknown reservation")
+          b = r.booking
+
+          def show(label):
+              print(label)
+              if b is None:
+                  return
+              b.refresh_from_db()
+              for x in AnalysisReservation.objects.filter(booking=b).order_by("created_at"):
+                  live = RemoteDesktopSession.objects.filter(reservation=x, status__in=OPEN_SESSION_STATUSES).values_list("status", flat=True).first()
+                  mark = " <- booking points here" if b.analysis_reservation_id == x.id else ""
+                  print(f"  {str(x.id)[:8]} {x.status:<16} window {t(x.requested_start)}-{t(x.requested_end)} pc={x.workstation.hostname if x.workstation_id else '-'} open_session={live}{mark}")
+
+          show("BEFORE")
+          if r.status in TERMINAL_RESERVATION:
+              print(f"Already {r.status}; nothing cancelled.")
+          else:
+              ReservationService().cancel(r, actor=None, reason="Cancelled by admin: future reservation was taking over today's launch (RA test)")
+              print("CANCELLED", str(r.id)[:8])
+          if b is not None:
+              live = (
+                  AnalysisReservation.objects.filter(booking=b)
+                  .exclude(status__in=TERMINAL_RESERVATION)
+                  .filter(desktop_sessions__status__in=OPEN_SESSION_STATUSES)
+                  .order_by("-created_at")
+                  .first()
+              )
+              if live is not None:
+                  BookingRemoteAnalysisService()._link_booking(b, live)
+                  print("booking now points at", str(live.id)[:8])
+          show("AFTER")
+          PY
