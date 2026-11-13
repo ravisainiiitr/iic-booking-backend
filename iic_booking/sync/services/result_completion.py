@@ -70,7 +70,7 @@ class ResultCompletionService:
 
         if processing_duration_ms is not None:
             result.processing_duration_ms = processing_duration_ms
-            result.processed_by = f"DepartmentSyncAgent:{agent.uuid}"
+            result.processed_by = f"DepartmentSyncAgent:{agent.agent_uuid}"
             result.save(update_fields=["processing_duration_ms", "processed_by", "updated_at"])
 
         if job is not None:
