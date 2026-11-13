@@ -246,36 +246,16 @@ class AnalysisExperienceBuilder:
             or bool(maintenance_hint.get("all_offline")),
         }
 
-        waiting = list(
-            ReservationQueue.objects.filter(status=QueueEntryStatus.WAITING)
-            .select_related("reservation")
-            .order_by("priority", "enqueued_at")
-        )
-        queue_total = len(waiting)
-        queue_position = None
-        people_ahead = 0
-        if reservation:
-            for idx, entry in enumerate(waiting, start=1):
-                if entry.reservation_id == reservation.id:
-                    queue_position = idx
-                    people_ahead = idx - 1
-                    break
-            if queue_position is None and reservation.status in QUEUED_RESERVATION:
-                queue_position = queue_total + 1
-                people_ahead = queue_total
+        from iic_booking.remote_analysis.services import queue_insight
 
+        queue_total = ReservationQueue.objects.filter(status=QueueEntryStatus.WAITING).count()
         avg_minutes = max(5, min(default_session_minutes, 120))
-        estimated_wait_minutes = None
-        expected_start = None
-        if queue_position:
-            estimated_wait_minutes = people_ahead * avg_minutes
-            expected_start = now + timedelta(minutes=estimated_wait_minutes)
-
-        anyone_waiting = queue_total > 0 and (
-            queue_position is None or (queue_position is not None and queue_total > 1)
-        )
-        # More precise: someone else waiting
-        others_waiting = any(e.reservation_id != getattr(reservation, "id", None) for e in waiting)
+        insight: dict[str, Any] = {}
+        if reservation and reservation.status in QUEUED_RESERVATION:
+            insight = queue_insight.insight(reservation, avg_session_minutes=avg_minutes, now=now)
+        queue_position = insight.get("position")
+        people_ahead = int(insight.get("people_ahead") or 0)
+        estimated_wait_minutes = insight.get("estimated_wait_minutes")
 
         remaining_seconds = None
         expires_at = None
@@ -283,6 +263,12 @@ class AnalysisExperienceBuilder:
             expires_at = session.expires_at
             remaining_seconds = max(0, int((session.expires_at - now).total_seconds()))
 
+        # Only a request that could use this very PC blocks an extension.
+        others_waiting = False
+        if session and session.status in ACTIVE_DESKTOP:
+            others_waiting = queue_insight.someone_waiting_for(
+                session.workstation_id, exclude_reservation_id=getattr(reservation, "id", None)
+            )
         can_extend = bool(
             session
             and session.status in ACTIVE_DESKTOP
@@ -292,9 +278,15 @@ class AnalysisExperienceBuilder:
         extend_blocked_reason = None
         if session and session.status in ACTIVE_DESKTOP and others_waiting:
             extend_blocked_reason = (
-                "Another analysis request is currently waiting. "
-                "Session extension is unavailable to ensure fair access."
+                "Someone is waiting for this Analysis PC, so the session cannot be extended. "
+                "Save your work before the time runs out."
             )
+        idle_timeout_minutes = int(getattr(session, "idle_timeout_minutes", 0) or 0) if session else 0
+        idle_ends_at = None
+        if session and session.status in ACTIVE_DESKTOP and idle_timeout_minutes:
+            anchor = session.last_activity_at or session.connected_at or session.launch_time
+            if anchor:
+                idle_ends_at = anchor + timedelta(minutes=idle_timeout_minutes)
 
         sync_phase = getattr(workspace, "sync_phase", None) if workspace else None
         sync_progress = int(getattr(workspace, "sync_progress_percent", 0) or 0) if workspace else 0
@@ -406,10 +398,13 @@ class AnalysisExperienceBuilder:
                 ),
                 "required_software": required_software,
                 "position": queue_position,
-                "queue_size": max(queue_total, queue_position or 0),
+                "queue_size": insight.get("queue_size") or (queue_position or 0),
                 "people_ahead": people_ahead,
                 "estimated_wait_minutes": estimated_wait_minutes,
-                "expected_start_at": _ts(expected_start),
+                "expected_start_at": insight.get("expected_start_at"),
+                "reason_code": insight.get("reason_code"),
+                "reason": insight.get("reason"),
+                "average_session_minutes": avg_minutes,
                 "maintenance": maintenance_hint,
                 "environments": {
                     "total": all_env_total,
@@ -430,6 +425,8 @@ class AnalysisExperienceBuilder:
                 "expires_at": _ts(expires_at),
                 "remaining_seconds": remaining_seconds,
                 "warnings": [10, 5, 2, 1],
+                "idle_timeout_minutes": idle_timeout_minutes or None,
+                "idle_ends_at": _ts(idle_ends_at),
                 "can_extend": can_extend,
                 "extend_blocked_reason": extend_blocked_reason,
                 "others_waiting": others_waiting,
@@ -479,6 +476,19 @@ class AnalysisExperienceBuilder:
                 or (session and session.status == SessionStatus.ACTIVE)
             ) else 15,
         }
+
+    def queue_estimate(self, booking, reservation) -> dict[str, Any]:
+        """Position / wait for one reservation, as shown on the workspace page (used by notices)."""
+        from iic_booking.remote_analysis.services import queue_insight
+        from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings
+
+        settings_obj = RemoteAnalysisSettings.get_solo()
+        minutes = int(
+            getattr(booking.equipment, "analysis_default_session_minutes", None)
+            or getattr(settings_obj, "session_timeout", 30)
+            or 30
+        )
+        return queue_insight.insight(reservation, avg_session_minutes=max(5, min(minutes, 120)))
 
     def _cleanup_status(self, session, workspace) -> str:
         if not session:

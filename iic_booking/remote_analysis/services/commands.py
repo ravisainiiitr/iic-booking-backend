@@ -285,6 +285,14 @@ class CommandService:
 
             store_browse_result(command, result)
 
+        if command.command_type == CommandType.PLACE_INPUT:
+            from iic_booking.equipment.remote_analysis_integration.input_placement import store_place_result
+
+            try:
+                store_place_result(command, result, success=success, message=message)
+            except Exception:
+                logger.exception("Failed to store PLACE_INPUT result (%s)", command.id)
+
         cmd_payload = command.payload or {}
         if (
             command.command_type == CommandType.CLEAN_WORKSTATION

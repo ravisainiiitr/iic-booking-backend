@@ -84,14 +84,11 @@ class CheckinService:
             details=f"Check-in window {minutes} minutes",
             metadata={"expires_at": reservation.checkin_expires_at.isoformat()},
         )
-        self._notify(
-            reservation,
-            title="Your Analysis Environment is ready",
-            body=(
-                f"A compatible Analysis PC has been reserved for you. "
-                f"Please start your session within {minutes} minutes."
-            ),
-        )
+        from iic_booking.remote_analysis.services import ready_notice
+
+        title, body = ready_notice.ready_message(reservation, minutes)
+        self._notify(reservation, title=title, body=body)
+        ready_notice.seat_ready(reservation, minutes)
         record_event(
             category=AuditCategory.SCHEDULER,
             action="CheckinOpened",
@@ -195,15 +192,30 @@ class CheckinService:
         reservation.save(update_fields=["workstation", "checkin_expires_at", "updated_at"])
 
         action = "released"
-        if missed and policy == MissedCheckinPolicy.CANCEL_AFTER_N and reservation.missed_checkin_count >= limit:
+        if not missed:
+            # The user gave the PC back: leave the queue instead of rejoining it at the back.
+            ReservationService().transition(
+                reservation, ReservationStatus.CANCELLED, reason=reason, actor=actor
+            )
+            SchedulerService().queue.cancel(reservation)
+            from iic_booking.remote_analysis.services import ready_notice
+
+            ready_notice.released(reservation)
+        elif missed and reservation.missed_checkin_count >= limit:
+            # Every policy stops after the limit: otherwise a user who walked away is re-held a PC,
+            # and notified, every few minutes for the whole access window.
             ReservationService().transition(
                 reservation, ReservationStatus.CANCELLED, reason=f"Missed check-in limit {limit}", actor=actor
             )
+            SchedulerService().queue.cancel(reservation)
             action = "cancelled"
             self._notify(
                 reservation,
-                title="Remote Analysis reservation cancelled",
-                body="Your reservation was cancelled after multiple missed check-ins.",
+                title="Remote Analysis request closed",
+                body=(
+                    f"An Analysis PC was held for you {limit} times and the session was not started, so the request "
+                    "has left the queue. You can request analysis again from your booking whenever you are ready."
+                ),
             )
         elif missed and policy == MissedCheckinPolicy.RETRY_LATER:
             ReservationService().transition(
@@ -248,12 +260,14 @@ class CheckinService:
     def _notify(self, reservation: AnalysisReservation, *, title: str, body: str) -> None:
         try:
             from iic_booking.remote_analysis.notifications import NotificationEngine
+            from iic_booking.remote_analysis.services.ready_notice import workspace_link
 
             NotificationEngine().notify(
                 reservation.user,
                 NotificationType.RESERVATION_CONFIRMED,
                 title,
                 body,
+                link=workspace_link(reservation),
                 metadata={"reservation_id": str(reservation.id)},
             )
         except Exception:
