@@ -425,3 +425,29 @@ def test_admin_agents_list_uses_latest_heartbeat_per_agent():
     assert latest[a.id].queue_size == 0
     assert latest[b.id].queue_size == 99
     assert len(latest) == 2
+
+
+def _via_serializer(payload: dict) -> dict:
+    """What the heartbeat view hands to HeartbeatService (fields outside the serializer are dropped)."""
+    from iic_booking.sync.serializers import HeartbeatRequestSerializer
+
+    ser = HeartbeatRequestSerializer(data=payload)
+    ser.is_valid(raise_exception=True)
+    return ser.validated_data
+
+
+@pytest.mark.django_db
+def test_sent_at_survives_the_heartbeat_serializer_and_sets_clock_skew():
+    """Live 13 Nov: clock skew stayed blank because the view's serializer dropped sent_at."""
+    agent = _agent()
+    sent = (timezone.now() + timedelta(seconds=40)).isoformat()
+    details = {"capabilities": {"remote_commands": ALL_COMMANDS}, "diagnostics": _diagnostics()}
+    HeartbeatService().process(agent, _via_serializer({"service_version": "1.0.8", "sent_at": sent, "details": details}))
+    state = AgentDiagnosticState.objects.get(sync_agent=agent)
+    assert 35 <= state.clock_skew_seconds <= 45
+
+    # The probe, as the view really delivers it (details defaulted to {}), keeps both.
+    HeartbeatService().process(agent, _via_serializer({"hostname": "DEPT-PC", "status_message": "connectivity_probe"}))
+    state.refresh_from_db()
+    assert 35 <= state.clock_skew_seconds <= 45
+    assert "stale" not in state.diagnostics

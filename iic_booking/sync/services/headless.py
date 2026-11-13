@@ -134,7 +134,8 @@ def _section(diag: dict, name: str) -> dict:
 
 def is_probe(payload: dict) -> bool:
     """A bare heartbeat without the agent's details: the DSA's portal connectivity probe (or a minimal client)."""
-    return payload.get("status_message") == "connectivity_probe" or "details" not in payload
+    # HeartbeatRequestSerializer defaults details to {}, so test for content, not presence.
+    return payload.get("status_message") == "connectivity_probe" or not payload.get("details")
 
 
 def _sync_running_version(agent: DepartmentSyncAgent, diagnostics: dict) -> None:
