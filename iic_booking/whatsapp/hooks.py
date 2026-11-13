@@ -153,6 +153,11 @@ def payment_order_saved(order, created: bool) -> None:
     if not order.booking_id:
         return
     if order.status == PaymentOrderStatus.PAID:
+        # The payment that confirms a booking is already announced by the Booking Confirmation message (a booking is
+        # only Booked once paid), so two messages back to back would say the same thing. A later payment on the same
+        # booking (for example an extra charge) is still announced.
+        if not _earlier_paid_order(order):
+            return
         event = "payment_successful"
     elif order.status == PaymentOrderStatus.FAILED:
         event = "payment_failed"
@@ -161,6 +166,13 @@ def payment_order_saved(order, created: bool) -> None:
     booking = order.booking
     _notify(order.user, event, [_person(order.user), _ref(booking), _equipment(booking), _money(order.total_amount)],
             f"payment:{order.pk}:{event}")
+
+
+def _earlier_paid_order(order) -> bool:
+    """True when this booking already had a paid order before this one, i.e. this payment is not the confirming one."""
+    from iic_booking.payments.models import PaymentOrder, PaymentOrderStatus
+
+    return PaymentOrder.objects.filter(booking_id=order.booking_id, status=PaymentOrderStatus.PAID).exclude(pk=order.pk).exists()
 
 
 @_guarded
