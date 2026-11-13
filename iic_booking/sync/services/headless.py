@@ -96,6 +96,8 @@ ACTION_HINTS = {
     "TOKEN_EXPIRING": "Renew the agent's enrollment before the token expires.",
     "CLOCK_SKEW": "Fix the department PC's clock (time sync); bookings and uploads depend on it.",
     "NO_DIAGNOSTICS": "Update the agent to 1.0.7 or later for full remote diagnostics.",
+    "SLEEP_ENABLED": "Update the agent to 1.0.9 (sets never-sleep on install), or set Sleep to Never and the lid to Do nothing.",
+    "RECENT_SLEEP": "Set the power button, lid and Start-menu Sleep so the PC cannot be put to sleep (DSA 1.0.9 does this).",
     "AGENT_DISABLED": "The agent is disabled on the portal.",
 }
 
@@ -297,10 +299,34 @@ def _diagnostic_reasons(diag: dict, state: AgentDiagnosticState | None, now) -> 
     if errors_1h >= _setting("DSA_ERROR_SPIKE_PER_HOUR"):
         out.append(_reason("ERROR_SPIKE", "warning", f"{errors_1h} errors logged in the last hour."))
 
+    out.extend(_power_reasons(_section(diag, "power"), now))
+
     skew = state.clock_skew_seconds if state else None
     if skew is not None and abs(skew) > _setting("DSA_CLOCK_SKEW_SECONDS"):
         out.append(
             _reason("CLOCK_SKEW", "warning", f"Agent clock is {abs(skew):.0f} s {'ahead' if skew > 0 else 'behind'}."),
+        )
+    return out
+
+
+def _power_reasons(power: dict, now) -> list[dict]:
+    """An unattended DSA PC must not sleep (13 Nov 2026: put to sleep 02:57, missed six hours)."""
+    if not power or not power.get("supported"):
+        return []
+    out = []
+    causes = []
+    for key, label in (("standby_ac_minutes", "sleeps"), ("hibernate_ac_minutes", "hibernates")):
+        minutes = _num(power.get(key))
+        if minutes and minutes > 0:
+            causes.append(f"{label} after {int(minutes)} min idle")
+    if power.get("lid_action_ac") in (1, 2):
+        causes.append("sleeps when the lid is closed")
+    if causes:
+        out.append(_reason("SLEEP_ENABLED", "warning", "The PC " + " and ".join(causes) + " (on mains)."))
+    slept = _dt(power.get("last_sleep_at"))
+    if slept is not None and timedelta(0) <= now - slept <= timedelta(hours=24):
+        out.append(
+            _reason("RECENT_SLEEP", "warning", f"The PC was put to sleep at {timezone.localtime(slept):%d %b %H:%M}."),
         )
     return out
 
