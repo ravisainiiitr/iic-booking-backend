@@ -389,3 +389,61 @@ def test_presigned_results_url_carries_filename(monkeypatch):
     seen.clear()
     assert results_s3.presign_results_s3_get("Results/x.zip")
     assert "ResponseContentDisposition" not in seen
+
+
+class _FakeQs(list):
+    def select_related(self, *a):
+        return self
+
+    def order_by(self, *a):
+        return self
+
+
+def _flat_sources(monkeypatch, *, s3_objects, attachments=(), uploaded=()):
+    from types import SimpleNamespace
+
+    from iic_booking.equipment import booking_results_service, results_download
+
+    monkeypatch.setattr(booking_results_service, "booking_result_attachments_qs", lambda b: _FakeQs(attachments))
+    monkeypatch.setattr(booking_results_service, "booking_result_files_qs", lambda b: _FakeQs(uploaded))
+    booking = SimpleNamespace(pk=1737, virtual_booking_id="IICMPAES202600016")
+    return results_download.booking_result_sources(booking, object(), "bucket", s3_objects)
+
+
+def test_results_zip_puts_files_at_root_and_lists_each_dsa_file_once(monkeypatch):
+    from types import SimpleNamespace
+
+    key = "Results/IICMPAES202600016/b1737-20261113065318/spectrum.csv"
+    att = SimpleNamespace(pk=1, s3_key=key, file_name="spectrum.csv", size_bytes=10, upload_session=None)
+    sources = _flat_sources(
+        monkeypatch,
+        s3_objects=[
+            (key, "b1737-20261113065318/spectrum.csv", 10),
+            ("Results/IICMPAES202600016/b1737-20261113065318/run2/raw.dat", "b1737-20261113065318/run2/raw.dat", 5),
+        ],
+        attachments=[att],
+    )
+    assert sorted(s.arcname for s in sources) == ["run2/raw.dat", "spectrum.csv"]
+
+
+def test_results_zip_renames_clashing_names(monkeypatch):
+    from types import SimpleNamespace
+
+    class FakeFile:
+        name = "booking_results/x/data.csv"
+        size = 3
+        storage = object()
+
+        def __bool__(self):
+            return True
+
+    uploaded = [SimpleNamespace(file=FakeFile(), original_name="data.csv")]
+    sources = _flat_sources(
+        monkeypatch,
+        s3_objects=[
+            ("Results/V/b1-1/data.csv", "b1-1/data.csv", 3),
+            ("Results/V/b2-2/DATA.csv", "b2-2/DATA.csv", 3),
+        ],
+        uploaded=uploaded,
+    )
+    assert [s.arcname for s in sources] == ["data.csv", "DATA (2).csv", "data (3).csv"]
