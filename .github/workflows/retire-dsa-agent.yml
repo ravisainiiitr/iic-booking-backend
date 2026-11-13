@@ -1,0 +1,73 @@
+name: Retire DSA Agent
+
+# Retire one Department Sync Agent on production (lifecycle RETIRED, inactive, token revoked),
+# for example when a department's DSA PC is replaced by a new server.
+# mode=dry-run only lists the department's agents. mode=apply retires the agent whose
+# agent_uuid AND machine_name both match the inputs, and refuses anything else.
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent_uuid:
+        description: agent_uuid of the DSA to retire
+        required: true
+      machine_name:
+        description: Machine name the agent must have (safety check)
+        required: true
+      reason:
+        description: Reason recorded in the audit log
+        required: true
+        default: Replaced by new DSA server
+      mode:
+        description: dry-run or apply
+        required: true
+        default: dry-run
+        type: choice
+        options: [dry-run, apply]
+
+jobs:
+  retire:
+    runs-on: self-hosted
+    steps:
+      - name: Retire agent
+        env:
+          AGENT_UUID: ${{ inputs.agent_uuid }}
+          MACHINE_NAME: ${{ inputs.machine_name }}
+          REASON: ${{ inputs.reason }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e AGENT_UUID -e MACHINE_NAME -e REASON -e MODE "$CID" python manage.py shell <<'PY'
+          import os
+          from iic_booking.sync.models import AgentLifecycleStatus, DepartmentSyncAgent
+          from iic_booking.sync.services.agent_registry import AgentRegistryService
+
+          uuid_in = os.environ["AGENT_UUID"].strip().lower()
+          name_in = os.environ["MACHINE_NAME"].strip()
+          mode = os.environ["MODE"].strip()
+
+
+          def show(label, agent):
+              print(label, str(agent.agent_uuid), agent.machine_name, "status", agent.status, "active", agent.is_active,
+                    "dept", agent.department_id, "last_heartbeat", agent.last_heartbeat_at)
+
+
+          target = DepartmentSyncAgent.objects.filter(agent_uuid=uuid_in).first()
+          if target is None:
+              raise SystemExit("No agent with that agent_uuid: nothing changed")
+          print("=== agents in the same department ===")
+          for a in DepartmentSyncAgent.objects.filter(department_id=target.department_id).order_by("-last_heartbeat_at"):
+              show("AGENT", a)
+          if target.machine_name != name_in:
+              raise SystemExit(f"machine_name mismatch ({target.machine_name!r}): nothing changed")
+          if mode != "apply":
+              print("DRY RUN: would retire", str(target.agent_uuid), target.machine_name)
+              raise SystemExit(0)
+          result = AgentRegistryService().set_lifecycle(
+              target, new_status=AgentLifecycleStatus.RETIRED, user_name="ops-workflow", reason=os.environ["REASON"],
+          )
+          print("RESULT", {k: result.get(k) for k in ("status", "previous_status", "is_active") if isinstance(result, dict)})
+          target.refresh_from_db()
+          show("AFTER", target)
+          PY
