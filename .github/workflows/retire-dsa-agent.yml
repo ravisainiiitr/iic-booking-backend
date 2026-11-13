@@ -27,7 +27,7 @@ on:
 
 jobs:
   retire:
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux]
     steps:
       - name: Retire agent
         env:
