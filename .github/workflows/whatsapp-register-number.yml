@@ -1,0 +1,56 @@
+# Register a WhatsApp Cloud API phone number with Meta (scripts/ops/whatsapp_register_number.py).
+#   mode=preflight  read-only: token scopes, the number's verification / name / status / PIN state, WABA membership.
+#   mode=register   preflight, then POST {number}/register ONCE (skipped if already registered), then preflight again.
+# Uses the portal's own Graph API version and system-user token (server settings). Run logs are public, so the IDs and
+# PIN come from secrets, never from inputs:
+#   WHATSAPP_REGISTER_PHONE_NUMBER_ID  the number to register (required)
+#   WHATSAPP_REGISTER_PIN              its 6-digit two-step verification PIN (register only). If two-step verification is
+#                                      not set up yet, Meta makes this the number's PIN.
+# Registering a number does not change the portal's sender (WHATSAPP_PHONE_NUMBER_ID).
+name: WhatsApp register phone number
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: preflight (read-only) or register
+        required: true
+        default: preflight
+        type: choice
+        options: [preflight, register]
+      confirm:
+        description: Type REGISTER for mode=register
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: whatsapp-register-number
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation to register
+        if: ${{ inputs.mode == 'register' && inputs.confirm != 'REGISTER' }}
+        run: |
+          echo "Type REGISTER in 'confirm' to send the registration."
+          exit 1
+      - uses: actions/checkout@v4
+      - name: Ask Meta
+        env:
+          MODE: ${{ inputs.mode }}
+          TARGET_ID: ${{ secrets.WHATSAPP_REGISTER_PHONE_NUMBER_ID }}
+          WABA_ID: ${{ secrets.WHATSAPP_WABA_ID }}
+          PIN: ${{ inputs.mode == 'register' && secrets.WHATSAPP_REGISTER_PIN || '' }}
+        run: |
+          set -euo pipefail
+          case "$TARGET_ID" in (*[!0-9]*|'') echo "WHATSAPP_REGISTER_PHONE_NUMBER_ID must be set and numeric"; exit 1 ;; esac
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          # The runner's checkout is sparse, so the script is read from git rather than from disk.
+          git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/whatsapp_register_number.py \
+            | docker exec -i -w /app -e MODE -e TARGET_ID -e WABA_ID -e PIN -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+              python -
