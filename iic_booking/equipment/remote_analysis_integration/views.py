@@ -830,3 +830,29 @@ def booking_analysis_pc_folders(request, booking_id: int):
     except pc_folders.PcFolderError as exc:
         return Response({"detail": exc.detail, "code": exc.code}, status=exc.status)
     return Response({"folders": [i["path"] for i in items], "items": items})
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_input_placement(request, booking_id: int):
+    """GET/POST /api/v1/bookings/{id}/analysis/input-placement/
+
+    GET: whether this Analysis PC can save input where the user chooses, the default folder, and this session's
+    placement (pending / done with the path / failed with the reason).
+    POST {place: Desktop|Documents|Downloads | location: "D:\\Data", folder_name}: save the input there and open it.
+    """
+    from iic_booking.equipment.remote_analysis_integration import input_placement
+    from iic_booking.equipment.remote_analysis_integration.pc_folders import PcFolderError
+
+    booking = _owned_booking(request, booking_id)
+    if booking is None:
+        return _forbidden()
+    if request.method == "GET":
+        return Response(input_placement.status(booking, request.user))
+    body = request.data if isinstance(request.data, dict) else {}
+    try:
+        data = input_placement.request_place(booking, request.user, body)
+    except PcFolderError as exc:
+        return Response({"detail": exc.detail, "code": exc.code}, status=exc.status)
+    return Response(data, status=status.HTTP_202_ACCEPTED)

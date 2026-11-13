@@ -93,6 +93,7 @@ class CommandType(models.TextChoices):
     JOIN_TUNNEL = "JOIN_TUNNEL", _("Join reverse tunnel")
     CLOSE_TUNNEL = "CLOSE_TUNNEL", _("Close reverse tunnel")
     BROWSE_PC_FOLDERS = "BROWSE_PC_FOLDERS", _("Browse folders on the Analysis PC")
+    PLACE_INPUT = "PLACE_INPUT", _("Save input data where the user chose on the Analysis PC")
 
 
 class TransportMode(models.TextChoices):
