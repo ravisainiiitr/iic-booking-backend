@@ -1,0 +1,8 @@
+{
+  "about": "Official equipment booking updates from IIT Roorkee facilities.",
+  "description": "Indian Institute of Technology Roorkee sends booking, payment and result updates for research equipment booked on the IIT Roorkee Equipment Booking Portal. Book and manage equipment at https://equip.iitr.ac.in. Reply STOP to stop WhatsApp messages.",
+  "address": "Indian Institute of Technology Roorkee, Roorkee, Uttarakhand 247667, India",
+  "email": "equip@iitr.ac.in",
+  "websites": ["https://equip.iitr.ac.in", "https://www.iitr.ac.in"],
+  "vertical": "EDU"
+}

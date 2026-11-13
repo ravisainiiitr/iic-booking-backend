@@ -1,0 +1,55 @@
+# Show or set the WhatsApp Business profile of the portal's sender (scripts/ops/whatsapp_business_profile.py).
+#   mode=show   read-only: the profile as WhatsApp users see it.
+#   mode=apply  uploads scripts/ops/assets/iitr-whatsapp-profile.jpg as the profile photo and sets the text from
+#               scripts/ops/assets/whatsapp_business_profile.json (about, description, address, email, websites, vertical).
+# Uses the portal's own sender, Graph API version and system-user token (server settings). Logs are public: no token,
+# ID or upload handle is printed.
+name: WhatsApp business profile
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: show (read-only) or apply
+        required: true
+        default: show
+        type: choice
+        options: [show, apply]
+      confirm:
+        description: Type PROFILE for mode=apply
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: whatsapp-business-profile
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation to apply
+        if: ${{ inputs.mode == 'apply' && inputs.confirm != 'PROFILE' }}
+        run: |
+          echo "Type PROFILE in 'confirm' to change the WhatsApp profile."
+          exit 1
+      - uses: actions/checkout@v4
+      - name: Ask Meta
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          # The runner's checkout is sparse, so files are read from git rather than from disk.
+          IMG="$RUNNER_TEMP/iitr-whatsapp-profile.jpg"
+          git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/assets/iitr-whatsapp-profile.jpg > "$IMG"
+          docker cp "$IMG" "$CID:/tmp/iitr-whatsapp-profile.jpg"
+          PROFILE_JSON="$(git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/assets/whatsapp_business_profile.json)"
+          export PROFILE_JSON
+          git -C "$GITHUB_WORKSPACE" show HEAD:scripts/ops/whatsapp_business_profile.py \
+            | docker exec -i -w /app -e MODE -e PROFILE_JSON -e IMAGE_PATH=/tmp/iitr-whatsapp-profile.jpg \
+                -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python -
+          docker exec "$CID" rm -f /tmp/iitr-whatsapp-profile.jpg
