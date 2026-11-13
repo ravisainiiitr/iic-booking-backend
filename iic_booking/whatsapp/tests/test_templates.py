@@ -623,14 +623,19 @@ def test_rejection_reminder_and_waitlist_map_correctly(sending):
     assert sent == [("booking_rejected", 4), ("booking_reminder", 5), ("waitlist_slot_available", 4)]
 
 
-@pytest.mark.parametrize("created, status, expected", [
-    (True, "CREATED", None), (False, "PAID", "payment_successful"), (False, "FAILED", "payment_failed"),
-    (False, "CREATED", None), (False, "EXPIRED", None),
+@pytest.mark.parametrize("created, status, earlier_paid, expected", [
+    (True, "CREATED", False, None),
+    # The payment that confirms the booking: Booking Confirmation already says so, no second message.
+    (False, "PAID", False, None),
+    # A later payment on the same booking (e.g. an extra charge) is still announced.
+    (False, "PAID", True, "payment_successful"),
+    (False, "FAILED", False, "payment_failed"),
+    (False, "CREATED", False, None), (False, "EXPIRED", False, None),
 ])
-def test_payment_order_mapping(sending, created, status, expected):
+def test_payment_order_mapping(sending, created, status, earlier_paid, expected):
     booking = fake_booking()
     order = SimpleNamespace(pk=5, booking_id=7, booking=booking, user=booking.user, status=status, total_amount=1500)
-    with patch("iic_booking.whatsapp.service.notify") as notify:
+    with patch("iic_booking.whatsapp.service.notify") as notify,             patch("iic_booking.whatsapp.hooks._earlier_paid_order", return_value=earlier_paid):
         hooks.payment_order_saved(order, created)
     if expected is None:
         notify.assert_not_called()
