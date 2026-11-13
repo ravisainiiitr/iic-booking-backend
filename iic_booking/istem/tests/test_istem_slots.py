@@ -120,8 +120,9 @@ def test_no_free_hour_left_that_day_holds_for_staff(live):
 EXECUTED = {"status": "SUCCESS", "message": "ok", "payment_id": 1, "request_id": "1", "confirmation_id": "2"}
 
 
-def test_silent_mode_is_on_by_default_for_create_confirm_and_cancel_only(live):
+def test_silent_mode_is_on_by_default_for_create_confirm_cancel_and_reschedule(live):
     # [TEAM 2026-10-30] "silent": true on Create, Confirm and Cancel; FBR Execute sends no emails.
+    # [I-STEM 13 Nov 2026] Reschedule accepts silent=true too.
     transport = FakeTransport(token_response(), json_response({"status": "Sucess", "message": "Done", "new_service_id": 1, "fbr_no": "19761"}),
                               json_response({"status": "SUCCESS", "result": {"request_id": "1"}, "confirmation_id": "2"}),
                               json_response({"status": "Sucess", "message": "Done"}),
@@ -135,7 +136,7 @@ def test_silent_mode_is_on_by_default_for_create_confirm_and_cancel_only(live):
     client.execute_fbr({"request_id": "1", "confirmation_id": "2"})
     client.create_user({"user_email": "a@example.com"})
     client.reschedule_booking("1", timings_from="2026-11-02 10:00:00", timings_to="2026-11-02 12:00:00", rescheduled_by="OP")
-    assert [c["data"].get("silent") for c in transport.calls[1:]] == ["true", "true", "true", None, None, None]
+    assert [c["data"].get("silent") for c in transport.calls[1:]] == ["true", "true", "true", None, None, "true"]
 
 
 def test_silent_mode_can_be_switched_off(live):

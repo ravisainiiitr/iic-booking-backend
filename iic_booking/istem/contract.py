@@ -60,6 +60,11 @@ CANCEL_BOOKING_PATH = "api/cancel-booking"
 # POST, form: request_id, rescheduled_date (YYYY-MM-DD), rescheduled_from_time / rescheduled_to_time (booking datetime
 # format), reschedule_by, reschedule_count. [TEAM 2026-10-30] Fixed on I-STEM's side; only request_id identifies the
 # booking (confirmation_id / FBR number are refused); reschedule_count is required but I-STEM computes it itself.
+# [I-STEM 13 Nov 2026] Only a Pending (not yet confirmed) booking can be rescheduled; a confirmed one is refused ("Only
+# pending bookings can be rescheduled"). To move a confirmed booking: create a new one, confirm it, cancel the old one
+# (service.enqueue_moves). The date is taken from rescheduled_from_time (rescheduled_date is required but unused); the
+# new slot must be in the future and not overlap a confirmed booking ("This slot is already booked."). silent=true is
+# accepted, as on Create, Confirm, Cancel and Reject.
 RESCHEDULE_BOOKING_PATH = "api/reschedule-booking"
 RESCHEDULE_COUNT_PLACEHOLDER = "1"
 RESCHEDULE_DATE_FORMAT = "%Y-%m-%d"
@@ -176,7 +181,7 @@ ISTEM_SLOT_HOURS = 1
 SLOT_OCCUPIED_MARKERS = ("occupied", "already booked", "already allocated", "not available", "clash", "overlap")
 # [TEAM 2026-10-30] Calls that take ``silent`` (no I-STEM emails to the user and lab in charge). FBR Execute sends no
 # emails and needs no flag.
-SILENT_OPERATIONS = frozenset({"create_booking", "confirm_booking", "cancel_booking"})
+SILENT_OPERATIONS = frozenset({"create_booking", "confirm_booking", "cancel_booking", "reschedule_booking"})
 
 
 def slot_occupied(message: str) -> bool:

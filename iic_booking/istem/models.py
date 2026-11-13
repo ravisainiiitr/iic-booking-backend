@@ -20,6 +20,7 @@ from .choices import (
     LinkOtpState,
     Operation,
     RemoteStatus,
+    SupersededState,
     SyncState,
     UserLinkState,
 )
@@ -553,3 +554,34 @@ class IstemSyncEvent(models.Model):
 
     def __str__(self):
         return f"{self.from_state or '—'} → {self.to_state or '—'}"
+
+
+class IstemSupersededBooking(models.Model):
+    """The previous I-STEM booking of a portal booking whose slot moved after I-STEM confirmed it. I-STEM does not
+    reschedule a confirmed booking (13 Nov 2026): a new booking is created and confirmed for the new slot and this one
+    is cancelled. When the new slot overlaps the old one, this one is cancelled first (``cancel_first``), because
+    I-STEM refuses to confirm a slot that overlaps a confirmed booking on the same equipment."""
+
+    booking_link = models.ForeignKey(IstemBookingLink, on_delete=models.PROTECT, related_name="superseded")
+    request_id = models.CharField(max_length=64)
+    fbr_no = models.CharField(max_length=64, blank=True, default="")
+    confirmation_id = models.CharField(max_length=64, blank=True, default="")
+    timings_from = models.CharField(max_length=32, blank=True, default="")
+    timings_to = models.CharField(max_length=32, blank=True, default="")
+    new_timings_from = models.CharField(max_length=32, blank=True, default="")
+    new_timings_to = models.CharField(max_length=32, blank=True, default="")
+    cancel_first = models.BooleanField(default=False)
+    state = models.CharField(max_length=20, choices=SupersededState.choices, default=SupersededState.CANCEL_PENDING)
+    message = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = _("I-STEM replaced booking")
+        verbose_name_plural = _("I-STEM replaced bookings")
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["state"], name="istem_superseded_state_idx")]
+
+    def __str__(self):
+        return f"request {self.request_id} ({self.state})"
+
