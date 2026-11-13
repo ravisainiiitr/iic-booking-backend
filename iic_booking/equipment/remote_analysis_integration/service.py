@@ -198,11 +198,18 @@ class BookingRemoteAnalysisService:
         from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
         from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
 
+        from iic_booking.equipment.models import Booking
+        from iic_booking.remote_analysis.guacamole.authorization import OPEN_SESSION_STATUSES
+
+        # One reservation per booking at a time. Without this lock two requests in the same second (Analyze and
+        # the launch page's first call) each saw "none yet" and each created one; the second was queued behind
+        # the first and, being newer, took over the booking so the live desktop was never handed to the browser.
+        Booking.objects.select_for_update().filter(pk=booking.pk).values_list("pk", flat=True).first()
+
+        live = AnalysisReservation.objects.filter(booking=booking).exclude(status__in=TERMINAL_RESERVATION)
         existing = (
-            AnalysisReservation.objects.filter(booking=booking)
-            .exclude(status__in=TERMINAL_RESERVATION)
-            .order_by("-created_at")
-            .first()
+            live.filter(desktop_sessions__status__in=OPEN_SESSION_STATUSES).order_by("-created_at").first()
+            or live.order_by("-created_at").first()
         )
         if existing:
             self._link_booking(booking, existing)
