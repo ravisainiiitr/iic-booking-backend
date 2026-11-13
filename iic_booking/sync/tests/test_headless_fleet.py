@@ -375,3 +375,53 @@ def test_equipment_pc_status_comes_from_heartbeat_freshness_not_registration_sta
     _beat(agent, _diagnostics(), pcs=pcs)
     laptop = AlertEvent.objects.get(sync_agent=agent, rule_code="EQPC_OFFLINE", details__subject="DSATEST-LAPTOP")
     assert laptop.status == "RESOLVED"
+
+
+@pytest.mark.django_db
+def test_connectivity_probe_does_not_wipe_diagnostics_or_clock_skew():
+    """Live 13 Nov: the DSA's bare connectivity-probe heartbeat flipped the fleet row to 'no diagnostics'."""
+    agent = _agent()
+    _beat(agent, _diagnostics(), sent_at=timezone.now() + timedelta(seconds=30))
+    HeartbeatService().process(
+        agent,
+        {"hostname": "DEPT-PC", "configuration_version": None, "schema_version": None,
+         "status_message": "connectivity_probe"},
+    )
+    state = AgentDiagnosticState.objects.get(sync_agent=agent)
+    assert "stale" not in state.diagnostics
+    assert state.diagnostics["service"]["version"] == "1.0.7"
+    assert 25 <= state.clock_skew_seconds <= 35
+    assert not any(r["code"] == "NO_DIAGNOSTICS" for r in state.reasons)
+
+
+@pytest.mark.django_db
+def test_running_version_comes_from_diagnostics_not_enrollment_version():
+    """Live 13 Nov: the fleet showed v1.0.6 for a DSA running 1.0.8 (heartbeat service_version is stale)."""
+    agent = _agent()
+    diag = _diagnostics(service={"version": "1.0.8+090c2341"})
+    details = {"capabilities": {"remote_commands": ALL_COMMANDS}, "diagnostics": diag}
+    HeartbeatService().process(
+        agent,
+        {"service_version": "1.0.6", "sent_at": timezone.now().isoformat(), "details": details, "equipment_pcs": []},
+    )
+    agent.refresh_from_db()
+    assert agent.version == "1.0.8"
+    client = APIClient()
+    client.force_authenticate(_admin())
+    row = next(r for r in client.get("/api/v1/sync/admin/fleet/").json()["results"] if r["id"] == str(agent.id))
+    assert row["version"] == "1.0.8"
+
+
+@pytest.mark.django_db
+def test_admin_agents_list_uses_latest_heartbeat_per_agent():
+    from iic_booking.sync.services.agent_management import _latest_heartbeat_map
+
+    a, b = _agent(), _agent()
+    now = timezone.now()
+    for i in range(5):
+        AgentHeartbeat.objects.create(sync_agent=a, reported_at=now - timedelta(minutes=i), queue_size=i)
+    AgentHeartbeat.objects.create(sync_agent=b, reported_at=now - timedelta(hours=1), queue_size=99)
+    latest = _latest_heartbeat_map([a.id, b.id, uuid.uuid4()])
+    assert latest[a.id].queue_size == 0
+    assert latest[b.id].queue_size == 99
+    assert len(latest) == 2

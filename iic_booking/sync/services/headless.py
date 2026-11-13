@@ -132,18 +132,41 @@ def _section(diag: dict, name: str) -> dict:
 # --------------------------------------------------------------------------------------------------------------
 
 
+def is_probe(payload: dict) -> bool:
+    """A bare heartbeat without the agent's details: the DSA's portal connectivity probe (or a minimal client)."""
+    return payload.get("status_message") == "connectivity_probe" or "details" not in payload
+
+
+def _sync_running_version(agent: DepartmentSyncAgent, diagnostics: dict) -> None:
+    """The heartbeat's ``service_version`` is the version recorded at enrollment (stale after an upgrade); the
+    diagnostics block carries the running build. Strip the ``+commit`` suffix."""
+    service = diagnostics.get("service") if isinstance(diagnostics.get("service"), dict) else {}
+    running = str(service.get("version") or "").split("+", 1)[0].strip()[:50]
+    if running and running != agent.version:
+        agent.version = running
+        agent.save(update_fields=["version", "updated_at"])
+
+
 def ingest_heartbeat(agent: DepartmentSyncAgent, payload: dict, details: dict, *, now=None) -> AgentDiagnosticState:
     """Store the latest diagnostics for the agent and re-evaluate its health. Mutates ``details``: the bulky
     ``diagnostics`` block is moved out so per-heartbeat rows stay small."""
     now = now or timezone.now()
     diagnostics = details.pop("diagnostics", None)
     state, _ = AgentDiagnosticState.objects.get_or_create(sync_agent=agent)
-    sent_at = _dt(payload.get("sent_at"))
     state.received_at = now
-    state.agent_sent_at = sent_at
-    state.clock_skew_seconds = round((sent_at - now).total_seconds(), 1) if sent_at else None
+    if is_probe(payload):
+        # The DSA's connectivity probe posts a bare heartbeat (no details, no clock). It proves the agent is alive
+        # but must not wipe the diagnostics / clock skew the full heartbeat delivered seconds earlier.
+        state.save(update_fields=["received_at", "updated_at"])
+        evaluate_and_sync(agent, state=state, now=now)
+        return state
+    sent_at = _dt(payload.get("sent_at"))
+    if sent_at:
+        state.agent_sent_at = sent_at
+        state.clock_skew_seconds = round((sent_at - now).total_seconds(), 1)
     if isinstance(diagnostics, dict):
         state.diagnostics = diagnostics
+        _sync_running_version(agent, diagnostics)
     elif diagnostics is None and state.diagnostics:
         # An agent that stopped sending diagnostics (downgrade) must not keep showing stale data as current.
         state.diagnostics = {**state.diagnostics, "stale": True}
