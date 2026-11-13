@@ -95,19 +95,16 @@ def _serialize_agent(agent: DepartmentSyncAgent, latest: AgentHeartbeat | None) 
 
 
 def _latest_heartbeat_map(agent_ids: list) -> dict:
-    if not agent_ids:
-        return {}
-    rows = (
-        AgentHeartbeat.objects.filter(sync_agent_id__in=agent_ids)
-        .order_by("sync_agent_id", "-reported_at")
-        .distinct("sync_agent_id")
-        if False  # SQLite/MySQL may lack DISTINCT ON; use Python fallback
-        else AgentHeartbeat.objects.filter(sync_agent_id__in=agent_ids).order_by("-reported_at")
-    )
+    """Latest heartbeat per agent: one indexed query each (sync_agent, -reported_at).
+
+    The old version loaded every heartbeat row of every agent into Python, which took ~16 s on production
+    and held up the whole Department Sync page.
+    """
     latest: dict = {}
-    for row in rows:
-        if row.sync_agent_id not in latest:
-            latest[row.sync_agent_id] = row
+    for agent_id in agent_ids:
+        row = AgentHeartbeat.objects.filter(sync_agent_id=agent_id).order_by("-reported_at").first()
+        if row is not None:
+            latest[agent_id] = row
     return latest
 
 

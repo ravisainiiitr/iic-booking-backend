@@ -164,7 +164,8 @@ def serialize_summary(agent: DepartmentSyncAgent, state: AgentDiagnosticState | 
         "status": agent.status,
         "health": health,
         "why": top[:3],
-        "version": agent.version or service.get("version") or "",
+        # Running build from diagnostics (heartbeat service_version is the enrollment-time version).
+        "version": str(service.get("version") or "").split("+", 1)[0] or agent.version or "",
         "last_heartbeat_at": _iso(agent.last_heartbeat_at),
         "uptime_seconds": service.get("uptime_seconds"),
         "uploads_pending": uploads.get("pending"),
