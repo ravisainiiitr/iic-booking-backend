@@ -190,6 +190,179 @@ def enqueue_cancellations(limit: int = 200) -> int:
     return queued
 
 
+# --- a confirmed booking whose slot moved on the portal ----------------------------------------------------------------
+# I-STEM (13 Nov 2026): Reschedule is only for Pending bookings. A confirmed booking is moved by creating and confirming
+# a new booking for the new slot and cancelling the old one. The old identifiers are kept on IstemSupersededBooking.
+
+MOVED_SLOT_FIELDS = frozenset({"preferred_timings_from", "preferred_timings_to"})
+REPLACED_STATES = (SyncState.CONFIRMED, SyncState.CONFIRMED_ID_MISSING, SyncState.EXECUTE_READY,
+                   SyncState.EXECUTE_IN_FLIGHT, SyncState.EXECUTED_PENDING_VERIFY, SyncState.EXECUTED)
+
+
+def _payload_window(payload: dict):
+    from datetime import datetime
+
+    try:
+        return (datetime.strptime(payload["preferred_timings_from"], contract.BOOKING_DATETIME_FORMAT),
+                datetime.strptime(payload["preferred_timings_to"], contract.BOOKING_DATETIME_FORMAT))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def enqueue_moves(limit: int = 200) -> int:
+    """Follow slots moved on the portal after I-STEM confirmed the booking. When the new slot overlaps the old one the
+    old booking is cancelled first (I-STEM refuses to confirm an overlapping slot); otherwise the new booking is
+    created and confirmed first and the old one cancelled afterwards (enqueue_superseded_cancellations)."""
+    from .eligibility import ELIGIBLE_STATUSES
+    from .models import IstemSupersededBooking
+
+    if conf.istem_mode() == conf.MODE_OFF or not conf.move_confirmed_enabled():
+        return 0
+    link_ids = list(
+        IstemBookingLink.objects.filter(
+            sync_state=SyncState.CONFIRMED, needs_review=False, user_link__isnull=False,
+            booking__status__in=[s for s in ELIGIBLE_STATUSES if s != "COMPLETED"], booking__completed_at__isnull=True,
+        ).exclude(request_id__isnull=True).exclude(request_id="").order_by("pk").values_list("pk", flat=True)[:limit]
+    )
+    now_local = timezone.localtime(timezone.now()).replace(tzinfo=None)
+    queued = 0
+    for link_id in link_ids:
+        with transaction.atomic():
+            link = (IstemBookingLink.objects.select_for_update(of=("self",))
+                    .select_related("booking__user", "booking__equipment", "booking__charge_profile", "user_link")
+                    .get(pk=link_id))
+            if link.sync_state != SyncState.CONFIRMED or link.needs_review:
+                continue
+            result = build_create_booking_payload(link.booking, link.user_link, shift_hours=link.istem_slot_shift_hours or 0)
+            if not result.ok or not (set(create_drift(link.booking, link, result.payload)) & MOVED_SLOT_FIELDS):
+                continue
+            old, new = _payload_window(link.create_payload or {}), _payload_window(result.payload)
+            if old is None or new is None or new[0] <= now_local:
+                continue
+            overlap = new[0] < old[1] and old[0] < new[1]
+            fmt = contract.BOOKING_DATETIME_FORMAT
+            row = IstemSupersededBooking.objects.create(
+                booking_link=link, request_id=link.request_id, fbr_no=link.fbr_no or "",
+                confirmation_id=link.confirmation_id or "", timings_from=old[0].strftime(fmt), timings_to=old[1].strftime(fmt),
+                new_timings_from=new[0].strftime(fmt), new_timings_to=new[1].strftime(fmt), cancel_first=overlap,
+            )
+            order = ("the old booking is cancelled first (the slots overlap), then a new one is created and confirmed"
+                     if overlap else "a new booking is created and confirmed, then the old one is cancelled")
+            _set_link(link, SyncState.CREATE_READY,
+                      reason=(f"slot moved on the portal ({row.timings_from} to {row.new_timings_from}); I-STEM does not "
+                              f"reschedule a confirmed booking (old request {row.request_id}): {order}")[:4000],
+                      review="", request_id=None, fbr_no=None, confirmation_id=None, remote_status="",
+                      remote_status_raw="", create_payload={}, create_payload_hash="", local_drift=False, drift_reason="")
+            if overlap:
+                add_job(Operation.CANCEL_SUPERSEDED, dedupe_key=f"CANCEL_SUPERSEDED:{row.pk}", trigger="slot moved",
+                        booking_link=link)
+            else:
+                add_job(Operation.CREATE_BOOKING, dedupe_key=f"CREATE_BOOKING:{link.booking_id}", trigger="slot moved",
+                        booking_link=link)
+            queued += 1
+    return queued
+
+
+def enqueue_superseded_cancellations(limit: int = 200) -> int:
+    """Cancel the old I-STEM booking once its replacement is confirmed, or once the portal booking was cancelled."""
+    from iic_booking.equipment.models import BookingStatus
+
+    from .choices import SupersededState
+    from .models import IstemSupersededBooking
+
+    if conf.istem_mode() == conf.MODE_OFF or not conf.cancel_enabled():
+        return 0
+    rows = (
+        IstemSupersededBooking.objects.filter(state=SupersededState.CANCEL_PENDING, cancel_first=False)
+        .filter(Q(booking_link__sync_state__in=REPLACED_STATES)
+                | Q(booking_link__booking__status__in=[BookingStatus.CANCELLED, BookingStatus.REFUNDED]))
+        .select_related("booking_link").order_by("pk")[:limit]
+    )
+    queued = 0
+    for row in rows:
+        add_job(Operation.CANCEL_SUPERSEDED, dedupe_key=f"CANCEL_SUPERSEDED:{row.pk}", trigger="replacement confirmed",
+                booking_link=row.booking_link)
+        queued += 1
+    return queued
+
+
+def _run_cancel_superseded(job: IstemOutboxJob, client_factory) -> str:
+    """Cancel Booking for the I-STEM booking replaced after a slot move. Sent once: a refused or uncertain cancel waits
+    for an administrator (the link is flagged for review)."""
+    from .choices import SupersededState
+    from .models import IstemSupersededBooking
+
+    if not conf.cancel_enabled():
+        finish_job(job, JobState.BLOCKED, category=ErrorCategory.CONFIG, message="Cancel Booking disabled (ISTEM_CANCEL_ENABLED)")
+        return JobState.BLOCKED
+    try:
+        row_id = int(job.dedupe_key.rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        finish_job(job, JobState.BLOCKED, category=ErrorCategory.CONFIG, message="no replaced booking in the job key")
+        return JobState.BLOCKED
+    with transaction.atomic():
+        row = (IstemSupersededBooking.objects.select_for_update(of=("self",)).select_related("booking_link__booking")
+               .filter(pk=row_id, booking_link_id=job.booking_link_id).first())
+        if row is None or row.state != SupersededState.CANCEL_PENDING:
+            finish_job(job, JobState.DONE, message=f"skipped: replaced booking is {getattr(row, 'state', 'missing')}")
+            return JobState.DONE
+        client = _client_or_block(job, client_factory)
+        if client is SHADOW:
+            finish_job(job, JobState.DONE, message="shadow: Cancel Booking not sent")
+            return JobState.DONE
+        if client is None:
+            return JobState.BLOCKED
+        booking = row.booking_link.booking
+        payload = {"request_id": row.request_id, "cancelled_on": format_booking_datetime(timezone.now()),
+                   "remarks": ("Replaced by a new booking: the slot was moved on the IIT Roorkee booking portal "
+                               f"({booking.virtual_booking_id or booking.pk})"),
+                   "cancelled_by": conf.cancelled_by()}
+        attempt = _start_attempt(job, Operation.CANCEL_SUPERSEDED, booking_link=row.booking_link, payload=payload,
+                                 endpoint="cancel-booking")
+        row.state = SupersededState.CANCEL_IN_FLIGHT
+        row.save(update_fields=["state"])
+
+    try:
+        message = client.cancel_booking(payload["request_id"], cancelled_on=payload["cancelled_on"],
+                                        remarks=payload["remarks"], cancelled_by=payload["cancelled_by"])
+    except IstemError as exc:
+        with transaction.atomic():
+            _finish_attempt(attempt, _outcome_for(exc), error=exc)
+            row = IstemSupersededBooking.objects.select_for_update().get(pk=row_id)
+            if exc.not_sent or exc.auth_failure:
+                row.state = SupersededState.CANCEL_PENDING
+                row.save(update_fields=["state"])
+                return retry_or_block(job, category=exc.category, message=exc.message)
+            uncertain = not exc.definite_failure
+            row.state = SupersededState.CANCEL_UNCERTAIN if uncertain else SupersededState.CANCEL_FAILED
+            row.message = exc.message[:4000]
+            row.save(update_fields=["state", "message"])
+            link = IstemBookingLink.objects.select_for_update().get(pk=row.booking_link_id)
+            link.needs_review = True
+            link.review_reason = (
+                f"The slot moved on the portal, and the old I-STEM booking (request {row.request_id}, FBR "
+                f"{row.fbr_no or '-'}) {'may not have been' if uncertain else 'was not'} cancelled: {exc.message}. "
+                "Cancel it on I-STEM, then clear the review."
+            )[:4000]
+            link.save(update_fields=["needs_review", "review_reason", "updated_at"])
+            finish_job(job, JobState.BLOCKED, category=exc.category, message=exc.message)
+            return JobState.BLOCKED
+
+    with transaction.atomic():
+        _finish_attempt(attempt, AttemptOutcome.SUCCESS, response={"message": message})
+        row = IstemSupersededBooking.objects.select_for_update().get(pk=row_id)
+        row.state, row.cancelled_at, row.message = SupersededState.CANCELLED, timezone.now(), (message or "")[:4000]
+        row.save(update_fields=["state", "cancelled_at", "message"])
+        link = IstemBookingLink.objects.select_for_update().get(pk=row.booking_link_id)
+        record_event(booking_link=link, from_state=link.sync_state, to_state=link.sync_state, attempt=attempt,
+                     reason=f"old I-STEM booking {row.request_id} cancelled after the slot moved")
+        if row.cancel_first and link.sync_state == SyncState.CREATE_READY:
+            add_job(Operation.CREATE_BOOKING, dedupe_key=f"CREATE_BOOKING:{link.booking_id}", trigger="slot moved",
+                    booking_link=link)
+        finish_job(job, JobState.DONE)
+    return JobState.DONE
+
+
 # --- processing -----------------------------------------------------------------------------------------------------
 
 def process_due_jobs(limit: int = 20, client_factory: ClientFactory = default_client) -> dict:
@@ -213,6 +386,7 @@ def process_job(job_id: int, client_factory: ClientFactory = default_client) -> 
         Operation.CONFIRM_BOOKING: _run_confirm_booking,
         Operation.EXECUTE_FBR: _run_execute_fbr,
         Operation.CANCEL_BOOKING: _run_cancel_booking,
+        Operation.CANCEL_SUPERSEDED: _run_cancel_superseded,
     }.get(job.operation)
     if runner is None:
         finish_job(job, JobState.BLOCKED, category=ErrorCategory.CONFIG, message=f"operation {job.operation} is not processed in Stage 2")

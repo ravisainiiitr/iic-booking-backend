@@ -162,6 +162,13 @@ def execute_enabled() -> bool:
     return bool(_setting("ISTEM_EXECUTE_ENABLED", False))
 
 
+def move_confirmed_enabled() -> bool:
+    """Follow a slot moved on the portal after I-STEM confirmed it: create and confirm a new I-STEM booking and cancel
+    the old one (I-STEM, 13 Nov 2026). Needs automatic confirmation and Cancel Booking; ISTEM_MOVE_CONFIRMED_ENABLED
+    (on by default) can switch it off on its own."""
+    return auto_confirm_enabled() and cancel_enabled() and bool(_setting("ISTEM_MOVE_CONFIRMED_ENABLED", True))
+
+
 def cancel_enabled() -> bool:
     """Close I-STEM bookings whose portal booking was cancelled (off by default; switched on at go-live). A full refund
     is cancelled on I-STEM; a cancellation that kept the fee is closed by FBR Execute for the amount kept (I-STEM,

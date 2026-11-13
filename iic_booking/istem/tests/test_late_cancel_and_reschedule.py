@@ -170,7 +170,8 @@ def test_client_sends_the_reschedule_fields_with_a_placeholder_count(live):
     assert transport.paths()[-1] == "api/reschedule-booking"
     assert transport.calls[-1]["data"] == {
         "request_id": "95601", "rescheduled_date": "2026-11-02", "rescheduled_from_time": "2026-11-02 10:00:00",
-        "rescheduled_to_time": "2026-11-02 12:00:00", "reschedule_by": "OP_IITR", "reschedule_count": "1"}
+        "rescheduled_to_time": "2026-11-02 12:00:00", "reschedule_by": "OP_IITR", "reschedule_count": "1",
+        "silent": "true"}
 
 
 def test_client_refuses_a_non_numeric_request_id_and_reports_istem_refusals(live):

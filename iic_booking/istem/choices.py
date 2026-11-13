@@ -93,12 +93,23 @@ class Operation(models.TextChoices):
     EXECUTE_FBR = "EXECUTE_FBR", _("FBR execute")
     RESCHEDULE_BOOKING = "RESCHEDULE_BOOKING", _("Reschedule booking")
     CANCEL_BOOKING = "CANCEL_BOOKING", _("Cancel booking")
+    CANCEL_SUPERSEDED = "CANCEL_SUPERSEDED", _("Cancel the replaced booking")
     GET_BOOKINGS = "GET_BOOKINGS", _("Get bookings")
     GET_FBR_DETAILS = "GET_FBR_DETAILS", _("Get FBR details")
     REFRESH_STATUS = "REFRESH_STATUS", _("Refresh status")
     RECONCILE = "RECONCILE", _("Reconcile")
     LIST_EQUIPMENT = "LIST_EQUIPMENT", _("Equipment list")
     LOOKUP_USER = "LOOKUP_USER", _("Public user lookup")
+
+
+class SupersededState(models.TextChoices):
+    """A confirmed I-STEM booking replaced because its slot moved on the portal (create new, confirm, cancel old)."""
+
+    CANCEL_PENDING = "CANCEL_PENDING", _("Waiting to cancel on I-STEM")
+    CANCEL_IN_FLIGHT = "CANCEL_IN_FLIGHT", _("Cancel in flight")
+    CANCELLED = "CANCELLED", _("Cancelled on I-STEM")
+    CANCEL_FAILED = "CANCEL_FAILED", _("Cancel refused")
+    CANCEL_UNCERTAIN = "CANCEL_UNCERTAIN", _("Cancel outcome uncertain")
 
 
 class JobState(models.TextChoices):
