@@ -22,7 +22,7 @@ from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
 
 CAPABILITY = "place_input_v1"
 PLACES = ("Desktop", "Documents", "Downloads")
-PLACE_TIMEOUT = timedelta(minutes=10)
+PLACE_TIMEOUT = timedelta(minutes=3)
 MAX_NAME = 80
 _BAD_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -144,20 +144,38 @@ def store_place_result(command, result: dict[str, Any] | None, *, success: bool,
 
 
 def placement(workspace, session) -> dict[str, Any] | None:
-    """The placement for the current session, or None (a placement from an earlier session does not count)."""
-    if workspace is None or session is None:
+    """This session's placement, or None (a placement from an earlier session does not count).
+
+    With no open session (the desktop just dropped) the latest placement is still reported, so a copy that
+    finished is never shown as "still copying". A placement left "pending" is reconciled with its command.
+    """
+    if workspace is None:
         return None
     entry = _state(workspace).get("input_placement") or {}
-    if str(entry.get("session_id") or "") != str(session.id):
+    if not entry:
+        return None
+    if session is not None and str(entry.get("session_id") or "") != str(session.id):
         return None
     if entry.get("status") == "pending":
         try:
-            cmd = RemoteCommand.objects.filter(pk=entry.get("request_id")).only("status", "created_at", "error_message").first()
+            cmd = (
+                RemoteCommand.objects.filter(pk=entry.get("request_id"))
+                .only("status", "created_at", "error_message", "payload")
+                .first()
+            )
         except (ValueError, ValidationError):
             cmd = None
-        if cmd is None or (
-            cmd.status in {CommandStatus.PENDING, CommandStatus.DELIVERED} and cmd.created_at < timezone.now() - PLACE_TIMEOUT
-        ):
+        if cmd is None:
+            return {**entry, "status": "failed", "detail": "The request was lost. Try again."}
+        if cmd.status == CommandStatus.COMPLETED:
+            # The agent finished but its result was not recorded: report it from the request itself.
+            payload = cmd.payload or {}
+            where = payload.get("place") or payload.get("location") or "the Analysis PC"
+            return {**entry, "status": "done", "display_path": f"{where} › {payload.get('folder_name') or ''}".rstrip(" ›")}
+        if cmd.status not in {CommandStatus.PENDING, CommandStatus.DELIVERED}:
+            detail = (cmd.error_message or "").split(": ", 1)[-1].strip()[:300] or "The Analysis PC could not save your input data."
+            return {**entry, "status": "failed", "detail": detail}
+        if cmd.created_at < timezone.now() - PLACE_TIMEOUT:
             return {**entry, "status": "failed", "detail": "The Analysis PC did not respond. Try again."}
     return dict(entry)
 
