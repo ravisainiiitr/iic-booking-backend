@@ -31,6 +31,8 @@ class HeartbeatRequestSerializer(serializers.Serializer):
     sqlite_schema_version = serializers.CharField(required=False, allow_blank=True, default="", max_length=50)
     last_upload_at = serializers.DateTimeField(required=False, allow_null=True)
     status_message = serializers.CharField(required=False, allow_blank=True, default="", max_length=500)
+    # DSA 1.0.7+: agent clock at send time (portal computes clock skew for the DSA monitor).
+    sent_at = serializers.DateTimeField(required=False, allow_null=True)
     details = serializers.JSONField(required=False, default=dict)
     # Phase 2: Equipment PC rollup from DSA (persisted into AgentHeartbeat.details)
     equipment_pcs = serializers.JSONField(required=False, allow_null=True)
