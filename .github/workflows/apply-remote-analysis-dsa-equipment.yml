@@ -1,0 +1,116 @@
+# Turns Remote Analysis on for the instruments that are connected to the Department Sync Agent (DSA).
+#   plan  : list them with their Remote Analysis state, department switch and mapped analysis software; change nothing
+#   apply : set Equipment.enable_remote_analysis=True for exactly the instruments the plan lists (or the ids given)
+#   revert: set it back to False for the ids given
+# "Connected to the DSA" = DSA enabled and a DSA hostname, IP address or UNC path set on the instrument.
+# Department module switches are only reported: change those under Department modules so the audit names the admin.
+# No personal data and no secrets are printed.
+name: Apply Remote Analysis for DSA Equipment
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "plan | apply | revert"
+        required: true
+        default: plan
+        type: choice
+        options: [plan, apply, revert]
+      equipment_ids:
+        description: "Optional comma-separated equipment ids (apply: limit to these; revert: required)"
+        required: false
+        default: ""
+      confirm:
+        description: "Type ENABLE for apply, REVERT for revert (not needed for plan)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        if: github.event.inputs.mode != 'plan'
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.inputs.mode }}" = "apply" ]; then test "${{ github.event.inputs.confirm }}" = "ENABLE"; fi
+          if [ "${{ github.event.inputs.mode }}" = "revert" ]; then
+            test "${{ github.event.inputs.confirm }}" = "REVERT"
+            test -n "${{ github.event.inputs.equipment_ids }}"
+          fi
+
+      - name: Plan / apply
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          IDS: ${{ github.event.inputs.equipment_ids }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production -e MODE -e IDS "$CID" python - <<'PY'
+          import os
+
+          import django
+
+          django.setup()
+          from django.db import transaction
+          from django.db.models import Q
+
+          from iic_booking.department_modules import access as dept_access
+          from iic_booking.department_modules.constants import ModuleKey
+          from iic_booking.equipment.models import Equipment
+          from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
+
+          mode = os.environ["MODE"]
+          ids = {int(x) for x in os.environ.get("IDS", "").replace(" ", "").split(",") if x.strip().isdigit()}
+
+          connected = (
+              Equipment.objects.filter(dsa_enabled=True)
+              .filter(~Q(dsa_hostname="") | ~Q(dsa_ip_address="") | ~Q(dsa_unc_path=""))
+              .select_related("internal_department")
+              .order_by("internal_department__name", "name")
+          )
+          if mode == "revert":
+              target = list(Equipment.objects.filter(pk__in=ids).select_related("internal_department"))
+          else:
+              target = [e for e in connected if not ids or e.pk in ids]
+
+          mapping = SoftwareMappingService()
+
+          def row(e):
+              dept = getattr(e, "internal_department", None)
+              if dept is not None:
+                  cell = dept_access.cell(dept.pk, ModuleKey.REMOTE_ANALYSIS)
+                  switch = "OFF" if not cell.enabled else ("test-only" if cell.test_users_only else "on")
+              else:
+                  switch = "n/a"
+              software = mapping.required_software_names(e)
+              return (
+                  f"{e.pk:>5}  {(e.code or '')[:18]:<18}  {(e.name or '')[:40]:<40}  "
+                  f"dept={(dept.name if dept else '-')[:24]:<24}  RA={'on ' if e.enable_remote_analysis else 'off'}  "
+                  f"dept_switch={switch:<9}  software={', '.join(software) or 'NONE MAPPED'}"
+              )
+
+          print(f"DSA-connected instruments: {connected.count()}  |  in scope for {mode}: {len(target)}")
+          for e in target:
+              print(row(e))
+
+          if mode == "plan":
+              print("PLAN ONLY: nothing changed.")
+          else:
+              value = mode == "apply"
+              with transaction.atomic():
+                  changed = [e.pk for e in target if e.enable_remote_analysis != value]
+                  Equipment.objects.filter(pk__in=changed).update(enable_remote_analysis=value)
+              print(f"{'ENABLED' if value else 'DISABLED'} Remote Analysis on {len(changed)} instrument(s): {changed}")
+              for e in Equipment.objects.filter(pk__in=[t.pk for t in target]).select_related("internal_department"):
+                  print("after:", row(e))
+          print("Note: a booking can use Remote Analysis only when its instrument is on, its department switch is on,")
+          print("and the instrument has analysis software mapped that an online Analysis PC has installed.")
+          PY
