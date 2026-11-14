@@ -99,3 +99,79 @@ def test_no_user_is_created_while_user_creation_is_off(settings, scheduled, djan
     with django_capture_on_commit_callbacks(execute=True):
         user = UserFactory(user_type=UserType.INSTITUTE, email_verified=True, admin_approved=True)
     assert not IstemUserLink.objects.filter(user=user).exists()
+
+
+# --- 14 Nov 2026: cancellations and moves in real time; nothing sent during the peak booking window ------------------
+
+def _on_istem(booking):
+    from iic_booking.istem.choices import SyncState
+    from iic_booking.istem.models import IstemBookingLink
+
+    return IstemBookingLink.objects.create(booking=booking, sync_state=SyncState.CONFIRMED, request_id="95601",
+                                           fbr_no="1976095601", confirmation_id="72010")
+
+
+def test_cancelling_a_booking_on_istem_starts_the_sync(settings, scheduled, django_capture_on_commit_callbacks):
+    apply_live(settings, ISTEM_AUTOMATIC_FBR=True)
+    booking = make_booking(status=BookingStatus.BOOKED)
+    _on_istem(booking)
+    cache.delete(realtime.KICK_KEY)
+    scheduled.reset_mock()
+    with django_capture_on_commit_callbacks(execute=True):
+        booking.status = BookingStatus.CANCELLED
+        booking.save(update_fields=["status"])
+    scheduled.assert_called_once_with(countdown=realtime.KICK_DELAY_SECONDS)
+
+
+def test_a_cancelled_booking_never_sent_to_istem_starts_nothing(settings, scheduled, django_capture_on_commit_callbacks):
+    apply_live(settings, ISTEM_AUTOMATIC_FBR=True)
+    booking = make_booking(status=BookingStatus.PENDING)
+    with django_capture_on_commit_callbacks(execute=True):
+        booking.status = BookingStatus.CANCELLED
+        booking.save(update_fields=["status"])
+    scheduled.assert_not_called()
+
+
+def test_a_reschedule_event_of_a_booking_on_istem_starts_the_sync(settings, scheduled, django_capture_on_commit_callbacks):
+    from iic_booking.equipment.models import BookingEvent, BookingEventType
+
+    apply_live(settings, ISTEM_AUTOMATIC_FBR=True)
+    booking = make_booking(status=BookingStatus.BOOKED)
+    _on_istem(booking)
+    cache.delete(realtime.KICK_KEY)
+    scheduled.reset_mock()
+    with django_capture_on_commit_callbacks(execute=True):
+        BookingEvent.objects.create(booking=booking, event_type=BookingEventType.RESCHEDULED, comment="moved")
+    scheduled.assert_called_once()
+
+
+def test_during_the_peak_window_one_run_is_scheduled_for_its_end(settings, scheduled, django_capture_on_commit_callbacks):
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    apply_live(settings, ISTEM_AUTOMATIC_FBR=True)
+    ends_at = timezone.now() + timedelta(minutes=7)
+    cache.delete(realtime.AFTER_PEAK_KEY)
+    with mock.patch.object(realtime, "peak_ends_at", return_value=ends_at), django_capture_on_commit_callbacks(execute=True):
+        make_booking(status=BookingStatus.BOOKED)
+        make_booking(status=BookingStatus.BOOKED)
+    scheduled.assert_called_once_with(eta=ends_at + timedelta(seconds=realtime.AFTER_PEAK_DELAY_SECONDS))
+    cache.delete(realtime.AFTER_PEAK_KEY)
+
+
+def test_the_scheduled_sync_sends_nothing_during_the_peak_window(settings, scheduled):
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from iic_booking.istem import tasks
+
+    apply_live(settings, ISTEM_AUTOMATIC_FBR=True)
+    ends_at = timezone.now() + timedelta(minutes=3)
+    cache.delete(realtime.AFTER_PEAK_KEY)
+    with mock.patch.object(realtime, "peak_ends_at", return_value=ends_at), \
+            mock.patch("iic_booking.istem.service.process_due_jobs") as process:
+        assert tasks.run_istem_sync() == {"deferred_until": ends_at.isoformat()}
+    process.assert_not_called()
+    cache.delete(realtime.AFTER_PEAK_KEY)

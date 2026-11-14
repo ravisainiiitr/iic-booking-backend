@@ -635,6 +635,7 @@ from iic_booking.istem.api_views import (
     istem_reference_sync,
     istem_equipment_details,
     istem_equipment_create,
+    istem_live_feed,
 )
 
 from iic_booking.whatsapp.views import (
@@ -1758,6 +1759,7 @@ urlpatterns = router.urls + [
     path("istem/register/lookup/", istem_register_lookup, name="istem-register-lookup"),
     path("istem/register/verify/", istem_register_verify, name="istem-register-verify"),
     path("istem/register/complete/", istem_register_complete, name="istem-register-complete"),
+    path("istem/live/", istem_live_feed, name="istem-live-feed"),
     path("istem/equipment-mappings/", istem_equipment_mappings, name="istem-equipment-mappings"),
     path("istem/equipment-mappings/search/", istem_equipment_search, name="istem-equipment-search"),
     path("istem/equipment-mappings/istem-listing/", istem_equipment_listing, name="istem-equipment-listing"),
