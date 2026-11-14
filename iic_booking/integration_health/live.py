@@ -74,15 +74,35 @@ def whatsapp_live(session=None) -> tuple[Check, dict | None]:
         check.status, check.summary = WARN, f"Meta's report could not be read ({type(exc).__name__}: {str(exc)[:120]})."
         return check, None
     can = state["can_send"]
+    notes = sending_notes(state["notes"])
     if can == "AVAILABLE":
         check.summary = f"Meta accepts messages from \"{state['name']}\" (quality {state['quality'] or '-'})."
+    elif can == "LIMITED" and notes and all(_DISPLAY_NAME in n.lower() for n in notes):
+        # Messages still go out; Meta only caps the daily count (and shows the number, not the name) until the display
+        # name is approved. A warning to follow up, not a failure.
+        check.status = WARN
+        check.summary = (f"Messages are going out. Meta shows the number instead of \"{state['name']}\" and caps the "
+                         "daily count until the display name is approved.")
+        check.items = notes[:5]
+        check.action = ("Meta WhatsApp Manager → Phone numbers → the number → Name: wait for or resubmit the display name "
+                        "review; business verification and an Official Business Account show the name in chats.")
     else:
         check.status = FAIL if can in ("BLOCKED", "LIMITED") else WARN
         check.summary = f"Meta reports sending as {can or 'unknown'} for \"{state['name']}\"."
-        check.items = state["notes"][:5]
+        check.items = notes[:5]
         check.action = ("Open Meta WhatsApp Manager → Phone numbers and settle what Meta lists (usually the display name "
                         "approval and business verification).")
     return check, state
+
+
+_DISPLAY_NAME = "display name"
+# Meta's health report also covers WhatsApp Business calling (SIP), which the portal does not use.
+_NOT_ABOUT_MESSAGING = ("sip", "calling")
+
+
+def sending_notes(notes: list[str]) -> list[str]:
+    """Meta's notes that concern sending messages; calling (SIP) notes are left out."""
+    return [n for n in notes if not any(word in n.lower() for word in _NOT_ABOUT_MESSAGING)]
 
 
 def payments_live() -> Check:

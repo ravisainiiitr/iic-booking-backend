@@ -156,6 +156,40 @@ def test_refused_messages_are_resent_once_meta_accepts_again(whatsapp_on, monkey
     assert heal.heal_whatsapp({"can_send": "AVAILABLE"})["resent"] == 0
 
 
+MetaNotes = {
+    "name": "Your display name has not been approved yet. Your message limit will increase after the display name is approved.",
+    "sip1": "WhatsApp Business calling cannot use SIP because it is not enabled",
+    "sip2": "This app cannot use SIP for WhatsApp Business calling because it has not configured a SIP server for this business phone number",
+}
+
+
+def _sender(monkeypatch, can_send, notes):
+    from iic_booking.integration_health import live
+
+    monkeypatch.setattr(live, "whatsapp_sender_state", lambda session=None: {
+        "can_send": can_send, "notes": notes, "name": "Indian Institute of Technology Roorkee", "quality": "GREEN",
+        "status": "CONNECTED"})
+    return live
+
+
+def test_a_name_awaiting_approval_is_a_warning_and_calling_notes_are_left_out(whatsapp_on, monkeypatch):
+    live = _sender(monkeypatch, "LIMITED", [MetaNotes["name"], MetaNotes["sip1"], MetaNotes["sip2"]])
+    check, _ = live.whatsapp_live()
+    assert check.status == checks.WARN
+    assert check.items == [MetaNotes["name"]]
+    assert "going out" in check.summary
+
+
+def test_other_limits_and_blocks_still_fail(whatsapp_on, monkeypatch):
+    live = _sender(monkeypatch, "LIMITED", ["Business verification is required.", MetaNotes["sip1"]])
+    check, _ = live.whatsapp_live()
+    assert check.status == checks.FAIL and check.items == ["Business verification is required."]
+    live = _sender(monkeypatch, "BLOCKED", [MetaNotes["name"]])
+    assert live.whatsapp_live()[0].status == checks.FAIL
+    live = _sender(monkeypatch, "AVAILABLE", [MetaNotes["sip1"]])
+    assert live.whatsapp_live()[0].status == checks.OK
+
+
 # --- alerts, API, nightly --------------------------------------------------------------------------------------------
 
 def test_admins_are_emailed_once_per_new_problem_and_when_it_clears(mailoutbox):
