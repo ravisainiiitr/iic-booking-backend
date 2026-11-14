@@ -295,6 +295,9 @@ class AnalysisExperienceBuilder:
                 f"join (up to {_handover.NO_SHOW_GRACE_MINUTES} minutes); you will then get "
                 f"{_handover.FINISH_UP_MINUTES} minutes to save."
             )
+        large_data = self._large_data(booking, reservation, session)
+        if large_data["session"].get("keep_running_until"):
+            can_extend = False
         idle_timeout_minutes = int(getattr(session, "idle_timeout_minutes", 0) or 0) if session else 0
         idle_ends_at = None
         if session and session.status in ACTIVE_DESKTOP and idle_timeout_minutes:
@@ -445,7 +448,9 @@ class AnalysisExperienceBuilder:
                 "extend_blocked_reason": extend_blocked_reason,
                 "handover": handover_info,
                 "others_waiting": others_waiting,
+                **large_data["session"],
             },
+            "output_upload": large_data["output_upload"],
             "workspace": {
                 "label": "Booking Workspace",
                 "status": getattr(workspace, "status", None) if workspace else None,
@@ -491,6 +496,29 @@ class AnalysisExperienceBuilder:
                 or (session and session.status == SessionStatus.ACTIVE)
             ) else 15,
         }
+
+    def _large_data(self, booking, reservation, session) -> dict[str, Any]:
+        """Pre-load, keep-running and results-outbox state (RAA large data); never breaks the page."""
+        empty_session = {
+            "input_preload": None,
+            "can_keep_running": False,
+            "keep_running_blocked_reason": None,
+            "keep_running_until": None,
+            "keep_running": {"allowed": False, "active": False, "until": None, "reason": None},
+        }
+        result: dict[str, Any] = {"session": dict(empty_session), "output_upload": None}
+        try:
+            from iic_booking.remote_analysis.large_data import keep_running, outbox, preload
+
+            result["session"]["input_preload"] = preload.payload_for(reservation)
+            if session is not None and session.status in OPEN_SESSION:
+                result["session"].update(keep_running.status(session))
+            result["output_upload"] = outbox.payload_for(booking)
+        except Exception:  # noqa: BLE001
+            import logging
+
+            logging.getLogger(__name__).exception("Large-data payload failed for booking %s", booking.pk)
+        return result
 
     def queue_estimate(self, booking, reservation) -> dict[str, Any]:
         """Position / wait for one reservation, as shown on the workspace page (used by notices)."""

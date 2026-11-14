@@ -95,6 +95,14 @@ class BookingRemoteAnalysisService:
                 "equipment_code": getattr(booking.equipment, "code", "") or "",
             }
         try:
+            from iic_booking.remote_analysis.large_data.outbox import payload_for as _output_upload
+
+            # Results outbox of the booking's last session (RAA large data, contract v1.2).
+            payload["output_upload"] = _output_upload(booking)
+        except Exception:  # noqa: BLE001
+            logger.exception("output_upload summary failed for booking %s", booking.pk)
+            payload["output_upload"] = None
+        try:
             payload["analyze"] = self.get_analyze_context(booking, user=user, request=request)
             payload["button_label"] = payload["analyze"].get("button_label")
             payload["software_options"] = payload["analyze"].get("software_options")
@@ -760,6 +768,16 @@ class BookingRemoteAnalysisService:
         if session.status == SessionStatus.PREPARING:
             orch.try_advance_after_prepare(session)
             session.refresh_from_db()
+
+        # Reconnecting to a kept-running session: its browser connection was closed, open a fresh one.
+        from iic_booking.remote_analysis.large_data import keep_running as _keep_running
+
+        if _keep_running.needs_reprovision(session):
+            try:
+                orch._provision_guacamole(session)
+                session.refresh_from_db()
+            except Exception:  # noqa: BLE001
+                logger.exception("Reconnect provisioning failed for kept session %s", session.pk)
 
         if was_new:
             # Only consume a session slot once prepare/Guacamole provisioning succeeds.

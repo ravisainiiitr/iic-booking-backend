@@ -1,0 +1,76 @@
+# RAA large data, Phase 4: S3 lifecycle rules (Intelligent-Tiering for raw + processed data, abort incomplete
+# multipart uploads after 7 days, expire speedtest/ after 1 day). DRY RUN by default; other rules are kept unchanged.
+# No rule deletes research data (the command refuses any expiration outside speedtest/). Bucket names are not printed.
+name: Apply S3 Lifecycle (RAA large data)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry-run prints the merged configuration; apply writes it"
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - apply
+      confirm_apply:
+        description: "For mode=apply, type APPLY"
+        required: false
+        default: ""
+      archive_after_days:
+        description: "Optional: move raw/processed data to an archive class after N days (empty = never)"
+        required: false
+        default: ""
+      archive_class:
+        description: "Archive storage class (used only with archive_after_days)"
+        required: false
+        default: GLACIER_IR
+        type: choice
+        options:
+          - GLACIER_IR
+          - GLACIER
+          - DEEP_ARCHIVE
+
+permissions:
+  contents: read
+
+jobs:
+  lifecycle:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Check inputs
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          CONFIRM: ${{ github.event.inputs.confirm_apply }}
+          DAYS: ${{ github.event.inputs.archive_after_days }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = "apply" ] && [ "$CONFIRM" != "APPLY" ]; then
+            echo "mode=apply needs confirm_apply=APPLY"; exit 1
+          fi
+          if [ -n "$DAYS" ] && ! echo "$DAYS" | grep -Eq '^[1-9][0-9]{0,4}$'; then
+            echo "archive_after_days must be a whole number of days"; exit 1
+          fi
+
+      - name: Locate django container
+        id: find
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          echo "container=$CID" >> "$GITHUB_OUTPUT"
+
+      - name: Plan or apply
+        env:
+          CID: ${{ steps.find.outputs.container }}
+          MODE: ${{ github.event.inputs.mode }}
+          DAYS: ${{ github.event.inputs.archive_after_days }}
+          ARCHIVE_CLASS: ${{ github.event.inputs.archive_class }}
+        run: |
+          set -euo pipefail
+          ARGS=()
+          if [ "$MODE" = "apply" ]; then ARGS+=(--apply); fi
+          if [ -n "$DAYS" ]; then ARGS+=(--archive-after-days "$DAYS" --archive-class "$ARCHIVE_CLASS"); fi
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python manage.py apply_s3_lifecycle "${ARGS[@]}" 2>&1 | grep '^RESULT'

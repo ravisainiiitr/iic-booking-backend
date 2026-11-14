@@ -239,6 +239,14 @@ class SessionCleanupService:
     @transaction.atomic
     def cleanup_expired(self) -> int:
         now = timezone.now()
+        # Keep running (large data): someone newly waiting ends a kept session with the 2-minute finish-up.
+        try:
+            from iic_booking.remote_analysis.large_data import keep_running
+
+            with transaction.atomic():
+                keep_running.sweep(now)
+        except Exception:  # noqa: BLE001 - never block normal expiry
+            logger.exception("Keep-running sweep failed")
         qs = RemoteDesktopSession.objects.select_for_update().filter(
             expires_at__lt=now,
             status__in=[
@@ -259,7 +267,8 @@ class SessionCleanupService:
         for session in qs:
             # Someone is waiting: hand the PC over and keep this session until they actually join.
             try:
-                if handover.begin_if_waiting(session, now=now):
+                # A kept session ends at keep_running_until (or after its finish-up): no extra grace.
+                if not session.keep_running_until and handover.begin_if_waiting(session, now=now):
                     continue
             except Exception:  # noqa: BLE001 - never let the grace logic block normal expiry
                 logger.exception("Handover check failed for session %s", session.pk)
@@ -275,6 +284,8 @@ class SessionCleanupService:
             status__in=[SessionStatus.ACTIVE, SessionStatus.CONNECTED, SessionStatus.IDLE],
         )
         for session in qs:
+            if session.keep_running_until and session.keep_running_until > now:
+                continue  # kept running on purpose; it ends at keep_running_until
             idle_minutes = session.idle_timeout_minutes or 15
             anchor = session.last_activity_at or session.connected_at or session.launch_time
             if not anchor:

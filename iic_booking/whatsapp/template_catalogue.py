@@ -135,6 +135,12 @@ CATALOGUE: tuple[Template, ...] = (
          params=("user name", "booking ID", "equipment", "minutes held"), examples=(_NAME, _REF, _EQ, "10"),
          details="Booking ID: {{2}}\nEquipment: {{3}}\nHeld for: {{4}} minutes",
          trigger="Remote Analysis queue gives the booking an Analysis PC and opens its check-in hold"),
+    _new("remote_analysis_results_uploaded", "iitr_remote_analysis_results_uploaded", "Analysis Results Uploaded",
+         "All the results of your remote analysis session have been uploaded.",
+         f"You can open them in My Research on {_PORTAL}.",
+         params=("user name", "booking ID", "equipment", "files"), examples=(_NAME, _REF, _EQ, "40 files (18.2 GB)"),
+         details="Booking ID: {{2}}\nEquipment: {{3}}\nUploaded: {{4}}",
+         trigger="The Analysis PC finished uploading a session's results outbox to My Research"),
     Template(
         event="otp_code", name="iitr_verification_code", category="AUTHENTICATION", header="",
         body="{{1}} is your verification code. For your security, do not share this code.",

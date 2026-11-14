@@ -78,6 +78,14 @@ def request_place(booking, user, data: dict[str, Any]) -> dict[str, Any]:
         "folder_name": name,
         "open": True,
     }
+    # Raw data pre-loaded into the locked holding folder: move it (same volume, instant) instead of copying.
+    from iic_booking.remote_analysis.large_data.preload import staging_for_placement
+
+    staged = staging_for_placement(workspace)
+    if staged is not None:
+        payload["from_staging"] = True
+        payload["reservation_id"] = str(staged.reservation_id)
+        payload["preload_revision"] = staged.revision
     location = data.get("location")
     if location not in (None, ""):
         payload["location"] = normalize_path(location)

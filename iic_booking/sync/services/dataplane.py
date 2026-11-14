@@ -508,6 +508,15 @@ class CommandService:
             from iic_booking.sync.services.fleet import store_support_bundle
 
             command.result_payload = store_support_bundle(command, command.result_payload)
+        if command.command_type == AgentCommandType.SPEED_TEST:
+            from iic_booking.remote_analysis.large_data.speedtest import store_command_result
+
+            try:
+                store_command_result(command, command.result_payload, success=True)
+            except Exception:  # noqa: BLE001
+                import logging
+
+                logging.getLogger(__name__).exception("Failed to store DSA SPEED_TEST result (%s)", command.id)
         command.bump_version()
         command.save(
             update_fields=[
@@ -557,6 +566,10 @@ class CommandService:
             "error_details": error_details or {},
             "retry_recommended": retry_recommended,
         }
+        if command.command_type == AgentCommandType.SPEED_TEST:
+            from iic_booking.remote_analysis.large_data.speedtest import store_command_result
+
+            store_command_result(command, None, success=False, message=failure_reason)
         command.bump_version()
         command.save(
             update_fields=[

@@ -541,3 +541,9 @@ from iic_booking.remote_analysis.collaboration_models import (  # noqa: E402,F40
 )
 
 from iic_booking.remote_analysis.installer.models import AgentInstallerRelease  # noqa: E402,F401
+from iic_booking.remote_analysis.transfer_models import (  # noqa: E402,F401
+    InputPreload,
+    OutputUpload,
+    OutputUploadFile,
+    TransferSpeedTest,
+)

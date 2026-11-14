@@ -94,6 +94,10 @@ class CommandType(models.TextChoices):
     CLOSE_TUNNEL = "CLOSE_TUNNEL", _("Close reverse tunnel")
     BROWSE_PC_FOLDERS = "BROWSE_PC_FOLDERS", _("Browse folders on the Analysis PC")
     PLACE_INPUT = "PLACE_INPUT", _("Save input data where the user chose on the Analysis PC")
+    SPEED_TEST = "SPEED_TEST", _("Measure the link speed to cloud storage")
+    PRELOAD_INPUT = "PRELOAD_INPUT", _("Pre-load raw data into the locked holding folder")
+    DISCARD_PRELOAD = "DISCARD_PRELOAD", _("Discard pre-loaded raw data")
+    KEEP_RUNNING = "KEEP_RUNNING", _("Keep the Windows session logged on after the browser closes")
 
 
 class TransportMode(models.TextChoices):

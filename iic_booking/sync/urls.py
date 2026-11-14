@@ -39,6 +39,12 @@ urlpatterns = [
     path("uploads/start/", views.upload_start, name="upload-start"),
     path("uploads/chunk/", views.upload_chunk, name="upload-chunk"),
     path("uploads/complete/", views.upload_complete, name="upload-complete"),
+    # RAA large data: files >= 100 MiB go straight to the results bucket (presigned multipart)
+    path("uploads/multipart/init/", views.multipart_init, name="upload-multipart-init"),
+    path("uploads/multipart/parts/", views.multipart_parts, name="upload-multipart-parts"),
+    path("uploads/multipart/state/", views.multipart_state, name="upload-multipart-state"),
+    path("uploads/multipart/complete/", views.multipart_complete, name="upload-multipart-complete"),
+    path("speed-test/<uuid:test_id>/result/", views.speed_test_result, name="speed-test-result"),
     # Result processing (Milestone 10)
     path("results/import/", views.results_import, name="results-import"),
     path("results/finalize/", views.results_finalize, name="results-finalize"),

@@ -311,6 +311,7 @@ from iic_booking.equipment.oic_substitution_views import (
     oic_substitutes_bulk_end,
 )
 from iic_booking.equipment.remote_analysis_integration import views as booking_ra_views
+from iic_booking.remote_analysis.large_data import views as large_data_views
 from iic_booking.equipment.server_time import server_time
 from iic_booking.equipment.slot_window_opening import slot_window_opening
 from iic_booking.equipment.booking_quota_summary import equipment_my_booking_quota
@@ -898,6 +899,17 @@ urlpatterns = router.urls + [
         "v1/bookings/<int:booking_id>/analysis/extend/",
         booking_ra_views.booking_analysis_extend,
         name="booking-analysis-extend",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/keep-running/",
+        large_data_views.booking_keep_running,
+        name="booking-analysis-keep-running",
+    ),
+    # Path as written in the RAA large-data contract (same view).
+    path(
+        "v1/equipment/bookings/<int:booking_id>/analysis/keep-running/",
+        large_data_views.booking_keep_running,
+        name="booking-analysis-keep-running-contract",
     ),
     path(
         "v1/bookings/<int:booking_id>/analysis/archive/",
