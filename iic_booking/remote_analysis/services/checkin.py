@@ -174,8 +174,15 @@ class CheckinService:
             reservation.missed_checkin_count = int(reservation.missed_checkin_count or 0) + 1
             reservation.save(update_fields=["missed_checkin_count", "updated_at"])
 
-        # Free workstation
-        if ws is not None and ws.status == WorkstationStatus.RESERVED:
+        # Free workstation (unless the previous user is still on it during the no-show grace)
+        from iic_booking.remote_analysis.services.handover import workstation_has_live_session
+
+        if ws is not None and ws.status == WorkstationStatus.RESERVED and workstation_has_live_session(
+            ws.pk, exclude_reservation_id=reservation.pk
+        ):
+            ws.status = WorkstationStatus.BUSY
+            ws.save(update_fields=["status", "updated_at"])
+        elif ws is not None and ws.status == WorkstationStatus.RESERVED:
             from iic_booking.remote_analysis.models import WorkstationStateHistory
 
             WorkstationStateHistory.objects.create(

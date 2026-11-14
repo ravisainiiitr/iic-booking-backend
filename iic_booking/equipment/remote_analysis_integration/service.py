@@ -717,6 +717,14 @@ class BookingRemoteAnalysisService:
             reservation.save(update_fields=["reserved_start", "updated_at"])
             self.audit.log(booking, "CheckinAccepted", details=str(reservation.id), actor=user)
 
+        # The previous user is still on this PC (no-show grace or finishing up): give them two minutes
+        # to save and let this user wait on the launch page instead of taking over their desktop.
+        from iic_booking.remote_analysis.services import handover
+
+        waiting = handover.on_next_user_joining(reservation)
+        if waiting is not None:
+            return waiting
+
         orch = SessionOrchestrator()
         was_new = find_reusable_open_session(reservation, settings_obj=orch.settings) is None
         # Repeat launch POSTs (polling, reconnects) reuse the open session: never re-ingest or
