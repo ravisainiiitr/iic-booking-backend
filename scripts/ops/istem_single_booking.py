@@ -4,7 +4,7 @@ Nothing schedules the I-STEM sync on production and ``istem_sync --enqueue`` wou
 this script works on a single booking (or a single instrument) only, and processes only that booking's outbox jobs.
 
 Inputs (environment):
-  ACTION        inspect | map-equipment | set-codes | create | confirm | execute | status
+  ACTION        inspect | map-equipment | set-codes | create | confirm | execute | status | retry-create | resend-create
   BOOKING       booking virtual ID (e.g. IIC-...) or numeric primary key  (create/confirm/execute/status, optional for inspect)
   EQUIPMENT     equipment code or primary key                              (inspect/map-equipment/set-codes)
   ISTEM_EQUIPMENT_ID  I-STEM equipment_id                                  (map-equipment)
@@ -320,7 +320,37 @@ def main():
     if booking is None:
         sys.exit("BOOKING is required")
 
-    if ACTION == "retry-create":
+    if ACTION == "resend-create":
+        # Re-send a Create Booking whose answer was another booking's I-STEM identifier (I-STEM answered "existing" with
+        # a request_id already linked to a different local booking, so the portal held this one). Only in exactly that
+        # state: no request_id here, the link held for review, the latest Create a SUCCESS whose identifier belongs to
+        # another link. The other booking is never touched. If I-STEM answers the same way again, the guard holds it again.
+        from iic_booking.istem.choices import AttemptOutcome, JobState, Operation
+        from iic_booking.istem.models import IstemApiAttempt
+
+        link = IstemBookingLink.objects.filter(booking=booking).first()
+        if link is None or link.request_id or not link.needs_review or link.sync_state != SyncState.CREATE_IN_FLIGHT:
+            sys.exit(f"resend-create needs a held CREATE_IN_FLIGHT link without a request_id (link is "
+                     f"{getattr(link, 'sync_state', 'missing')}, request_id={getattr(link, 'request_id', None)})")
+        last = IstemApiAttempt.objects.filter(booking_link=link, operation=Operation.CREATE_BOOKING).order_by("-pk").first()
+        returned = str(((last.response_redacted or {}) if last else {}).get("new_service_id") or "")
+        holder = IstemBookingLink.objects.filter(request_id=returned).exclude(pk=link.pk).first() if returned else None
+        if last is None or last.outcome != AttemptOutcome.SUCCESS or holder is None:
+            sys.exit("the latest Create Booking did not return an identifier held by another booking; not resending")
+        out("returned id", returned, "is held by booking", holder.booking_id, "(left unchanged)")
+        with transaction.atomic():
+            blocked = IstemOutboxJob.objects.filter(booking_link=link, operation=Operation.CREATE_BOOKING, state=JobState.BLOCKED)
+            out("blocked create jobs closed:", blocked.update(state=JobState.CANCELLED, finished_at=timezone.now(),
+                                                               updated_at=timezone.now()))
+            service.record_event(booking_link=link, from_state=link.sync_state, to_state=SyncState.CREATE_READY,
+                                 reason=f"resend after I-STEM returned booking {holder.booking_id}'s identifier (single-booking workflow)")
+            link.sync_state = SyncState.CREATE_READY
+            link.needs_review, link.review_reason = False, ""
+            link.save(update_fields=["sync_state", "needs_review", "review_reason", "updated_at"])
+            outbox.add_job(Operation.CREATE_BOOKING, dedupe_key=f"CREATE_BOOKING:{booking.pk}",
+                           trigger="single-booking resend-create", booking_link=link)
+        run_jobs(link)
+    elif ACTION == "retry-create":
         # Re-send a Create Booking that I-STEM definitely refused (e.g. "This slot is already booked." before Create
         # moved to the next free hour). Only when nothing exists on I-STEM: no request_id, and the latest Create
         # attempt is a definite refusal, never an uncertain one (those need the two-administrator recovery).
@@ -379,7 +409,8 @@ def main():
     link = IstemBookingLink.objects.filter(booking=booking).first()
     # With confirmation on, Confirm Booking follows Create Booking automatically.
     expected = {"create": (SyncState.CREATED, SyncState.CONFIRMED),
-                "retry-create": (SyncState.CREATED, SyncState.CONFIRMED, SyncState.EXECUTED), "confirm": (SyncState.CONFIRMED,),
+                "retry-create": (SyncState.CREATED, SyncState.CONFIRMED, SyncState.EXECUTED),
+                "resend-create": (SyncState.CREATED, SyncState.CONFIRMED), "confirm": (SyncState.CONFIRMED,),
                 "execute": (SyncState.EXECUTED, SyncState.EXECUTED_PENDING_VERIFY)}.get(ACTION)
     if expected and (link is None or link.sync_state not in expected):
         fail(f"link is {link.sync_state if link else 'missing'}, expected {expected}")
