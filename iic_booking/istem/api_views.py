@@ -355,3 +355,17 @@ def istem_equipment_create(request, equipment_id: int):
         return Response(create_on_istem(request.user, equipment_id, dry_run=dry_run))
     except MappingRefused as exc:
         return _mapping_refusal(exc)
+
+
+# --- I-STEM live activity (Main Admin; end-to-end demonstration) -----------------------------------------------------
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def istem_live_feed(request):
+    """Every call to I-STEM, newest first, with the time from the portal event to I-STEM's answer. ``?since=`` ISO time."""
+    from .equipment_mapping import _is_main_admin
+    from .live_feed import live_feed
+
+    if not _is_main_admin(request.user):
+        return Response({"error": "Only the Main Administrator sees I-STEM live activity."}, status=status.HTTP_403_FORBIDDEN)
+    return Response(live_feed(request.query_params.get("since", "")))

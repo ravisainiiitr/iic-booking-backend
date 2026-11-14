@@ -1,6 +1,6 @@
 """Scheduled I-STEM sync (2 Nov 2026). Runs only while automatic FBR is on (``ISTEM_AUTOMATIC_FBR``); it is scheduled
 every few minutes from the database beat schedule when the integration goes live. Bookings made before
-``ISTEM_SYNC_START_AT`` are never sent."""
+``ISTEM_SYNC_START_AT`` are never sent. Nothing is sent during the peak booking window (realtime.peak_ends_at)."""
 
 from __future__ import annotations
 
@@ -23,6 +23,14 @@ def run_istem_sync(limit: int = 50) -> dict:
 
     if not conf.automatic_fbr_enabled() or conf.missing_live_settings():
         return {"skipped": True}
+    from .realtime import _schedule_after_peak, peak_ends_at
+
+    ends_at = peak_ends_at()
+    if ends_at is not None:
+        # Peak booking window: nothing goes to I-STEM until it ends; one run is due then.
+        _schedule_after_peak(ends_at, "scheduled sync during the peak window")
+        logger.info("istem sync: deferred until the peak window ends (%s)", ends_at.isoformat())
+        return {"deferred_until": ends_at.isoformat()}
     queued = enqueue_eligible(limit=limit)
     executions = enqueue_eligible_executions(limit=limit)
     cancellations = enqueue_cancellations(limit=limit)
