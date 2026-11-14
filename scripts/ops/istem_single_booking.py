@@ -4,7 +4,7 @@ Nothing schedules the I-STEM sync on production and ``istem_sync --enqueue`` wou
 this script works on a single booking (or a single instrument) only, and processes only that booking's outbox jobs.
 
 Inputs (environment):
-  ACTION        inspect | map-equipment | set-codes | create | confirm | execute | status | retry-create | resend-create
+  ACTION        inspect | map-equipment | set-codes | create | confirm | execute | status | retry-create | resend-create | close-unsent
   BOOKING       booking virtual ID (e.g. IIC-...) or numeric primary key  (create/confirm/execute/status, optional for inspect)
   EQUIPMENT     equipment code or primary key                              (inspect/map-equipment/set-codes)
   ISTEM_EQUIPMENT_ID  I-STEM equipment_id                                  (map-equipment)
@@ -320,7 +320,28 @@ def main():
     if booking is None:
         sys.exit("BOOKING is required")
 
-    if ACTION == "resend-create":
+    if ACTION == "close-unsent":
+        # A booking cancelled on the portal that never got its own I-STEM identifier (e.g. I-STEM answered "existing"
+        # with another booking's request_id) has nothing to cancel on I-STEM. Close its record so it is no longer held:
+        # open jobs CANCELLED (never deleted), link NOT_ELIGIBLE, review cleared, with an event recording why.
+        from iic_booking.istem.choices import JobState
+
+        if booking.status not in ("CANCELLED", "REFUNDED"):
+            sys.exit(f"cancel the booking on the portal first (status is {booking.status})")
+        link = IstemBookingLink.objects.filter(booking=booking).first()
+        if link is None or link.request_id or link.fbr_no or link.confirmation_id:
+            sys.exit("close-unsent needs a link with no I-STEM identifiers (use the normal cancellation instead)")
+        with transaction.atomic():
+            jobs = IstemOutboxJob.objects.filter(booking_link=link).exclude(state__in=[JobState.DONE, JobState.CANCELLED])
+            out("open jobs closed:", jobs.update(state=JobState.CANCELLED, finished_at=timezone.now(), updated_at=timezone.now(),
+                                                 last_error_message="Cancelled: booking cancelled on the portal before I-STEM had it."))
+            service.record_event(booking_link=link, from_state=link.sync_state, to_state=SyncState.NOT_ELIGIBLE,
+                                 reason="booking cancelled on the portal; never created on I-STEM (single-booking workflow)")
+            link.sync_state = SyncState.NOT_ELIGIBLE
+            link.needs_review, link.review_reason = False, ""
+            link.save(update_fields=["sync_state", "needs_review", "review_reason", "updated_at"])
+        out("link closed as NOT_ELIGIBLE")
+    elif ACTION == "resend-create":
         # Re-send a Create Booking whose answer was another booking's I-STEM identifier (I-STEM answered "existing" with
         # a request_id already linked to a different local booking, so the portal held this one). Only in exactly that
         # state: no request_id here, the link held for review, the latest Create a SUCCESS whose identifier belongs to
