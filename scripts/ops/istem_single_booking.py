@@ -166,6 +166,25 @@ def show_booking(booking):
             "remote_status=", getattr(link, "remote_status", ""), "review=", (link.review_reason or "")[:300])
         for job in IstemOutboxJob.objects.filter(booking_link=link).order_by("pk"):
             out("  job |", job.pk, job.operation, job.state, (job.last_error_message or "")[:300] if hasattr(job, "last_error_message") else "")
+        show_attempts(link)
+
+
+def show_attempts(link):
+    """Each call to I-STEM for this booking, and for a Create Booking answer whose identifier another booking holds,
+    which booking that is. Identifiers and booking references only: no names, emails or phone numbers."""
+    from iic_booking.istem.models import IstemApiAttempt
+
+    for attempt in IstemApiAttempt.objects.filter(booking_link=link).order_by("pk"):
+        body = attempt.response_redacted if isinstance(attempt.response_redacted, dict) else {}
+        remote = {k: body.get(k) for k in ("request_id", "new_service_id", "fbr_no", "existing", "result") if body.get(k) not in (None, "")}
+        out("  attempt |", attempt.pk, attempt.operation, attempt.outcome, attempt.started_at, "http=", attempt.http_status, remote or "")
+        for key in ("request_id", "new_service_id"):
+            value = str(body.get(key) or "")
+            if not value:
+                continue
+            for other in IstemBookingLink.objects.filter(request_id=value).exclude(pk=link.pk).select_related("booking"):
+                out("    held by | booking", other.booking_id, other.booking.virtual_booking_id, "status=", other.booking.status,
+                    "link=", other.sync_state, "fbr_no=", other.fbr_no, "confirmation_id=", other.confirmation_id)
 
 
 def run_jobs(link):
