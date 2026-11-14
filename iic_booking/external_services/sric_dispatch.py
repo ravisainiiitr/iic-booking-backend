@@ -5,7 +5,7 @@
 * ``run_batch`` is scheduled at 09:30 and every 30 minutes until 17:00 on weekdays. The first run on the batch day
   opens that week's batch (unique per date) and takes every invoice request and bank refund queued before it; later
   runs, that day or later in the week, only retry. Requests are never lost because they live in the database.
-* Bank refunds of the batch go to the same SRIC address in one email (``sric_refunds``).
+* Bank refunds go to SRIC one email each, to the refund addresses, at once or with this batch (``sric_refunds``).
 * Each request is claimed by compare-and-swap (BATCHED/FAILED -> SENDING) before its email is sent, and the email
   is sent outside any transaction. Success -> SENT (accepted by the mail server, which is not "invoice issued").
   Failure -> FAILED with exponential backoff, at most ``MAX_ATTEMPTS`` tries, then GAVE_UP and the Accounts In
@@ -273,8 +273,6 @@ def run_batch(now=None) -> dict:
     if local.time() < BATCH_TIME:
         return {"skipped": "before_0930"}
     to = recipient(s)
-    if not to:
-        return {"skipped": "no_recipient"}
     result = {"batched": 0, "sent": 0, "failed": 0, "uncertain": 0}
     # Requests a crashed worker left mid-send: never resent automatically.
     stale = list(SricInvoiceRequest.objects.filter(status=InvoiceRequestStatus.SENDING,
@@ -292,7 +290,7 @@ def run_batch(now=None) -> dict:
 
                 cutoff = batch.opened_at
                 ids = []
-                if s.invoice_requests_enabled:
+                if s.invoice_requests_enabled and to:
                     ids = list(SricInvoiceRequest.objects.select_for_update(skip_locked=True)
                                .filter(status=InvoiceRequestStatus.QUEUED, created_at__lte=cutoff)
                                .exclude(_portal_invoiced())
@@ -303,7 +301,10 @@ def run_batch(now=None) -> dict:
                 result["refunds_batched"] = queue_into_batch(batch, cutoff) if s.cancellation_policy_enabled else 0
     from .sric_refunds import send_due
 
-    result.update(send_due(to, s.sric_dispatch_mode))
+    if s.cancellation_policy_enabled:
+        result.update(send_due())
+    if not to:  # no invoice desk address: refunds (own addresses) were handled above
+        return {**result, "skipped": "no_recipient"}
     due = list(
         SricInvoiceRequest.objects.filter(
             status__in=[InvoiceRequestStatus.BATCHED, InvoiceRequestStatus.FAILED], attempts__lt=MAX_ATTEMPTS

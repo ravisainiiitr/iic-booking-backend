@@ -8,9 +8,10 @@ external users under the external workflow, test accounts only while piloted):
   before -> ``cancellation_half_penalty_percent`` (50) % penalty; less than that -> 100 % penalty (no refund).
   The refund goes to the wallet at once.
 * A lab disruption (equipment down, operator absent, other) carries no penalty. When the instrument itself is
-  non-functional (equipment down / maintenance) the user chooses the wallet (at once) or a bank account; a bank
-  refund is queued for SRIC and sent with the invoice requests on the first working day of the week, and the
-  account is saved for next time. Other disruptions are refunded to the wallet.
+  non-functional (equipment down / maintenance) the user chooses the wallet (at once) or a bank account.
+* Any refund with something to give back may go to the wallet (at once) or to a bank account (14 Nov 2026): the user
+  reviews and confirms the account, and the request goes to SRIC (``bank_refunds``). Lab-failure refunds recorded by
+  staff to a bank account wait for the user to give and confirm the account.
 * What is refunded: the amount paid minus the non-refundable return shipping charge (and its GST). If a GST invoice
   has already been requested for the booking, the GST is not refunded here (SRIC settles the tax with the invoice);
   otherwise the GST on the refunded part is returned too. The user sees the figures before confirming.
@@ -185,7 +186,7 @@ def cancellation_quote(booking, *, now=None) -> dict:
     start = first_slot_start(booking)
     if is_disrupted(booking):
         q = quote(booking, penalty_percent=0, tier="disruption", include_shipping=True)
-        return {"disruption": True, "bank_refund_allowed": instrument_non_functional(booking), **q.as_dict(),
+        return {"disruption": True, "bank_refund_allowed": q.refund > 0, **q.as_dict(),
                 "first_slot_start": _iso(start)}
     if start is None:
         raise RefundPolicyError("Start time is not available.", code="no_start_time")
@@ -197,7 +198,7 @@ def cancellation_quote(booking, *, now=None) -> dict:
     hours = int(s.cancellation_free_hours or 48)
     half = int(s.cancellation_half_hours or 24)
     return {
-        "disruption": False, "bank_refund_allowed": False, **q.as_dict(), "first_slot_start": _iso(start),
+        "disruption": False, "bank_refund_allowed": q.refund > 0, **q.as_dict(), "first_slot_start": _iso(start),
         "free_until": _iso(start - timedelta(hours=hours)), "half_until": _iso(start - timedelta(hours=half)),
         "rules": {"free_hours": hours, "half_hours": half, "half_penalty_percent": int(s.cancellation_half_penalty_percent)},
     }
@@ -276,9 +277,17 @@ def _credit_note_allowed(booking) -> bool:
 
 
 def _record(booking, user, *, origin, destination, q: RefundQuote, account=None, txn=None, actor=None,
-            reason: str = "") -> ExternalRefund:
+            reason: str = "", account_confirmed: bool = False, starts_at=None) -> ExternalRefund:
     snapshot = account_dict(account, full=True) if account is not None else {}
-    status = RefundStatus.QUEUED if destination == RefundDestination.BANK else RefundStatus.CLOSED
+    if destination != RefundDestination.BANK:
+        status = RefundStatus.CLOSED
+    elif account is None:
+        status = RefundStatus.AWAITING_ACCOUNT
+    else:
+        if not account_confirmed:
+            raise RefundPolicyError("Please review the bank account details and confirm that they are correct.",
+                                    code="confirmation_required")
+        status = RefundStatus.QUEUED
     try:
         with transaction.atomic():
             refund = ExternalRefund.objects.create(
@@ -289,6 +298,8 @@ def _record(booking, user, *, origin, destination, q: RefundQuote, account=None,
                 shipping_refunded=q.shipping_refunded, portion_percent=q.portion_percent, reason=reason,
                 bank_snapshot=snapshot, wallet_transaction=txn, status=status, created_by=actor or user,
                 closed_at=timezone.now() if status == RefundStatus.CLOSED else None,
+                account_confirmed_at=timezone.now() if status == RefundStatus.QUEUED else None,
+                booking_starts_at=starts_at,
             )
     except IntegrityError as exc:
         raise RefundPolicyError("This booking has already been refunded.", status=409, code="already_refunded") from exc
@@ -310,7 +321,7 @@ def _refuse_settled(booking) -> None:
 
 
 def cancel(user, booking_id, *, destination: str = "wallet", bank_account_id=None, notes: str = "",
-           expected_refund=None) -> dict:
+           expected_refund=None, account_confirmed: bool = False) -> dict:
     """The owner cancels a whole booking under the policy. ``expected_refund`` (the amount the user was shown) must
     match the amount computed now, so a tier boundary crossed while the dialog was open is never a surprise."""
     from iic_booking.communication.utils import booking_display_id_for_email
@@ -344,7 +355,7 @@ def cancel(user, booking_id, *, destination: str = "wallet", bank_account_id=Non
             raise RefundPolicyError("This booking has already been refunded.", status=409, code="already_refunded")
         info = cancellation_quote(booking)
         if destination == RefundDestination.BANK and not info["bank_refund_allowed"]:
-            raise RefundPolicyError("A refund to a bank account is offered only when the instrument is non-functional.",
+            raise RefundPolicyError("There is nothing to refund to a bank account for this booking.",
                                     code="bank_not_allowed")
         if expected_refund is not None and _money(expected_refund) != _money(info["refund"]):
             raise RefundPolicyError("The refund amount has changed since it was shown. Please check it again.",
@@ -354,6 +365,9 @@ def cancel(user, booking_id, *, destination: str = "wallet", bank_account_id=Non
             account = RefundBankAccount.objects.filter(pk=bank_account_id, user=user, is_active=True).first()
             if account is None:
                 raise RefundPolicyError("Choose or add the bank account for the refund.", code="account_required")
+            if not account_confirmed:
+                raise RefundPolicyError("Please review the bank account details and confirm that they are correct.",
+                                        code="confirmation_required")
         q = quote(booking, penalty_percent=int(info["penalty_percent"]), tier=info["tier"],
                   include_shipping=info["tier"] == "disruption")
         ref = booking_display_id_for_email(booking)
@@ -366,6 +380,7 @@ def cancel(user, booking_id, *, destination: str = "wallet", bank_account_id=Non
             reason = "Cancelled by the user more than the free-cancellation period before the booking."
         note = " ".join(part for part in (reason, notes) if part)
         previous = booking.status
+        starts_at = first_slot_start(booking)
         perform_booking_cancellation(
             booking, slot_ids=list(booking.daily_slots.values_list("id", flat=True)), should_refund=False,
             cancel_notes=note, actor=user, allow_started_slots=disrupted, cancelled_by_label="user",
@@ -381,7 +396,8 @@ def cancel(user, booking_id, *, destination: str = "wallet", bank_account_id=Non
                 related_user=booking.user,
             )
         refund = _record(booking, user, origin=RefundOrigin.DISRUPTION if q.tier == "disruption" else RefundOrigin.CANCELLATION,
-                         destination=destination, q=q, account=account, txn=txn)
+                         destination=destination, q=q, account=account, txn=txn, account_confirmed=account_confirmed,
+                         starts_at=starts_at)
         booking.refresh_from_db()
         if q.refund > 0 and destination == RefundDestination.WALLET:
             booking.status = BookingStatus.REFUNDED
@@ -396,14 +412,10 @@ def cancel(user, booking_id, *, destination: str = "wallet", bank_account_id=Non
         notify(f"refund:{refund.pk}:created", [user], title=f"Booking {ref} cancelled",
                message=_user_message(q, destination, ref), link=f"/my-bookings?booking={booking.pk}")
         if destination == RefundDestination.BANK and q.refund > 0:
-            from .invoices import _staff_recipients
+            from .bank_refunds import _notify_staff_confirmed, schedule_send
 
-            notify(f"refund:{refund.pk}:staff", _staff_recipients(booking),
-                   title=f"Bank refund queued for booking {ref}",
-                   message=f"₹{q.refund} for booking {ref} ({eq_name}) is to be refunded to the user's bank account "
-                           "after a lab disruption. It goes to SRIC with the weekly batch; close it once SRIC confirms "
-                           "the payment.",
-                   link="/accounts/refunds")
+            _notify_staff_confirmed(refund)
+            schedule_send(refund)
     return {"refund": refund_dict(refund), "booking_status": booking.status}
 
 
@@ -466,7 +478,7 @@ def lab_failure_quote(actor, booking_id, *, portion_percent=100) -> dict:
 
 
 def refund_lab_failure(actor, booking_id, *, kind: str, reason: str, portion_percent=100,
-                       expected_refund=None) -> dict:
+                       expected_refund=None, destination: str = "wallet") -> dict:
     """Refund an external booking the lab could not serve (equipment failure, analysis not possible) to the user's
     wallet. Full (100%): the booking is closed and its remaining slots released; partial: that share of the service
     charges, the booking stays. One refund per booking; amounts as shown (``expected_refund``)."""
@@ -483,6 +495,9 @@ def refund_lab_failure(actor, booking_id, *, kind: str, reason: str, portion_per
     if len(reason) < 10:
         raise RefundPolicyError("Describe what happened (at least 10 characters); the user sees it.", code="reason_required")
     portion = _portion(portion_percent)
+    destination = str(destination or "wallet").strip().lower()
+    if destination not in (RefundDestination.WALLET, RefundDestination.BANK):
+        raise RefundPolicyError("Choose where the refund goes.", code="invalid_destination")
     with transaction.atomic():
         booking = _lab_failure_booking(actor, booking_id, lock=True)
         _refuse_settled(booking)
@@ -497,35 +512,44 @@ def refund_lab_failure(actor, booking_id, *, kind: str, reason: str, portion_per
         eq_name = getattr(booking.equipment, "name", "")
         full_reason = f"{LAB_FAILURE_KINDS[kind]}: {reason}"
         previous = booking.status
+        starts_at = first_slot_start(booking)
         if portion == 100:
             perform_booking_cancellation(
                 booking, slot_ids=list(booking.daily_slots.values_list("id", flat=True)), should_refund=False,
                 cancel_notes=f"Refunded in full by the lab. {full_reason}", actor=actor, allow_started_slots=True,
                 cancelled_by_label="admin",
             )
-        target, _ = WalletRepository.get_booking_wallet_target(booking.user, getattr(booking.equipment, "internal_department", None))
-        if target is None:
-            raise RefundPolicyError("No wallet was found for this department to refund to.", status=409, code="no_wallet")
-        txn = target.credit(
-            amount=q.refund,
-            description=f"Refund for Booking {ref}- {eq_name} ({_refund_label(q)})",
-            related_user=booking.user,
-        )
-        refund = _record(booking, booking.user, origin=RefundOrigin.LAB_FAILURE, destination=RefundDestination.WALLET,
-                         q=q, txn=txn, actor=actor, reason=full_reason)
+        txn = None
+        if destination == RefundDestination.WALLET:
+            target, _ = WalletRepository.get_booking_wallet_target(booking.user, getattr(booking.equipment, "internal_department", None))
+            if target is None:
+                raise RefundPolicyError("No wallet was found for this department to refund to.", status=409, code="no_wallet")
+            txn = target.credit(
+                amount=q.refund,
+                description=f"Refund for Booking {ref}- {eq_name} ({_refund_label(q)})",
+                related_user=booking.user,
+            )
+        refund = _record(booking, booking.user, origin=RefundOrigin.LAB_FAILURE, destination=destination,
+                         q=q, txn=txn, actor=actor, reason=full_reason, starts_at=starts_at)
         booking.refresh_from_db()
-        if portion == 100:
+        if portion == 100 and destination == RefundDestination.WALLET:
             booking.status = BookingStatus.REFUNDED
             booking.save(update_fields=["status"])
-        message = f"{_user_message(q, RefundDestination.WALLET, ref)} Reason: {full_reason}"
+        if destination == RefundDestination.BANK:
+            message = (f"₹{q.refund} for booking {ref} will be paid to your bank account through SRIC "
+                       f"({_refund_label(q)}). Please give and confirm your bank account on the portal so that the "
+                       f"request can be sent. Reason: {full_reason}")
+        else:
+            message = f"{_user_message(q, RefundDestination.WALLET, ref)} Reason: {full_reason}"
         create_booking_event(
-            booking=booking, event_type=BookingEventType.REFUNDED, created_by=actor, previous_status=previous,
-            new_status=booking.status, comment=message,
-            metadata={"external_refund_id": refund.pk, **q.as_dict(), "destination": "wallet", "reason": full_reason},
+            booking=booking, event_type=BookingEventType.REFUNDED if txn else BookingEventType.CANCELLED,
+            created_by=actor, previous_status=previous, new_status=booking.status, comment=message,
+            metadata={"external_refund_id": refund.pk, **q.as_dict(), "destination": destination, "reason": full_reason},
             send_notification=False,
         )
-        notify(f"refund:{refund.pk}:created", [booking.user], title=f"Refund for booking {ref}", message=message,
-               link=f"/my-bookings?booking={booking.pk}")
+        notify(f"refund:{refund.pk}:created", [booking.user],
+               title=f"Refund for booking {ref}" + (": bank account needed" if destination == RefundDestination.BANK else ""),
+               message=message, link=f"/my-refunds?refund={refund.pk}")
     return {"refund": refund_dict(refund), "booking_status": booking.status}
 
 
@@ -572,13 +596,26 @@ def refund_dict(r: ExternalRefund, *, staff: bool = False) -> dict:
         "closed_at": r.closed_at.isoformat() if r.closed_at else None, "close_note": r.close_note,
         "bank": ({**r.bank_snapshot, "account_number": masked(r.bank_snapshot.get("account_number", ""))}
                  if r.bank_snapshot and not staff else (r.bank_snapshot or None)),
+        "account_confirmed_at": r.account_confirmed_at.isoformat() if r.account_confirmed_at else None,
+        "settled_amount": str(r.settled_amount) if r.settled_amount is not None else None,
+        "settled_on": r.settled_on.isoformat() if r.settled_on else None,
+        "settlement_mode": r.settlement_mode, "settlement_mode_label": r.get_settlement_mode_display(),
+        "utr": r.utr if r.status == RefundStatus.CLOSED else "",
+        "needs_account": r.status == RefundStatus.AWAITING_ACCOUNT,
     }
+    from .bank_refunds import deductions, entitlement
+
+    out["deductions"] = deductions(r)
+    out["entitlement"] = entitlement(r)
     if staff:
         from iic_booking.users.display import get_user_display_name
 
         out["user"] = {"id": r.user_id, "name": get_user_display_name(r.user), "email": r.user.email}
         out["equipment"] = getattr(r.booking.equipment, "name", "")
+        dept = getattr(r.booking.equipment, "internal_department", None)
+        out["department"] = getattr(dept, "name", "") or ""
         out["utr"] = r.utr
+        out["attempts"], out["last_error"], out["sent_to"] = r.attempts, r.last_error, r.sent_to
     return out
 
 
@@ -588,16 +625,26 @@ def my_refunds(user) -> list[dict]:
 
 
 def staff_may_track(user) -> bool:
-    from iic_booking.users.models.user_type import UserType
+    from .bank_refunds import may_handle
 
-    return getattr(user, "user_type", None) in (UserType.FINANCE, UserType.ADMIN)
+    return may_handle(user)
 
 
 def tracker(user, *, status: str = "", q: str = "") -> list[dict]:
     if not staff_may_track(user):
         raise RefundPolicyError("Only the Accounts In Charge can see refunds.", status=403, code="forbidden")
-    qs = ExternalRefund.objects.filter(destination=RefundDestination.BANK).select_related("booking__equipment", "user")
-    if status:
+    from django.db.models import Q as _Q
+
+    from iic_booking.department_modules.access import is_main_admin
+
+    qs = ExternalRefund.objects.filter(destination=RefundDestination.BANK).select_related(
+        "booking__equipment__internal_department", "user")
+    if not is_main_admin(user):
+        qs = qs.filter(_Q(booking__equipment__internal_department__isnull=True)
+                       | _Q(booking__equipment__internal_department_id=getattr(user, "department_id", None)))
+    if status == "open":
+        qs = qs.exclude(status=RefundStatus.CLOSED)
+    elif status:
         qs = qs.filter(status=status)
     if q:
         from django.db.models import Q
@@ -606,27 +653,9 @@ def tracker(user, *, status: str = "", q: str = "") -> list[dict]:
     return [refund_dict(r, staff=True) for r in qs.order_by("status", "-created_at")[:300]]
 
 
-def close(user, refund_id, *, utr: str = "", note: str = "") -> ExternalRefund:
-    """The Accounts In Charge confirm that the money reached the user's account."""
-    if not staff_may_track(user):
-        raise RefundPolicyError("Only the Accounts In Charge can close refunds.", status=403, code="forbidden")
-    utr = str(utr or "").strip()[:64]
-    note = str(note or "").strip()[:1000]
-    if not utr and len(note) < 5:
-        raise RefundPolicyError("Give the bank reference (UTR) or a note on how the payment was confirmed.",
-                                code="proof_required")
-    with transaction.atomic():
-        r = ExternalRefund.objects.select_for_update().filter(pk=refund_id, destination=RefundDestination.BANK).first()
-        if r is None:
-            raise RefundPolicyError("Refund not found.", status=404, code="not_found")
-        if r.status == RefundStatus.CLOSED:
-            raise RefundPolicyError("This refund is already closed.", status=409, code="closed")
-        r.status, r.utr, r.close_note = RefundStatus.CLOSED, utr, note
-        r.closed_at, r.closed_by = timezone.now(), user
-        r.save(update_fields=["status", "utr", "close_note", "closed_at", "closed_by", "updated_at"])
-        ref = getattr(r.booking, "virtual_booking_id", "") or r.booking_id
-        notify(f"refund:{r.pk}:closed", [r.user], title=f"Refund for booking {ref} paid",
-               message=f"₹{r.refund_amount} for booking {ref} has been paid to your bank account"
-                       + (f" (reference {utr})." if utr else "."),
-               link=f"/my-bookings?booking={r.booking_id}")
-    return r
+def close(user, refund_id, *, utr: str = "", note: str = "", amount=None, settled_on=None,
+          mode: str = "") -> ExternalRefund:
+    """Record the settlement: SRIC has paid the money into the user's account (see ``bank_refunds.settle``)."""
+    from .bank_refunds import settle
+
+    return settle(user, refund_id, amount=amount, settled_on=settled_on, mode=mode, utr=utr, note=note)

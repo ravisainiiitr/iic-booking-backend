@@ -192,10 +192,34 @@ def payment_refund_saved(refund, created: bool) -> None:
 def external_refund_saved(refund, created: bool) -> None:
     from iic_booking.external_services.models import RefundStatus
 
+    from iic_booking.external_services.models import RefundDestination
+
+    if refund.status == RefundStatus.AWAITING_ACCOUNT and created:
+        _notify(refund.user, "refund_account_needed",
+                [_person(refund.user), _ref(refund.booking), _money(refund.refund_amount)],
+                f"refund:{refund.pk}:refund_account_needed")
+        return
     if refund.status != RefundStatus.CLOSED:
+        return
+    if getattr(refund, "destination", "") == RefundDestination.BANK and _approved("bank_refund_paid"):
+        from iic_booking.external_services.bank_refunds import whatsapp_deductions
+
+        _notify(refund.user, "bank_refund_paid",
+                [_person(refund.user), _ref(refund.booking), _money(refund.settled_amount or refund.refund_amount),
+                 whatsapp_deductions(refund), refund.utr or "Not given"],
+                f"refund:{refund.pk}:bank_refund_paid")
         return
     _notify(refund.user, "refund_completed", [_person(refund.user), _ref(refund.booking), _money(refund.refund_amount)],
             f"refund:{refund.pk}:refund_completed")
+
+
+def _approved(event: str) -> bool:
+    """Whether the template for ``event`` is approved at Meta (a newer template falls back to an older one until)."""
+    from .template_catalogue import BY_EVENT
+    from .templates import is_approved
+
+    entry = BY_EVENT.get(event)
+    return bool(entry) and is_approved(conf.template_name(event), entry.language)
 
 
 

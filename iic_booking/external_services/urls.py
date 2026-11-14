@@ -59,6 +59,9 @@ urlpatterns = [
     path("refunds/", views.my_refunds_view, name="my-refunds"),
     path("staff/refunds/", views.staff_refunds_view, name="staff-refunds"),
     path("staff/refunds/<int:refund_id>/close/", views.staff_refund_close, name="staff-refund-close"),
+    path("staff/refunds/<int:refund_id>/", views.staff_refund_detail, name="staff-refund-detail"),
+    path("staff/refunds/<int:refund_id>/resend/", views.staff_refund_resend, name="staff-refund-resend"),
+    path("refunds/<int:refund_id>/bank-account/", views.refund_confirm_account, name="refund-confirm-account"),
     # Invoices (the GST invoice is issued by SRIC; the portal requests, tracks and delivers it)
     path("bookings/<int:booking_id>/invoice/", views.booking_invoice_view, name="booking-invoice"),
     path(
@@ -112,4 +115,5 @@ admin_urlpatterns = [
     path("window/history/", views.admin_window_history, name="admin-window-history"),
     path("settings/", views.admin_settings_view, name="admin-settings"),
     path("policies/", views.admin_policy_add, name="admin-policy-add"),
+    path("refund-email/", views.admin_refund_email, name="admin-refund-email"),
 ]

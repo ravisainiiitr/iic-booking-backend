@@ -144,3 +144,11 @@ def notifications_sweep() -> dict:
     from .notifications import sweep
 
     return sweep()
+
+
+@shared_task(name="external_services.send_bank_refund")
+def send_bank_refund(refund_id: int) -> str:
+    """Email one confirmed bank refund to SRIC (immediate timing). Failures are retried by the batch runs."""
+    from .bank_refunds import send
+
+    return str(send(refund_id))

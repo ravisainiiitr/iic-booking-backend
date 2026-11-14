@@ -173,6 +173,26 @@ class ExternalServicesSettings(models.Model):
     )
     sric_recipient_email = models.EmailField(blank=True, default="", help_text=_("SRIC invoice desk (live mode)."))
     sric_test_recipient_email = models.EmailField(blank=True, default="", help_text=_("Used in test mode."))
+    # Refunds to bank accounts: where and when the SRIC refund request goes, and its wording (bank_refunds).
+    refund_sric_recipients = models.TextField(
+        blank=True, default="",
+        help_text=_("SRIC refund desk addresses for live mode, one per line. Empty: the SRIC invoice desk above."),
+    )
+    refund_sric_cc = models.TextField(
+        blank=True, default="", help_text=_("Copied on every SRIC refund request (live mode), one per line."),
+    )
+    refund_sric_test_recipients = models.TextField(
+        blank=True, default="", help_text=_("Test-mode addresses, one per line. Empty: the test address above."),
+    )
+    refund_dispatch_timing = models.CharField(
+        max_length=10,
+        choices=[("immediate", _("As soon as the user confirms the bank account")),
+                 ("weekly", _("With the weekly SRIC batch (first working day, 09:30)"))],
+        default="immediate",
+    )
+    refund_email_subject = models.CharField(max_length=255, blank=True, default="",
+                                            help_text=_("Empty: the standard subject."))
+    refund_email_body = models.TextField(blank=True, default="", help_text=_("Empty: the standard wording."))
     # Credit for government organisations (approved per request by the Head IIC by email)
     govt_credit_enabled = models.BooleanField(
         default=False, help_text=_("Government and R&D organisations may raise credit requests.")
@@ -826,10 +846,22 @@ class RefundDestination(models.TextChoices):
 
 
 class RefundStatus(models.TextChoices):
-    QUEUED = "queued", _("Waiting for the weekly SRIC batch")
+    AWAITING_ACCOUNT = "awaiting", _("Waiting for the user's bank account")
+    QUEUED = "queued", _("Waiting to be sent to SRIC")
+    SENDING = "sending", _("Being sent to SRIC")
     SENT = "sent", _("Sent to SRIC")
     FAILED = "failed", _("Sending to SRIC failed (will retry)")
-    CLOSED = "closed", _("Closed: amount reached the user")
+    UNCERTAIN = "unsure", _("Sending interrupted: check with SRIC before resending")
+    CLOSED = "closed", _("Settled: amount paid to the user")
+
+
+class SettlementMode(models.TextChoices):
+    NEFT = "neft", _("NEFT")
+    RTGS = "rtgs", _("RTGS")
+    IMPS = "imps", _("IMPS")
+    UPI = "upi", _("UPI")
+    CHEQUE = "cheque", _("Cheque / demand draft")
+    OTHER = "other", _("Other")
 
 
 class RefundBankAccount(models.Model):
@@ -892,6 +924,18 @@ class ExternalRefund(models.Model):
     sent_to = models.CharField(max_length=254, blank=True, default="")
     sent_in_mode = models.CharField(max_length=8, blank=True, default="")
     utr = models.CharField(max_length=64, blank=True, default="", help_text=_("Bank reference of the payment."))
+    booking_starts_at = models.DateTimeField(
+        null=True, blank=True, help_text=_("First slot of the booking when the refund was made (slots may be released)."),
+    )
+    account_confirmed_at = models.DateTimeField(
+        null=True, blank=True, help_text=_("When the user reviewed and confirmed the bank account for this refund."),
+    )
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    sric_subject = models.CharField(max_length=255, blank=True, default="")
+    sric_body = models.TextField(blank=True, default="", help_text=_("The request exactly as last emailed to SRIC."))
+    settled_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    settled_on = models.DateField(null=True, blank=True)
+    settlement_mode = models.CharField(max_length=8, blank=True, default="", choices=SettlementMode.choices)
     close_note = models.TextField(blank=True, default="")
     closed_at = models.DateTimeField(null=True, blank=True)
     closed_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
@@ -904,7 +948,8 @@ class ExternalRefund(models.Model):
         constraints = [
             models.CheckConstraint(condition=models.Q(refund_amount__gte=0), name="external_refund_amount_not_negative"),
             models.CheckConstraint(
-                condition=~models.Q(destination="bank") | models.Q(bank_account__isnull=False),
+                condition=~models.Q(destination="bank") | models.Q(bank_account__isnull=False)
+                | models.Q(status="awaiting"),
                 name="external_refund_bank_needs_account",
             ),
         ]

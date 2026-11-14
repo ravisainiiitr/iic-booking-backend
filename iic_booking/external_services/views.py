@@ -857,9 +857,13 @@ def booking_cancel_with_refund(request, booking_id):
     result = refunds.cancel(
         request.user, booking_id, destination=data.get("destination") or "wallet",
         bank_account_id=data.get("bank_account_id"), notes=data.get("notes") or "",
-        expected_refund=data.get("expected_refund"),
+        expected_refund=data.get("expected_refund"), account_confirmed=_truthy(data.get("account_confirmed")),
     )
     return Response(result)
+
+
+def _truthy(value) -> bool:
+    return value is True or str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
 @api_view(["GET", "POST"])
@@ -868,7 +872,8 @@ def booking_cancel_with_refund(request, booking_id):
 def booking_lab_failure_refund(request, booking_id):
     """Equipment failure / analysis not possible (OIC of the equipment, Accounts In Charge, Main Administrator).
     GET ?portion=<1-100>: the refund that would be made, with GST and return shipping shown. POST: make it.
-    Body: kind (equipment_failure | analysis_unsuccessful), reason, portion_percent, expected_refund."""
+    Body: kind (equipment_failure | analysis_unsuccessful), reason, portion_percent, expected_refund, destination
+    (wallet | bank: the user is then asked to give and confirm the bank account)."""
     from . import refunds
 
     if request.method == "GET":
@@ -878,6 +883,7 @@ def booking_lab_failure_refund(request, booking_id):
     return Response(refunds.refund_lab_failure(
         request.user, booking_id, kind=data.get("kind") or "", reason=data.get("reason") or "",
         portion_percent=data.get("portion_percent", 100), expected_refund=data.get("expected_refund"),
+        destination=data.get("destination") or "wallet",
     ))
 
 
@@ -922,5 +928,56 @@ def staff_refund_close(request, refund_id):
     from . import refunds
 
     data = _data(request)
-    r = refunds.close(request.user, refund_id, utr=data.get("utr") or "", note=data.get("note") or "")
+    r = refunds.close(request.user, refund_id, utr=data.get("utr") or "", note=data.get("note") or "",
+                      amount=data.get("amount"), settled_on=data.get("settled_on"), mode=data.get("mode") or "")
     return Response(refunds.refund_dict(r, staff=True))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@_refund_errors
+def refund_confirm_account(request, refund_id):
+    """The user gives the bank account for a refund the lab recorded to a bank account, after reviewing it.
+    Body: bank_account_id, account_confirmed (true)."""
+    from . import bank_refunds, refunds
+
+    data = _data(request)
+    r = bank_refunds.confirm_account(request.user, refund_id, bank_account_id=data.get("bank_account_id"),
+                                     confirmed=_truthy(data.get("account_confirmed")))
+    return Response({"refund": refunds.refund_dict(r)})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@_refund_errors
+def staff_refund_detail(request, refund_id):
+    """Accounts In Charge / Main Administrator: one bank refund with everything SRIC is (or was) sent."""
+    from . import bank_refunds
+
+    return Response(bank_refunds.staff_detail(request.user, refund_id))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@_refund_errors
+def staff_refund_resend(request, refund_id):
+    from . import bank_refunds
+
+    return Response(bank_refunds.resend(request.user, refund_id, note=_data(request).get("note") or ""))
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+@_refund_errors
+def admin_refund_email(request):
+    """Main Administrator: the SRIC refund email settings (GET) and a preview of unsaved wording (POST). Saving goes
+    through the external services settings (PATCH, with a reason)."""
+    from iic_booking.department_modules.access import is_main_admin
+
+    from . import bank_refunds
+
+    if request.method == "POST":
+        return Response(bank_refunds.preview(request.user, _data(request)))
+    if not is_main_admin(request.user):
+        return Response({"error": "Only the Main Administrator can see these settings.", "code": "forbidden"}, status=403)
+    return Response(bank_refunds.settings_dict())
