@@ -75,19 +75,22 @@ CSRF_TRUSTED_ORIGINS = env.list(
 # https://docs.djangoproject.com/en/dev/ref/settings/#secure-ssl-redirect
 SECURE_SSL_REDIRECT = env.bool("DJANGO_SECURE_SSL_REDIRECT", default=True)
 # https://docs.djangoproject.com/en/dev/ref/settings/#session-cookie-secure
-# Only require secure cookies when SSL redirect is enabled (i.e., HTTPS-only)
-SESSION_COOKIE_SECURE = SECURE_SSL_REDIRECT
+# Cookies are Secure even when Django's own redirect is off: Apache already
+# redirects every HTTP request to HTTPS, and DJANGO_SECURE_SSL_REDIRECT stays
+# off only so the deploy health checks on http://127.0.0.1 are not redirected.
+SESSION_COOKIE_SECURE = env.bool("DJANGO_SESSION_COOKIE_SECURE", default=True)
 # https://docs.djangoproject.com/en/dev/ref/settings/#session-cookie-name
 SESSION_COOKIE_NAME = "__Secure-sessionid" if SECURE_SSL_REDIRECT else "sessionid"
 # https://docs.djangoproject.com/en/dev/ref/settings/#csrf-cookie-secure
-# Only require secure cookies when SSL redirect is enabled (i.e., HTTPS-only)
-CSRF_COOKIE_SECURE = SECURE_SSL_REDIRECT
+# Secure for the same reason as the session cookie above.
+CSRF_COOKIE_SECURE = env.bool("DJANGO_CSRF_COOKIE_SECURE", default=True)
 # https://docs.djangoproject.com/en/dev/ref/settings/#csrf-cookie-name
 CSRF_COOKIE_NAME = "__Secure-csrftoken" if SECURE_SSL_REDIRECT else "csrftoken"
 # https://docs.djangoproject.com/en/dev/topics/security/#ssl-https
 # https://docs.djangoproject.com/en/dev/ref/settings/#secure-hsts-seconds
-# TODO: set this to 60 seconds first and then to 518400 once you prove the former works
-SECURE_HSTS_SECONDS = 60
+# 60 seconds ran without problems; 6 days now. Raise to 31536000 (1 year) via
+# DJANGO_SECURE_HSTS_SECONDS once a week at 6 days has shown nothing breaks.
+SECURE_HSTS_SECONDS = env.int("DJANGO_SECURE_HSTS_SECONDS", default=518400)
 # https://docs.djangoproject.com/en/dev/ref/settings/#secure-hsts-include-subdomains
 SECURE_HSTS_INCLUDE_SUBDOMAINS = env.bool(
     "DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS",
