@@ -114,12 +114,20 @@ def test_a_changed_amount_is_never_applied_silently(policy, factory, user):
     assert Booking.objects.get(pk=b.pk).status == BookingStatus.BOOKED
 
 
-def test_bank_refund_only_for_a_lab_disruption(policy, factory, user):
+def test_any_refund_may_go_to_a_bank_account_once_the_user_confirms_it(policy, factory, user):
+    """14 Nov 2026: every external refund may go to a bank account; the account must be reviewed and confirmed."""
     b = _booking(factory, user, 72)
     acc = refunds.save_account(user, ACCOUNT)
+    assert refunds.cancellation_quote(b)["bank_refund_allowed"] is True
     r = client_for(user).post(f"{API}bookings/{b.pk}/cancel/", {"destination": "bank", "bank_account_id": acc.pk},
                               format="json")
-    assert r.status_code == 400 and r.json()["code"] == "bank_not_allowed"
+    assert r.status_code == 400 and r.json()["code"] == "confirmation_required"
+    assert Booking.objects.get(pk=b.pk).status == BookingStatus.BOOKED
+    r = client_for(user).post(f"{API}bookings/{b.pk}/cancel/", {"destination": "bank", "bank_account_id": acc.pk,
+                                                               "account_confirmed": True}, format="json")
+    assert r.status_code == 200, r.content
+    refund = ExternalRefund.objects.get(booking=b)
+    assert refund.status == RefundStatus.QUEUED and refund.account_confirmed_at is not None
 
 
 def test_disruption_refunds_in_full_to_a_saved_bank_account_and_waits_for_sric(policy, factory, user):
@@ -132,7 +140,8 @@ def test_disruption_refunds_in_full_to_a_saved_bank_account_and_waits_for_sric(p
     assert quote["tier"] == "disruption" and quote["refund"] == "1180.00" and quote["bank_refund_allowed"] is True
     assert quote["accounts"][0]["account_number"] == "XXXXXXXX9012"
     r = client_for(user).post(f"{API}bookings/{b.pk}/cancel/",
-                              {"destination": "bank", "bank_account_id": added.json()["id"]}, format="json")
+                              {"destination": "bank", "bank_account_id": added.json()["id"], "account_confirmed": True},
+                              format="json")
     assert r.status_code == 200, r.content
     refund = ExternalRefund.objects.get(booking=b)
     assert refund.status == RefundStatus.QUEUED and refund.refund_amount == Decimal("1180.00")
@@ -153,12 +162,13 @@ def test_weekly_batch_sends_bank_refunds_and_staff_close_them(policy, factory, u
     settings.EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
     s = ExternalServicesSettings.load()
     s.sric_dispatch_mode, s.sric_test_recipient_email = "test", "sric.test@example.org"
+    s.refund_dispatch_timing = "weekly"
     s.save()
     b = _booking(factory, user, 2, status=BookingStatus.DISRUPTION_PENDING)
-    b.disruption_kind = BookingDisruptionKind.MAINTENANCE  # instrument non-functional: bank refund allowed
+    b.disruption_kind = BookingDisruptionKind.MAINTENANCE
     b.save(update_fields=["disruption_kind"])
     acc = refunds.save_account(user, ACCOUNT)
-    refunds.cancel(user, b.pk, destination="bank", bank_account_id=acc.pk)
+    refunds.cancel(user, b.pk, destination="bank", bank_account_id=acc.pk, account_confirmed=True)
     refund = ExternalRefund.objects.get(booking=b)
     ExternalRefund.objects.filter(pk=refund.pk).update(created_at=timezone.now() - timedelta(days=3))
     # A Wednesday that is not the first working day of the week opens no batch.
@@ -173,7 +183,7 @@ def test_weekly_batch_sends_bank_refunds_and_staff_close_them(policy, factory, u
     refund.refresh_from_db()
     assert refund.status == RefundStatus.SENT
     assert any("123456789012" in m.body and "[TEST]" in m.subject for m in mail.outbox)
-    accounts = make_user(UserType.FINANCE)
+    accounts = make_user(UserType.FINANCE, department=factory.department)
     listing = client_for(accounts).get(f"{API}staff/refunds/").json()
     assert listing["count"] == 1 and listing["refunds"][0]["bank"]["account_number"] == "123456789012"
     assert client_for(user).get(f"{API}staff/refunds/").status_code == 403
@@ -211,12 +221,21 @@ def test_old_cancel_endpoint_follows_the_policy(policy, factory, user):
     assert _wallet(user, factory) == Decimal("590.00")
 
 
-def test_bank_refund_only_when_the_instrument_is_non_functional(policy, factory, user):
+def test_bank_refund_for_every_disruption_but_never_without_an_account(policy, factory, user):
     b = _booking(factory, user, 2, status=BookingStatus.DISRUPTION_PENDING)
     b.disruption_kind = BookingDisruptionKind.OPERATOR_ABSENT
     b.save(update_fields=["disruption_kind"])
     quote = refunds.cancellation_quote(b)
-    assert quote["tier"] == "disruption" and quote["bank_refund_allowed"] is False
+    assert quote["tier"] == "disruption" and quote["bank_refund_allowed"] is True
     with pytest.raises(refunds.RefundPolicyError) as exc:
         refunds.cancel(user, b.pk, destination="bank")
-    assert "non-functional" in exc.value.message
+    assert exc.value.code == "account_required"
+
+
+def test_nothing_to_refund_cannot_go_to_a_bank(policy, factory, user):
+    b = _booking(factory, user, 10)  # under 24 h: 100% penalty
+    acc = refunds.save_account(user, ACCOUNT)
+    assert refunds.cancellation_quote(b)["bank_refund_allowed"] is False
+    with pytest.raises(refunds.RefundPolicyError) as exc:
+        refunds.cancel(user, b.pk, destination="bank", bank_account_id=acc.pk, account_confirmed=True)
+    assert exc.value.code == "bank_not_allowed"

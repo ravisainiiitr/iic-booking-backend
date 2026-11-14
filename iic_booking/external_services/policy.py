@@ -36,6 +36,13 @@ SETTINGS_FIELDS = BOOLEAN_SETTINGS + (
     "cancellation_free_hours",
     "cancellation_half_hours",
     "cancellation_half_penalty_percent",
+    # Refunds to bank accounts: SRIC addresses, timing and the email wording (bank_refunds)
+    "refund_sric_recipients",
+    "refund_sric_cc",
+    "refund_sric_test_recipients",
+    "refund_dispatch_timing",
+    "refund_email_subject",
+    "refund_email_body",
 )
 
 
@@ -164,14 +171,24 @@ def update_settings(actor, data: dict) -> ExternalServicesSettings:
             if len(emails) > 5:
                 raise PolicyError("Give at most 5 Head IIC addresses.", field="head_iic_emails")
             s.head_iic_emails = "\n".join(_email(e, "head_iic_emails") for e in emails)
+        from .bank_refunds import SETTINGS_FIELDS as REFUND_FIELDS
+        from .bank_refunds import clean_settings
+        from .refunds import RefundPolicyError
+
+        try:
+            refund_values = clean_settings({f: data[f] for f in REFUND_FIELDS if f in data})
+        except RefundPolicyError as exc:
+            raise PolicyError(exc.message, field=next((f for f in REFUND_FIELDS if f in data), "")) from exc
+        for field, value in refund_values.items():
+            setattr(s, field, value)
         if s.cancellation_half_hours >= s.cancellation_free_hours:
             raise PolicyError("The full-penalty limit must be fewer hours than the free-cancellation limit.",
                               field="cancellation_half_hours")
         if s.govt_credit_enabled and not s.head_iic_emails:
             raise PolicyError("Set the Head IIC addresses before enabling credit requests.", field="head_iic_emails")
-        if s.sric_dispatch_mode == "live" and not s.sric_recipient_email:
+        if s.sric_dispatch_mode == "live" and not (s.sric_recipient_email or s.refund_sric_recipients):
             raise PolicyError("Set the SRIC recipient address before live sending.", field="sric_recipient_email")
-        if s.sric_dispatch_mode == "test" and not s.sric_test_recipient_email:
+        if s.sric_dispatch_mode == "test" and not (s.sric_test_recipient_email or s.refund_sric_test_recipients):
             raise PolicyError("Set the test address before test sending.", field="sric_test_recipient_email")
         if s.early_invoice_allowed and not PolicyText.objects.filter(key="early_invoice").exists():
             raise PolicyError("Add the early-invoice disclosure wording first.", field="early_invoice_allowed")
