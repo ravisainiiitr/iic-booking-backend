@@ -140,7 +140,15 @@ def _with_verdict(pc, now) -> dict:
     return {**pc, "online": online, "last_heartbeat_at": _iso(last)}
 
 
-def serialize_summary(agent: DepartmentSyncAgent, state: AgentDiagnosticState | None, open_incidents: int, now) -> dict:
+def serialize_summary(
+    agent: DepartmentSyncAgent,
+    state: AgentDiagnosticState | None,
+    open_incidents: int,
+    now,
+    *,
+    latest_version: str = "",
+    last_command: AgentCommand | None = None,
+) -> dict:
     diag = (state.diagnostics if state else None) or {}
     uploads = _section(diag, "uploads")
     storage = _section(diag, "storage")
@@ -155,6 +163,9 @@ def serialize_summary(agent: DepartmentSyncAgent, state: AgentDiagnosticState | 
     if health == AgentHealthState.OFFLINE and not any(r.get("code") == "DSA_OFFLINE" for r in top):
         mins = int((now - agent.last_heartbeat_at).total_seconds() // 60)
         top.insert(0, {"code": "DSA_OFFLINE", "severity": "critical", "message": f"No heartbeat for {mins} min."})
+    running = str(service.get("version") or "").split("+", 1)[0] or agent.version or ""
+    problems = _section(diag, "problems")
+    pcs = (state.equipment_pcs if state else None) or []
     return {
         "id": str(agent.id),
         "agent_name": agent.agent_name,
@@ -162,27 +173,123 @@ def serialize_summary(agent: DepartmentSyncAgent, state: AgentDiagnosticState | 
         "department": agent.department.name if agent.department_id else "",
         "department_code": getattr(agent.department, "code", "") if agent.department_id else "",
         "status": agent.status,
+        "retired": agent.status in HIDDEN_STATUSES,
         "health": health,
         "why": top[:3],
         # Running build from diagnostics (heartbeat service_version is the enrollment-time version).
-        "version": str(service.get("version") or "").split("+", 1)[0] or agent.version or "",
+        "version": running,
+        "latest_version": latest_version,
+        "version_status": version_status(running, latest_version),
+        "share": _share_summary(pcs, now),
+        "network": _network_summary(diag),
+        "errors_1h": problems.get("errors_1h"),
+        "errors_24h": problems.get("errors_24h"),
+        "warnings_24h": problems.get("warnings_24h"),
+        "last_command": (
+            {
+                "command_type": last_command.command_type,
+                "action": (last_command.payload or {}).get("action") or "",
+                "status": last_command.status,
+                "created_at": _iso(last_command.created_at),
+                "decision": str((last_command.result_payload or {}).get("decision") or ""),
+            }
+            if last_command
+            else None
+        ),
         "last_heartbeat_at": _iso(agent.last_heartbeat_at),
         "uptime_seconds": service.get("uptime_seconds"),
         "uploads_pending": uploads.get("pending"),
         "uploads_failed": uploads.get("failed"),
         "oldest_pending_age_minutes": uploads.get("oldest_pending_age_minutes"),
         "disk_free_percent": storage.get("data_drive_free_percent"),
-        "equipment_pcs": _pc_counts(state.equipment_pcs if state else [], now),
+        "equipment_pcs": _pc_counts(pcs, now),
+        # Search keys only (host names and Equipment Network IPs), so the fleet search finds an agent by its PCs.
+        "equipment_pc_hosts": sorted(
+            {
+                str(v)
+                for pc in pcs
+                if isinstance(pc, dict)
+                for v in (pc.get("hostname"), pc.get("observed_ip"), pc.get("assigned_ip"))
+                if v
+            },
+        )[:40],
         "open_incidents": open_incidents,
         "clock_skew_seconds": state.clock_skew_seconds if state else None,
         "diagnostics_supported": bool(diag) and not diag.get("stale"),
     }
 
 
-def _fleet_queryset():
-    return DepartmentSyncAgent.objects.select_related("department").exclude(
-        status__in=HIDDEN_STATUSES,
-    )
+def _fleet_queryset(*, include_retired: bool = False):
+    qs = DepartmentSyncAgent.objects.select_related("department")
+    if include_retired:
+        # Retired/revoked agents can be shown on request (history); deleted ones never are.
+        return qs.exclude(status=AgentLifecycleStatus.DELETED)
+    return qs.exclude(status__in=HIDDEN_STATUSES)
+
+
+def _truthy(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def latest_published_version() -> str:
+    """Version of the DSA installer currently published as latest on the portal ('' when none)."""
+    from iic_booking.sync.installer.models import DsaInstallerRelease
+
+    rel = DsaInstallerRelease.objects.filter(is_active=True, is_latest=True).only("version").first()
+    return (rel.version or "").strip().lstrip("vV") if rel else ""
+
+
+def _version_tuple(value: str) -> tuple[int, ...] | None:
+    core = str(value or "").strip().lstrip("vV").split("+", 1)[0].split("-", 1)[0]
+    parts = core.split(".")
+    try:
+        return tuple(int(p) for p in parts if p != "")
+    except ValueError:
+        return None
+
+
+def version_status(running: str, latest: str) -> str:
+    """current | outdated | ahead | unknown — running build against the published latest."""
+    a, b = _version_tuple(running), _version_tuple(latest)
+    if not a or not b:
+        return "unknown"
+    width = max(len(a), len(b))
+    a, b = a + (0,) * (width - len(a)), b + (0,) * (width - len(b))
+    if a == b:
+        return "current"
+    return "outdated" if a < b else "ahead"
+
+
+def _share_summary(pcs: list, now) -> dict:
+    """Results-share reachability across the agent's registered Equipment PCs (from the heartbeat rollup)."""
+    ok = failing = unknown = 0
+    for pc in pcs or []:
+        if not isinstance(pc, dict) or str(pc.get("registration_status") or "").lower() in ("unassigned", "retired"):
+            continue
+        share = pc.get("share_ok")
+        if share is True:
+            ok += 1
+        elif share is False:
+            failing += 1
+        else:
+            unknown += 1
+    return {"ok": ok, "failing": failing, "unknown": unknown}
+
+
+def _network_summary(diag: dict) -> dict:
+    net = _section(diag, "equipment_network")
+    if not net:
+        return {"reported": False}
+    return {
+        "reported": True,
+        "enabled": net.get("enabled"),
+        "adapter_found": net.get("adapter_found"),
+        "adapter_up": net.get("adapter_up"),
+        "adapter_ip": net.get("adapter_ip"),
+        "configured_ip": net.get("configured_ip"),
+        "ip_matches_config": net.get("ip_matches_config"),
+        "subnet": net.get("subnet"),
+    }
 
 
 @api_view(["GET"])
@@ -191,7 +298,8 @@ def _fleet_queryset():
 def fleet_list(request):
     """GET /api/v1/sync/admin/fleet/ — all departments' DSAs with health and why."""
     now = timezone.now()
-    agents = list(_fleet_queryset()[:500])
+    include_retired = _truthy(request.query_params.get("include_retired"))
+    agents = list(_fleet_queryset(include_retired=include_retired)[:500])
     states = {s.sync_agent_id: s for s in AgentDiagnosticState.objects.filter(sync_agent__in=agents)}
     open_counts: dict = {}
     for row in (
@@ -200,15 +308,43 @@ def fleet_list(request):
         .values_list("sync_agent_id", flat=True)
     ):
         open_counts[row] = open_counts.get(row, 0) + 1
-    rows = [serialize_summary(a, states.get(a.id), open_counts.get(a.id, 0), now) for a in agents]
-    rows.sort(key=lambda r: (_HEALTH_ORDER.get(r["health"], 9), r["department"], r["agent_name"]))
+    last_commands: dict = {}
+    for cmd in (
+        AgentCommand.objects.filter(sync_agent__in=agents, created_at__gte=now - timedelta(days=30))
+        .only("sync_agent_id", "command_type", "status", "created_at", "payload", "result_payload")
+        .order_by("-created_at")[:2000]
+    ):
+        last_commands.setdefault(cmd.sync_agent_id, cmd)
+    latest = latest_published_version()
+    rows = [
+        serialize_summary(
+            a,
+            states.get(a.id),
+            open_counts.get(a.id, 0),
+            now,
+            latest_version=latest,
+            last_command=last_commands.get(a.id),
+        )
+        for a in agents
+    ]
+    rows.sort(key=lambda r: (r["retired"], _HEALTH_ORDER.get(r["health"], 9), r["department"], r["agent_name"]))
     counts = dict.fromkeys(AgentHealthState.values, 0)
     for r in rows:
-        counts[r["health"]] = counts.get(r["health"], 0) + 1
+        if not r["retired"]:
+            counts[r["health"]] = counts.get(r["health"], 0) + 1
+    retired_count = (
+        sum(1 for r in rows if r["retired"])
+        if include_retired
+        else DepartmentSyncAgent.objects.filter(
+            status__in=[AgentLifecycleStatus.REVOKED, AgentLifecycleStatus.RETIRED],
+        ).count()
+    )
     return Response(
         {
             "count": len(rows),
             "counts": counts,
+            "retired_count": retired_count,
+            "latest_version": latest,
             "heartbeat_timeout_seconds": heartbeat_timeout_seconds(),
             "server_time": now.isoformat(),
             "results": rows,
@@ -249,12 +385,162 @@ def _serialize_command(c: AgentCommand) -> dict:
     }
 
 
+def _booking_ref(booking_id, booking) -> dict | None:
+    if not booking_id:
+        return None
+    return {"id": booking_id, "label": (getattr(booking, "virtual_booking_id", "") or "") if booking else ""}
+
+
+def _equipment_ref(equipment) -> dict | None:
+    if equipment is None:
+        return None
+    return {"id": equipment.pk, "name": getattr(equipment, "name", "") or "", "code": getattr(equipment, "code", "") or ""}
+
+
+def _latest_pc_probes(commands: list[AgentCommand]) -> dict:
+    """hostname/id -> latest Refresh Equipment PCs probe (SMB write test = share + firewall reachability)."""
+    out: dict = {}
+    for cmd in commands:  # newest first
+        if cmd.command_type != AgentCommandType.REFRESH_EQUIPMENT_PCS:
+            continue
+        result = cmd.result_payload or {}
+        for probe in result.get("results") or []:
+            if not isinstance(probe, dict):
+                continue
+            entry = {
+                **{k: probe.get(k) for k in (
+                    "success", "connectivity", "agent_status", "smb_status", "write_test", "ip",
+                    "error_category", "message", "duration_ms",
+                )},
+                "probed_at": _iso(cmd.completed_at or cmd.updated_at),
+            }
+            for key in (probe.get("equipment_pc_id"), probe.get("hostname")):
+                if key not in (None, "") and str(key).lower() not in out:
+                    out[str(key).lower()] = entry
+    return out
+
+
+def _with_probe(pc: dict, probes: dict) -> dict:
+    for key in (pc.get("id"), pc.get("hostname")):
+        if key not in (None, "") and str(key).lower() in probes:
+            return {**pc, "last_probe": probes[str(key).lower()]}
+    return {**pc, "last_probe": None}
+
+
+def _recent_sync_events(agent: DepartmentSyncAgent, now, limit: int = 60) -> list[dict]:
+    """Warnings and errors the agent reported to the portal (SyncLog), each with its event code."""
+    from iic_booking.sync.models import SyncLog
+
+    rows = (
+        SyncLog.objects.filter(
+            sync_agent=agent,
+            severity__in=["WARNING", "ERROR", "CRITICAL"],
+            created_at__gte=now - timedelta(days=14),
+        )
+        .select_related("equipment")
+        .order_by("-created_at")[:limit]
+    )
+    out = []
+    for row in rows:
+        payload = row.json_payload if isinstance(row.json_payload, dict) else {}
+        booking_id = payload.get("booking_id")
+        try:
+            booking_id = int(booking_id) if booking_id not in (None, "") else None
+        except (TypeError, ValueError):
+            booking_id = None
+        out.append(
+            {
+                "id": row.id,
+                "at": _iso(row.created_at),
+                "code": row.event_code,
+                "severity": row.severity,
+                "category": row.category,
+                "message": (row.message or "")[:500],
+                "equipment": _equipment_ref(row.equipment) if row.equipment_id else None,
+                "booking": _booking_ref(booking_id, None),
+                "correlation_id": str(row.correlation_id) if row.correlation_id else "",
+            },
+        )
+    return out
+
+
+def _recent_uploads(agent: DepartmentSyncAgent, now, limit: int = 40) -> list[dict]:
+    """Recent upload sessions with their result-processing outcome, for the agent -> booking/result drill-down."""
+    from iic_booking.sync.models import AgentUploadSession
+    from iic_booking.sync.models import ResultProcessingQueue
+
+    sessions = list(
+        AgentUploadSession.objects.filter(sync_agent=agent, created_at__gte=now - timedelta(days=30))
+        .select_related("booking", "equipment")
+        .order_by("-created_at")[:limit],
+    )
+    jobs: dict = {}
+    for job in (
+        ResultProcessingQueue.objects.filter(upload_session__in=sessions)
+        .only("upload_session_id", "status", "error_message", "retry_count", "parser_used", "completed_at")
+        .order_by("-created_at")
+    ):
+        jobs.setdefault(job.upload_session_id, job)
+    out = []
+    for s in sessions:
+        job = jobs.get(s.id)
+        out.append(
+            {
+                "id": str(s.id),
+                "file_name": s.file_name,
+                "status": s.status,
+                "bytes_received": s.bytes_received,
+                "expected_size": s.expected_size,
+                "created_at": _iso(s.created_at),
+                "completed_at": _iso(s.completed_at),
+                "last_error": (s.last_error or "")[:300],
+                "booking": _booking_ref(s.booking_id, s.booking),
+                "equipment": _equipment_ref(s.equipment) if s.equipment_id else None,
+                "processing": (
+                    {
+                        "status": job.status,
+                        "error": (job.error_message or "")[:300],
+                        "retry_count": job.retry_count,
+                        "parser": job.parser_used,
+                        "completed_at": _iso(job.completed_at),
+                    }
+                    if job
+                    else None
+                ),
+            },
+        )
+    return out
+
+
+def _recent_workspaces(agent: DepartmentSyncAgent, limit: int = 40) -> list[dict]:
+    from iic_booking.sync.models import BookingWorkspace
+
+    rows = (
+        BookingWorkspace.objects.filter(sync_agent=agent)
+        .select_related("booking", "equipment")
+        .order_by("-updated_at")[:limit]
+    )
+    return [
+        {
+            "id": str(w.id),
+            "workspace_name": w.workspace_name,
+            "status": w.status,
+            "relative_folder": w.relative_folder,
+            "expected_result_folder": w.expected_result_folder,
+            "booking": _booking_ref(w.booking_id, w.booking),
+            "equipment": _equipment_ref(w.equipment) if w.equipment_id else None,
+            "updated_at": _iso(w.updated_at),
+        }
+        for w in rows
+    ]
+
+
 @api_view(["GET"])
 @authentication_classes(PORTAL_ADMIN_AUTH)
 @permission_classes(FLEET_PERM)
 def fleet_detail(request, agent_id):
     """GET /api/v1/sync/admin/fleet/{id}/ — drill-down: diagnostics, Equipment PCs, incidents, commands, bundles."""
-    agent = _fleet_queryset().filter(pk=agent_id).first()
+    agent = _fleet_queryset(include_retired=True).filter(pk=agent_id).first()
     if agent is None:
         return Response({"detail": _("Agent not found.")}, status=status.HTTP_404_NOT_FOUND)
     now = timezone.now()
@@ -272,12 +558,25 @@ def fleet_detail(request, agent_id):
         .order_by("-created_at")[:10],
     )
     latest_hb = agent.heartbeats.order_by("-reported_at").first()
+    probes = _latest_pc_probes(commands)
     return Response(
         {
-            "agent": serialize_summary(agent, state, open_count, now),
+            "agent": serialize_summary(
+                agent,
+                state,
+                open_count,
+                now,
+                latest_version=latest_published_version(),
+                last_command=commands[0] if commands else None,
+            ),
             "reasons": (state.reasons if state else []) or [],
             "diagnostics": (state.diagnostics if state else {}) or {},
-            "equipment_pcs": [_with_verdict(pc, now) for pc in ((state.equipment_pcs if state else []) or [])],
+            "equipment_pcs": [
+                _with_probe(_with_verdict(pc, now), probes) for pc in ((state.equipment_pcs if state else []) or [])
+            ],
+            "sync_events": _recent_sync_events(agent, now),
+            "uploads": _recent_uploads(agent, now),
+            "workspaces": _recent_workspaces(agent),
             "received_at": _iso(state.received_at) if state else None,
             "agent_sent_at": _iso(state.agent_sent_at) if state else None,
             "evaluated_at": _iso(state.evaluated_at) if state else None,

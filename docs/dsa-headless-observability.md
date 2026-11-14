@@ -67,3 +67,22 @@ disables actions they can't run.
 
 The agent redacts text before it leaves the PC: bearer and basic tokens, `password=`/`token=`-style values, JWTs,
 e-mail addresses, Indian mobile numbers, Windows/Unix user profile names, and long hex or base64 strings.
+
+## Console traceability (14 Nov 2026)
+
+The DSA Monitor (`/department-sync?tab=fleet`) drills down fleet -> agent -> Equipment PC -> booking. The fleet API
+adds, without a migration:
+
+- `GET /api/v1/sync/admin/fleet/?include_retired=1` returns retired/revoked agents too (`retired: true`); by default
+  they stay hidden and `retired_count` says how many. Retired agents never count towards health totals and accept no
+  remote actions (the action endpoint still 404s for them); their detail page stays readable.
+- Per agent: `latest_version` (the installer release marked latest), `version_status`
+  (`current`/`outdated`/`ahead`/`unknown`), `share` (results shares ok/failing/unknown across Equipment PCs),
+  `network` (Equipment Network adapter summary), `errors_1h`/`errors_24h`/`warnings_24h`, `last_command`, and
+  `equipment_pc_hosts` (host names and IPs, for search only).
+- Detail: `sync_events` (warning/error SyncLog rows of the last 14 days with event code, equipment and booking id),
+  `uploads` (last 30 days of upload sessions with booking and result-processing outcome), `workspaces` (booking
+  workspaces), and `equipment_pcs[].last_probe` (the latest Refresh Equipment PCs probe for that PC).
+
+Firewall state is not reported by DSA 1.0.10 itself; the console judges it from the SMB write probe that
+"Refresh Equipment PCs" runs (connectivity, SMB status, write test, error category).

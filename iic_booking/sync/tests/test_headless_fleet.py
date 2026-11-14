@@ -482,3 +482,127 @@ def test_power_rules_ignore_missing_lid_and_older_agents():
     _beat(agent, _diagnostics())  # 1.0.7/1.0.8 send no power section
     codes = {r["code"] for r in AgentDiagnosticState.objects.get(sync_agent=agent).reasons}
     assert not codes & {"SLEEP_ENABLED", "RECENT_SLEEP"}
+
+
+# --------------------------------------------------------------------------------------------------------------
+# Console traceability (14 Nov 2026): retired toggle, latest version, share/network, error codes, drill-down
+# --------------------------------------------------------------------------------------------------------------
+
+
+def test_version_status_compares_running_build_with_latest_published():
+    from iic_booking.sync.services.fleet import version_status
+
+    assert version_status("1.0.10", "1.0.10") == "current"
+    assert version_status("1.0.9+abc", "1.0.10") == "outdated"
+    assert version_status("1.0.10.0", "1.0.10") == "current"
+    assert version_status("1.0.11", "v1.0.10") == "ahead"
+    assert version_status("", "1.0.10") == "unknown"
+    assert version_status("1.0.10", "") == "unknown"
+
+
+@pytest.mark.django_db
+def test_fleet_hides_retired_agents_unless_asked_and_reports_latest_version():
+    from datetime import date
+
+    from iic_booking.sync.installer.models import DsaInstallerRelease
+
+    DsaInstallerRelease.objects.create(version="1.0.10", release_date=date(2026, 11, 13), is_latest=True)
+    live = _agent(agent_name="IIC HPE")
+    _beat(live, _diagnostics(service={"version": "1.0.9"}))
+    retired = _agent(agent_name="RAVI", status=AgentLifecycleStatus.RETIRED)
+    client = APIClient()
+    client.force_authenticate(_admin())
+
+    body = client.get("/api/v1/sync/admin/fleet/").json()
+    ids = {r["id"] for r in body["results"]}
+    assert str(live.id) in ids and str(retired.id) not in ids
+    assert body["retired_count"] == 1
+    assert body["latest_version"] == "1.0.10"
+    row = next(r for r in body["results"] if r["id"] == str(live.id))
+    assert row["version_status"] == "outdated"
+    assert row["retired"] is False
+    assert row["network"]["adapter_ip"] == "10.250.0.1"
+
+    body = client.get("/api/v1/sync/admin/fleet/?include_retired=1").json()
+    rrow = next(r for r in body["results"] if r["id"] == str(retired.id))
+    assert rrow["retired"] is True
+    # Retired agents never count towards the health totals and accept no remote actions.
+    assert sum(body["counts"].values()) == 1
+    assert client.get(f"/api/v1/sync/admin/fleet/{retired.id}/").status_code == 200
+    resp = client.post(f"/api/v1/sync/admin/fleet/{retired.id}/actions/", {"action": "run_diagnostics"}, format="json")
+    assert resp.status_code == 404
+
+
+@pytest.mark.django_db
+def test_fleet_detail_traces_error_codes_uploads_bookings_and_pc_probes():
+    from iic_booking.sync.models import AgentUploadSession
+    from iic_booking.sync.models import SyncLog
+
+    agent = _agent()
+    pc = {
+        "id": "pc-1",
+        "hostname": "MPAES-PC",
+        "registration_status": "Registered",
+        "online": True,
+        "last_heartbeat_at": timezone.now().isoformat(),
+        "share_ok": False,
+    }
+    _beat(agent, _diagnostics(), pcs=[pc])
+    SyncLog.objects.create(
+        sync_agent=agent,
+        event_code="RESULT-2007",
+        severity="ERROR",
+        category="UPLOAD",
+        message="Result upload retried",
+        json_payload={"booking_id": 4321},
+    )
+    SyncLog.objects.create(sync_agent=agent, event_code="HB-1000", severity="INFO", category="HEARTBEAT", message="ok")
+    AgentUploadSession.objects.create(
+        sync_agent=agent,
+        agent_upload_id=uuid.uuid4(),
+        file_name="scan.csv",
+        relative_path="b1/scan.csv",
+        expected_size=10,
+        expected_chunk_count=1,
+        chunk_size=10,
+        status="FAILED",
+        last_error="checksum mismatch",
+        expires_at=timezone.now() + timedelta(hours=1),
+    )
+    AgentCommand.objects.create(
+        sync_agent=agent,
+        command_type=AgentCommandType.REFRESH_EQUIPMENT_PCS,
+        status=AgentCommandStatus.COMPLETED,
+        completed_at=timezone.now(),
+        payload={"action": "refresh_equipment_pcs"},
+        result_payload={
+            "decision": "probed",
+            "results": [
+                {
+                    "equipment_pc_id": "pc-1",
+                    "hostname": "MPAES-PC",
+                    "success": False,
+                    "connectivity": "Reachable",
+                    "smb_status": "AccessDenied",
+                    "write_test": False,
+                    "error_category": "Firewall",
+                    "message": "SMB port 445 blocked",
+                },
+            ],
+        },
+    )
+    client = APIClient()
+    client.force_authenticate(_admin())
+    detail = client.get(f"/api/v1/sync/admin/fleet/{agent.id}/").json()
+
+    assert [e["code"] for e in detail["sync_events"]] == ["RESULT-2007"]
+    assert detail["sync_events"][0]["booking"]["id"] == 4321
+    assert detail["uploads"][0]["status"] == "FAILED"
+    assert detail["uploads"][0]["last_error"] == "checksum mismatch"
+    probe = detail["equipment_pcs"][0]["last_probe"]
+    assert probe["error_category"] == "Firewall"
+    assert probe["smb_status"] == "AccessDenied"
+    assert detail["agent"]["share"] == {"ok": 0, "failing": 1, "unknown": 0}
+    assert detail["agent"]["last_command"]["action"] == "refresh_equipment_pcs"
+    assert detail["workspaces"] == []
+    assert "MPAES-PC" in detail["agent"]["equipment_pc_hosts"]
