@@ -2222,6 +2222,8 @@ class AgentCommandType:
     RETRY_FAILED_UPLOADS = "RETRY_FAILED_UPLOADS"
     COLLECT_SUPPORT_BUNDLE = "COLLECT_SUPPORT_BUNDLE"
     REFRESH_EQUIPMENT_PCS = "REFRESH_EQUIPMENT_PCS"
+    # RAA large data (DSA 1.0.11+): measure the link to cloud storage (payload has presigned PUT/GET URLs).
+    SPEED_TEST = "SPEED_TEST"
 
 
 class AgentCommand(models.Model):
@@ -3059,3 +3061,49 @@ class AgentSupportBundle(models.Model):
 
     def __str__(self) -> str:
         return self.file_name
+
+
+class DirectResultUploadStatus(models.TextChoices):
+    PENDING = "pending", _("Pending")
+    DONE = "done", _("Done")
+    FAILED = "failed", _("Failed")
+
+
+class DirectResultUpload(models.Model):
+    """A raw-data file the Equipment PC (DSA >= 1.0.11) uploads straight to the results bucket (presigned multipart).
+
+    ``id`` is the ``file_id`` the agent uses. On completion the file is recorded against the booking exactly as
+    ``uploads/complete/`` does (AgentUploadSession + EquipmentResult + ResultAttachment with ``s3_key``).
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    sync_agent = models.ForeignKey(DepartmentSyncAgent, on_delete=models.CASCADE, related_name="direct_uploads")
+    booking = models.ForeignKey(
+        "equipment.Booking", on_delete=models.SET_NULL, null=True, blank=True, related_name="direct_result_uploads"
+    )
+    equipment = models.ForeignKey(
+        "equipment.Equipment", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    agent_upload_id = models.UUIDField(default=uuid.uuid4, db_index=True)
+    rel_path = models.CharField(max_length=1024)
+    file_name = models.CharField(max_length=500)
+    size = models.BigIntegerField(default=0)
+    sha256 = models.CharField(max_length=64, blank=True, default="")
+    key = models.CharField(max_length=1024)
+    upload_id = models.CharField(max_length=1024, blank=True, default="")
+    part_size = models.BigIntegerField(default=0)
+    status = models.CharField(max_length=16, choices=DirectResultUploadStatus.choices, default=DirectResultUploadStatus.PENDING)
+    attachment = models.ForeignKey(
+        "sync.ResultAttachment", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    last_error = models.CharField(max_length=300, blank=True, default="")
+    bytes_done = models.BigIntegerField(default=0)
+    last_progress_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["sync_agent", "status"], name="sync_direct_upload_idx")]
+
+    def __str__(self) -> str:
+        return f"direct {self.file_name} ({self.status})"

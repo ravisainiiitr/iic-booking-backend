@@ -172,6 +172,22 @@ class RemoteAnalysisSettings(models.Model):
         default=True,
         help_text=_("When True, Analyze Data prefers Equipment→Workflow mappings over legacy single-software."),
     )
+    # Remote Analysis large data (14 Nov 2026): agents move bulk bytes straight to/from S3.
+    transfer_max_booking_bytes = models.BigIntegerField(
+        default=0,
+        help_text=_("Largest total size of input or results one booking may move (bytes); 0 = no limit."),
+    )
+    transfer_active_session_mbps = models.PositiveIntegerField(
+        default=0,
+        help_text=_(
+            "Transfer cap (Mbps) while someone is working on the Analysis PC; 0 = 40% of the last measured "
+            "uplink, at least 20 Mbps."
+        ),
+    )
+    transfer_cache_max_gb = models.PositiveIntegerField(
+        default=200,
+        help_text=_("Analysis PC raw-data cache size before least recently used datasets are removed (GB)."),
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -288,6 +304,11 @@ class RemoteDesktopSession(models.Model):
     last_activity_at = models.DateTimeField(null=True, blank=True)
     reconnect_count = models.PositiveIntegerField(default=0)
     failure_detail = models.TextField(blank=True, default="")
+    keep_running_until = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_("Keep running: the browser was closed but the Windows session stays logged on until then."),
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

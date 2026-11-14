@@ -88,3 +88,45 @@ def ensure_scheduler_periodic_tasks(sender, **kwargs):
             )
     except Exception:
         logger.exception("Failed to seed remote analysis scheduler periodic tasks")
+
+
+# --- Large data: raw-data pre-load follows the reservation (14 Nov 2026) -------------------------------------------
+
+from django.db import transaction  # noqa: E402
+from django.db.models.signals import post_save  # noqa: E402
+
+
+def _preload_watch_reservation(sender, instance, **kwargs):
+    from iic_booking.remote_analysis.large_data import preload
+
+    reservation_id = instance.pk
+    transaction.on_commit(lambda: preload.sync_reservation_id(reservation_id))
+
+
+def _preload_watch_setup(sender, instance, created=False, **kwargs):
+    from iic_booking.remote_analysis.large_data import preload
+
+    booking_id = instance.booking_id
+
+    def _run():
+        from iic_booking.equipment.models import Booking
+
+        booking = Booking.objects.filter(pk=booking_id).first()
+        if booking is not None:
+            try:
+                preload.on_input_changed(booking)
+            except Exception:  # noqa: BLE001
+                logger.exception("Pre-load re-queue failed for booking %s", booking_id)
+
+    transaction.on_commit(_run)
+
+
+def _connect_preload_signals() -> None:
+    from iic_booking.remote_analysis.scheduler_models import AnalysisReservation
+    from iic_booking.remote_analysis.workspace_models import BookingAnalysisSetup
+
+    post_save.connect(_preload_watch_reservation, sender=AnalysisReservation, dispatch_uid="ra_preload_reservation")
+    post_save.connect(_preload_watch_setup, sender=BookingAnalysisSetup, dispatch_uid="ra_preload_setup")
+
+
+_connect_preload_signals()

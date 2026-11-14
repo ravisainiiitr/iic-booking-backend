@@ -266,12 +266,19 @@ class CommandService:
                 workspace_id = (command.payload or {}).get("workspace_id")
                 if workspace_id:
                     ws_obj = AnalysisWorkspace.objects.filter(pk=workspace_id).first()
-                    if ws_obj:
+                    collect_session = str((command.payload or {}).get("session_id") or "")
+                    handed_to_outbox = False
+                    if ws_obj and success and command.command_type == CommandType.COLLECT_WORKSPACE:
+                        from iic_booking.remote_analysis.large_data.outbox import handle_collect_complete
+
+                        # RAA >= 1.0.40 moves the results into its outbox and uploads them afterwards.
+                        handed_to_outbox = handle_collect_complete(ws_obj, collect_session, result)
+                    if ws_obj and not handed_to_outbox:
                         WorkspaceSyncService().mark_synced(
                             ws_obj,
                             success=success,
                             message=message,
-                            session_id=str((command.payload or {}).get("session_id") or ""),
+                            session_id=collect_session,
                         )
             except Exception:
                 logger.exception(
@@ -284,6 +291,21 @@ class CommandService:
             from iic_booking.equipment.remote_analysis_integration.pc_folders import store_browse_result
 
             store_browse_result(command, result)
+
+        if command.command_type == CommandType.SPEED_TEST:
+            from iic_booking.remote_analysis.large_data.speedtest import store_command_result
+
+            try:
+                store_command_result(command, result, success=success, message=message)
+            except Exception:
+                logger.exception("Failed to store SPEED_TEST result (%s)", command.id)
+
+        if command.command_type == CommandType.PRELOAD_INPUT and not success:
+            from iic_booking.remote_analysis.transfer_models import InputPreload, PreloadState
+
+            InputPreload.objects.filter(command_id=command.id).exclude(state=PreloadState.DISCARDED).update(
+                state=PreloadState.FAILED, detail=(message or "The Analysis PC could not pre-load the data.")[:300]
+            )
 
         if command.command_type == CommandType.PLACE_INPUT:
             from iic_booking.equipment.remote_analysis_integration.input_placement import store_place_result

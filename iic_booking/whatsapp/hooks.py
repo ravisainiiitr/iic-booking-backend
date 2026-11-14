@@ -208,3 +208,17 @@ def remote_analysis_ready(reservation, minutes: int) -> None:
     opened = reservation.checkin_notified_at or timezone.now()
     _notify(reservation.user, "remote_analysis_ready", [_person(reservation.user), _ref(booking), _equipment(booking), str(int(minutes))],
             f"ra:{reservation.pk}:ready:{opened.isoformat()}")
+
+
+@_guarded
+def remote_analysis_results_uploaded(outbox, where: str = "") -> None:
+    """The Analysis PC finished uploading a session's results outbox to My Research. One message per outbox."""
+    booking = getattr(outbox, "booking", None)
+    if booking is None or outbox.user is None:
+        return
+    from iic_booking.remote_analysis.large_data.outbox import _human
+
+    count = int(outbox.files_total or 0)
+    files = f"{count} file{'s' if count != 1 else ''} ({_human(outbox.bytes_total)})"
+    _notify(outbox.user, "remote_analysis_results_uploaded", [_person(outbox.user), _ref(booking), _equipment(booking), files],
+            f"ra:{outbox.session_id}:results_uploaded")

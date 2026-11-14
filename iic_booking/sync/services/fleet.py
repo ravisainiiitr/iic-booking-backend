@@ -75,6 +75,8 @@ ACTIONS: dict[str, dict[str, Any]] = {
         "label": "Refresh Equipment PCs",
     },
     "run_diagnostics": {"command": AgentCommandType.RUN_DIAGNOSTICS, "label": "Run diagnostics"},
+    # RAA large data: link speed to cloud storage (DSA >= 1.0.11 advertises SPEED_TEST).
+    "speed_test": {"command": AgentCommandType.SPEED_TEST, "label": "Test link speed", "cooldown_minutes": 30},
 }
 
 # Disabled agents stay visible (with a reason); revoked/retired/deleted ones are gone from the fleet.
@@ -216,6 +218,7 @@ def serialize_summary(
         "open_incidents": open_incidents,
         "clock_skew_seconds": state.clock_skew_seconds if state else None,
         "diagnostics_supported": bool(diag) and not diag.get("stale"),
+        "speed_test": _speed_test(agent),
     }
 
 
@@ -290,6 +293,11 @@ def _network_summary(diag: dict) -> dict:
         "ip_matches_config": net.get("ip_matches_config"),
         "subnet": net.get("subnet"),
     }
+def _speed_test(agent) -> dict | None:
+    from iic_booking.remote_analysis.large_data import speedtest
+
+    return speedtest.serialize(speedtest.latest_for(sync_agent=agent))
+
 
 
 @api_view(["GET"])
@@ -668,6 +676,14 @@ def fleet_action(request, agent_id):
     payload: dict[str, Any] = {"reason": reason, "requested_via": "fleet_dashboard", "action": key}
     if force:
         payload["force"] = True
+    if command_type == AgentCommandType.SPEED_TEST:
+        from iic_booking.remote_analysis.large_data import speedtest
+        from iic_booking.remote_analysis.large_data.common import TransferError
+
+        try:
+            payload.update(speedtest.issue_for_dsa(agent, requested_by=user))
+        except TransferError as exc:
+            return Response(exc.as_dict(), status=exc.status)
     cmd = AgentCommand.objects.create(
         sync_agent=agent,
         command_type=command_type,

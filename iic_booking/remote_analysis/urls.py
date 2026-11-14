@@ -13,6 +13,7 @@ from iic_booking.remote_analysis.operations import views as ops_views
 from iic_booking.remote_analysis.collaboration import views as collab_views
 from iic_booking.remote_analysis import health as health_views
 from iic_booking.remote_analysis.installer import views as installer_views
+from iic_booking.remote_analysis.large_data import views as large_data_views
 
 app_name = "remote_analysis"
 
@@ -27,6 +28,41 @@ urlpatterns = [
     path("inventory/", views.inventory, name="inventory"),
     path("commands/", views.commands_poll, name="commands-poll"),
     path("commands/<uuid:command_id>/complete/", views.command_complete, name="command-complete"),
+    # Large data (agent token): speed test, raw-data pre-load, results outbox
+    path("agent/speed-test/<uuid:test_id>/result/", large_data_views.agent_speed_test_result, name="agent-speed-test-result"),
+    path(
+        "agent/transfers/input/<uuid:reservation_id>/manifest/",
+        large_data_views.agent_input_manifest,
+        name="agent-input-manifest",
+    ),
+    path(
+        "agent/transfers/input/<uuid:reservation_id>/progress/",
+        large_data_views.agent_input_progress,
+        name="agent-input-progress",
+    ),
+    path(
+        "agent/transfers/input/<uuid:reservation_id>/files/<str:file_id>/content/",
+        large_data_views.agent_input_file_content,
+        name="agent-input-file-content",
+    ),
+    path("agent/transfers/output/<uuid:session_id>/init/", large_data_views.agent_output_init, name="agent-output-init"),
+    path("agent/transfers/output/<uuid:session_id>/parts/", large_data_views.agent_output_parts, name="agent-output-parts"),
+    path("agent/transfers/output/<uuid:session_id>/state/", large_data_views.agent_output_state, name="agent-output-state"),
+    path(
+        "agent/transfers/output/<uuid:session_id>/complete/",
+        large_data_views.agent_output_complete,
+        name="agent-output-complete",
+    ),
+    path(
+        "agent/transfers/output/<uuid:session_id>/progress/",
+        large_data_views.agent_output_progress,
+        name="agent-output-progress",
+    ),
+    path(
+        "workstations/<uuid:workstation_id>/speed-test/",
+        large_data_views.workstation_speed_test,
+        name="workstation-speed-test",
+    ),
     # Portal management
     path("workstations/", views.workstations_list, name="workstations-list"),
     path("workstations/<uuid:workstation_id>/", views.workstation_detail, name="workstation-detail"),

@@ -1249,3 +1249,94 @@ def operations_maintenance(request):
         monitoring_days=body.get("monitoring_days"),
     )
     return Response(result, status=status.HTTP_200_OK)
+
+
+# --- RAA large data (14 Nov 2026): direct-to-S3 multipart uploads + speed test result ------------------------------
+
+
+def _direct(handler, request, **kwargs):
+    from iic_booking.my_research.storage import ResearchStorageError
+    from iic_booking.remote_analysis.large_data.common import TransferError
+
+    data = request.data if isinstance(request.data, dict) else {}
+    try:
+        return Response(handler(request.sync_agent, data, **kwargs), status=status.HTTP_200_OK)
+    except TransferError as exc:
+        return Response(exc.as_dict(), status=exc.status)
+    except SyncControlPlaneError as exc:
+        return _error_response(exc)
+    except ResearchStorageError:
+        logger.warning("Direct upload storage call failed")
+        return Response({"code": "storage_error", "detail": "Cloud storage is not reachable; retry shortly."}, status=503)
+
+
+@api_view(["POST"])
+@authentication_classes(_AGENT_AUTH)
+@permission_classes(_AGENT_PERM)
+def multipart_init(request):
+    """POST /api/v1/sync/uploads/multipart/init/ {booking_id, equipment_id?, files:[{rel_path, size, sha256}]}"""
+    from iic_booking.sync.services import multipart
+
+    return _direct(multipart.init, request)
+
+
+@api_view(["POST"])
+@authentication_classes(_AGENT_AUTH)
+@permission_classes(_AGENT_PERM)
+def multipart_parts(request):
+    """POST /api/v1/sync/uploads/multipart/parts/ {file_id, part_numbers:[...]}"""
+    from iic_booking.sync.services import multipart
+
+    return _direct(multipart.parts, request)
+
+
+@api_view(["GET", "POST"])
+@authentication_classes(_AGENT_AUTH)
+@permission_classes(_AGENT_PERM)
+def multipart_state(request):
+    """GET/POST /api/v1/sync/uploads/multipart/state/ {file_ids?:[...], booking_id?}"""
+    from iic_booking.sync.services import multipart
+
+    if request.method == "GET":
+        data = {"booking_id": request.query_params.get("booking_id")}
+        ids = request.query_params.getlist("file_id")
+        if ids:
+            data["file_ids"] = ids
+        try:
+            return Response(multipart.state(request.sync_agent, data))
+        except Exception:  # noqa: BLE001
+            logger.exception("multipart state failed")
+            return Response({"code": "storage_error", "detail": "Cloud storage is not reachable; retry shortly."}, status=503)
+    return _direct(multipart.state, request)
+
+
+@api_view(["POST"])
+@authentication_classes(_AGENT_AUTH)
+@permission_classes(_AGENT_PERM)
+def multipart_complete(request):
+    """POST /api/v1/sync/uploads/multipart/complete/ {file_id, parts:[{n, etag}], sha256}"""
+    from iic_booking.sync.services import multipart
+
+    return _direct(multipart.complete, request, correlation_id=_correlation_id(request))
+
+
+@api_view(["POST"])
+@authentication_classes(_AGENT_AUTH)
+@permission_classes(_AGENT_PERM)
+def speed_test_result(request, test_id):
+    """POST /api/v1/sync/speed-test/{test_id}/result/ {upload_mbps, download_mbps, bytes, seconds, measured_at}"""
+    from iic_booking.remote_analysis.large_data import speedtest
+    from iic_booking.remote_analysis.large_data.common import TransferError
+    from iic_booking.remote_analysis.transfer_models import SpeedTestStatus, TransferSpeedTest
+
+    test = TransferSpeedTest.objects.filter(pk=test_id, sync_agent=request.sync_agent).first()
+    if test is None:
+        return Response({"code": "not_found", "detail": "Unknown speed test."}, status=404)
+    if test.status != SpeedTestStatus.PENDING:
+        return Response(speedtest.serialize(test))
+    data = request.data if isinstance(request.data, dict) else {}
+    ok = data.get("success", True) not in (False, "false", 0)
+    try:
+        return Response(speedtest.serialize(speedtest.record_result(test, data, success=ok, message=str(data.get("detail") or ""))))
+    except TransferError as exc:
+        return Response(exc.as_dict(), status=exc.status)

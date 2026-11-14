@@ -761,6 +761,16 @@ class BookingRemoteAnalysisService:
             orch.try_advance_after_prepare(session)
             session.refresh_from_db()
 
+        # Reconnecting to a kept-running session: its browser connection was closed, open a fresh one.
+        from iic_booking.remote_analysis.large_data import keep_running as _keep_running
+
+        if _keep_running.needs_reprovision(session):
+            try:
+                orch._provision_guacamole(session)
+                session.refresh_from_db()
+            except Exception:  # noqa: BLE001
+                logger.exception("Reconnect provisioning failed for kept session %s", session.pk)
+
         if was_new:
             # Only consume a session slot once prepare/Guacamole provisioning succeeds.
             # Failed prepare attempts (timeouts, agent blips) must not permanently

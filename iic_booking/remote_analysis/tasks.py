@@ -124,6 +124,12 @@ def expire_desktop_sessions() -> dict:
 
     expired = SessionCleanupService().cleanup_expired()
     idle = SessionCleanupService().cleanup_idle()
+    try:
+        from iic_booking.remote_analysis.large_data.outbox import sweep_stalled
+
+        sweep_stalled()
+    except Exception:  # noqa: BLE001
+        logger.exception("Results outbox stall sweep failed")
     logger.info("expire_desktop_sessions expired=%s idle=%s", expired, idle)
     return {"expired": expired, "idle_terminated": idle}
 
