@@ -129,4 +129,4 @@ def test_fleet_speed_test_action_and_result(big_s3, settings):
     test = TransferSpeedTest.objects.get(pk=cmd.payload["test_id"])
     assert test.status == SpeedTestStatus.COMPLETED and test.sync_agent_id == agent.id
     row = next(r for r in client.get("/api/v1/sync/admin/fleet/").json()["results"] if r["id"] == str(agent.id))
-    assert row["speed_test"]["upload_mbps"] == 95.5
+    assert row["speed_test"]["upload_mbps"] == 95.5 and row["link_speed"]["download_mbps"] == 300

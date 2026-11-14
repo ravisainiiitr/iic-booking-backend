@@ -246,17 +246,22 @@ def setup_payload(booking, user) -> dict[str, Any]:
         },
         "agent": _agent(workspace, booking),
         "eligibility": BookingAnalysisEligibilityService().evaluate(booking).as_dict(),
-        "transfer": _transfer_info(ws_for_output),
+        "transfer": _transfer_info(booking, ws_for_output),
     }
 
 
-def _transfer_info(workstation) -> dict[str, Any]:
-    """Size limit and the Analysis PC's last measured link speed, for the size warning and ETA (RAA large data)."""
-    from iic_booking.remote_analysis.large_data import speedtest
+def _transfer_info(booking, workstation) -> dict[str, Any]:
+    """Size limit, input size and the Analysis PC's last measured link speed (contract v1.2), for the size warning and ETA."""
+    from iic_booking.remote_analysis.large_data import preload, speedtest
     from iic_booking.remote_analysis.large_data.common import booking_size_limit
 
     latest = speedtest.latest_for(workstation=workstation) if workstation is not None else None
-    return {"max_booking_bytes": booking_size_limit() or None, "speed_test": speedtest.serialize(latest)}
+    return {
+        "size_limit_bytes": booking_size_limit() or None,
+        "input_bytes": preload.input_bytes(booking),
+        "download_mbps": latest.download_mbps if latest is not None else None,
+        "upload_mbps": latest.upload_mbps if latest is not None else None,
+    }
 
 
 def _resolve_project(user, data: dict[str, Any], booking):

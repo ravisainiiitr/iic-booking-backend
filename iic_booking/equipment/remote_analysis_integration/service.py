@@ -95,6 +95,14 @@ class BookingRemoteAnalysisService:
                 "equipment_code": getattr(booking.equipment, "code", "") or "",
             }
         try:
+            from iic_booking.remote_analysis.large_data.outbox import payload_for as _output_upload
+
+            # Results outbox of the booking's last session (RAA large data, contract v1.2).
+            payload["output_upload"] = _output_upload(booking)
+        except Exception:  # noqa: BLE001
+            logger.exception("output_upload summary failed for booking %s", booking.pk)
+            payload["output_upload"] = None
+        try:
             payload["analyze"] = self.get_analyze_context(booking, user=user, request=request)
             payload["button_label"] = payload["analyze"].get("button_label")
             payload["software_options"] = payload["analyze"].get("software_options")

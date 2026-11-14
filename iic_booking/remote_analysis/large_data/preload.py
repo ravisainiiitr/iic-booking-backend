@@ -257,12 +257,13 @@ def _research_entries(link) -> list[dict[str, Any]]:
     return rows
 
 
-def _workspace_entries(reservation) -> list[dict[str, Any]]:
+def _workspace_entries(reservation, booking=None) -> list[dict[str, Any]]:
     from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace, WorkspaceFile
 
-    workspace = AnalysisWorkspace.objects.filter(reservation=reservation).first()
-    if workspace is None and reservation.booking_id:
-        workspace = AnalysisWorkspace.objects.filter(booking_id=reservation.booking_id).order_by("-created_at").first()
+    workspace = AnalysisWorkspace.objects.filter(reservation=reservation).first() if reservation is not None else None
+    booking_id = booking.pk if booking is not None else getattr(reservation, "booking_id", None)
+    if workspace is None and booking_id:
+        workspace = AnalysisWorkspace.objects.filter(booking_id=booking_id).order_by("-created_at").first()
     if workspace is None:
         return []
     rows = []
@@ -285,11 +286,12 @@ def _workspace_entries(reservation) -> list[dict[str, Any]]:
     return rows
 
 
-def input_entries(reservation) -> list[dict[str, Any]]:
+def input_entries(reservation=None, *, booking=None) -> list[dict[str, Any]]:
     """Every file of the booking's chosen input, with private ``_`` fields used to sign URLs or stream."""
     from iic_booking.equipment.remote_analysis_integration.analysis_setup import get_setup, setup_link
 
-    booking = reservation.booking if reservation.booking_id else None
+    if booking is None:
+        booking = reservation.booking if reservation is not None and reservation.booking_id else None
     if booking is None:
         return []
     setup = get_setup(booking)
@@ -303,9 +305,18 @@ def input_entries(reservation) -> list[dict[str, Any]]:
             rows += [r for r in _booking_entries(setup.input_booking) if (r["rel_path"].lower(), r["size"]) not in have]
         return rows
     if setup is not None and setup.input_source == "upload":
-        return _workspace_entries(reservation)
+        return _workspace_entries(reservation, booking)
     input_booking = setup.input_booking if setup is not None and setup.input_booking_id else booking
     return _booking_entries(input_booking)
+
+
+def input_bytes(booking) -> int | None:
+    """Total size of the booking's chosen input (for the setup popup's size warning); None when unknown."""
+    try:
+        return sum(int(r["size"] or 0) for r in input_entries(booking=booking))
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not size the input of booking %s", getattr(booking, "pk", None))
+        return None
 
 
 def content_path(reservation_id, file_id: str) -> str:

@@ -444,6 +444,17 @@ def destination_label(outbox: OutputUpload) -> str | None:
     return f"My Research › {dest['path_label']}" if dest else None
 
 
+def my_research_href(outbox: OutputUpload) -> str | None:
+    """Frontend link to the booking's Processed Data folder (``/my-research/<project>?folder=<id>``)."""
+    if outbox.research_link_id is None:
+        return None
+    dest = _research().processed_destination(outbox.research_link)
+    if not dest:
+        return None
+    href = f"/my-research/{dest['workspace_id']}"
+    return f"{href}?folder={dest['folder_id']}" if dest.get("folder_id") else href
+
+
 def finish(outbox: OutputUpload) -> None:
     with transaction.atomic():
         locked = OutputUpload.objects.select_for_update().get(pk=outbox.pk)
@@ -494,7 +505,7 @@ def notify_complete(outbox_id) -> None:
         f"All {outbox.files_total} result file{'s' if outbox.files_total != 1 else ''} of booking {ref} "
         f"({_human(outbox.bytes_total)}) are in {where}."
     ).replace("booking  (", "your session (")
-    link = "/my-research"
+    link = my_research_href(outbox) or "/my-research"
     try:
         from iic_booking.communication.in_app import notify_in_app
 
@@ -621,7 +632,8 @@ def payload_for(booking) -> dict[str, Any] | None:
         fallback = latest.upload_mbps if latest is not None else None
     return {
         "session_id": str(outbox.session_id),
-        "state": outbox.state,
+        # The UI's names (contract v1.2): "done" instead of the agent-facing "complete".
+        "state": "done" if outbox.state == OutputState.COMPLETE else outbox.state,
         "bytes_done": outbox.bytes_done,
         "bytes_total": outbox.bytes_total,
         "files_done": outbox.files_done,
@@ -631,6 +643,7 @@ def payload_for(booking) -> dict[str, Any] | None:
         else eta_seconds(outbox.bytes_done, outbox.bytes_total, outbox.rate_bps, fallback),
         "paused_reason": outbox.paused_reason or None,
         "destination_label": destination_label(outbox),
+        "my_research_href": my_research_href(outbox),
         "completed_at": outbox.completed_at.isoformat() if outbox.completed_at else None,
     }
 

@@ -162,6 +162,7 @@ def test_admin_queues_speed_test_and_agent_reports_result(ra_user, eligible_work
     assert summary["latest"]["download_mbps"] == 870.1 and summary["pending"] is False
     detail = _client(ra_user).get(f"/api/v1/analysis/workstations/{eligible_workstation.id}/").data
     assert detail["speed_test"]["upload_mbps"] == 412.5
+    assert detail["link_speed"] == {"upload_mbps": 412.5, "download_mbps": 870.1, "measured_at": test.measured_at.isoformat()}
 
 
 @pytest.mark.django_db
@@ -328,6 +329,8 @@ def test_manifest_size_limit_and_my_research_source(
     settings_obj = RemoteAnalysisSettings.get_solo()
     settings_obj.transfer_max_booking_bytes = 4
     settings_obj.save()
+    transfer = _client(ra_user).get(_url(booking, "setup")).data["transfer"]
+    assert transfer == {"size_limit_bytes": 4, "input_bytes": len(body), "download_mbps": None, "upload_mbps": None}
     resp = _agent_client(eligible_workstation).get(url)
     assert resp.status_code == 413 and resp.data["code"] == "size_limit" and resp.data["limit_bytes"] == 4
 
@@ -436,6 +439,13 @@ def test_outbox_upload_registers_files_in_processed_data_and_notifies(
     box = OutputUpload.objects.get(session=session)
     assert box.state == OutputState.COMPLETE and box.files_done == 2 and box.bytes_done == len(big) + len(small)
     assert bell.called and "My Research" in bell.call_args.kwargs["message"]
+    done_payload = outbox.payload_for(booking)
+    _, _, processed_folder = research.find_folders(workspace.research_link)
+    assert done_payload["state"] == "done" and done_payload["eta_seconds"] is None
+    assert done_payload["my_research_href"] == f"/my-research/{workspace.research_link.workspace_id}?folder={processed_folder.pk}"
+    assert bell.call_args.kwargs["link"] == done_payload["my_research_href"]
+    summary = _client(ra_user).get(f"/api/v1/bookings/{booking.booking_id}/analysis/").data
+    assert summary["output_upload"]["state"] == "done"
     whatsapp.assert_called_once()
 
     _, _, processed = research.find_folders(workspace.research_link)
@@ -535,6 +545,8 @@ def test_keep_running_disconnects_browser_and_survives_idle(ra_user, eligible_wo
     assert resp.status_code == 200, resp.data
     session.refresh_from_db()
     assert session.status == SessionStatus.READY and session.keep_running_until
+    kr = keep_running.status(session)["keep_running"]
+    assert kr["active"] is True and kr["allowed"] is False and kr["until"] == session.keep_running_until.isoformat()
     assert session.expires_at == session.keep_running_until
     assert _commands(eligible_workstation, CommandType.KEEP_RUNNING).get().payload["logoff"] is False
     reservation.refresh_from_db()
@@ -562,6 +574,7 @@ def test_keep_running_refused_when_someone_waits_and_newcomer_ends_it():
     waiting = _reservation(created_ago=timedelta(minutes=5))
     entry = _enqueue(waiting, ago=timedelta(minutes=5))
     assert keep_running.status(session)["can_keep_running"] is False
+    assert keep_running.status(session)["keep_running"]["reason"].startswith("Someone is waiting")
     with pytest.raises(keep_running.TransferError):
         keep_running.start(session)
     entry.delete()
@@ -619,7 +632,8 @@ def test_experience_payload_has_large_data_fields(ra_user, eligible_workstation,
     booking.refresh_from_db()
     data = AnalysisExperienceBuilder().build(booking)
     assert data["session"]["input_preload"]["eta_seconds"] == 10
-    assert set(data["session"]) >= {"can_keep_running", "keep_running_blocked_reason", "keep_running_until"}
+    assert set(data["session"]) >= {"can_keep_running", "keep_running_blocked_reason", "keep_running_until", "keep_running"}
+    assert set(data["session"]["keep_running"]) == {"allowed", "active", "until", "reason"}
     assert data["output_upload"] is None
 
 

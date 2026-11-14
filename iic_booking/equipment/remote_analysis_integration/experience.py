@@ -504,6 +504,7 @@ class AnalysisExperienceBuilder:
             "can_keep_running": False,
             "keep_running_blocked_reason": None,
             "keep_running_until": None,
+            "keep_running": {"allowed": False, "active": False, "until": None, "reason": None},
         }
         result: dict[str, Any] = {"session": dict(empty_session), "output_upload": None}
         try:

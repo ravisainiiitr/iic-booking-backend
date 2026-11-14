@@ -160,3 +160,10 @@ def store_command_result(command, result: dict[str, Any] | None, *, success: boo
         record_result(test, result, success=success, message=message)
     except TransferError as exc:
         record_result(test, None, success=False, message=exc.detail)
+
+
+def link_speed(test: TransferSpeedTest | None) -> dict[str, Any] | None:
+    """``link_speed`` on fleet rows (contract v1.2)."""
+    if test is None:
+        return None
+    return {"upload_mbps": test.upload_mbps, "download_mbps": test.download_mbps, "measured_at": iso(test.measured_at)}

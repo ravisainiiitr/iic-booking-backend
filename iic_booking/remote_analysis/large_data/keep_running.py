@@ -73,12 +73,22 @@ def status(session, now=None) -> dict[str, Any]:
     """``can_keep_running`` / reason for the session payload."""
     now = now or timezone.now()
     if session is None:
-        return {"can_keep_running": False, "keep_running_blocked_reason": None, "keep_running_until": None}
-    reason = None if is_keeping(session, now) else _blocked_reason(session, now)
+        return {
+            "can_keep_running": False,
+            "keep_running_blocked_reason": None,
+            "keep_running_until": None,
+            "keep_running": {"allowed": False, "active": False, "until": None, "reason": None},
+        }
+    active = is_keeping(session, now)
+    reason = None if active else _blocked_reason(session, now)
+    until = iso(session.keep_running_until) if active else None
+    allowed = not active and reason is None
     return {
-        "can_keep_running": not is_keeping(session, now) and reason is None,
+        "can_keep_running": allowed,
         "keep_running_blocked_reason": reason,
-        "keep_running_until": iso(session.keep_running_until) if is_keeping(session, now) else None,
+        "keep_running_until": until,
+        # The UI's object (contract v1.2).
+        "keep_running": {"allowed": allowed, "active": active, "until": until, "reason": reason},
     }
 
 

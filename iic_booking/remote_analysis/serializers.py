@@ -39,11 +39,17 @@ class AnalysisWorkstationSerializer(serializers.ModelSerializer):
     capabilities = WorkstationCapabilitySerializer(read_only=True)
     department_id = serializers.IntegerField(source="department.id", read_only=True, allow_null=True)
     speed_test = serializers.SerializerMethodField()
+    link_speed = serializers.SerializerMethodField()
 
     def get_speed_test(self, obj):
         from iic_booking.remote_analysis.large_data import speedtest
 
         return speedtest.serialize(speedtest.latest_for(workstation=obj))
+
+    def get_link_speed(self, obj):
+        from iic_booking.remote_analysis.large_data import speedtest
+
+        return speedtest.link_speed(speedtest.latest_for(workstation=obj))
 
     class Meta:
         model = AnalysisWorkstation
@@ -85,6 +91,7 @@ class AnalysisWorkstationSerializer(serializers.ModelSerializer):
             "last_inventory_update",
             "capabilities",
             "speed_test",
+            "link_speed",
             "created_at",
             "updated_at",
         ]

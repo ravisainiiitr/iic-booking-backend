@@ -218,7 +218,7 @@ def serialize_summary(
         "open_incidents": open_incidents,
         "clock_skew_seconds": state.clock_skew_seconds if state else None,
         "diagnostics_supported": bool(diag) and not diag.get("stale"),
-        "speed_test": _speed_test(agent),
+        **_speed_test(agent),
     }
 
 
@@ -293,11 +293,13 @@ def _network_summary(diag: dict) -> dict:
         "ip_matches_config": net.get("ip_matches_config"),
         "subnet": net.get("subnet"),
     }
-def _speed_test(agent) -> dict | None:
+
+
+def _speed_test(agent) -> dict:
     from iic_booking.remote_analysis.large_data import speedtest
 
-    return speedtest.serialize(speedtest.latest_for(sync_agent=agent))
-
+    latest = speedtest.latest_for(sync_agent=agent)
+    return {"speed_test": speedtest.serialize(latest), "link_speed": speedtest.link_speed(latest)}
 
 
 @api_view(["GET"])
