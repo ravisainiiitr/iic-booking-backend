@@ -1,0 +1,246 @@
+# Read-only security assessment of the production host (CISO advisory, Oct 2026): 60-day log review, file integrity,
+# access control, patches and backups. Makes no changes. Prints counts, summaries and attacker-side request lines only;
+# query strings are stripped and no secret, password hash, token or file content is printed.
+name: Security Assessment Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Days of logs to review
+        required: false
+        default: "60"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    env:
+      DAYS: ${{ inputs.days }}
+      # This repository is public, so its Actions logs are too. Every finding goes to this file on the production host
+      # (readable by the server account only); the log carries only counts and pass/attention lines (last step).
+      REPORT: /home/ubuntu/security-reports/probe-${{ github.run_id }}.txt
+    steps:
+      - name: 0 Private report file
+        shell: bash
+        run: |
+          umask 077
+          mkdir -p "$(dirname "$REPORT")" && chmod 700 "$(dirname "$REPORT")"
+          echo "Security assessment probe, run ${{ github.run_id }}, $(date -u +%FT%TZ), last $DAYS days" > "$REPORT"
+          chmod 600 "$REPORT"
+          echo "report: $REPORT"
+
+      - name: 1a Web server logs (Apache, incl. rotated)
+        shell: bash
+        run: |
+          set +e +o pipefail
+          exec >>"$REPORT" 2>&1
+          strip() { sed -E 's/\?[^ "]*//g; s/(Token|token=|t=)[A-Za-z0-9:_-]+/\1***/g'; }
+          cd /var/log/apache2 || exit 0
+          echo "log formats:"; sudo -n grep -rhE '^\s*(CustomLog|LogFormat)' /etc/apache2/sites-enabled /etc/apache2/apache2.conf 2>/dev/null | sed 's/^\s*//' | sort -u
+          echo "files:"; sudo -n ls -la --time-style=+%F /var/log/apache2 | awk '{print $6, $5, $7}'
+          ALL() { sudo -n sh -c 'for f in /var/log/apache2/*access*.log*; do case "$f" in *.gz) zcat "$f";; *) cat "$f";; esac; done' 2>/dev/null; }
+          ALL > /tmp/sa_access.log
+          echo "total access lines: $(wc -l < /tmp/sa_access.log)"
+          awk 'BEGIN{split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec",M," "); for(i in M) m[M[i]]=sprintf("%02d",i)}
+               {d=substr($4,2,11); split(d,a,"/"); k=a[3]"-"m[a[2]]"-"a[1]; if(k!~/--/){c[k]++}}
+               END{n=0; for(k in c){n++; if(min==""||k<min)min=k; if(k>max)max=k}; print "log coverage:", min, "to", max, "(" n " days with traffic)"}' /tmp/sa_access.log
+          SQLI='(union(%20|\+| )+(all(%20|\+| )+)?select|information_schema|sleep\(|benchmark\(|%27(%20|\+)*(or|and)|'"'"'(%20|\+| )*or(%20|\+| )+1=1|xp_cmdshell|pg_sleep|load_file\(|into(%20|\+| )+outfile)'
+          TRAV='(\.\./|%2e%2e%2f|%2e%2e/|/etc/passwd|win\.ini|/proc/self)'
+          PROBE='(wp-admin|wp-login|xmlrpc\.php|phpmyadmin|/\.env|/\.git/|/\.aws|/vendor/phpunit|/cgi-bin/|\.php(\?| |$)|/actuator|/solr/|/boaform|/HNAP1|/owa/|\.asp(x)?( |\?))'
+          SHELL='(cmd=|exec=|/shell|c99|r57|webshell|base64_decode|eval\(|\$\{jndi:|/bin/sh|wget(%20|\+| )http|curl(%20|\+| )http)'
+          for n in SQLI TRAV PROBE SHELL; do
+            pat="${!n}"
+            c=$(grep -ciE "$pat" /tmp/sa_access.log); ok=$(grep -iE "$pat" /tmp/sa_access.log | awk '$9 ~ /^2/' | wc -l)
+            echo "== $n: $c requests, $ok answered 2xx"
+            echo "   top sources:"; grep -iE "$pat" /tmp/sa_access.log | awk '{print $1}' | sort | uniq -c | sort -rn | head -8
+            echo "   2xx answers (method path status bytes):"
+            grep -iE "$pat" /tmp/sa_access.log | awk '$9 ~ /^2/ {print $6, $7, $9, $10}' | strip | sort | uniq -c | sort -rn | head -15
+          done
+          echo "== status classes:"; awk '{print substr($9,1,1)"xx"}' /tmp/sa_access.log | sort | uniq -c
+          echo "== 5xx by path (top 15):"; awk '$9 ~ /^5/ {print $7}' /tmp/sa_access.log | strip | sort | uniq -c | sort -rn | head -15
+          echo "== top sources by bytes sent (possible bulk download):"
+          awk '$10 ~ /^[0-9]+$/ {b[$1]+=$10; n[$1]++} END{for(i in b) printf "%12d MB %8d req %s\n", b[i]/1048576, n[i], i}' /tmp/sa_access.log | sort -rn | head -12
+          echo "== largest single responses (path, MB):"
+          awk '$10 ~ /^[0-9]+$/ && $10 > 50000000 {printf "%d MB %s %s %s\n", $10/1048576, $1, $7, $9}' /tmp/sa_access.log | strip | sort -rn | head -15
+          echo "== export/download endpoints 2xx by source (top 10):"
+          grep -iE '(export|download|/media/)' /tmp/sa_access.log | awk '$9 ~ /^2/ {print $1}' | sort | uniq -c | sort -rn | head -10
+          echo "== auth: login POSTs by status:"; grep -E '"POST [^ ]*(auth/login|admin/login|token)' /tmp/sa_access.log | awk '{print $9}' | sort | uniq -c
+          echo "== auth: sources with most failed login POSTs (4xx):"
+          grep -E '"POST [^ ]*(auth/login|admin/login|token)' /tmp/sa_access.log | awk '$9 ~ /^4/ {print $1}' | sort | uniq -c | sort -rn | head -10
+          echo "== Django admin (/admin/) 2xx by source:"; grep -E '"(GET|POST) /admin/' /tmp/sa_access.log | awk '$9 ~ /^2|^3/ {print $1}' | sort | uniq -c | sort -rn | head -10
+          echo "== error log: notable lines:"
+          sudo -n sh -c 'for f in /var/log/apache2/*error*.log*; do case "$f" in *.gz) zcat "$f";; *) cat "$f";; esac; done' 2>/dev/null \
+            | grep -iE 'denied|modsecurity|attack|overflow|segfault|AH01630|AH00126|client sent malformed' | strip | sed -E 's/^\[[^]]*\] //' | cut -c1-200 | sort | uniq -c | sort -rn | head -15
+          rm -f /tmp/sa_access.log
+
+      - name: 1b Host access (SSH, sudo, logins)
+        shell: bash
+        run: |
+          set +e +o pipefail
+          exec >>"$REPORT" 2>&1
+          AUTH() { sudo -n sh -c 'for f in /var/log/auth.log*; do case "$f" in *.gz) zcat "$f";; *) cat "$f";; esac; done' 2>/dev/null; }
+          echo "auth.log files:"; sudo -n ls -la --time-style=+%F /var/log/auth.log* | awk '{print $6, $5, $7}'
+          echo "== SSH accepted logins (user, method, source):"
+          AUTH | grep -E 'sshd.*Accepted' | sed -E 's/.*Accepted ([a-z-]+) for ([^ ]+) from ([^ ]+).*/\2 \1 \3/' | sort | uniq -c | sort -rn | head -20
+          echo "== SSH failed / invalid user attempts: $(AUTH | grep -cE 'sshd.*(Failed|Invalid user)')"
+          AUTH | grep -E 'sshd.*(Failed|Invalid user)' | grep -oE 'from [0-9a-f.:]+' | sort | uniq -c | sort -rn | head -8
+          echo "== sudo by user (count):"; AUTH | grep -E 'sudo: +[^ ]+ :' | sed -E 's/.*sudo: +([^ ]+) :.*/\1/' | sort | uniq -c
+          echo "== sudo commands by non-runner users (top 20):"
+          AUTH | grep -E 'sudo: +[^ ]+ :.*COMMAND=' | grep -vE "sudo: +$(whoami) :" | sed -E 's/.*sudo: +([^ ]+) :.*COMMAND=(.{0,120}).*/\1 \2/' | sort | uniq -c | sort -rn | head -20
+          echo "== user/group changes:"; AUTH | grep -E 'useradd|userdel|usermod|groupadd|passwd\[|chpasswd' | sed -E 's/^(\S+ +\S+ +\S+).*\]: /\1 /' | tail -20
+          echo "== last logins:"; last -n 25 -F 2>/dev/null | head -28
+          echo "== failed logins (lastb) count: $(sudo -n lastb 2>/dev/null | grep -vc '^$')"
+
+      - name: 1c Application logs (Django container)
+        shell: bash
+        run: |
+          set +e +o pipefail
+          exec >>"$REPORT" 2>&1
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "container=$CID started=$(docker inspect -f '{{.State.StartedAt}}' "$CID")  (container logs cover only since start)"
+          L="$(docker logs --since "${DAYS}d" "$CID" 2>&1 | sed -E 's/\?[^ "]*//g')"
+          echo "lines: $(printf '%s\n' "$L" | wc -l)"
+          for p in 'Invalid credentials|Unable to log in|authentication failed|login failed' 'PermissionDenied|Forbidden' 'DisallowedHost|SuspiciousOperation|SuspiciousFileOperation' 'ProgrammingError|DataError|syntax error at or near' 'Traceback'; do
+            echo "== /$p/: $(printf '%s\n' "$L" | grep -ciE "$p")"
+          done
+          echo "== SQL errors (possible injection probing):"; printf '%s\n' "$L" | grep -iE 'syntax error at or near|unterminated quoted|ProgrammingError' | cut -c1-200 | sort | uniq -c | sort -rn | head -10
+          echo "== DisallowedHost hosts:"; printf '%s\n' "$L" | grep -oE "Invalid HTTP_HOST header: '[^']+'" | sort | uniq -c | sort -rn | head -10
+
+      - name: 3 File integrity (deployed code, web roots, uploads, schedules)
+        shell: bash
+        run: |
+          set +e +o pipefail
+          exec >>"$REPORT" 2>&1
+          DEPLOY=/home/ubuntu/iic-booking-backend
+          cd "$DEPLOY" && echo "deployed: $(git describe --tags --always) $(git rev-parse --short HEAD)"
+          echo "== modified tracked files on the server (should be none):"; git status --porcelain --untracked-files=no | head -30
+          echo "== untracked files (excluding env/backups/logs/media):"
+          git status --porcelain --untracked-files=all | grep '^??' | grep -vE '\.envs/|\.bak|backups?/|\.log$|/media/|__pycache__|\.deploy-state|node_modules' | head -30
+          echo "== Python/HTML files changed after the deploy, outside git:"
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec "$CID" sh -c 'cd /app && find . -path ./staticfiles -prune -o -type f \( -name "*.py" -o -name "*.html" \) -newer /app/manage.py -print 2>/dev/null | head -20'
+          echo "== web roots: files changed in the last $DAYS days that are scripts:"
+          for d in /var/www /home/ubuntu/iic-booking-frontend /home/ubuntu/frontend; do
+            [ -d "$d" ] || continue
+            echo "-- $d"; sudo -n find "$d" -type f \( -iname '*.php*' -o -iname '*.phtml' -o -iname '*.jsp' -o -iname '*.asp*' -o -iname '*.cgi' -o -iname '*.pl' -o -iname '*.sh' -o -iname '*.py' \) 2>/dev/null | head -20
+            echo "   files changed in $DAYS days: $(sudo -n find "$d" -type f -mtime -"$DAYS" 2>/dev/null | wc -l)"
+          done
+          echo "== uploaded media: script-like files (should be none):"
+          docker exec "$CID" sh -c 'for d in /app/iic_booking/media /app/media /media; do [ -d "$d" ] && find "$d" -type f \( -iname "*.php*" -o -iname "*.phtml" -o -iname "*.jsp" -o -iname "*.asp*" -o -iname "*.cgi" -o -iname "*.sh" -o -iname "*.py" -o -iname "*.exe" -o -iname "*.svg" -o -iname "*.htm*" \) 2>/dev/null | sed -E "s#(/[^/]+)$#/<name>#" | sort | uniq -c | head -20; done'
+          echo "== crontabs:"
+          for u in root ubuntu www-data; do echo "-- $u"; sudo -n crontab -l -u "$u" 2>/dev/null | grep -vE '^\s*(#|$)' | sed -E 's/(PASSWORD|TOKEN|KEY|SECRET)=[^ ]+/\1=***/Ig'; done
+          echo "-- /etc/cron.d"; ls -la --time-style=+%F /etc/cron.d 2>/dev/null | awk 'NR>1{print $6, $7}'
+          echo "-- cron.d / cron.daily files changed in $DAYS days:"; sudo -n find /etc/cron* -type f -mtime -"$DAYS" 2>/dev/null
+          echo "== systemd timers:"; systemctl list-timers --all --no-pager 2>/dev/null | head -25
+          echo "== systemd units changed in $DAYS days:"; sudo -n find /etc/systemd/system /lib/systemd/system -type f -mtime -"$DAYS" 2>/dev/null | head -20
+          echo "== recently changed binaries in /usr/local/bin, /tmp executables:"
+          sudo -n find /usr/local/bin /usr/local/sbin -type f -mtime -"$DAYS" 2>/dev/null | head; sudo -n find /tmp /var/tmp /dev/shm -type f -perm -u+x 2>/dev/null | head
+
+      - name: 4 Access control and patches
+        shell: bash
+        run: |
+          set +e +o pipefail
+          exec >>"$REPORT" 2>&1
+          . /etc/os-release; echo "OS: $PRETTY_NAME kernel $(uname -r) up $(uptime -p)"
+          echo "== pending updates: $(apt list --upgradable 2>/dev/null | grep -vc Listing) (security: $(apt list --upgradable 2>/dev/null | grep -c -- '-security'))"
+          [ -f /var/run/reboot-required ] && echo "REBOOT REQUIRED" || echo "no reboot required"
+          echo "unattended-upgrades: $(systemctl is-enabled unattended-upgrades 2>/dev/null)"
+          echo "== accounts with a login shell:"; awk -F: '$7 !~ /(nologin|false|sync)$/ {print $1, $3, $7}' /etc/passwd
+          echo "== accounts with a password set:"; sudo -n awk -F: '$2 !~ /^[!*]/ && $2 != "" {print $1}' /etc/shadow
+          echo "== sudo-capable:"; getent group sudo admin wheel 2>/dev/null; sudo -n grep -rhE '^[^#].*NOPASSWD' /etc/sudoers /etc/sudoers.d 2>/dev/null | sed 's/\s\+/ /g'
+          echo "== SSH authorized keys (fingerprint, comment):"
+          for h in /root /home/*; do f="$h/.ssh/authorized_keys"; sudo -n test -f "$f" || continue; echo "-- $f"; sudo -n ssh-keygen -lf "$f" 2>/dev/null; done
+          echo "== sshd effective settings:"; sudo -n sshd -T 2>/dev/null | grep -E '^(permitrootlogin|passwordauthentication|pubkeyauthentication|kbdinteractiveauthentication|port|maxauthtries|x11forwarding|allowusers|allowgroups) '
+          echo "== listening sockets:"; sudo -n ss -tulpn 2>/dev/null | awk 'NR==1 || /LISTEN|UNCONN/' | awk '{print $1, $5, $7}' | sed -E 's/users:\(\("([^"]+)".*/\1/' | sort -u
+          echo "== firewall:"; sudo -n ufw status 2>/dev/null | head -20; sudo -n iptables -S 2>/dev/null | grep -c . | sed 's/^/iptables rules: /'
+          echo "== docker published ports:"; docker ps --format '{{.Names}} {{.Ports}}'
+          echo "== docker images age:"; docker images --format '{{.Repository}}:{{.Tag}} {{.CreatedSince}}' | head -20
+          echo "== TLS certificate expiry:"; for f in /etc/letsencrypt/live/*/cert.pem; do sudo -n test -f "$f" && echo "$f $(sudo -n openssl x509 -in "$f" -noout -enddate)"; done
+          echo "== Django: privileged accounts and recent admin activity:"
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DAYS="$DAYS" -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import os
+          from datetime import timedelta
+
+          import django
+
+          django.setup()
+          from django.conf import settings
+          from django.contrib.admin.models import LogEntry
+          from django.db import connection
+          from django.utils import timezone
+
+          from iic_booking.users.models import User
+
+          days = int(os.environ.get("DAYS", "60"))
+          since = timezone.now() - timedelta(days=days)
+
+          def m(e):
+              u, _, d = (e or "").partition("@")
+              return (u[:2] + "***@" + d) if d else "***"
+
+          print("DEBUG=", settings.DEBUG, " ALLOWED_HOSTS=", settings.ALLOWED_HOSTS)
+          print("SECURE_SSL_REDIRECT=", getattr(settings, "SECURE_SSL_REDIRECT", None), " SESSION_COOKIE_SECURE=",
+                getattr(settings, "SESSION_COOKIE_SECURE", None), " CSRF_COOKIE_SECURE=", getattr(settings, "CSRF_COOKIE_SECURE", None),
+                " HSTS=", getattr(settings, "SECURE_HSTS_SECONDS", None))
+          for label, qs in (("superusers", User.objects.filter(is_superuser=True)), ("staff (non-superuser)", User.objects.filter(is_staff=True, is_superuser=False))):
+              print(f"{label}: {qs.count()} (active {qs.filter(is_active=True).count()})")
+              for u in qs.filter(is_active=True).order_by("-last_login")[:40]:
+                  stale = (u.last_login is None) or (u.last_login < timezone.now() - timedelta(days=180))
+                  print(f"   {m(u.email)} last_login={u.last_login:%Y-%m-%d}" if u.last_login else f"   {m(u.email)} last_login=never", "STALE" if stale else "", "test" if getattr(u, "is_test_account", False) else "")
+          print("users created in window:", User.objects.filter(date_joined__gte=since).count(), " total:", User.objects.count())
+          print("superusers/staff created in window:", User.objects.filter(date_joined__gte=since).filter(is_staff=True).count())
+          print("admin LogEntry in window by user (top 15):")
+          from django.db.models import Count
+          for r in LogEntry.objects.filter(action_time__gte=since).values("user__email").annotate(n=Count("id")).order_by("-n")[:15]:
+              print("   ", m(r["user__email"]), r["n"])
+          print("admin deletions in window:", LogEntry.objects.filter(action_time__gte=since, action_flag=3).count())
+          with connection.cursor() as c:
+              c.execute("select current_user, version()")
+              print("db user / version:", c.fetchone())
+              c.execute("select rolname, rolsuper, rolcreaterole, rolcreatedb, rolcanlogin from pg_roles where rolname !~ '^(pg_|rds)' order by 1")
+              print("db roles (name, super, createrole, createdb, login):")
+              for r in c.fetchall():
+                  print("   ", r)
+              c.execute("select name, setting from pg_settings where name in ('log_connections','log_disconnections','log_statement','log_min_duration_statement','ssl','password_encryption')")
+              print("db logging/ssl settings:", c.fetchall())
+              c.execute("select usename, client_addr, application_name, count(*) from pg_stat_activity where datname = current_database() group by 1,2,3 order by 4 desc")
+              print("current db sessions (user, client, app, n):")
+              for r in c.fetchall():
+                  print("   ", r)
+          PY
+
+      - name: 5 Backups
+        shell: bash
+        run: |
+          set +e +o pipefail
+          exec >>"$REPORT" 2>&1
+          B=/home/ubuntu/backups
+          [ -d "$B" ] || { echo "no $B"; exit 0; }
+          echo "== backup tree:"; find "$B" -maxdepth 2 -type d | head -20
+          echo "== latest nightly:"; ls -la --time-style=+%F "$B/nightly/latest" 2>/dev/null; ls -la --time-style=+%F "$B/nightly/latest/" 2>/dev/null | awk 'NR>1{print $5, $6, $7}'
+          echo "== nightly sets in the last $DAYS days: $(find "$B/nightly" -mindepth 1 -maxdepth 1 -type d -mtime -"$DAYS" 2>/dev/null | wc -l)"
+          find "$B/nightly" -mindepth 1 -maxdepth 1 -type d -printf '%TY-%Tm-%Td %p\n' 2>/dev/null | sort | tail -5
+          echo "== gzip integrity of the latest dumps:"
+          for f in $(find -L "$B/nightly/latest" -maxdepth 1 -type f -name '*.gz' 2>/dev/null); do gzip -t "$f" 2>/dev/null && echo "OK $(basename "$f") $(du -h "$f" | cut -f1)" || echo "CORRUPT $(basename "$f")"; done
+          echo "== off-host copies (S3 sync in scripts/cron):"
+          grep -rlsE 'aws s3|s3 sync|s3 cp|rclone' /home/ubuntu/*.sh /usr/local/bin "$B" /etc/cron.d 2>/dev/null | head; sudo -n crontab -l -u ubuntu 2>/dev/null | grep -iE 'backup|s3' | sed -E 's/(KEY|SECRET|TOKEN)=[^ ]+/\1=***/Ig'
+          echo "== disk:"; df -h / "$B" | sort -u
+          echo "== AWS identity on host (for RDS snapshots / CloudTrail):"; (command -v aws >/dev/null && aws sts get-caller-identity --query Arn --output text 2>&1 | sed -E 's/[0-9]{12}/<acct>/') || echo "aws cli not installed"
+          command -v aws >/dev/null && aws rds describe-db-instances --query 'DBInstances[].[DBInstanceIdentifier,BackupRetentionPeriod,LatestRestorableTime,StorageEncrypted,PubliclyAccessible,DeletionProtection]' --output text 2>&1 | head
+
+      - name: 6 Summary (counts only; details stay in the private report)
+        if: always()
+        shell: bash
+        run: |
+          set +e +o pipefail
+          echo "Full report on the production host: $REPORT (owner-only). Read it over SSH; it holds IP addresses and account names."
+          grep -E '^(total access lines:|log coverage:|== (SQLI|TRAV|PROBE|SHELL):|== SSH failed / invalid user attempts:|== failed logins \(lastb\) count:|deployed:|== pending updates:|REBOOT REQUIRED|no reboot required|unattended-upgrades:|SECURE_SSL_REDIRECT=|superusers:|staff \(non-superuser\):|users created in window:|superusers/staff created in window:|admin deletions in window:|== nightly sets|OK |CORRUPT )' "$REPORT" \
+            | sed -E 's/[0-9]{1,3}(\.[0-9]{1,3}){3}/<ip>/g; s/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/<email>/g'
+          echo "stale privileged accounts (no login for 180 days): $(grep -c ' STALE' "$REPORT")"
+          echo "modified tracked files on the server: $(cd /home/ubuntu/iic-booking-backend && git status --porcelain --untracked-files=no | wc -l)"
+          echo "DEBUG on production: $(grep -oE '^DEBUG= [A-Za-z]+' "$REPORT" | cut -d' ' -f2)"
+          echo "report lines: $(wc -l < "$REPORT")"
