@@ -254,7 +254,15 @@ class SessionCleanupService:
             ],
         )
         count = 0
+        from iic_booking.remote_analysis.services import handover
+
         for session in qs:
+            # Someone is waiting: hand the PC over and keep this session until they actually join.
+            try:
+                if handover.begin_if_waiting(session, now=now):
+                    continue
+            except Exception:  # noqa: BLE001 - never let the grace logic block normal expiry
+                logger.exception("Handover check failed for session %s", session.pk)
             self.cleanup(session, reason="Session expired", final_status=SessionStatus.EXPIRED)
             count += 1
         return count

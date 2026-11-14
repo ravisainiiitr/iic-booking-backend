@@ -281,6 +281,20 @@ class AnalysisExperienceBuilder:
                 "Someone is waiting for this Analysis PC, so the session cannot be extended. "
                 "Save your work before the time runs out."
             )
+        # No-show grace: the next user has been told the PC is ready; work on until they join.
+        from iic_booking.remote_analysis.services import handover as _handover
+
+        handover_info = _handover.handover_state(session) if session and session.status in ACTIVE_DESKTOP else None
+        if handover_info:
+            can_extend = False
+            extend_blocked_reason = (
+                "The next user has joined. Save your work now: this session ends in about "
+                f"{_handover.FINISH_UP_MINUTES} minutes."
+                if handover_info.get("next_joined")
+                else "The next user has been told this Analysis PC is ready. You can keep working until they "
+                f"join (up to {_handover.NO_SHOW_GRACE_MINUTES} minutes); you will then get "
+                f"{_handover.FINISH_UP_MINUTES} minutes to save."
+            )
         idle_timeout_minutes = int(getattr(session, "idle_timeout_minutes", 0) or 0) if session else 0
         idle_ends_at = None
         if session and session.status in ACTIVE_DESKTOP and idle_timeout_minutes:
@@ -429,6 +443,7 @@ class AnalysisExperienceBuilder:
                 "idle_ends_at": _ts(idle_ends_at),
                 "can_extend": can_extend,
                 "extend_blocked_reason": extend_blocked_reason,
+                "handover": handover_info,
                 "others_waiting": others_waiting,
             },
             "workspace": {
